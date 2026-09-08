@@ -36,6 +36,7 @@ from llm.pipelines.registry import PipelineRegistry, get_pipeline_registry
 from llm.service.errors import LLMError, LLMPolicyDenied, LLMProviderError
 from llm.service.logger import log_call, log_error, log_stream
 from llm.service.policies import resolve_model
+from llm.service.stream_log import StreamLogAccumulator
 from llm.types.context import RunContext
 from llm.types.messages import Message
 from llm.types.requests import ChatRequest
@@ -48,6 +49,72 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 LLM_MAX_CONCURRENT_STREAMS = int(os.environ.get("LLM_MAX_CONCURRENT_STREAMS", "20"))
+
+
+class _StreamCollapser:
+    """Incrementally reduce a stream into a ``ChatResponse`` (pure; no I/O).
+
+    The final assistant text is rebuilt from ``token`` events, reset on each
+    ``message_start`` so only the last turn's answer survives (the streaming
+    tool-loop pops ``content`` from its final ``message_end``). Usage comes
+    from the LAST ``message_end`` (which carries the aggregated totals). An
+    ``error`` event — emitted by the provider instead of raising — is re-raised
+    as the mapped exception in ``finalize``.
+
+    Deliberately different fold from ``StreamLogAccumulator`` (log semantics:
+    no text reset, FIRST ``message_end`` wins) — do not merge the two.
+    """
+
+    def __init__(self) -> None:
+        self._text_parts: list[str] = []
+        self._last_end: dict | None = None
+        self._error_data: dict | None = None
+
+    def feed(self, event: StreamEvent) -> None:
+        et = event.event_type
+        if et == "message_start":
+            self._text_parts = []
+        elif et == "token":
+            self._text_parts.append(event.data.get("text", ""))
+        elif et == "message_end":
+            self._last_end = event.data
+        elif et == "error":
+            self._error_data = event.data
+        # thinking / tool_start / tool_end: not part of the collapsed result
+
+    def finalize(self, request: ChatRequest) -> ChatResponse:
+        from llm.core.providers.base import exception_for_error_code
+
+        if self._error_data is not None:
+            error_code = self._error_data.get("error_code")
+            raise exception_for_error_code(error_code)(
+                self._error_data.get("message") or "LLM stream failed",
+                error_code=error_code,
+            )
+
+        last_end = self._last_end
+        usage = None
+        metadata: dict = {}
+        if last_end:
+            usage = Usage(
+                prompt_tokens=last_end.get("input_tokens"),
+                completion_tokens=last_end.get("output_tokens"),
+                total_tokens=last_end.get("total_tokens"),
+                cached_tokens=last_end.get("cached_tokens"),
+                cache_write_tokens=last_end.get("cache_write_tokens"),
+                reasoning_tokens=last_end.get("reasoning_tokens"),
+                cost_usd=last_end.get("cost_usd"),
+            )
+            for key in ("response_metadata", "stop_reason", "provider_model_id"):
+                if key in last_end:
+                    metadata[key] = last_end[key]
+
+        return ChatResponse(
+            message=Message(role="assistant", content="".join(self._text_parts)),
+            model=(last_end or {}).get("model") or request.model or "",
+            usage=usage,
+            metadata=metadata,
+        )
 
 
 class LLMService:
@@ -142,69 +209,25 @@ class LLMService:
         ``timeout`` → ``LLMTimeoutError``) still works.
         """
         request.stream = True
-        events = list(self.stream(pipeline_id, request))
-        return self._collapse_stream_events(events, request)
+        collapser = _StreamCollapser()
+        for event in self.stream(pipeline_id, request):
+            collapser.feed(event)
+        return collapser.finalize(request)
 
     @staticmethod
     def _collapse_stream_events(
         events: list[StreamEvent], request: ChatRequest
     ) -> ChatResponse:
-        """Reduce a drained stream into a ``ChatResponse`` (pure; no I/O).
+        """Reduce an already-drained event list into a ``ChatResponse``.
 
-        The final assistant text is rebuilt from ``token`` events, reset on each
-        ``message_start`` so only the last turn's answer survives (the streaming
-        tool-loop pops ``content`` from its final ``message_end``). Usage comes
-        from the last ``message_end`` (which carries the aggregated totals). An
-        ``error`` event — emitted by the provider instead of raising — is
-        re-raised as the mapped exception after the drain (the pipeline stops
-        without a synthetic ``message_end`` on error).
+        Thin wrapper over ``_StreamCollapser`` kept for tests and callers that
+        hold a list; ``run_via_stream`` feeds the collapser incrementally so the
+        event list is never materialized.
         """
-        from llm.core.providers.base import exception_for_error_code
-
-        text_parts: list[str] = []
-        last_end: dict | None = None
-        error_data: dict | None = None
+        collapser = _StreamCollapser()
         for event in events:
-            et = event.event_type
-            if et == "message_start":
-                text_parts = []
-            elif et == "token":
-                text_parts.append(event.data.get("text", ""))
-            elif et == "message_end":
-                last_end = event.data
-            elif et == "error":
-                error_data = event.data
-            # thinking / tool_start / tool_end: not part of the collapsed result
-
-        if error_data is not None:
-            error_code = error_data.get("error_code")
-            raise exception_for_error_code(error_code)(
-                error_data.get("message") or "LLM stream failed",
-                error_code=error_code,
-            )
-
-        usage = None
-        metadata: dict = {}
-        if last_end:
-            usage = Usage(
-                prompt_tokens=last_end.get("input_tokens"),
-                completion_tokens=last_end.get("output_tokens"),
-                total_tokens=last_end.get("total_tokens"),
-                cached_tokens=last_end.get("cached_tokens"),
-                cache_write_tokens=last_end.get("cache_write_tokens"),
-                reasoning_tokens=last_end.get("reasoning_tokens"),
-                cost_usd=last_end.get("cost_usd"),
-            )
-            for key in ("response_metadata", "stop_reason", "provider_model_id"):
-                if key in last_end:
-                    metadata[key] = last_end[key]
-
-        return ChatResponse(
-            message=Message(role="assistant", content="".join(text_parts)),
-            model=(last_end or {}).get("model") or request.model or "",
-            usage=usage,
-            metadata=metadata,
-        )
+            collapser.feed(event)
+        return collapser.finalize(request)
 
     def stream(self, pipeline_id: str, request: ChatRequest) -> Iterator[StreamEvent]:
         """Stream events from a pipeline. Ensures context and model; validates streaming capability."""
@@ -219,14 +242,17 @@ class LLMService:
             pipeline_id, request.model, run_id,
         )
         t0 = time.monotonic()
-        events: list[StreamEvent] = []
+        # Fold events as they pass instead of retaining the full list — one
+        # pydantic object per token plus full tool results made long tool-loop
+        # runs a real memory spike on the worker.
+        acc = StreamLogAccumulator()
         _logged = False
         try:
             for event in pipeline.stream(request):
-                events.append(event)
+                acc.add(event)
                 yield event
             duration_ms = int((time.monotonic() - t0) * 1000)
-            log_stream(request, events, duration_ms)
+            log_stream(request, acc, duration_ms)
             _logged = True
             logger.info(
                 "LLMService.stream complete pipeline=%s model=%s duration_ms=%d run_id=%s",
@@ -255,10 +281,10 @@ class LLMService:
             )
             raise LLMProviderError(f"Pipeline {pipeline_id} stream failed") from exc
         finally:
-            if not _logged and events:
+            if not _logged and acc.has_events:
                 try:
                     duration_ms = int((time.monotonic() - t0) * 1000)
-                    log_stream(request, events, duration_ms)
+                    log_stream(request, acc, duration_ms)
                 except Exception:
                     logger.debug("Failed to log interrupted stream (non-fatal)")
 

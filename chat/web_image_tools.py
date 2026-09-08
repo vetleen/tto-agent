@@ -141,12 +141,18 @@ class WebImageViewTool(ContextAwareTool):
                 created_by=user,
             )
             token = image_token(asset.id, "")
-            context.pending_native_assets.append({
+            if not context.try_add_native_asset({
                 "asset_id": token,
                 "b64": base64.b64encode(safe_bytes).decode("ascii"),
                 "media_type": media_type,
                 "description": description,
-            })
+            }):
+                results.append(
+                    f"{handle}: fetched and stored, but not attached for viewing — "
+                    "the attachment budget for this run is exhausted. You can still "
+                    f"display it with: {token}"
+                )
+                continue
             attached += 1
             results.append(
                 f"{handle}: viewed. To DISPLAY this image in your reply, paste this "

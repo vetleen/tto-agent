@@ -231,7 +231,8 @@ class LogStreamToolsTests(TestCase):
             StreamEvent(event_type="token", data={"text": "OK"}, sequence=2, run_id=run_id),
             StreamEvent(event_type="message_end", data={}, sequence=3, run_id=run_id),
         ]
-        log_stream(request, events, duration_ms=200)
+        from llm.service.stream_log import StreamLogAccumulator
+        log_stream(request, StreamLogAccumulator.from_events(events), duration_ms=200)
 
         log = LLMCallLog.objects.get(run_id=run_id)
         self.assertEqual(len(log.tools), 1)
@@ -249,7 +250,8 @@ class LogStreamToolsTests(TestCase):
             StreamEvent(event_type="token", data={"text": "OK"}, sequence=1, run_id=run_id),
             StreamEvent(event_type="message_end", data={}, sequence=2, run_id=run_id),
         ]
-        log_stream(request, events, duration_ms=100)
+        from llm.service.stream_log import StreamLogAccumulator
+        log_stream(request, StreamLogAccumulator.from_events(events), duration_ms=100)
 
         log = LLMCallLog.objects.get(run_id=run_id)
         self.assertIsNone(log.tools)

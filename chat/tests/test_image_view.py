@@ -185,6 +185,102 @@ class DocumentViewNativeToolTests(TestCase):
 
 
 @override_settings(MEDIA_ROOT=_MEDIA)
+class PdfAttachChainTests(TestCase):
+    """The staged degrade chain for PDFs that bust the native-asset budget:
+    as-is → lossless compress → page render → extracted-text floor."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="pdfchain@test.com", password="pw")
+        self.room = DataRoom.objects.create(name="R", slug="r-pdfchain", created_by=self.user)
+        self.pdf_bytes = b"%PDF-1.4 " + b"x" * 1000
+        doc = DataRoomDocument.objects.create(
+            data_room=self.room, uploaded_by=self.user,
+            original_filename="big.pdf", mime_type="application/pdf",
+            doc_index=1, status=DataRoomDocument.Status.READY,
+        )
+        version = DataRoomDocumentVersion.objects.create(
+            document=doc, parser_type="pypdf", mime_type="application/pdf",
+            native_blob=ContentFile(self.pdf_bytes, name="big.pdf"),
+        )
+        doc.current_version = version
+        doc.save(update_fields=["current_version"])
+
+    def _tool(self, remaining_budget):
+        from llm.types.context import NATIVE_ASSET_BUDGET_B64_CHARS
+        from chat.tools import DocumentViewNativeTool
+
+        tool = DocumentViewNativeTool()
+        ctx = RunContext.create(user_id=self.user.pk, data_room_ids=[self.room.pk])
+        ctx._native_asset_b64_used = NATIVE_ASSET_BUDGET_B64_CHARS - remaining_budget
+        tool.set_context(ctx)
+        return tool
+
+    def test_compress_stage_attaches_when_it_fits(self):
+        from unittest.mock import patch
+
+        tool = self._tool(remaining_budget=300)  # original b64 (~1350) won't fit
+        with patch("chat.pdf_attach.compress_pdf_lossless", return_value=b"tiny-pdf") as mock_c:
+            result = tool._run([1])
+        mock_c.assert_called_once()
+        self.assertIn("losslessly compressed", result)
+        pending = tool.context.pending_native_assets
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["kind"], "pdf")
+
+    def test_render_stage_attaches_page_images_with_truncation_note(self):
+        from unittest.mock import patch
+
+        tool = self._tool(remaining_budget=300)
+        with patch("chat.pdf_attach.compress_pdf_lossless", side_effect=lambda b: b), \
+             patch("chat.pdf_attach.render_pdf_pages_to_jpegs",
+                   return_value=([b"jpeg-one", b"jpeg-two"], 5)):
+            result = tool._run([1])
+        self.assertIn("attached the first 2 of 5 pages", result)
+        self.assertIn("TRUNCATED", result)
+        pending = tool.context.pending_native_assets
+        self.assertEqual(len(pending), 2)
+        self.assertEqual(pending[0]["kind"], "image")
+        self.assertEqual(pending[0]["media_type"], "image/jpeg")
+        self.assertIn("page 1 of 5", pending[0]["description"])
+
+    def test_floor_returns_extracted_text_only(self):
+        from unittest.mock import patch
+
+        tool = self._tool(remaining_budget=3)  # nothing fits, not even a page
+        with patch("chat.pdf_attach.compress_pdf_lossless", side_effect=lambda b: b), \
+             patch("chat.pdf_attach.render_pdf_pages_to_jpegs", return_value=([], 0)):
+            result = tool._run([1])
+        self.assertIn("attachment budget for this run is exhausted", result)
+        self.assertIn("Extracted text", result)
+        self.assertEqual(tool.context.pending_native_assets, [])
+
+    def test_doc_image_rejected_when_budget_exhausted(self):
+        from llm.types.context import NATIVE_ASSET_BUDGET_B64_CHARS
+        from chat.tools import DocumentViewNativeTool
+
+        img_doc = DataRoomDocument.objects.create(
+            data_room=self.room, uploaded_by=self.user,
+            original_filename="chart.png", mime_type="image/png",
+            doc_index=2, status=DataRoomDocument.Status.READY,
+        )
+        version = DataRoomDocumentVersion.objects.create(
+            document=img_doc, parser_type="image", mime_type="image/png",
+            native_blob=ContentFile(b"\x89PNG fake-image", name="chart.png"),
+        )
+        img_doc.current_version = version
+        img_doc.save(update_fields=["current_version"])
+
+        tool = DocumentViewNativeTool()
+        ctx = RunContext.create(user_id=self.user.pk, data_room_ids=[self.room.pk])
+        ctx._native_asset_b64_used = NATIVE_ASSET_BUDGET_B64_CHARS
+        tool.set_context(ctx)
+        result = tool._run([2])
+        self.assertIn("attached 0 of 1", result)
+        self.assertIn("attachment budget for this run is exhausted", result)
+        self.assertEqual(tool.context.pending_native_assets, [])
+
+
+@override_settings(MEDIA_ROOT=_MEDIA)
 class AttachmentMarkersTests(TestCase):
     """The summariser surfaces shared-file markers so compression doesn't
     silently lose that the user shared an image."""

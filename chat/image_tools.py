@@ -138,8 +138,11 @@ class ChatGenerateImageTool(ContextAwareTool):
         token = image_token(asset.id, "")
 
         # Surface the image to the model too, so it can describe/caption it.
+        # Budget-gated: on rejection the image is still stored and embeddable
+        # via its token — the model just doesn't get an inline preview.
+        preview_attached = True
         if context is not None:
-            context.pending_native_assets.append(
+            preview_attached = context.try_add_native_asset(
                 {
                     "asset_id": token,
                     "b64": base64.b64encode(result.img_bytes).decode("ascii"),
@@ -148,6 +151,16 @@ class ChatGenerateImageTool(ContextAwareTool):
                 }
             )
 
+        message = (
+            "Image ready. Embed this token in your reply to show it to the user, "
+            "then briefly present it and ask if they'd like any changes — do not "
+            f"regenerate unless asked: {token}"
+        )
+        if not preview_attached:
+            message += (
+                " (Inline preview not attached — the attachment budget for this "
+                "run is exhausted.)"
+            )
         return json.dumps(
             {
                 "status": "ok",
@@ -155,11 +168,7 @@ class ChatGenerateImageTool(ContextAwareTool):
                 "token": token,
                 "width": result.width,
                 "height": result.height,
-                "message": (
-                    "Image ready. Embed this token in your reply to show it to the user, "
-                    "then briefly present it and ask if they'd like any changes — do not "
-                    f"regenerate unless asked: {token}"
-                ),
+                "message": message,
             }
         )
 

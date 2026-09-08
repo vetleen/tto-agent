@@ -702,7 +702,10 @@ class PreviewSlidesTool(ContextAwareTool):
         if attached == 0:
             return json.dumps({
                 "status": "unavailable",
-                "message": "The render produced no images; proceed without a visual preview.",
+                "message": (
+                    "The render produced no images, or the attachment budget for "
+                    "this run is exhausted; proceed without a visual preview."
+                ),
             })
         return json.dumps({
             "status": "ok",
@@ -738,12 +741,13 @@ class PreviewSlidesTool(ContextAwareTool):
                 with source.open("rb") as fh:
                     data = fh.read()
                 data, ct = _downscale_png(data, ct)
-                ctx.pending_native_assets.append({
+                if not ctx.try_add_native_asset({
                     "asset_id": sid,  # label only — unused by the pipeline drain
                     "b64": base64.b64encode(data).decode("ascii"),
                     "media_type": ct or "image/png",
                     "description": f"Rendered slide {sid} (page {info.get('page')})",
-                })
+                }):
+                    continue
                 attached += 1
             except Exception:
                 continue

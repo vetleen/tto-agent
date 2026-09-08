@@ -581,7 +581,7 @@ class InterruptedStreamLoggingTests(TestCase):
 
     @patch("llm.service.llm_service.log_stream")
     def test_interrupted_stream_logs_via_finally(self, mock_log_stream):
-        """When a consumer stops iterating mid-stream, the finally block logs collected events."""
+        """When a consumer stops iterating mid-stream, the finally block logs the folded events."""
         request = ChatRequest(
             messages=[Message(role="user", content="Hello")],
             stream=True,
@@ -608,8 +608,14 @@ class InterruptedStreamLoggingTests(TestCase):
         gen.close()  # simulate disconnect — triggers GeneratorExit → finally
 
         mock_log_stream.assert_called_once()
-        logged_events = mock_log_stream.call_args[0][1]
-        self.assertEqual(len(logged_events), 2)
+        from llm.service.stream_log import StreamLogAccumulator
+
+        logged_acc = mock_log_stream.call_args[0][1]
+        self.assertIsInstance(logged_acc, StreamLogAccumulator)
+        # Only the two consumed events were folded before the disconnect.
+        self.assertEqual(logged_acc.event_count, 2)
+        self.assertEqual(logged_acc.streamed_text, "Hello")
+        self.assertFalse(logged_acc.has_end_event)
 
     @patch("llm.service.llm_service.log_stream")
     def test_fully_consumed_stream_logs_normally_not_twice(self, mock_log_stream):

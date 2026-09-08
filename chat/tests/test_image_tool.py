@@ -87,6 +87,20 @@ class ChatGenerateImageToolTests(TestCase):
         self.assertEqual(len(self.ctx.pending_native_assets), 1)
         self.assertEqual(self.ctx.pending_native_assets[0]["media_type"], "image/png")
 
+    def test_budget_exhausted_skips_preview_but_stays_ok(self):
+        from llm.types.context import NATIVE_ASSET_BUDGET_B64_CHARS
+
+        self.ctx._native_asset_b64_used = NATIVE_ASSET_BUDGET_B64_CHARS
+        fake = _FakeService()
+        with _patch_prefs(), _patch_service(fake):
+            result = self._invoke({"prompt": "a friendly robot"})
+
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("[[image:", result["token"])
+        self.assertIn("Inline preview not attached", result["message"])
+        self.assertEqual(Asset.objects.filter(thread=self.thread).count(), 1)
+        self.assertEqual(self.ctx.pending_native_assets, [])
+
     def test_disabled_returns_error(self):
         disabled = SimpleNamespace(image_model="", allowed_image_models=[])
         with _patch_prefs(disabled):

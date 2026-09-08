@@ -1255,3 +1255,135 @@ class SimpleChatPipelineTests(TestCase):
         self.assertEqual(fake_model.stream.call_count, 1)
         token_events = [e for e in events if e.event_type == "token"]
         self.assertEqual(token_events[0].data["text"], "Deadline hit")
+
+
+class IterationNoticeTests(TestCase):
+    """_iteration_notice: sub-agents get a progress counter every iteration;
+    main chat keeps the old warn-only-near-the-end behavior byte-for-byte."""
+
+    def _notice(self, i, max_iter, agent_kind, deadline_dt=None):
+        from llm.pipelines.simple_chat import _iteration_notice
+
+        return _iteration_notice(i, max_iter, deadline_dt, agent_kind)
+
+    def test_main_no_notice_far_from_limit(self):
+        self.assertIsNone(self._notice(0, 10, "main"))
+
+    def test_main_warning_text_unchanged_at_two_remaining(self):
+        notice = self._notice(7, 10, "main")  # finished 8 of 10 -> 2 remaining
+        self.assertEqual(
+            notice.content,
+            "IMPORTANT: You have 2 tool iterations remaining. Wrap up your research "
+            "and prepare to deliver your comprehensive final response as plain text.",
+        )
+
+    def test_main_warning_text_unchanged_at_last_iteration(self):
+        notice = self._notice(8, 10, "main")  # finished 9 of 10 -> 1 remaining
+        self.assertIn("This is your last tool iteration.", notice.content)
+
+    def test_main_time_low_warning(self):
+        deadline = datetime.now(timezone.utc) + timedelta(seconds=30)
+        notice = self._notice(0, 10, "main", deadline_dt=deadline)
+        self.assertIn("You are running low on time.", notice.content)
+
+    def test_subagent_gets_counter_every_iteration(self):
+        notice = self._notice(2, 35, "subagent")  # finished 3 of 35
+        self.assertEqual(
+            notice.content,
+            "[Progress: finished tool iteration 3 of 35 — 32 remaining.]",
+        )
+        self.assertEqual(notice.role, "user")
+
+    def test_subagent_last_iteration_absorbs_warning_into_one_message(self):
+        notice = self._notice(34, 35, "subagent")  # finished 35 -> 0 remaining
+        self.assertIn("[Progress: finished tool iteration 35 of 35 — 0 remaining.]", notice.content)
+        self.assertIn("This is your last tool iteration.", notice.content)
+
+    def test_subagent_time_low_absorbed(self):
+        deadline = datetime.now(timezone.utc) + timedelta(seconds=30)
+        notice = self._notice(0, 35, "subagent", deadline_dt=deadline)
+        self.assertIn("[Progress: finished tool iteration 1 of 35 — 34 remaining.]", notice.content)
+        self.assertIn("You are running low on time.", notice.content)
+
+    def test_run_loop_injects_counter_for_subagent_context(self):
+        """Integration: a 2-tool-round sub-agent run sees a progress message
+        after each round in the history the next generate receives."""
+        tool = _MockToolImpl(name="document_search")
+        ctx = RunContext.create()
+        ctx.agent_kind = "subagent"
+        request = ChatRequest(
+            messages=[Message(role="user", content="Go")],
+            stream=False,
+            model="gpt-4o-mini",
+            tools=["document_search"],
+            context=ctx,
+        )
+        tool_call = ToolCall(id="c1", name="document_search", arguments={"a": 1, "b": 2})
+        tool_response = ChatResponse(
+            message=Message(role="assistant", content="", tool_calls=[tool_call]),
+            model="gpt-4o-mini", usage=None, metadata={},
+        )
+        final_response = ChatResponse(
+            message=Message(role="assistant", content="Done."),
+            model="gpt-4o-mini", usage=None, metadata={},
+        )
+        fake_model = MagicMock()
+        fake_model.generate.side_effect = [tool_response, tool_response, final_response]
+
+        mock_registry = MagicMock()
+        mock_registry.return_value.get_tool.side_effect = (
+            lambda n: tool if n == "document_search" else None
+        )
+        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
+             patch("llm.pipelines.simple_chat.get_tool_registry", mock_registry):
+            mock_create.return_value = fake_model
+            response = SimpleChatPipeline(max_tool_iterations=5).run(request)
+
+        self.assertEqual(response.message.content, "Done.")
+        final_messages = fake_model.generate.call_args_list[2][0][0].messages
+        progress = [
+            m.content for m in final_messages
+            if m.role == "user" and isinstance(m.content, str) and m.content.startswith("[Progress:")
+        ]
+        self.assertEqual(progress, [
+            "[Progress: finished tool iteration 1 of 5 — 4 remaining.]",
+            "[Progress: finished tool iteration 2 of 5 — 3 remaining.]",
+        ])
+
+    def test_run_loop_no_counter_for_main_context(self):
+        tool = _MockToolImpl(name="document_search")
+        request = ChatRequest(
+            messages=[Message(role="user", content="Go")],
+            stream=False,
+            model="gpt-4o-mini",
+            tools=["document_search"],
+            context=RunContext.create(),  # agent_kind defaults to "main"
+        )
+        tool_call = ToolCall(id="c1", name="document_search", arguments={"a": 1, "b": 2})
+        tool_response = ChatResponse(
+            message=Message(role="assistant", content="", tool_calls=[tool_call]),
+            model="gpt-4o-mini", usage=None, metadata={},
+        )
+        final_response = ChatResponse(
+            message=Message(role="assistant", content="Done."),
+            model="gpt-4o-mini", usage=None, metadata={},
+        )
+        fake_model = MagicMock()
+        fake_model.generate.side_effect = [tool_response, final_response]
+
+        mock_registry = MagicMock()
+        mock_registry.return_value.get_tool.side_effect = (
+            lambda n: tool if n == "document_search" else None
+        )
+        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
+             patch("llm.pipelines.simple_chat.get_tool_registry", mock_registry):
+            mock_create.return_value = fake_model
+            SimpleChatPipeline(max_tool_iterations=10).run(request)
+
+        final_messages = fake_model.generate.call_args_list[1][0][0].messages
+        progress = [
+            m for m in final_messages
+            if m.role == "user" and isinstance(m.content, str)
+            and ("[Progress:" in m.content or "IMPORTANT:" in m.content)
+        ]
+        self.assertEqual(progress, [])

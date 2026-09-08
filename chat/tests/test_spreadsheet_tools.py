@@ -256,6 +256,17 @@ class ViewSheetToolTests(SpreadsheetToolTestCase):
         self.assertIn("does not exist", result)
         self.assertEqual(tool.context.pending_native_assets, [])
 
+    def test_budget_exhausted_reports_and_skips_attach(self):
+        from llm.types.context import NATIVE_ASSET_BUDGET_B64_CHARS
+
+        tool = self._view_tool()
+        tool.context._native_asset_b64_used = NATIVE_ASSET_BUDGET_B64_CHARS
+        with patch("documents.services.spreadsheets.tiles.render_band", side_effect=_fake_render_band):
+            result = tool._run(1)
+        self.assertIn("attachment budget", result)
+        self.assertIn("document_read_sheet", result)
+        self.assertEqual(tool.context.pending_native_assets, [])
+
     def test_render_unavailable_degrades_to_message(self):
         tool = self._view_tool()
         with patch(

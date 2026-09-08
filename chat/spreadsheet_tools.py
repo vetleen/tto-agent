@@ -518,12 +518,18 @@ class DocumentViewSheetTool(ContextAwareTool):
                 png = fh.read()
             description = f"Sheet '{entry.get('name')}' tile x{x}y{y} ({extent})"
             token = image_token(asset.id, description)
-            self.context.pending_native_assets.append({
+            if not self.context.try_add_native_asset({
                 "asset_id": token,
                 "b64": base64.b64encode(png).decode("ascii"),
                 "media_type": "image/png",
                 "description": description,
-            })
+            }):
+                lines.append(
+                    f"Tile x{x}y{y} ({extent}) rendered but not attached — the "
+                    "attachment budget for this run is exhausted; read exact "
+                    "values with document_read_sheet."
+                )
+                continue
             attached += 1
             lines.append(
                 f"Attached tile x{x}y{y} ({extent}). To show it to the user, "

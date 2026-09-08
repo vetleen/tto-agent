@@ -8,6 +8,12 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, PrivateAttr
 
+# Per-run cap on native-asset bytes, measured on base64 length (that is what
+# actually occupies memory in the message history and the provider payload).
+# Cumulative for the whole run — it deliberately does NOT reset when the
+# pipeline drains pending_native_assets each tool-loop iteration.
+NATIVE_ASSET_BUDGET_B64_CHARS = 20 * 1024 * 1024
+
 
 class RunContext(BaseModel):
     """Per-run context for tracing, attribution, and timeouts."""
@@ -52,6 +58,31 @@ class RunContext(BaseModel):
     # (ThreadPoolExecutor): a plain len()+1 would race and collide.
     _web_image_lock: Any = PrivateAttr(default_factory=threading.Lock)
     _web_image_next: int = PrivateAttr(default=1)
+    # Native-asset budget bookkeeping — locked for the same reason as above.
+    _native_asset_lock: Any = PrivateAttr(default_factory=threading.Lock)
+    _native_asset_b64_used: int = PrivateAttr(default=0)
+
+    def try_add_native_asset(self, item: dict) -> bool:
+        """Queue a native asset if the run's byte budget allows it.
+
+        Atomically reserves ``len(item["b64"])`` against the per-run budget and
+        appends to ``pending_native_assets``; returns False (and appends
+        nothing) once the budget is exhausted. Every tool that surfaces
+        images/PDFs to the model MUST go through this instead of appending
+        directly, so one run can never hold unbounded base64 in history.
+        """
+        size = len(item.get("b64") or "")
+        with self._native_asset_lock:
+            if self._native_asset_b64_used + size > NATIVE_ASSET_BUDGET_B64_CHARS:
+                return False
+            self._native_asset_b64_used += size
+            self.pending_native_assets.append(item)
+            return True
+
+    def native_asset_budget_remaining(self) -> int:
+        """Base64 chars still available in this run's native-asset budget."""
+        with self._native_asset_lock:
+            return NATIVE_ASSET_BUDGET_B64_CHARS - self._native_asset_b64_used
 
     def allocate_web_image_handle(self, entry: dict) -> str:
         """Register a web image candidate under a fresh monotonic handle and

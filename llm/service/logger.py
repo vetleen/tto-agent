@@ -4,10 +4,13 @@ LLM call logging helpers.
 These functions write to LLMCallLog without ever raising — a logging failure must
 never surface to the caller.
 
-raw_output stores the entire response as a single coherent JSON blob:
-- Non-streaming: full ChatResponse (message, model, usage, metadata).
-- Streaming: one assembled response built from all events after the stream
-  finishes (message content from token events, tool_calls from tool_start/tool_end).
+Payloads are stored SLIM by design (memory + DB footprint): ``prompt`` keeps the
+message-list shape but caps text content (500 chars/message) and tool-call
+arguments (1KB); ``raw_output`` is a compact JSON summary
+``{final_text_preview, tool_calls: [{tool_name, args_size, result_size,
+result_preview}], counts}`` — never the full transcript. Set
+``LLM_LOG_FULL_PAYLOADS=true`` (env) for larger, still-capped payloads when
+debugging locally. See ``llm/service/stream_log.py``.
 
 tools stores a simplified list of tool schemas from the request:
 - [{"name": "...", "description": "..."}, ...] when tools are bound
@@ -19,12 +22,21 @@ from __future__ import annotations
 import json
 import logging
 from decimal import Decimal
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING
+
+from llm.service.stream_log import (
+    LOG_FULL_PAYLOAD_CAP_CHARS,
+    LOG_TEXT_PREVIEW_CHARS,
+    LOG_TOOL_ARGS_CHARS,
+    cap_text,
+    full_payloads_enabled,
+    slim_response_raw_output,
+)
 
 if TYPE_CHECKING:
+    from llm.service.stream_log import StreamLogAccumulator
     from llm.types.requests import ChatRequest
     from llm.types.responses import ChatResponse
-    from llm.types.streaming import StreamEvent
 
 logger = logging.getLogger(__name__)
 
@@ -64,16 +76,49 @@ def _truncate_base64_in_content(content):
     return truncated
 
 
+def _cap_content(content):
+    """Cap logged message content: whole string, or each text block in a list.
+
+    Base64/data-URI blocks were already replaced by ``_truncate_base64_in_content``;
+    this bounds the remaining text so a 24k-char extracted-text block or a giant
+    system prompt never lands in the log row.
+    """
+    cap = LOG_FULL_PAYLOAD_CAP_CHARS if full_payloads_enabled() else LOG_TEXT_PREVIEW_CHARS
+    if isinstance(content, str):
+        return cap_text(content, cap)
+    if isinstance(content, list):
+        capped = []
+        for block in content:
+            if isinstance(block, dict) and isinstance(block.get("text"), str):
+                capped.append({**block, "text": cap_text(block["text"], cap)})
+            else:
+                capped.append(block)
+        return capped
+    return content
+
+
+def _cap_tool_arguments(arguments):
+    """Bound logged tool-call arguments; keep the dict when it's small."""
+    cap = LOG_FULL_PAYLOAD_CAP_CHARS if full_payloads_enabled() else LOG_TOOL_ARGS_CHARS
+    try:
+        serialized = json.dumps(arguments, default=str)
+    except Exception:
+        return arguments
+    if len(serialized) <= cap:
+        return arguments
+    return f"[tool args truncated: {len(serialized):,} chars] {serialized[:cap]}"
+
+
 def _serialize_messages(request: "ChatRequest") -> list:
-    """Convert request messages to a plain list of dicts."""
+    """Convert request messages to a plain list of dicts (content capped)."""
     result = []
     for m in request.messages:
-        d = {"role": m.role, "content": _truncate_base64_in_content(m.content)}
+        d = {"role": m.role, "content": _cap_content(_truncate_base64_in_content(m.content))}
         if m.tool_call_id:
             d["tool_call_id"] = m.tool_call_id
         if m.tool_calls:
             d["tool_calls"] = [
-                {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
+                {"id": tc.id, "name": tc.name, "arguments": _cap_tool_arguments(tc.arguments)}
                 for tc in m.tool_calls
             ]
         result.append(d)
@@ -119,7 +164,7 @@ def _user_fk_id(user_id: str | None) -> int | None:
 
 
 def log_call(request: "ChatRequest", response: "ChatResponse", duration_ms: int) -> None:
-    """Write a SUCCESS log entry for a non-streaming call. raw_output = full response JSON."""
+    """Write a SUCCESS log entry for a non-streaming call. raw_output = slim summary JSON."""
     try:
         from llm.models import LLMCallLog
 
@@ -152,7 +197,7 @@ def log_call(request: "ChatRequest", response: "ChatResponse", duration_ms: int)
             is_stream=False,
             prompt=_serialize_messages(request),
             tools=_serialize_tool_schemas(request.tool_schemas, request.tools),
-            raw_output=response.model_dump_json(),
+            raw_output=slim_response_raw_output(response),
             input_tokens=usage.prompt_tokens if usage else None,
             output_tokens=usage.completion_tokens if usage else None,
             total_tokens=usage.total_tokens if usage else None,
@@ -170,47 +215,15 @@ def log_call(request: "ChatRequest", response: "ChatResponse", duration_ms: int)
         logger.exception("Failed to write LLM call log (non-streaming)")
 
 
-def _assemble_stream_response(events: "List[StreamEvent]") -> str:
-    """Build a single coherent response JSON from stream events (after stream finished)."""
-    content = "".join(
-        e.data.get("text", "") for e in events if e.event_type == "token"
-    )
-    # Pair tool_start with tool_end by tool_call_id
-    tool_by_id: dict = {}
-    for e in events:
-        if e.event_type == "tool_start":
-            tid = e.data.get("tool_call_id") or ""
-            tool_by_id[tid] = {
-                "tool_call_id": tid,
-                "tool_name": e.data.get("tool_name", ""),
-                "arguments": e.data.get("arguments", {}),
-                "result": None,
-            }
-        elif e.event_type == "tool_end":
-            tid = e.data.get("tool_call_id") or ""
-            if tid in tool_by_id:
-                tool_by_id[tid]["result"] = e.data.get("result")
-            else:
-                tool_by_id[tid] = {
-                    "tool_call_id": tid,
-                    "tool_name": e.data.get("tool_name", ""),
-                    "arguments": {},
-                    "result": e.data.get("result"),
-                }
-    tool_calls = list(tool_by_id.values())
-    payload = {
-        "message": {"role": "assistant", "content": content},
-        "tool_calls": tool_calls,
-    }
-    return json.dumps(payload)
-
-
 def log_stream(
     request: "ChatRequest",
-    events: "List[StreamEvent]",
+    acc: "StreamLogAccumulator",
     duration_ms: int,
 ) -> None:
     """Write a SUCCESS or ERROR log entry after a streaming call completes.
+
+    Takes a ``StreamLogAccumulator`` that folded the events as they streamed —
+    the full event list is never retained (see ``llm/service/stream_log.py``).
 
     Providers catch exceptions in ``BaseLangChainChatModel.stream`` and yield
     an ``error`` ``StreamEvent`` instead of re-raising, so ``LLMService.stream``
@@ -223,19 +236,10 @@ def log_stream(
     try:
         from llm.models import LLMCallLog
 
-        raw_output = _assemble_stream_response(events)
+        raw_output = acc.build_raw_output()
 
-        # Extract usage from the message_end event (populated by provider)
-        end_event = next(
-            (e for e in events if e.event_type == "message_end"),
-            None,
-        )
-        error_event = next(
-            (e for e in events if e.event_type == "error"),
-            None,
-        )
-
-        end_data = end_event.data if end_event else {}
+        # Usage comes from the message_end data (populated by provider)
+        end_data = acc.end_data
         input_tokens = end_data.get("input_tokens")
         output_tokens = end_data.get("output_tokens")
         total_tokens = end_data.get("total_tokens")
@@ -247,13 +251,13 @@ def log_stream(
         # the provider never sent a terminal message_end, so usage is absent.
         # Estimate output tokens from the text we did stream so cost stays
         # visible instead of NULL, and flag explicit cancellations distinctly.
-        interrupted = end_event is None and error_event is None
+        # Keys off has_end_event, not end_data truthiness — an empty-data
+        # message_end is still terminal.
+        interrupted = not acc.has_end_event and acc.error_data is None
         if interrupted and output_tokens is None:
             from core.tokens import count_tokens
 
-            streamed_text = "".join(
-                e.data.get("text", "") for e in events if e.event_type == "token"
-            )
+            streamed_text = acc.streamed_text
             if streamed_text:
                 output_tokens = count_tokens(streamed_text)
         params = request.params or {}
@@ -292,8 +296,8 @@ def log_stream(
         provider_model_id = end_data.get("provider_model_id", "")
 
         context = request.context
-        if error_event is not None:
-            err_data = error_event.data or {}
+        if acc.error_data is not None:
+            err_data = acc.error_data
             LLMCallLog.objects.create(
                 user_id=_user_fk_id(context.user_id if context else None),
                 run_id=context.run_id if context else "",

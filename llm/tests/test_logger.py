@@ -9,6 +9,7 @@ from django.test import TestCase
 
 from llm.models import LLMCallLog
 from llm.service.logger import log_call, log_error, log_stream
+from llm.service.stream_log import StreamLogAccumulator
 from llm.types.context import RunContext
 from llm.types.messages import Message
 from llm.types.requests import ChatRequest
@@ -17,6 +18,10 @@ from llm.types.messages import ToolCall
 from llm.types.streaming import StreamEvent
 
 User = get_user_model()
+
+# log_stream takes a fold-as-you-go accumulator instead of the raw event list;
+# tests still build event lists for readability and wrap them here.
+_acc = StreamLogAccumulator.from_events
 
 
 def _make_request(model="gpt-4o-mini", user_id=None, stream=False, conversation_id=None):
@@ -50,10 +55,10 @@ class LogCallTests(TestCase):
         self.assertEqual(log.status, "success")
         self.assertEqual(log.model, "gpt-4o-mini")
         self.assertFalse(log.is_stream)
-        # raw_output = full response JSON
+        # raw_output = slim summary JSON (never the full response)
         parsed = json.loads(log.raw_output)
-        self.assertEqual(parsed["message"]["content"], "Hi!")
-        self.assertEqual(parsed["model"], "gpt-4o-mini")
+        self.assertEqual(parsed["final_text_preview"], "Hi!")
+        self.assertEqual(parsed["tool_calls"], [])
         self.assertEqual(log.input_tokens, 5)
         self.assertEqual(log.output_tokens, 3)
         self.assertEqual(log.total_tokens, 8)
@@ -302,15 +307,14 @@ class LogStreamTests(TestCase):
             StreamEvent(event_type="token", data={"text": "lo!"}, sequence=3, run_id=run_id),
             StreamEvent(event_type="message_end", data={}, sequence=4, run_id=run_id),
         ]
-        log_stream(request, events, duration_ms=300)
+        log_stream(request, _acc(events), duration_ms=300)
 
         log = _get_log(request)
         self.assertEqual(log.status, "success")
         self.assertTrue(log.is_stream)
-        # raw_output = assembled response JSON (single coherent blob)
+        # raw_output = slim summary JSON built from the folded events
         parsed = json.loads(log.raw_output)
-        self.assertEqual(parsed["message"]["role"], "assistant")
-        self.assertEqual(parsed["message"]["content"], "Hello!")
+        self.assertEqual(parsed["final_text_preview"], "Hello!")
         self.assertEqual(parsed["tool_calls"], [])
         self.assertEqual(log.duration_ms, 300)
         # No usage in message_end data → still None
@@ -319,11 +323,11 @@ class LogStreamTests(TestCase):
 
     def test_empty_events_produces_empty_output(self):
         request = _make_request(stream=True)
-        log_stream(request, [], duration_ms=10)
+        log_stream(request, _acc([]), duration_ms=10)
 
         log = _get_log(request)
         parsed = json.loads(log.raw_output)
-        self.assertEqual(parsed["message"]["content"], "")
+        self.assertEqual(parsed["final_text_preview"], "")
         self.assertEqual(parsed["tool_calls"], [])
 
     def test_stores_tools_from_request_in_stream(self):
@@ -346,7 +350,7 @@ class LogStreamTests(TestCase):
             StreamEvent(event_type="token", data={"text": "Hi"}, sequence=2, run_id=run_id),
             StreamEvent(event_type="message_end", data={}, sequence=3, run_id=run_id),
         ]
-        log_stream(request, events, duration_ms=200)
+        log_stream(request, _acc(events), duration_ms=200)
 
         log = _get_log(request)
         self.assertEqual(len(log.tools), 1)
@@ -359,7 +363,7 @@ class LogStreamTests(TestCase):
             StreamEvent(event_type="token", data={"text": "Hi"}, sequence=1, run_id=run_id),
             StreamEvent(event_type="message_end", data={}, sequence=2, run_id=run_id),
         ]
-        log_stream(request, events, duration_ms=100)
+        log_stream(request, _acc(events), duration_ms=100)
 
         log = _get_log(request)
         self.assertIsNone(log.tools)
@@ -384,7 +388,7 @@ class LogStreamTests(TestCase):
                 run_id=run_id,
             ),
         ]
-        log_stream(request, events, duration_ms=200)
+        log_stream(request, _acc(events), duration_ms=200)
 
         log = _get_log(request)
         self.assertEqual(log.input_tokens, 100)
@@ -399,7 +403,7 @@ class LogStreamTests(TestCase):
         events = [
             StreamEvent(event_type="message_end", data={"model": "gpt-5-mini"}, sequence=1, run_id=run_id),
         ]
-        log_stream(request, events, duration_ms=50)
+        log_stream(request, _acc(events), duration_ms=50)
 
         log = _get_log(request)
         self.assertIsNone(log.input_tokens)
@@ -413,7 +417,7 @@ class LogStreamTests(TestCase):
         events = [
             StreamEvent(event_type="message_end", data={}, sequence=1, run_id=run_id),
         ]
-        log_stream(request, events, duration_ms=50)
+        log_stream(request, _acc(events), duration_ms=50)
 
         log = _get_log(request)
         self.assertEqual(log.trace_id, request.context.trace_id)
@@ -437,7 +441,7 @@ class LogStreamTests(TestCase):
                 run_id=run_id,
             ),
         ]
-        log_stream(request, events, duration_ms=100)
+        log_stream(request, _acc(events), duration_ms=100)
 
         log = _get_log(request)
         self.assertEqual(log.stop_reason, "end_turn")
@@ -448,7 +452,7 @@ class LogStreamTests(TestCase):
     def test_never_raises_on_db_error(self):
         request = _make_request(stream=True)
         with patch.object(LLMCallLog.objects, "create", side_effect=RuntimeError("DB is down")):
-            log_stream(request, [], duration_ms=10)
+            log_stream(request, _acc([]), duration_ms=10)
 
     def test_error_event_without_message_end_writes_error_row(self):
         """Providers convert stream exceptions into ``error`` events and return,
@@ -469,7 +473,7 @@ class LogStreamTests(TestCase):
                 run_id=run_id,
             ),
         ]
-        log_stream(request, events, duration_ms=120)
+        log_stream(request, _acc(events), duration_ms=120)
 
         log = _get_log(request)
         self.assertEqual(log.status, "error")
@@ -489,7 +493,7 @@ class LogStreamTests(TestCase):
                 run_id=run_id,
             ),
         ]
-        log_stream(request, events, duration_ms=10)
+        log_stream(request, _acc(events), duration_ms=10)
 
         log = _get_log(request)
         self.assertEqual(log.status, "error")
@@ -522,7 +526,7 @@ class LogStreamTests(TestCase):
                 run_id=run_id,
             ),
         ]
-        log_stream(request, events, duration_ms=80)
+        log_stream(request, _acc(events), duration_ms=80)
 
         log = _get_log(request)
         self.assertEqual(log.status, "error")
@@ -565,7 +569,7 @@ class CancelledStreamLoggingTests(TestCase):
         ev = threading.Event()
         ev.set()
         request = self._request(cancel_event=ev)
-        log_stream(request, self._interrupted_events(request.context.run_id), duration_ms=200)
+        log_stream(request, _acc(self._interrupted_events(request.context.run_id)), duration_ms=200)
 
         log = _get_log(request)
         self.assertEqual(log.status, "cancelled")
@@ -576,7 +580,7 @@ class CancelledStreamLoggingTests(TestCase):
 
     def test_interrupted_without_cancel_event_stays_success(self):
         request = self._request(cancel_event=None)
-        log_stream(request, self._interrupted_events(request.context.run_id), duration_ms=100)
+        log_stream(request, _acc(self._interrupted_events(request.context.run_id)), duration_ms=100)
 
         log = _get_log(request)
         self.assertEqual(log.status, "success")
@@ -588,7 +592,7 @@ class CancelledStreamLoggingTests(TestCase):
 
         ev = threading.Event()  # created but NOT set
         request = self._request(cancel_event=ev)
-        log_stream(request, self._interrupted_events(request.context.run_id), duration_ms=100)
+        log_stream(request, _acc(self._interrupted_events(request.context.run_id)), duration_ms=100)
 
         log = _get_log(request)
         self.assertEqual(log.status, "success")
@@ -611,7 +615,7 @@ class CancelledStreamLoggingTests(TestCase):
                 run_id=run_id,
             ),
         ]
-        log_stream(request, events, duration_ms=50)
+        log_stream(request, _acc(events), duration_ms=50)
 
         log = _get_log(request)
         self.assertEqual(log.status, "success")
@@ -622,14 +626,14 @@ class CancelledStreamLoggingTests(TestCase):
         threading.Event. An interrupted stream whose _cancel_check() returns True
         must be logged CANCELLED (was previously SUCCESS)."""
         request = self._request(cancel_check=lambda: True)
-        log_stream(request, self._interrupted_events(request.context.run_id), duration_ms=100)
+        log_stream(request, _acc(self._interrupted_events(request.context.run_id)), duration_ms=100)
 
         log = _get_log(request)
         self.assertEqual(log.status, "cancelled")
 
     def test_subagent_cancel_check_false_stays_success(self):
         request = self._request(cancel_check=lambda: False)
-        log_stream(request, self._interrupted_events(request.context.run_id), duration_ms=100)
+        log_stream(request, _acc(self._interrupted_events(request.context.run_id)), duration_ms=100)
 
         log = _get_log(request)
         self.assertEqual(log.status, "success")
@@ -652,7 +656,7 @@ class LogStreamErrorUsageTests(TestCase):
                 "input_tokens": 100, "output_tokens": 20, "total_tokens": 120,
             }, sequence=3, run_id=run_id),
         ]
-        log_stream(request, events, duration_ms=100)
+        log_stream(request, _acc(events), duration_ms=100)
 
         log = _get_log(request)
         self.assertEqual(log.status, "error")            # error event wins
@@ -752,6 +756,146 @@ class SerializeMessagesTests(TestCase):
         result = _serialize_messages(request)
         self.assertEqual(result[0]["content"], "Hello")
 
+    def test_long_string_content_capped_with_marker(self):
+        from llm.service.logger import _serialize_messages
+
+        request = ChatRequest(
+            messages=[Message(role="user", content="x" * 5000)],
+            stream=False,
+            model="gpt-4o-mini",
+            context=RunContext.create(),
+        )
+        result = _serialize_messages(request)
+        content = result[0]["content"]
+        self.assertLess(len(content), 600)
+        self.assertIn("5,000 chars total", content)
+
+    def test_long_text_block_capped(self):
+        from llm.service.logger import _serialize_messages
+
+        request = ChatRequest(
+            messages=[Message(role="user", content=[
+                {"type": "text", "text": "y" * 3000},
+                {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}},
+            ])],
+            stream=False,
+            model="gpt-4o-mini",
+            context=RunContext.create(),
+        )
+        result = _serialize_messages(request)
+        text_block = result[0]["content"][0]
+        self.assertLess(len(text_block["text"]), 600)
+        self.assertIn("3,000 chars total", text_block["text"])
+        # Non-text blocks pass through untouched
+        self.assertEqual(result[0]["content"][1]["image_url"]["url"], "https://example.com/a.png")
+
+    def test_large_tool_arguments_replaced_with_summary(self):
+        from llm.service.logger import _serialize_messages
+
+        request = ChatRequest(
+            messages=[Message(role="assistant", content="", tool_calls=[
+                ToolCall(id="tc1", name="canvas_write", arguments={"content": "z" * 5000}),
+            ])],
+            stream=False,
+            model="gpt-4o-mini",
+            context=RunContext.create(),
+        )
+        result = _serialize_messages(request)
+        tc = result[0]["tool_calls"][0]
+        self.assertEqual(tc["name"], "canvas_write")
+        self.assertIsInstance(tc["arguments"], str)
+        self.assertIn("tool args truncated", tc["arguments"])
+
+    def test_small_tool_arguments_kept_as_dict(self):
+        from llm.service.logger import _serialize_messages
+
+        request = ChatRequest(
+            messages=[Message(role="assistant", content="", tool_calls=[
+                ToolCall(id="tc1", name="search", arguments={"q": "test"}),
+            ])],
+            stream=False,
+            model="gpt-4o-mini",
+            context=RunContext.create(),
+        )
+        result = _serialize_messages(request)
+        self.assertEqual(result[0]["tool_calls"][0]["arguments"], {"q": "test"})
+
+    def test_full_payloads_flag_raises_caps(self):
+        import os
+        from llm.service.logger import _serialize_messages
+
+        request = ChatRequest(
+            messages=[Message(role="user", content="x" * 5000)],
+            stream=False,
+            model="gpt-4o-mini",
+            context=RunContext.create(),
+        )
+        with patch.dict(os.environ, {"LLM_LOG_FULL_PAYLOADS": "true"}):
+            result = _serialize_messages(request)
+        self.assertEqual(result[0]["content"], "x" * 5000)
+
+
+class SlimRawOutputTests(TestCase):
+    """raw_output carries a compact tool summary, never full results."""
+
+    def test_stream_raw_output_summarizes_tool_calls(self):
+        request = _make_request(stream=True)
+        run_id = request.context.run_id
+        big_result = json.dumps({"data": "r" * 5000})
+        events = [
+            StreamEvent(event_type="tool_start", data={
+                "tool_call_id": "tc1", "tool_name": "document_search",
+                "arguments": {"query": "alpha"},
+            }, sequence=1, run_id=run_id),
+            StreamEvent(event_type="tool_end", data={
+                "tool_call_id": "tc1", "tool_name": "document_search",
+                "result": big_result,
+            }, sequence=2, run_id=run_id),
+            StreamEvent(event_type="token", data={"text": "Done"}, sequence=3, run_id=run_id),
+            StreamEvent(event_type="message_end", data={}, sequence=4, run_id=run_id),
+        ]
+        log_stream(request, _acc(events), duration_ms=100)
+
+        log = _get_log(request)
+        parsed = json.loads(log.raw_output)
+        self.assertEqual(len(parsed["tool_calls"]), 1)
+        entry = parsed["tool_calls"][0]
+        self.assertEqual(entry["tool_name"], "document_search")
+        self.assertEqual(entry["result_size"], len(big_result))
+        self.assertLess(len(entry["result_preview"]), 300)
+        self.assertIn("chars total", entry["result_preview"])
+        # The full result must NOT be stored anywhere in the row
+        self.assertLess(len(log.raw_output), 2000)
+
+    def test_stream_raw_output_caps_final_text(self):
+        request = _make_request(stream=True)
+        run_id = request.context.run_id
+        events = [
+            StreamEvent(event_type="token", data={"text": "t" * 4000}, sequence=1, run_id=run_id),
+            StreamEvent(event_type="message_end", data={}, sequence=2, run_id=run_id),
+        ]
+        log_stream(request, _acc(events), duration_ms=100)
+
+        log = _get_log(request)
+        parsed = json.loads(log.raw_output)
+        self.assertLess(len(parsed["final_text_preview"]), 600)
+        self.assertEqual(parsed["counts"]["text_chars"], 4000)
+
+    def test_call_raw_output_is_slim_summary(self):
+        request = _make_request()
+        response = ChatResponse(
+            message=Message(role="assistant", content="w" * 4000),
+            model="gpt-4o-mini",
+            usage=None,
+            metadata={},
+        )
+        log_call(request, response, duration_ms=50)
+
+        log = _get_log(request)
+        parsed = json.loads(log.raw_output)
+        self.assertLess(len(parsed["final_text_preview"]), 600)
+        self.assertEqual(parsed["counts"]["text_chars"], 4000)
+
 
 class LogCallIntegrationTests(TestCase):
     """Verify that LLMService.run/stream actually create log entries."""
@@ -834,7 +978,7 @@ class LogCallIntegrationTests(TestCase):
         self.assertEqual(log.status, "success")
         self.assertTrue(log.is_stream)
         parsed = json.loads(log.raw_output)
-        self.assertEqual(parsed["message"]["content"], "Hi")
+        self.assertEqual(parsed["final_text_preview"], "Hi")
 
     def test_stream_error_creates_error_log_entry(self):
         from unittest.mock import MagicMock

@@ -30,6 +30,58 @@ logger = logging.getLogger(__name__)
 MAX_TOOL_RESULT_CHARS = 200_000
 
 
+def _iteration_notice(
+    iteration_index: int,
+    max_iterations: int,
+    deadline_dt: datetime | None,
+    agent_kind: str,
+) -> Message | None:
+    """The user message appended after an iteration's tool results, or None.
+
+    Sub-agents get a progress counter EVERY iteration so they pace themselves
+    across the whole run (they have a hard iteration budget and a deadline);
+    the last-iteration / time-low warnings are absorbed into the same message.
+    Main-chat behavior is unchanged: warnings only at <=2 remaining or when
+    time runs low. Cache-safe either way — the message is appended after the
+    tool results, never edited into earlier history.
+    """
+    finished = iteration_index + 1
+    remaining = max_iterations - finished
+    time_running_low = bool(
+        deadline_dt
+        and (deadline_dt - datetime.now(timezone.utc)).total_seconds() <= 90
+    )
+
+    warnings = []
+    if remaining <= 2:
+        if remaining <= 1:
+            warnings.append("This is your last tool iteration.")
+        else:
+            warnings.append("You have 2 tool iterations remaining.")
+    if time_running_low:
+        warnings.append("You are running low on time.")
+
+    warning_text = ""
+    if warnings:
+        warning_text = (
+            f"IMPORTANT: {' '.join(warnings)} Wrap up your research "
+            "and prepare to deliver your comprehensive final response "
+            "as plain text."
+        )
+
+    if agent_kind == "subagent":
+        progress = (
+            f"[Progress: finished tool iteration {finished} of {max_iterations} "
+            f"— {remaining} remaining.]"
+        )
+        content = f"{progress} {warning_text}" if warning_text else progress
+        return Message(role="user", content=content)
+
+    if not warning_text:
+        return None
+    return Message(role="user", content=warning_text)
+
+
 def _safe_result_dict(result_str: str) -> dict | None:
     """Best-effort parse of a tool result into a dict for label computation.
 
@@ -406,28 +458,12 @@ class SimpleChatPipeline(BasePipeline):
             from chat.dedup import deduplicate_tool_results
             new_messages = deduplicate_tool_results(new_messages)
 
-            remaining_iters = effective_max - i - 1
-            time_running_low = (
-                deadline_dt
-                and (deadline_dt - datetime.now(timezone.utc)).total_seconds() <= 90
+            notice = _iteration_notice(
+                i, effective_max, deadline_dt,
+                getattr(req.context, "agent_kind", "main") if req.context else "main",
             )
-            warnings = []
-            if remaining_iters <= 2:
-                if remaining_iters <= 1:
-                    warnings.append("This is your last tool iteration.")
-                else:
-                    warnings.append("You have 2 tool iterations remaining.")
-            if time_running_low:
-                warnings.append("You are running low on time.")
-            if warnings:
-                new_messages.append(Message(
-                    role="user",
-                    content=(
-                        f"IMPORTANT: {' '.join(warnings)} Wrap up your research "
-                        "and prepare to deliver your comprehensive final response "
-                        "as plain text."
-                    ),
-                ))
+            if notice is not None:
+                new_messages.append(notice)
 
             self._append_pending_native_assets(new_messages, req)
             self._append_pending_skill_instructions(new_messages, req)
@@ -703,28 +739,12 @@ class SimpleChatPipeline(BasePipeline):
             from chat.dedup import deduplicate_tool_results
             new_messages = deduplicate_tool_results(new_messages)
 
-            remaining_iters = max_iterations - i - 1
-            time_running_low = (
-                deadline_dt
-                and (deadline_dt - datetime.now(timezone.utc)).total_seconds() <= 90
+            notice = _iteration_notice(
+                i, max_iterations, deadline_dt,
+                getattr(req.context, "agent_kind", "main") if req.context else "main",
             )
-            warnings = []
-            if remaining_iters <= 2:
-                if remaining_iters <= 1:
-                    warnings.append("This is your last tool iteration.")
-                else:
-                    warnings.append("You have 2 tool iterations remaining.")
-            if time_running_low:
-                warnings.append("You are running low on time.")
-            if warnings:
-                new_messages.append(Message(
-                    role="user",
-                    content=(
-                        f"IMPORTANT: {' '.join(warnings)} Wrap up your research "
-                        "and prepare to deliver your comprehensive final response "
-                        "as plain text."
-                    ),
-                ))
+            if notice is not None:
+                new_messages.append(notice)
 
             self._append_pending_native_assets(new_messages, req)
             self._append_pending_skill_instructions(new_messages, req)

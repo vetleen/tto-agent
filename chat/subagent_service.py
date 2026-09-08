@@ -11,6 +11,12 @@ from core.preferences import ResolvedPreferences
 
 logger = logging.getLogger(__name__)
 
+# Sub-agents get fewer tool iterations than the pipeline default (50): long
+# runs are the worker's main memory spike (history grows every iteration), and
+# the per-iteration progress counter the pipeline injects for sub-agents keeps
+# the model pacing itself instead of hitting the cliff.
+SUBAGENT_MAX_TOOL_ITERATIONS = 35
+
 
 def is_retryable_subagent_error(exc: BaseException) -> bool:
     """Whether a sub-agent failure is transient and worth retrying the whole run.
@@ -342,7 +348,10 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
             stream=True,
             tools=tool_list if tool_list else None,
             context=context,
-            params={"_cancel_check": _is_cancelled},
+            params={
+                "_cancel_check": _is_cancelled,
+                "max_tool_iterations": SUBAGENT_MAX_TOOL_ITERATIONS,
+            },
         )
 
         # Execute via streaming so a long generation never trips a non-streaming

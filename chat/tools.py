@@ -1438,6 +1438,9 @@ class DocumentViewNativeTool(ContextAwareTool):
             is_pdf = kind_for_extension(ext) == KIND_PDF or (doc.mime_type or "").lower() == "application/pdf"
 
             # --- PDF: attach natively (the model sees the whole page). ---
+            # Staged degrade chain when the file would bust the run's
+            # native-asset budget: as-is → lossless compress → first-N-pages
+            # JPEG render + extracted text → extracted text only.
             if is_pdf:
                 if remaining <= 0:
                     results.append(f"Document #{idx} ('{doc.original_filename}'): attachment limit reached; call again to view it.")
@@ -1446,15 +1449,64 @@ class DocumentViewNativeTool(ContextAwareTool):
                 if not data:
                     results.append(f"Document #{idx} ('{doc.original_filename}'): the original PDF is unavailable.")
                     continue
-                context.pending_native_assets.append({
-                    "kind": "pdf",
-                    "b64": base64.b64encode(data).decode("ascii"),
-                    "filename": doc.original_filename or "document.pdf",
-                    "description": doc.description or "",
-                    "extracted_text": _version_text(version, self._TEXT_CAP),
-                })
+
+                def _try_attach_pdf(pdf_bytes: bytes) -> bool:
+                    return context.try_add_native_asset({
+                        "kind": "pdf",
+                        "b64": base64.b64encode(pdf_bytes).decode("ascii"),
+                        "filename": doc.original_filename or "document.pdf",
+                        "description": doc.description or "",
+                        "extracted_text": _version_text(version, self._TEXT_CAP),
+                    })
+
+                msg = None
+                if _try_attach_pdf(data):
+                    msg = f"Document #{idx} ('{doc.original_filename}'): attached the PDF for you to view."
+                else:
+                    from chat.pdf_attach import compress_pdf_lossless, render_pdf_pages_to_jpegs
+
+                    compressed = compress_pdf_lossless(data)
+                    if len(compressed) < len(data) and _try_attach_pdf(compressed):
+                        msg = (
+                            f"Document #{idx} ('{doc.original_filename}'): attached the PDF "
+                            "for you to view (losslessly compressed to fit)."
+                        )
+                if msg is None:
+                    pages, total_pages = render_pdf_pages_to_jpegs(
+                        data, b64_budget=context.native_asset_budget_remaining(),
+                    )
+                    pages_attached = 0
+                    for p, jpeg in enumerate(pages, start=1):
+                        if not context.try_add_native_asset({
+                            "kind": "image",
+                            "asset_id": "",
+                            "b64": base64.b64encode(jpeg).decode("ascii"),
+                            "media_type": "image/jpeg",
+                            "description": (
+                                f"'{doc.original_filename}' page {p} of {total_pages} "
+                                "(truncated view)"
+                            ),
+                        }):
+                            break
+                        pages_attached += 1
+                    if pages_attached:
+                        msg = (
+                            f"Document #{idx} ('{doc.original_filename}'): PDF too large to "
+                            f"attach in full — attached the first {pages_attached} of "
+                            f"{total_pages} pages as images. NOTE: you are seeing a "
+                            "TRUNCATED view; the extracted text follows:\n\n"
+                            f"{_version_text(version, self._TEXT_CAP)}"
+                        )
+                if msg is None:
+                    # Floor: no attachment fits — inline the extracted text.
+                    text = _version_text(version, self._TEXT_CAP)
+                    results.append(
+                        f"Document #{idx} ('{doc.original_filename}'): PDF too large to "
+                        "attach and the attachment budget for this run is exhausted. "
+                        f"Extracted text:\n\n{text}"
+                    )
+                    continue
                 attached += 1
-                msg = f"Document #{idx} ('{doc.original_filename}'): attached the PDF for you to view."
                 file_tok = file_token_for_document(doc)
                 if file_tok:
                     msg += f" To offer the original file as a download, paste this token: {file_tok}"
@@ -1469,18 +1521,28 @@ class DocumentViewNativeTool(ContextAwareTool):
                     token = get_or_create_version_image_token(
                         version_id=version.id, mime=doc.mime_type, description=doc.description,
                     )
+                attached_here = 0
+                budget_exhausted = False
                 for img_bytes, media_type, description in images:
                     if attached >= self._MAX_ATTACHMENTS:
                         break
-                    context.pending_native_assets.append({
+                    if not context.try_add_native_asset({
                         "kind": "image",
                         "asset_id": token,
                         "b64": base64.b64encode(img_bytes).decode("ascii"),
                         "media_type": media_type,
                         "description": description or "",
-                    })
+                    }):
+                        budget_exhausted = True
+                        break
                     attached += 1
-                msg = f"Document #{idx} ('{doc.original_filename}'): attached {len(images)} image(s) for you to view."
+                    attached_here += 1
+                msg = f"Document #{idx} ('{doc.original_filename}'): attached {attached_here} of {len(images)} image(s) for you to view."
+                if budget_exhausted:
+                    msg += (
+                        " The attachment budget for this run is exhausted — use "
+                        "document_read for the text instead."
+                    )
                 if token:
                     msg += (
                         f" To place it in a canvas or your reply, paste this token where you "

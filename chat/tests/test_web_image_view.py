@@ -73,6 +73,18 @@ class WebImageViewToolTests(TestCase):
         self.assertEqual(len(self.ctx.pending_native_assets), 1)
         self.assertEqual(self.ctx.pending_native_assets[0]["media_type"], "image/png")
 
+    def test_budget_exhausted_stores_but_does_not_attach(self):
+        from llm.types.context import NATIVE_ASSET_BUDGET_B64_CHARS
+
+        self.ctx._native_asset_b64_used = NATIVE_ASSET_BUDGET_B64_CHARS
+        result = self._invoke({"handles": ["img-1"]}, return_value=_resp(_png()))
+
+        self.assertIn("not attached for viewing", result)
+        self.assertIn("attachment budget", result)
+        self.assertIn("[[image:", result)  # token still usable for display
+        self.assertEqual(Asset.objects.filter(thread=self.thread).count(), 1)
+        self.assertEqual(self.ctx.pending_native_assets, [])
+
     def test_unknown_handle_errors(self):
         result = self._invoke({"handles": ["img-99"]}, return_value=_resp(_png()))
         self.assertIn("unknown handle", result)
