@@ -1618,6 +1618,103 @@ class RerankTests(TestCase):
         # Falls back to first 3
         self.assertEqual(reranked[0]["id"], 0)
 
+    def test_ranker_session_built_without_memory_arena(self):
+        """_get_ranker swaps FlashRank's default session for an arena-free one.
+
+        The default onnxruntime CPU memory arena grows to the peak of all
+        concurrent reranks and is never returned — the worker's post-burst
+        memory ratchet (2026-09-08). The replacement session must have the
+        arena off, bounded intra-op threads and spinning disabled.
+        """
+        from pathlib import Path
+
+        import onnxruntime as ort
+
+        from documents.services import retrieval
+
+        captured = {}
+
+        class FakeSession:
+            def __init__(self, path, options):
+                captured["path"] = path
+                captured["options"] = options
+
+        fake_ranker = MagicMock()
+        fake_ranker.model_dir = Path("/models/ms-marco-TinyBERT-L-2-v2")
+        original_session = fake_ranker.session
+
+        retrieval._ranker_cache = None
+        try:
+            with patch("flashrank.Ranker", return_value=fake_ranker), \
+                 patch.object(ort, "InferenceSession", FakeSession):
+                ranker = retrieval._get_ranker()
+                self.assertIs(retrieval._get_ranker(), ranker)  # cached
+        finally:
+            retrieval._ranker_cache = None
+
+        self.assertIs(ranker, fake_ranker)
+        self.assertIsInstance(ranker.session, FakeSession)
+        self.assertIsNot(ranker.session, original_session)
+        self.assertTrue(captured["path"].endswith(".onnx"))
+        opts = captured["options"]
+        self.assertFalse(opts.enable_cpu_mem_arena)
+        self.assertEqual(opts.intra_op_num_threads, retrieval.RERANK_INTRA_OP_THREADS)
+        self.assertEqual(
+            opts.get_session_config_entry("session.intra_op.allow_spinning"), "0",
+        )
+
+    def test_ranker_keeps_default_session_when_configuration_fails(self):
+        import onnxruntime as ort
+
+        from documents.services import retrieval
+
+        fake_ranker = MagicMock()
+        original_session = fake_ranker.session
+        retrieval._ranker_cache = None
+        try:
+            with patch("flashrank.Ranker", return_value=fake_ranker), \
+                 patch.object(ort, "InferenceSession", side_effect=RuntimeError("no model")), \
+                 self.assertLogs("documents.services.retrieval", level="WARNING"):
+                ranker = retrieval._get_ranker()
+        finally:
+            retrieval._ranker_cache = None
+        self.assertIs(ranker.session, original_session)
+
+    @patch("documents.services.retrieval._get_ranker")
+    def test_rerank_concurrency_is_capped(self, mock_get_ranker):
+        """At most RERANK_MAX_CONCURRENT reranks run at once (each 20x512 batch
+        is ~60 MB of transient activations; a threads-pool worker must not stack
+        a dozen)."""
+        import threading
+        import time
+        from concurrent.futures import ThreadPoolExecutor
+
+        from documents.services import retrieval
+
+        lock = threading.Lock()
+        state = {"active": 0, "max": 0}
+
+        def slow_rerank(request):
+            with lock:
+                state["active"] += 1
+                state["max"] = max(state["max"], state["active"])
+            time.sleep(0.05)
+            with lock:
+                state["active"] -= 1
+            return [{"id": p["id"], "score": 1.0} for p in request.passages]
+
+        mock_ranker = MagicMock()
+        mock_ranker.rerank.side_effect = slow_rerank
+        mock_get_ranker.return_value = mock_ranker
+
+        results = self._make_results(3)
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            outs = list(pool.map(lambda _: rerank_chunks(results, query="q", top_n=3), range(8)))
+        self.assertTrue(all(len(o) == 3 for o in outs))
+        self.assertEqual(state["active"], 0)
+        self.assertLessEqual(state["max"], retrieval.RERANK_MAX_CONCURRENT)
+        self.assertGreaterEqual(state["max"], 1)
+
     @patch("documents.services.retrieval.rerank_chunks")
     @patch("documents.services.retrieval.hybrid_search_chunks")
     def test_similarity_search_calls_rerank(self, mock_hybrid, mock_rerank):

@@ -7,6 +7,7 @@ reranks results with FlashRank when RERANK_ENABLED is True.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from collections import defaultdict
 from typing import Any
@@ -35,6 +36,48 @@ logger = logging.getLogger(__name__)
 _ranker_cache: Any = None
 _ranker_lock = threading.Lock()
 
+# onnxruntime session tuning for the reranker. FlashRank builds its
+# InferenceSession with default options, which means the CPU *memory arena* is
+# ON: every inference's activation buffers are carved from an arena that grows
+# to the peak of all concurrent runs and is never shrunk or returned to the OS.
+# Measured on a one-off Standard-2X dyno (2026-09-08, 20 passages x 512 tokens,
+# the shape a real document_search produces): one rerank grew the arena to
+# 124 MB, four concurrent reranks to 516 MB, eight to 1 GB of reserved memory,
+# and RSS stayed +240 MB for the life of the process. That arena — not the
+# conversation history — was the bulk of the worker's post-burst "ratchet".
+# With the arena off, buffers go through malloc and are freed after each run
+# (the same probe settled back to baseline). Intra-op threads default to one per
+# core (8 on a 2X dyno) and spin between ops; TinyBERT-L-2 needs neither.
+RERANK_INTRA_OP_THREADS = int(os.environ.get("RERANK_INTRA_OP_THREADS", "2"))
+# Cap concurrent reranks process-wide: with the arena off each 20x512 batch is
+# still ~60 MB of transient activations, and a threads-pool worker running many
+# sub-agents (each with a 4-thread tool pool) could otherwise stack a dozen.
+RERANK_MAX_CONCURRENT = int(os.environ.get("RERANK_MAX_CONCURRENT", "2"))
+_rerank_semaphore = threading.BoundedSemaphore(max(1, RERANK_MAX_CONCURRENT))
+
+
+def _configure_ranker_session(ranker) -> None:
+    """Swap the ranker's default onnxruntime session for an arena-free one.
+
+    Best-effort: on any failure the FlashRank default session stays in place
+    (functionally identical, just with the memory behaviour described above).
+    """
+    try:
+        import onnxruntime as ort
+        from flashrank.Config import default_model, model_file_map
+
+        model_path = ranker.model_dir / model_file_map[default_model]
+        options = ort.SessionOptions()
+        options.enable_cpu_mem_arena = False
+        options.intra_op_num_threads = max(1, RERANK_INTRA_OP_THREADS)
+        options.add_session_config_entry("session.intra_op.allow_spinning", "0")
+        ranker.session = ort.InferenceSession(str(model_path), options)
+    except Exception:
+        logger.warning(
+            "Could not configure the rerank onnxruntime session; using FlashRank's default",
+            exc_info=True,
+        )
+
 
 def _get_ranker():
     """Lazy-init FlashRank Ranker with module-level cache + threading lock."""
@@ -45,7 +88,9 @@ def _get_ranker():
         if _ranker_cache is not None:
             return _ranker_cache
         from flashrank import Ranker
-        _ranker_cache = Ranker()
+        ranker = Ranker()
+        _configure_ranker_session(ranker)
+        _ranker_cache = ranker
         return _ranker_cache
 
 
@@ -80,7 +125,8 @@ def rerank_chunks(
         ranker = _get_ranker()
         passages = [{"id": i, "text": r.get("text", "")} for i, r in enumerate(results)]
         request = RerankRequest(query=query, passages=passages)
-        reranked = ranker.rerank(request)
+        with _rerank_semaphore:
+            reranked = ranker.rerank(request)
 
         # Map reranked results back to original dicts by id
         id_to_original = {i: r for i, r in enumerate(results)}
