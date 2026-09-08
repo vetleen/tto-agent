@@ -155,6 +155,8 @@ class ExpireStaleTranscriptionsTests(TestCase):
         self.assertEqual(live.transcript, "Real transcript content.")
 
     def test_swallows_transient_db_error(self):
+        import logging
+
         from django.db.utils import OperationalError
 
         with patch.object(
@@ -162,9 +164,13 @@ class ExpireStaleTranscriptionsTests(TestCase):
             "filter",
             side_effect=OperationalError("the database system is starting up"),
         ):
-            result = expire_stale_transcriptions()
+            # INFO, not WARNING: the sweep self-heals on the next beat tick, so
+            # a transient blip must not become a Sentry event (WILFRED-7D).
+            with self.assertLogs("meetings.tasks", level="INFO") as cm:
+                result = expire_stale_transcriptions()
 
         self.assertEqual(result, 0)
+        self.assertTrue(all(r.levelno < logging.WARNING for r in cm.records))
 
     def test_propagates_non_transient_db_error(self):
         from django.db.utils import ProgrammingError

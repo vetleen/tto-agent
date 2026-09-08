@@ -386,7 +386,10 @@ def expire_stale_transcriptions() -> int:
             )
             handled += stale_live
     except (OperationalError, InterfaceError):
-        logger.warning(
+        # INFO, not WARNING: the sweep self-heals on the next beat tick, so a
+        # transient DB blip is not Sentry-worthy (same rationale as the chat
+        # and documents sweepers).
+        logger.info(
             "Skipping stale transcription sweep: database temporarily unavailable; "
             "will retry on next beat tick.",
             exc_info=True,
