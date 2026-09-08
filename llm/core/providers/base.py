@@ -682,8 +682,34 @@ class BaseLangChainChatModel(ChatModel):
         usage = self._build_usage_from_message(raw) if raw is not None else None
         return result, usage
 
+    def _messages_with_trailing_role_repair(self, request: ChatRequest) -> list:
+        """Return the request's messages, repaired if they end on an assistant turn.
+
+        Anthropic rejects a conversation whose last message is an assistant one
+        ("assistant message prefill"); no caller builds that shape on purpose, so
+        when it happens (WILFRED-7C) append a continuation user message instead
+        of failing the whole turn, and log enough to find the producing path.
+        A trailing tool message is fine (tool results become user turns).
+        """
+        messages = request.messages
+        if not messages or messages[-1].role != "assistant":
+            return messages
+        ctx = request.context
+        logger.warning(
+            "LLM request ended with an assistant message; appending a continuation "
+            "user message. trailing_roles=%s run_id=%s agent_kind=%s conversation_id=%s",
+            [m.role for m in messages[-3:]],
+            getattr(ctx, "run_id", None),
+            getattr(ctx, "agent_kind", None),
+            getattr(ctx, "conversation_id", None),
+        )
+        return list(messages) + [
+            Message(role="user", content="[Continue from where you left off.]")
+        ]
+
     def generate(self, request: ChatRequest) -> ChatResponse:
-        lc_messages = to_langchain_messages(request.messages, provider=self._provider_id)
+        messages = self._messages_with_trailing_role_repair(request)
+        lc_messages = to_langchain_messages(messages, provider=self._provider_id)
         client = self._get_streaming_client(request)
         callbacks = self._get_callbacks(request)
         config = self._build_config(request, callbacks)
@@ -746,7 +772,8 @@ class BaseLangChainChatModel(ChatModel):
         return ChatResponse(message=message, model=self.name, usage=usage, metadata=metadata)
 
     def stream(self, request: ChatRequest) -> Iterator[StreamEvent]:
-        lc_messages = to_langchain_messages(request.messages, provider=self._provider_id)
+        messages = self._messages_with_trailing_role_repair(request)
+        lc_messages = to_langchain_messages(messages, provider=self._provider_id)
         client = self._get_streaming_client(request)
         run_id = request.context.run_id if request.context else ""
         logger.info(
