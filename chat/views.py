@@ -73,10 +73,19 @@ def serve_image_asset(request, asset_id):
     if source is None:
         raise Http404
     displayable = kind_for_mime(ct) == KIND_IMAGE
-    resp = FileResponse(
-        source.open("rb"),
-        content_type=ct if displayable else "application/octet-stream",
-    )
+    # The full S3 fetch happens inside the FileResponse constructor (its header
+    # setup touches seek/tell, which downloads the object), so a missing blob —
+    # FileNotFoundError from HeadObject or NoSuchKey during GetObject — lands
+    # here, not mid-stream. A row can outlive its object (e.g. a worker killed
+    # mid-upload), which is a broken asset, not a server error.
+    try:
+        resp = FileResponse(
+            source.open("rb"),
+            content_type=ct if displayable else "application/octet-stream",
+        )
+    except Exception as exc:
+        logger.warning("Asset %s blob unreadable (%s)", asset.id, type(exc).__name__)
+        raise Http404
     disposition = "inline" if displayable else "attachment"
     # Append an extension derived from the content type so a "Save image as"
     # download lands a usable file (browsers fall back to this filename / the
@@ -211,7 +220,13 @@ def serve_file_asset(request, asset_id):
     source, filename, _ct = file_asset_source(asset)
     if source is None:
         raise Http404
-    resp = FileResponse(source.open("rb"), content_type="application/octet-stream")
+    # See serve_image_asset: a missing S3 object surfaces inside the
+    # FileResponse constructor and means a broken asset, not a server error.
+    try:
+        resp = FileResponse(source.open("rb"), content_type="application/octet-stream")
+    except Exception as exc:
+        logger.warning("Asset %s blob unreadable (%s)", asset.id, type(exc).__name__)
+        raise Http404
     resp["Content-Disposition"] = _content_disposition(filename or str(asset.id))
     resp["X-Content-Type-Options"] = "nosniff"
     return resp

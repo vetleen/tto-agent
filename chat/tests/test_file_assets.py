@@ -149,6 +149,15 @@ class ServeFileAssetTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(b"".join(resp.streaming_content), b"LEGACY")
 
+    def test_missing_blob_returns_404(self):
+        """A row whose storage object is gone serves a clean 404, not a 500."""
+        self.v0.native_blob.storage.delete(self.v0.native_blob.name)
+        self.client.force_login(self.owner)
+        with self.assertLogs("chat.views", level="WARNING") as cm:
+            resp = self.client.get(self._url())
+        self.assertEqual(resp.status_code, 404)
+        self.assertIn("blob unreadable", cm.output[0])
+
     def test_no_native_file_gives_404(self):
         """A canvas/markdown-only doc has nothing to download."""
         doc = _make_doc(self.room, self.owner, filename="draft", doc_index=3)

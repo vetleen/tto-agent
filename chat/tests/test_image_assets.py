@@ -127,6 +127,18 @@ class ServeAssetTests(TestCase):
         resp = self.client.get(self._url())
         self.assertEqual(resp.status_code, 302)
 
+    def test_missing_blob_returns_404(self):
+        """A row whose storage object is gone serves a clean 404, not a 500.
+
+        Seen in prod (WILFRED-7F/7E/7G): Asset rows outliving their S3 object.
+        """
+        self.asset.blob.storage.delete(self.asset.blob.name)
+        self.client.force_login(self.owner)
+        with self.assertLogs("chat.views", level="WARNING") as cm:
+            resp = self.client.get(self._url())
+        self.assertEqual(resp.status_code, 404)
+        self.assertIn("blob unreadable", cm.output[0])
+
     def test_non_image_forced_to_download(self):
         # A non-displayable content type is streamed as an attachment.
         asset = _make_asset(canvas=self.canvas, content_type="image/x-emf")
