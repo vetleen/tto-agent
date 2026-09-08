@@ -223,7 +223,9 @@ def _ops_request(path: str, params: dict, tool_name: str, context=None) -> dict:
                 continue
             if status == 429 or (status is not None and status >= 500):
                 wait = _RATE_LIMIT_BACKOFF_SCHEDULE[min(attempt, len(_RATE_LIMIT_BACKOFF_SCHEDULE) - 1)]
-                logger.warning("EPO OPS %s (attempt %d), waiting %.1fs", status, attempt + 1, wait)
+                # Per-attempt retry chatter stays at INFO (Sentry breadcrumb);
+                # the terminal "failed after retries" WARNING is the event.
+                logger.info("EPO OPS %s (attempt %d), waiting %.1fs", status, attempt + 1, wait)
                 if attempt < _MAX_RETRIES:
                     nap, may_retry = _deadline_capped_wait(wait, context)
                     if nap > 0:
@@ -236,16 +238,18 @@ def _ops_request(path: str, params: dict, tool_name: str, context=None) -> dict:
             # a rate limit "will not resolve by retrying" and abandons search;
             # let it drop to the terminal "unavailable after retries" message.
             if status is not None and status < 500 and status != 429:
-                logger.warning("EPO OPS client error %s path=%s", status, path)
                 if status == 404:
+                    # A missing record is a normal search outcome, not a fault.
+                    logger.info("EPO OPS client error %s path=%s", status, path)
                     return {"error": "No matching patent record was found (EPO OPS 404)."}
+                logger.warning("EPO OPS client error %s path=%s", status, path)
                 return {"error": f"EPO OPS request failed ({status}). This will not resolve by retrying."}
         except requests.exceptions.Timeout as e:
             last_exc = e
-            logger.warning("EPO OPS timeout (attempt %d) path=%s", attempt + 1, path)
+            logger.info("EPO OPS timeout (attempt %d) path=%s", attempt + 1, path)
         except requests.exceptions.RequestException as e:
             last_exc = e
-            logger.warning("EPO OPS request error (attempt %d) path=%s: %s", attempt + 1, path, e)
+            logger.info("EPO OPS request error (attempt %d) path=%s: %s", attempt + 1, path, e)
         except Exception as e:
             from llm.tools.web_fetch import _ResponseTooLarge
 
@@ -262,7 +266,9 @@ def _ops_request(path: str, params: dict, tool_name: str, context=None) -> dict:
             if not may_retry:
                 break  # run deadline reached during backoff — stop retrying
 
-    logger.error("EPO OPS failed after retries path=%s", path, exc_info=last_exc)
+    # WARNING (one Sentry event per exhausted call), not ERROR: the tool
+    # degrades gracefully and the model reports the outage to the user.
+    logger.warning("EPO OPS failed after retries path=%s", path, exc_info=last_exc)
     return {"error": "EPO OPS is currently unavailable after retries. Consider reporting this to the user."}
 
 

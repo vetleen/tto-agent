@@ -8,6 +8,7 @@ target; if a live response differs, fixtures and parsers get corrected together.
 from __future__ import annotations
 
 import json
+import logging
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
@@ -399,6 +400,37 @@ class OpsRequestTests(TestCase):
         # as a permanent client error (which would make the agent give up).
         self.assertNotIn("will not resolve by retrying", data["error"])
         self.assertIn("unavailable after retries", data["error"])
+
+    @patch("llm.tools.epo_ops.time.sleep")
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_500_retries_then_exhausts(self, mock_get, _sleep):
+        mock_get.return_value = _mock_http_error(500)
+        with self.assertLogs("llm.tools.epo_ops", level="INFO") as cm:
+            data = _ops_request("published-data/search/biblio", {"q": "x"}, tool_name="patent_epoops_search")
+        self.assertIn("error", data)
+        self.assertIn("unavailable after retries", data["error"])
+        self.assertEqual(mock_get.call_count, 4)  # 1 + 3 retries
+        # Per-attempt backoff chatter must stay at INFO (Sentry breadcrumbs);
+        # exactly one WARNING — the terminal failure — becomes the event.
+        warnings = [r for r in cm.records if r.levelno >= logging.WARNING]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("failed after retries", warnings[0].getMessage())
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_404_logs_info_not_warning(self, mock_get):
+        """A missing record is a normal search outcome, not a Sentry event."""
+        mock_get.return_value = _mock_http_error(404)
+        with self.assertLogs("llm.tools.epo_ops", level="INFO") as cm:
+            _ops_request("published-data/publication/epodoc/EP0/biblio", {}, tool_name="patent_epoops_get")
+        self.assertTrue(all(r.levelno < logging.WARNING for r in cm.records))
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_other_client_errors_still_warn(self, mock_get):
+        """A 400 means our query-building is broken — keep it Sentry-visible."""
+        mock_get.return_value = _mock_http_error(400)
+        with self.assertLogs("llm.tools.epo_ops", level="WARNING") as cm:
+            _ops_request("published-data/search/biblio", {"q": "x"}, tool_name="patent_epoops_search")
+        self.assertIn("client error 400", cm.output[0])
 
     @patch("llm.tools.epo_ops.requests.get")
     def test_oversized_response(self, mock_get):
