@@ -349,6 +349,26 @@ class CreateSubagentToolQueueStatusTests(_QueueTestCase):
             ).exists()
         )
 
+    @patch("chat.subagent_limits.dispatch_pending_subagents")
+    def test_reports_started_when_a_sibling_call_dispatched_it(self, mock_dispatch):
+        """Parallel chat_subagent_create calls in one turn: a sibling thread's
+        dispatcher can hand out this run first, so our own call returns nothing."""
+        def sibling_dispatched_everything():
+            SubAgentRun.objects.filter(
+                status=SubAgentRun.Status.PENDING, dispatched_at__isnull=True,
+            ).update(dispatched_at=timezone.now(), celery_task_id="celery-sibling")
+            return []
+
+        mock_dispatch.side_effect = sibling_dispatched_everything
+
+        result = _invoke(
+            CreateSubagentTool, {"prompt": "task"}, _ctx(self.user.pk, self.thread.id),
+        )
+
+        self.assertEqual(result["status"], "started")
+        run = SubAgentRun.objects.get(pk=result["run_id"])
+        self.assertEqual(run.celery_task_id, "celery-sibling")
+
     @patch("chat.subagent_limits.SUBAGENT_WORKER_SLOTS", 1)
     @patch("chat.tasks.run_subagent_task")
     def test_deadline_branch_reports_queued_when_still_waiting(self, mock_task):

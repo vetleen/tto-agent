@@ -13,6 +13,15 @@ from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
 logger = logging.getLogger(__name__)
 
 
+def _is_waiting(run_id) -> bool:
+    """True while the run is still queued for an execution slot (PENDING, never dispatched)."""
+    from chat.models import SubAgentRun
+
+    return SubAgentRun.objects.filter(
+        pk=run_id, status=SubAgentRun.Status.PENDING, dispatched_at__isnull=True,
+    ).exists()
+
+
 # --- Input schemas ---
 
 class CreateSubagentInput(ReasonBaseModel):
@@ -152,11 +161,14 @@ class CreateSubagentTool(ContextAwareTool):
         # dispatcher error is not a spawn error: the row exists and the sweeper
         # backstop will dispatch it.
         try:
-            dispatched = dispatch_pending_subagents()
+            dispatch_pending_subagents()
         except Exception:
             logger.exception("Dispatch after creating sub-agent run %s failed", run.id)
-            dispatched = []
-        started = run.id in dispatched
+        # Read the outcome from the row, not from this call's return value:
+        # sibling chat_subagent_create calls in the same turn run in parallel
+        # threads, and whichever dispatcher runs first hands out every waiting
+        # run — including ours — leaving our own call nothing to return.
+        started = not _is_waiting(run.id)
 
         if timeout == 0:
             if started:
@@ -220,10 +232,8 @@ class CreateSubagentTool(ContextAwareTool):
                 })
 
         # Timeout exceeded — still waiting for a slot, or still running
-        state = SubAgentRun.objects.filter(pk=run.id).values_list("status", "dispatched_at").first()
-        waiting = bool(state) and state[0] == SubAgentRun.Status.PENDING and state[1] is None
         queue = get_queue_depth()
-        if waiting:
+        if _is_waiting(run.id):
             return json.dumps({
                 "status": "queued",
                 "run_id": str(run.id),
