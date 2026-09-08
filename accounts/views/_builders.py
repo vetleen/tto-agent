@@ -38,13 +38,13 @@ def build_feature_rows(
     only) adds the effective value after the full cascade.
     """
     from core.preferences import FEATURE_DEFAULTS
-    from llm.model_registry import get_models_at_or_above_tier
+    from llm.model_registry import get_models_with_min_stars
 
     rows = []
     for fkey, fdef in FEATURE_DEFAULTS.items():
         if fdef.scope != scope:
             continue
-        eligible = [m for m in get_models_at_or_above_tier(fdef.min_tier) if m in eligible_allowed]
+        eligible = [m for m in get_models_with_min_stars(fdef.min_stars) if m in eligible_allowed]
         if fdef.required_modality:
             from llm.display import supports_modality
 

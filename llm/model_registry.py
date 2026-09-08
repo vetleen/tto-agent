@@ -13,32 +13,29 @@ from decimal import Decimal
 TIER_CHEAP = "cheap"
 TIER_MID = "mid"
 TIER_STANDARD = "standard"
-TIER_PREMIUM = "premium"
+TIER_FLAGSHIP = "flagship"
 TIER_ORDER = {
     TIER_CHEAP: 0,
     TIER_MID: 1,
     TIER_STANDARD: 2,
-    TIER_PREMIUM: 3,
+    TIER_FLAGSHIP: 3,
 }
 
-SLOT_ALLOWED_TIERS: dict[str, set[str]] = {
-    "cheap": {TIER_CHEAP},
-    "mid": {TIER_MID, TIER_STANDARD, TIER_PREMIUM},
-    "primary": {TIER_STANDARD, TIER_PREMIUM},
+# Slot eligibility floors on capability stars. The cheap slot has no star
+# floor — it is price-defined (a model qualifies via the cheap category).
+SLOT_MIN_STARS: dict[str, int] = {
+    "mid": 2,
+    "primary": 3,
 }
 
-
-def get_performance_tier(input_price: Decimal | None) -> str:
-    """Map standard input price per 1M tokens to the four performance tiers."""
-    if input_price is None:
-        return TIER_STANDARD
-    if input_price <= Decimal("0.50"):
-        return TIER_CHEAP
-    if input_price <= Decimal("1.50"):
-        return TIER_MID
-    if input_price < Decimal("5.00"):
-        return TIER_STANDARD
-    return TIER_PREMIUM
+# Star rating → tier category. 1-star models categorize only as cheap (via
+# price); any model may additionally be cheap when priced below $0.50.
+_STARS_TO_TIER = {
+    2: TIER_MID,
+    3: TIER_MID,
+    4: TIER_STANDARD,
+    5: TIER_FLAGSHIP,
+}
 
 
 @dataclass(frozen=True)
@@ -58,9 +55,10 @@ class ModelInfo:
     display_name: str
     provider: str  # "openai" | "anthropic" | "google_genai"
     api_model: str
-    # Manually curated 1-5 picker star rating. When None, the stars fall back
-    # to the input-price tier (+1 for flagship) — set them explicitly so promo
-    # pricing can't demote a model's standing (e.g. Sol's 2026 promo price).
+    # Manually curated 1-5 picker star rating. When None, capability_stars
+    # falls back to an input-price rating (+1 for flagship) — set them
+    # explicitly so promo pricing can't demote a model's standing (e.g. Sol's
+    # 2026 promo price).
     stars: int | None = None
     # Only the very best current models are flagships (tooltip label; also the
     # fifth star in the price-derived fallback).
@@ -104,8 +102,39 @@ class ModelInfo:
         return "image" in self.input_modalities
 
     @property
+    def capability_stars(self) -> int:
+        """Manual picker stars, falling back to a price-derived rating."""
+        if self.stars is not None:
+            return self.stars
+        if self.input_price is None:
+            base = 3
+        elif self.input_price <= Decimal("0.50"):
+            base = 1
+        elif self.input_price <= Decimal("1.50"):
+            base = 2
+        elif self.input_price < Decimal("5.00"):
+            base = 3
+        else:
+            base = 4
+        return min(base + (1 if self.flagship else 0), 5)
+
+    @property
+    def tiers(self) -> frozenset[str]:
+        """Every performance category the model belongs to (may overlap)."""
+        result: set[str] = set()
+        if self.input_price is not None and self.input_price < Decimal("0.50"):
+            result.add(TIER_CHEAP)
+        star_tier = _STARS_TO_TIER.get(self.capability_stars)
+        if star_tier:
+            result.add(star_tier)
+        return frozenset(result)
+
+    @property
     def tier(self) -> str:
-        return get_performance_tier(self.input_price)
+        """Highest-ranked category, for ordinal consumers and display."""
+        if not self.tiers:
+            return TIER_STANDARD
+        return max(self.tiers, key=TIER_ORDER.__getitem__)
 
 
 _GPT56_LEVELS = ("none", "low", "medium", "high", "xhigh", "max")
@@ -187,6 +216,17 @@ _MODELS: dict[str, ModelInfo] = {
         output_price=Decimal("1.25"),
     ),
     # Anthropic
+    "anthropic/claude-fable-5-1": ModelInfo(
+        display_name="Claude Fable 5.1", provider="anthropic",
+        api_model="claude-fable-5-1", stars=5, flagship=True,
+        reasoning_levels=("low", "medium", "high", "xhigh", "max"),
+        default_reasoning_level="high", thinking_mode="adaptive",
+        input_modalities=_MULTIMODAL, context_window=1_000_000,
+        max_output_tokens=128_000, input_price=Decimal("10.00"),
+        # Anthropic prices Fable 5.1 cache reads at 0.025x, not the usual 0.1x.
+        cached_input_price=Decimal("0.25"), cache_write_price=Decimal("12.50"),
+        cache_write_1h_price=Decimal("20.00"), output_price=Decimal("50.00"),
+    ),
     "anthropic/claude-fable-5": ModelInfo(
         display_name="Claude Fable 5", provider="anthropic", api_model="claude-fable-5",
         stars=5, flagship=True,
@@ -259,6 +299,19 @@ _MODELS: dict[str, ModelInfo] = {
         long_context_input_price=Decimal("4.00"),
         long_context_cached_input_price=Decimal("0.40"),
         long_context_output_price=Decimal("18.00"),
+    ),
+    "gemini/gemini-3.8-flash": ModelInfo(
+        display_name="Gemini 3.8 Flash", provider="google_genai",
+        api_model="gemini-3.8-flash", stars=2,
+        reasoning_levels=("low", "medium", "high"), default_reasoning_level="medium",
+        input_modalities=_MULTIMODAL, context_window=1_048_576,
+        max_output_tokens=65_536, input_price=Decimal("0.75"),
+        cached_input_price=Decimal("0.075"), output_price=Decimal("3.75"),
+        price_changes=(PriceChange(
+            starts_on=date(2027, 1, 1), input_price=Decimal("1.50"),
+            cached_input_price=Decimal("0.15"), cache_write_price=None,
+            cache_write_1h_price=None, output_price=Decimal("7.50"),
+        ),),
     ),
     "gemini/gemini-3.7-flash": ModelInfo(
         display_name="Gemini 3.7 Flash", provider="google_genai",
@@ -344,39 +397,33 @@ def get_model_tier(model_id: str) -> str | None:
 
 
 def get_models_by_tier(tier: str) -> list[str]:
-    return [mid for mid, info in _MODELS.items() if info.tier == tier]
+    return [mid for mid, info in _MODELS.items() if tier in info.tiers]
 
 
-def get_models_at_or_above_tier(tier: str) -> list[str]:
-    min_rank = TIER_ORDER.get(tier, 0)
-    return [
-        mid for mid, info in _MODELS.items()
-        if TIER_ORDER.get(info.tier, 0) >= min_rank
-    ]
+def get_models_with_min_stars(min_stars: int) -> list[str]:
+    return [mid for mid, info in _MODELS.items() if info.capability_stars >= min_stars]
 
 
 def is_model_valid_for_slot(model_id: str, slot: str) -> bool:
     info = get_model_info(model_id)
     if info is None:
         return False
-    allowed = SLOT_ALLOWED_TIERS.get(slot)
-    return allowed is None or info.tier in allowed
+    if slot == "cheap":
+        return TIER_CHEAP in info.tiers
+    floor = SLOT_MIN_STARS.get(slot)
+    return floor is None or info.capability_stars >= floor
 
 
 def get_models_for_slot(slot: str, allowed_models: list[str] | None = None) -> list[str]:
-    allowed_tiers = SLOT_ALLOWED_TIERS.get(slot)
     candidates = normalize_model_ids(allowed_models) if allowed_models else list(_MODELS)
-    if allowed_tiers is None:
-        return candidates
-    return [m for m in candidates if (info := get_model_info(m)) and info.tier in allowed_tiers]
+    return [m for m in candidates if is_model_valid_for_slot(m, slot)]
 
 
 __all__ = [
     "ModelInfo", "PriceChange", "MODEL_REPLACEMENTS",
-    "TIER_CHEAP", "TIER_MID", "TIER_STANDARD", "TIER_PREMIUM", "TIER_ORDER",
-    "SLOT_ALLOWED_TIERS", "canonical_model_id", "normalize_model_ids",
-    "get_performance_tier",
+    "TIER_CHEAP", "TIER_MID", "TIER_STANDARD", "TIER_FLAGSHIP", "TIER_ORDER",
+    "SLOT_MIN_STARS", "canonical_model_id", "normalize_model_ids",
     "get_model_info", "get_registered_model_ids", "get_model_tier",
-    "get_models_by_tier", "get_models_at_or_above_tier",
+    "get_models_by_tier", "get_models_with_min_stars",
     "is_model_valid_for_slot", "get_models_for_slot",
 ]

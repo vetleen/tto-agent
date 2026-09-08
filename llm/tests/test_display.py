@@ -120,8 +120,10 @@ class PickerRatingTests(SimpleTestCase):
         # otherwise demote Sol to the standard tier's 3).
         self.assertEqual(get_capability_level("openai/gpt-5.6-sol"), 4)
         self.assertEqual(get_capability_level("openai/gpt-6-astra"), 5)
+        self.assertEqual(get_capability_level("anthropic/claude-fable-5-1"), 5)
         self.assertEqual(get_capability_level("anthropic/claude-fable-5"), 5)
         self.assertEqual(get_capability_level("gemini/gemini-3.1-pro-preview"), 3)
+        self.assertEqual(get_capability_level("gemini/gemini-3.8-flash"), 2)
 
     def test_capability_falls_back_to_price_tier_without_manual_stars(self):
         unstarred = ModelInfo(
@@ -138,11 +140,16 @@ class PickerRatingTests(SimpleTestCase):
         # Label follows the manual 4-star rating, not the promo-price tier.
         self.assertEqual(
             get_model_meta_tooltip("openai/gpt-5.6-sol"),
-            "Premium · $20 / 1M output tokens",
+            "Standard · $20 / 1M output tokens",
         )
         self.assertEqual(
             get_model_meta_tooltip("anthropic/claude-opus-5"),
-            "Premium · $25 / 1M output tokens",
+            "Standard · $25 / 1M output tokens",
+        )
+        # 3-star models read as "Mid" under the star-based categories.
+        self.assertEqual(
+            get_model_meta_tooltip("anthropic/claude-sonnet-5"),
+            "Mid · $10 / 1M output tokens",
         )
         self.assertEqual(
             get_model_meta_tooltip("openai/gpt-5.4-nano"),

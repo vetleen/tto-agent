@@ -259,8 +259,9 @@ class OrgSettingsAccessTests(TestCase):
         )
         self.assertEqual(chat_row["label"], "Chat")
         self.assertIn("openai/gpt-5.6-sol", chat_row["eligible_models"])
-        # Luna is cheap-tier since the 2026-09 price cut — below chat's mid floor.
-        self.assertNotIn("openai/gpt-5.6-luna", chat_row["eligible_models"])
+        # Luna's curated 2 stars clear chat's 2-star floor even though its
+        # promo price puts it in the cheap category.
+        self.assertIn("openai/gpt-5.6-luna", chat_row["eligible_models"])
         self.assertContains(response, "The default model for new chats.")
 
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
@@ -1483,8 +1484,8 @@ class OrgFeatureModelUpdateTests(TestCase):
         "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
     ])
     def test_happy_path(self, mock_models):
-        # document_description has a "mid" tier floor; gpt-5.4 (→ terra,
-        # standard tier) clears it. gpt-5.4-mini (→ luna) is cheap now.
+        # document_description has a 2-star floor; gpt-5.4 (→ terra, 3 stars)
+        # clears it.
         self.client.login(email=self.admin_user.email, password=self.password)
         response = self.client.post(
             self.url,
@@ -1518,17 +1519,20 @@ class OrgFeatureModelUpdateTests(TestCase):
         "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
         "openai/gpt-5.6-sol", "openai/gpt-5.6-luna",
     ])
-    def test_rejects_luna_for_chat_after_price_cut(self, mock_models):
-        # Luna dropped to the cheap tier with the 2026-09 price cut, so it no
-        # longer clears chat's mid floor.
+    def test_accepts_luna_for_chat_with_curated_mid_stars(self, mock_models):
+        # Luna's manual 2-star rating clears chat's 2-star floor; the 2026-09
+        # promo price no longer demotes it (stars beat price tiers).
         self.client.login(email=self.admin_user.email, password=self.password)
         response = self.client.post(
             self.url,
             json.dumps({"feature": "chat", "model": "openai/gpt-5.6-luna"}),
             content_type="application/json",
         )
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("tier too low", response.json()["error"])
+        self.assertEqual(response.status_code, 200)
+        self.org.refresh_from_db()
+        self.assertEqual(
+            self.org.preferences["feature_models"]["chat"], "openai/gpt-5.6-luna"
+        )
 
     @patch("llm.service.policies.get_allowed_models", return_value=[
         "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
@@ -1548,7 +1552,7 @@ class OrgFeatureModelUpdateTests(TestCase):
     ])
     def test_rejects_too_low_tier(self, mock_models):
         self.client.login(email=self.admin_user.email, password=self.password)
-        # Chat allows mid-tier models but not cheap-tier models.
+        # Chat's floor is 2 stars; nano's 1 star falls short.
         response = self.client.post(
             self.url,
             json.dumps({"feature": "chat", "model": "openai/gpt-5.4-nano"}),

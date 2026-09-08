@@ -1547,7 +1547,7 @@ def org_skills_update(request):
 def org_feature_model_update(request):
     """Set org's preferred model for a specific feature."""
     from core.preferences import FEATURE_DEFAULTS
-    from llm.model_registry import TIER_ORDER, get_model_tier
+    from llm.model_registry import get_model_info
     from llm.service.policies import get_allowed_models
 
     membership = request.org_membership
@@ -1563,7 +1563,7 @@ def org_feature_model_update(request):
         return JsonResponse({"error": "Unknown feature"}, status=400)
 
     _fdef = FEATURE_DEFAULTS[feature]
-    min_tier, scope = _fdef.min_tier, _fdef.scope
+    min_stars, scope = _fdef.min_stars, _fdef.scope
     if scope != "org":
         return JsonResponse({"error": "This feature is not org-configurable"}, status=400)
 
@@ -1573,9 +1573,9 @@ def org_feature_model_update(request):
         effective = [m for m in org_allowed if m in system_models] if org_allowed else list(system_models)
         if model not in effective:
             return JsonResponse({"error": "Model not in allowed list"}, status=400)
-        tier = get_model_tier(model)
-        if tier and TIER_ORDER.get(tier, 0) < TIER_ORDER.get(min_tier, 0):
-            return JsonResponse({"error": f"Model tier too low for this feature (minimum: {min_tier})"}, status=400)
+        info = get_model_info(model)
+        if info and info.capability_stars < min_stars:
+            return JsonResponse({"error": f"Model tier too low for this feature (minimum: {min_stars} stars)"}, status=400)
 
     def mutate(prefs):
         feature_models = prefs.get("feature_models", {})

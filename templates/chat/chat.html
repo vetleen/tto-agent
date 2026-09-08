@@ -2207,8 +2207,8 @@
   var reasoningLevelSelect = document.getElementById('reasoning-level-select');
 
   // Build the muted performance (★) + price ($) glyphs shown on the right of
-  // each model row. Four stars come from price tiers; the fifth is reserved for
-  // manually curated flagship models.
+  // each model row. Stars are the registry's curated rating (price-derived
+  // only for unrated models).
   // Price is 1-5 filled "$" right-aligned in a fixed column.
   function modelMetaHtml(m) {
     var html = '';

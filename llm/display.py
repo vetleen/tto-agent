@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from decimal import Decimal
 
-from llm.model_registry import TIER_ORDER, get_model_info
+from llm.model_registry import get_model_info
 
 
 def get_display_name(model_id: str) -> str:
@@ -195,16 +195,14 @@ def get_price_level(model_id: str) -> int:
 def get_capability_level(model_id: str) -> int:
     """Return a 1-5 performance rating (0 if unknown).
 
-    The registry's manually curated ``stars`` wins when set. Models without it
-    fall back to the input-price tier (cheap through premium), with the
-    ``flagship`` marker awarding a fifth star.
+    The registry's manually curated ``stars`` wins when set; models without it
+    fall back to an input-price rating, with the ``flagship`` marker awarding
+    an extra star (see ``ModelInfo.capability_stars``).
     """
     info = get_model_info(model_id)
     if info is None:
         return 0
-    if info.stars is not None:
-        return info.stars
-    return TIER_ORDER.get(info.tier, 0) + 1 + (1 if info.flagship else 0)
+    return info.capability_stars
 
 
 def _format_output_price(price: Decimal) -> str:
@@ -214,9 +212,9 @@ def _format_output_price(price: Decimal) -> str:
     return f"${price:.2f}"
 
 
-# Standing label per star count, so the tooltip always matches the stars —
-# including manually starred models whose price-derived tier would say less.
-_CAPABILITY_LABELS = {1: "Cheap", 2: "Mid", 3: "Standard", 4: "Premium", 5: "Flagship"}
+# Standing label per star count, matching the star-based tier categories
+# (2-3 stars = mid, 4 = standard, 5 = flagship).
+_CAPABILITY_LABELS = {1: "Cheap", 2: "Mid", 3: "Mid", 4: "Standard", 5: "Flagship"}
 
 
 def get_model_meta_tooltip(model_id: str) -> str | None:

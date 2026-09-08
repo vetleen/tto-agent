@@ -71,7 +71,8 @@ class FeatureDefault:
     """Per-feature model-selection policy.
 
     default_slot: tier used by default ("primary", "mid", "cheap").
-    min_tier: minimum model tier allowed ("cheap", "mid", "standard", "premium").
+    min_stars: minimum capability stars allowed (1-5; see
+        ModelInfo.capability_stars in llm/model_registry.py).
     scope: "org" exposes a dedicated organization override; "user" identifies
         features that follow the organization's tier defaults. Chat also allows
         an individual thread override, stored on the thread rather than in user
@@ -82,39 +83,39 @@ class FeatureDefault:
     """
 
     default_slot: str
-    min_tier: str
+    min_stars: int
     scope: str
     required_modality: str | None = None
 
 
 # Per-feature model catalog.
 FEATURE_DEFAULTS: dict[str, FeatureDefault] = {
-    "chat": FeatureDefault("primary", "mid", "org"),
-    "thread_title": FeatureDefault("cheap", "cheap", "user"),
-    "thread_emoji": FeatureDefault("cheap", "cheap", "user"),
-    "canvas_title": FeatureDefault("cheap", "cheap", "user"),
-    "image_description": FeatureDefault("cheap", "cheap", "user"),
-    "message_summary": FeatureDefault("mid", "mid", "org"),
-    "guardrails_classifier": FeatureDefault("cheap", "cheap", "org"),
-    "guardrails_reviewer": FeatureDefault("primary", "standard", "org"),
-    "document_description": FeatureDefault("mid", "mid", "org"),
+    "chat": FeatureDefault("primary", 2, "org"),
+    "thread_title": FeatureDefault("cheap", 1, "user"),
+    "thread_emoji": FeatureDefault("cheap", 1, "user"),
+    "canvas_title": FeatureDefault("cheap", 1, "user"),
+    "image_description": FeatureDefault("cheap", 1, "user"),
+    "message_summary": FeatureDefault("mid", 2, "org"),
+    "guardrails_classifier": FeatureDefault("cheap", 1, "org"),
+    "guardrails_reviewer": FeatureDefault("primary", 3, "org"),
+    "document_description": FeatureDefault("mid", 2, "org"),
     # Describes images uploaded to data rooms; needs a vision-capable model.
-    "document_image_description": FeatureDefault("mid", "mid", "org", required_modality="image"),
+    "document_image_description": FeatureDefault("mid", 2, "org", required_modality="image"),
     # Describes spreadsheet sheets + adjudicates header rows from a rendered
     # tile; needs vision. Unlike images, spreadsheets degrade (heuristic
     # headers, no descriptions) instead of blocking upload when unavailable.
-    "spreadsheet_description": FeatureDefault("mid", "mid", "org", required_modality="image"),
-    "skill_emoji": FeatureDefault("cheap", "cheap", "org"),
-    "guardrail_chunk_scan": FeatureDefault("cheap", "cheap", "org"),
-    "guardrail_web_scan": FeatureDefault("cheap", "cheap", "org"),
-    "pii_scan": FeatureDefault("mid", "mid", "org"),
+    "spreadsheet_description": FeatureDefault("mid", 2, "org", required_modality="image"),
+    "skill_emoji": FeatureDefault("cheap", 1, "org"),
+    "guardrail_chunk_scan": FeatureDefault("cheap", 1, "org"),
+    "guardrail_web_scan": FeatureDefault("cheap", 1, "org"),
+    "pii_scan": FeatureDefault("mid", 2, "org"),
 }
 
 _SLOT_TO_ATTR = {"primary": "top_model", "mid": "mid_model", "cheap": "cheap_model"}
 
 # Map a model's registry tier to the preference slot used for fallback.
 _TIER_TO_SLOT = {
-    "premium": "primary",
+    "flagship": "primary",
     "standard": "primary",
     "mid": "mid",
     "cheap": "cheap",
@@ -262,7 +263,7 @@ def get_preferences(user) -> ResolvedPreferences:
         mid_model = top_model
         warnings.append("No mid-tier models in your organization's allowed list. Mid-tier features will use the primary model.")
     if not get_models_for_slot("primary", effective_allowed):
-        warnings.append("No standard-tier models in your organization's allowed list. Chat and primary features may not work correctly.")
+        warnings.append("No standard-grade models (3 stars or better) in your organization's allowed list. Chat and primary features may not work correctly.")
 
     # --- Transcription model cascade ---
     system_transcription_allowed = list(getattr(django_settings, "TRANSCRIPTION_ALLOWED_MODELS", []))
@@ -479,7 +480,7 @@ def get_preferences(user) -> ResolvedPreferences:
 
     # Resolve per-feature model overrides
     from llm.display import supports_modality
-    from llm.model_registry import TIER_ORDER, get_model_tier
+    from llm.model_registry import get_model_info
 
     slot_model = {"primary": top_model, "mid": mid_model, "cheap": cheap_model}
     org_feature_prefs = org_prefs.get("feature_models") or {}
@@ -497,8 +498,8 @@ def get_preferences(user) -> ResolvedPreferences:
 
         override = _match_allowed_model(override, pool)
         if override and override in pool:
-            tier = get_model_tier(override)
-            if tier and TIER_ORDER.get(tier, 0) >= TIER_ORDER.get(fdef.min_tier, 0):
+            info = get_model_info(override)
+            if info and info.capability_stars >= fdef.min_stars:
                 feature_models[fkey] = override
                 continue
 
@@ -657,7 +658,7 @@ def resolve_org_feature_model(org_id: int | None, feature_key: str) -> str:
     Celery tasks or system contexts where only the org ID is available.
     """
     from accounts.models import Organization
-    from llm.model_registry import TIER_ORDER, get_model_tier
+    from llm.model_registry import get_model_info
     from llm.service.policies import get_allowed_models
 
     feature_def = FEATURE_DEFAULTS.get(feature_key)
@@ -665,7 +666,7 @@ def resolve_org_feature_model(org_id: int | None, feature_key: str) -> str:
         return getattr(django_settings, "LLM_DEFAULT_MODEL", "") or ""
 
     default_slot = feature_def.default_slot
-    min_tier = feature_def.min_tier
+    min_stars = feature_def.min_stars
     sys_models = _get_system_model_defaults()
     system_allowed = get_allowed_models()
 
@@ -704,8 +705,8 @@ def resolve_org_feature_model(org_id: int | None, feature_key: str) -> str:
         (org_prefs.get("feature_models") or {}).get(feature_key), effective_allowed
     )
     if override and override in effective_allowed:
-        tier = get_model_tier(override)
-        if tier and TIER_ORDER.get(tier, 0) >= TIER_ORDER.get(min_tier, 0):
+        info = get_model_info(override)
+        if info and info.capability_stars >= min_stars:
             return override
 
     # Fall back to org's tier default → system tier default

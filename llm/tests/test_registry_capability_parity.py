@@ -7,6 +7,7 @@ from llm.model_registry import _MODELS
 from llm.transcription_registry import _TRANSCRIPTION_MODELS
 
 _ADAPTIVE_ANTHROPIC = {
+    "claude-fable-5-1",
     "claude-fable-5",
     "claude-opus-5",
     "claude-opus-4-8",

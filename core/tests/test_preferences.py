@@ -1106,8 +1106,8 @@ class ResolveOrgFeatureModelTest(TestCase):
     def test_org_feature_override(self, mock_allowed):
         from core.preferences import resolve_org_feature_model
 
-        # gemini-3.5-flash is standard tier, above document_description's
-        # mid-tier minimum, so the org override applies.
+        # gemini-3.5-flash (→ 3.7-flash, 2 stars) clears
+        # document_description's 2-star minimum, so the org override applies.
         org = Organization.objects.create(name="FeatOrg", slug="featorg", preferences={
             "feature_models": {"document_description": "gemini/gemini-3.5-flash"},
         })
@@ -1126,8 +1126,9 @@ class ResolveOrgFeatureModelTest(TestCase):
     def test_org_feature_override_below_min_tier_falls_back(self, mock_allowed):
         from core.preferences import resolve_org_feature_model
 
-        # gemini-3.1-flash-lite is cheap tier; document_description requires
-        # mid, so the override is ignored and the mid default applies.
+        # gemini-3.1-flash-lite (→ 3.5-flash-lite, 1 star) is below
+        # document_description's 2-star minimum, so the override is ignored
+        # and the mid default applies.
         org = Organization.objects.create(name="FeatOrg2", slug="featorg2", preferences={
             "feature_models": {"document_description": "gemini/gemini-3.1-flash-lite"},
         })
