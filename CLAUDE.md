@@ -43,7 +43,7 @@ Three-app pipeline `wilfred` (EU region). Each app has its own Postgres (`essent
 | `wilfred-staging` | staging | Auto-deploys on push to GitHub `main`. Web + worker dynos. |
 | `wilfred-production` | production | Promoted from staging via `heroku pipelines:promote -a wilfred-staging` (same slug, no rebuild). Web + worker dynos. |
 
-**Workflow:** push to `main` on GitHub → staging auto-builds → verify on `wilfred-staging` → promote to production. Never `git push heroku main` directly to production — it bypasses staging. The same goes for every other direct path: no dashboard "Deploy Branch", no `heroku builds:create`, no API-triggered builds on `wilfred-production`. Production releases happen ONLY via `heroku pipelines:promote -a wilfred-staging` (releases must read "Promote", never "Deploy", in `heroku releases`).
+**Workflow:** push to `main` on GitHub → staging auto-builds → verify on `wilfred-staging` → promote to production. Never `git push heroku main` directly to production — it bypasses staging. The same goes for every other direct path: no dashboard "Deploy Branch", no `heroku builds:create`, no API-triggered builds on `wilfred-production`. Production releases happen ONLY via `heroku pipelines:promote -a wilfred-staging`. Note: a promote's release description still reads "Deploy <sha>" in `heroku releases` — to check whether a production release was a promote, compare its `slug.id` (via `heroku api GET /apps/<app>/releases/<v>`) with the staging release's; a promote reuses the identical slug, a direct build creates a new one.
 
 **Local dev shares the `wilfred-dev` Postgres** (its `DATABASE_URL` is in the local `.env`). Staging and production have isolated databases. Two consequences:
 
