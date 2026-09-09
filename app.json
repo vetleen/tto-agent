@@ -94,6 +94,21 @@
       "value": "4",
       "required": false
     },
+    "CHAT_TURN_MAX_PER_USER": {
+      "description": "Max chat turns streaming at once for one user in the web process. Over the cap a turn queues and starts by itself; it is never refused. 0 disables.",
+      "value": "2",
+      "required": false
+    },
+    "CHAT_TURN_MAX_CONCURRENT": {
+      "description": "Max chat turns streaming at once in the web process, across all users. The web dyno memory and API-burst lever. Over the cap a turn queues. 0 disables.",
+      "value": "8",
+      "required": false
+    },
+    "CHAT_TURN_QUEUE_TIMEOUT_SECONDS": {
+      "description": "How long a chat turn waits for a slot before giving up and asking the user to send again. Keep at or under 300 so a timed-out sub-agent continuation is still re-claimed. 0 waits forever.",
+      "value": "300",
+      "required": false
+    },
     "RERANK_ON_WORKER": {
       "description": "Enable FlashRank rerank on the Celery worker. Default false. FlashRank/onnxruntime is ~45MB resident (TinyBERT + onnxruntime session); on its own this flag won't get a real workload under the 512MB cap (the shared LLM/ML stack dominates — tiktoken alone is ~80MB), but keeping it off avoids stacking that extra ~45MB toward the R15 kill under concurrency. Main-chat rerank is controlled by RERANK_ENABLED. Enable only after a Standard-2X bump gives headroom; worker restart required.",
       "value": "false",

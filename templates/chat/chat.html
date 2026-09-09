@@ -2680,6 +2680,16 @@
       enableInput();
       return;
     }
+    if (et === "turn.queued") {
+      // The turn is waiting for a free concurrency slot. Reuse the spinner the
+      // bubble already carries and just retitle it; the first token removes it
+      // via hideWaitingIndicator(). No position is shown — it would go stale.
+      var queuedLabel = currentStreamingElement && currentStreamingElement.querySelector(".waiting-indicator span");
+      if (queuedLabel) queuedLabel.textContent = ((data.data && data.data.reason) === "user")
+        ? "Waiting for your other chat to finish…"
+        : "Waiting for a free slot…";
+      return;
+    }
     if (et === "subagents.updated") { updateSubagentStatusBar(data.active_count || 0, null, data.waiting_count || 0); return; }
     if (et === "stream.cancelled") { finishStreaming("Stopped."); updateSubagentStatusBar(0); enableInput(); return; }
     if (et === "stream.degenerate") {

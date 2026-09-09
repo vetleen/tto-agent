@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
 
+from chat import turn_gate
 from core.redis_errors import REDIS_BLIP as _REDIS_BLIP
 
 logger = logging.getLogger(__name__)
@@ -1652,13 +1653,21 @@ class ChatConsumer(AsyncWebsocketConsumer):
             msg.save(update_fields=["metadata"])
 
     async def _send_heartbeats(self, interval=30):
-        """Send periodic heartbeat events to keep the connection alive during long operations."""
+        """Send periodic heartbeat events to keep the connection alive during long operations.
+
+        Also runs while a turn waits for a concurrency slot, where the socket is
+        more likely to close underneath it — hence the broad catch, which keeps a
+        send on a half-closed socket from surfacing as "Task exception was never
+        retrieved" instead of the harmless thing it is.
+        """
         try:
             while True:
                 await asyncio.sleep(interval)
                 await self.send(text_data=json.dumps({"event_type": "heartbeat"}))
         except asyncio.CancelledError:
             pass
+        except Exception:
+            logger.debug("heartbeat send failed; socket is going away", exc_info=True)
 
     async def _handle_stop(self, data):
         """Handle a stop request from the client."""
@@ -2026,30 +2035,21 @@ class ChatConsumer(AsyncWebsocketConsumer):
             if seed_mode and await self._is_fresh_loop_thread(thread.id):
                 history_mode = "loop_pass"
 
-            # Gather history + context and build the layered system prompt.
-            static_system, history, semi_static_system, dynamic_context_data, meta = (
-                await self._assemble_turn_inputs(
-                    thread, content,
-                    model=model, max_context_tokens=max_context_tokens,
-                    history_mode=history_mode,
-                )
-            )
-
             # Launch streaming + post-processing as a background task so
             # the dispatch loop stays free for chat.stop and other messages.
+            # Turn-input assembly happens inside that task rather than here, so
+            # the history snapshot is taken when the turn actually starts.
             self._stream_task = asyncio.create_task(
                 self._stream_and_finalize(
-                    thread, static_system, history,
-                    semi_static_system=semi_static_system,
-                    dynamic_context_data=dynamic_context_data,
+                    thread,
+                    content=content,
                     requested_model=requested_model,
                     thinking_level=thinking_level,
                     resolved_model=model,
+                    max_context_tokens=max_context_tokens,
+                    history_mode=history_mode,
                     turn=turn,
                     seed_mode=seed_mode,
-                    content=content,
-                    meta=meta,
-                    max_context_tokens=max_context_tokens,
                 )
             )
 
@@ -2061,34 +2061,88 @@ class ChatConsumer(AsyncWebsocketConsumer):
             }))
 
     async def _stream_and_finalize(
-        self, thread, static_system, history, *,
-        semi_static_system, dynamic_context_data,
-        requested_model, thinking_level, resolved_model,
-        turn, seed_mode, content, meta, max_context_tokens,
+        self, thread, *,
+        content, requested_model, thinking_level, resolved_model,
+        max_context_tokens, history_mode, turn, seed_mode,
     ):
-        """Stream LLM response and run post-processing.
+        """Wait for a turn slot, assemble inputs, stream, and post-process.
 
         Runs as a background ``asyncio.Task`` so the dispatch loop stays
         free for ``chat.stop`` and other messages. All guardrail coordination
         goes through this turn's ``_TurnState`` so a superseded turn's late
         verdict can't leak into this one.
-        """
-        turn.history_has_subagent_results = bool(meta.get("has_subagent_results"))
-        try:
-            await self._stream_response(
-                thread, static_system, history,
-                semi_static_system=semi_static_system,
-                dynamic_context_data=dynamic_context_data,
-                requested_model=requested_model, thinking_level=thinking_level,
-                resolved_model=resolved_model,
-                turn=turn,
-                seed_mode=seed_mode,
-            )
 
-            # Apply this turn's guardrail verdict: await the pipeline and redact
-            # any intercepted content. Runs here on the normal path and again in
-            # `finally` (idempotent) so a stop/disconnect race can't skip redaction.
-            await self._finalize_guardrail(thread, turn)
+        The concurrency wait MUST happen here and never in
+        ``_handle_chat_message``, which ``receive()`` awaits: a wait there would
+        freeze the whole socket, and ``_handle_stop`` would have no
+        ``_stream_task`` to cancel, leaving a queued turn unstoppable.
+
+        The gate covers assembly, streaming and guardrail finalization only.
+        Title generation and summarization run after the slot is released, so a
+        turn whose answer already looks finished never holds a slot away from
+        another tab.
+        """
+        meta: dict = {}
+        queue_hb: asyncio.Task | None = None
+
+        async def _on_queued(reason, position):
+            nonlocal queue_hb
+            await self._sink.send_event({
+                "event_type": "turn.queued",
+                "data": {"reason": reason, "position": position},
+            })
+            # Keep the browser's stream timeout resetting while we wait;
+            # _stream_response starts its own heartbeat once streaming begins.
+            if self._sink.wants_heartbeats and queue_hb is None:
+                queue_hb = asyncio.create_task(self._send_heartbeats())
+
+        try:
+            async with turn_gate.slot(self.user.pk, on_queued=_on_queued):
+                if queue_hb is not None:
+                    queue_hb.cancel()
+                    queue_hb = None
+
+                # A stop, a newer message, or a guardrail verdict may have landed
+                # while this turn waited in line. Bail out without streaming; the
+                # `finally` below still applies and redacts the verdict.
+                if (
+                    self._stopped
+                    or turn.cancel_event.is_set()
+                    or turn.guardrail_intercepted
+                    or self._turn is not turn
+                ):
+                    if self._turn is turn:
+                        self._cancel_event = None
+                    return
+
+                # Gather history + context and build the layered system prompt.
+                # Deliberately here and not in the dispatch loop: the snapshot
+                # then reflects the moment the turn runs, which for a turn that
+                # queued behind another tab is not the moment it was accepted.
+                static_system, history, semi_static_system, dynamic_context_data, meta = (
+                    await self._assemble_turn_inputs(
+                        thread, content,
+                        model=resolved_model, max_context_tokens=max_context_tokens,
+                        history_mode=history_mode,
+                    )
+                )
+                turn.history_has_subagent_results = bool(meta.get("has_subagent_results"))
+
+                await self._stream_response(
+                    thread, static_system, history,
+                    semi_static_system=semi_static_system,
+                    dynamic_context_data=dynamic_context_data,
+                    requested_model=requested_model, thinking_level=thinking_level,
+                    resolved_model=resolved_model,
+                    turn=turn,
+                    seed_mode=seed_mode,
+                )
+
+                # Apply this turn's guardrail verdict: await the pipeline and redact
+                # any intercepted content. Runs here on the normal path and again in
+                # `finally` (idempotent) so a stop/disconnect race can't skip redaction.
+                await self._finalize_guardrail(thread, turn)
+            # --- slot released here ---
 
             if self._stopped or turn.guardrail_intercepted:
                 # Stopped or intercepted → skip the post-stream work below.
@@ -2116,6 +2170,28 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     thread, model=resolved_model, max_context_tokens=max_context_tokens,
                 )
 
+        except turn_gate.TurnQueueTimeout:
+            logger.warning(
+                "chat turn gave up waiting for a slot thread=%s seed=%s",
+                thread.id, seed_mode,
+            )
+            if self._turn is turn:
+                self._cancel_event = None
+            # A seeded continuation has no user message to resend, and its
+            # reported_at lease expires on the same clock so the sub-agent
+            # watchdog re-claims it. Telling a human to "send again" for a turn
+            # they never sent would be worse than staying quiet.
+            if not seed_mode and not self._stopped and not turn.cancel_event.is_set():
+                await self._sink.send_event({
+                    "event_type": "error",
+                    "data": {
+                        "message": (
+                            "Wilfred is handling several requests right now. "
+                            "Please send your message again."
+                        ),
+                        "error_code": "turn_queue_timeout",
+                    },
+                })
         except asyncio.CancelledError:
             pass
         except Exception:
@@ -2128,6 +2204,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
             except Exception:
                 pass
         finally:
+            # Cancel without awaiting: this `finally` may be unwinding a
+            # cancellation, and awaiting there can be interrupted by a second one.
+            if queue_hb is not None:
+                queue_hb.cancel()
             # Redaction of guardrail-intercepted content must run even when the
             # turn was stopped / cancelled / disconnected mid-flight (the try above
             # returns early on stop). Idempotent via turn.guardrail_redacted.

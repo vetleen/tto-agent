@@ -56,6 +56,25 @@ whenever a slot frees (on every run's completion, on user cancel, and from the 1
 Caveat: a worker restart mid-load leaves RUNNING ghosts that hold their slots until the sweeper
 expires them (15 min from `started_at`), which can stall the whole line for that long.
 
+**Chat-turn queue (web).** The web dyno has its own, unrelated queue for interactive chat
+turns: `chat/turn_gate.py`. At most `CHAT_TURN_MAX_PER_USER` (2) of one user's turns and
+`CHAT_TURN_MAX_CONCURRENT` (8) turns overall may stream at once in the Daphne process; a turn
+over either cap **queues and starts by itself** when a slot frees, and is never refused. It
+gives up after `CHAT_TURN_QUEUE_TIMEOUT_SECONDS` (300) with the ordinary error event asking the
+user to send again — keep that at or under 300 s so a timed-out sub-agent continuation is still
+re-claimed by the report lease. The user sees the existing spinner relabelled via a `turn.queued`
+event, and Stop works throughout.
+
+Unlike the sub-agent and document queues this one is **in-memory and per process**: a slot is
+held only for as long as its streaming task is alive and is released in that task's `finally`,
+so a stop, a disconnect, an exception or a dyno restart cannot strand one. There is nothing to
+sweep and nothing that survives a restart. A slot covers history assembly, streaming and
+guardrail finalization; title generation and summarization deliberately run after it is
+released. Loop turns run on the worker and are not gated. Because the caps are per process,
+scaling web past one dyno multiplies the effective system cap by the dyno count.
+`LLM_MAX_CONCURRENT_STREAMS` (20, `llm/service/llm_service.py`) sits one level below as a
+backstop and is non-binding while `CHAT_TURN_MAX_CONCURRENT` is lower.
+
 **`-B` embeds Celery beat in the worker.** Beat is the scheduler for periodic tasks
 (`CELERY_BEAT_SCHEDULE` in `config/settings.py`, e.g. `expire_stale_subagent_runs`
 every 120s) and **must run on exactly one process.** The threads pool supports embedding
@@ -404,6 +423,9 @@ See `.env.example` for the full list with comments. Key production variables:
 | `SUBAGENT_WORKER_SLOTS` | No | Max sub-agents executing at once, system-wide (default 4; production 8). The sub-agent memory lever — applies on the next dispatch, no restart. See *Sub-agent execution queue*. |
 | `SUBAGENT_MAX_SYSTEM` | No | Max sub-agents waiting + running system-wide, i.e. the queue depth (default 8; production 24). Above it a spawn is refused with "system busy". |
 | `SUBAGENT_MAX_PER_USER` | No | Max sub-agents waiting + running per user (default 4). Hard deny; the orchestrator prompt states this number. |
+| `CHAT_TURN_MAX_PER_USER` | No | Max chat turns streaming at once for one user in the web process (default 2). Because a new message on a socket cancels that socket's turn, this is effectively how many of one person's tabs may stream together. Over the cap a turn queues and starts by itself — never refused. 0 disables. See *Chat-turn queue (web)*. |
+| `CHAT_TURN_MAX_CONCURRENT` | No | Max chat turns streaming at once in the web process across all users (default 8). The web dyno's streaming-memory and API-burst lever. 0 disables. |
+| `CHAT_TURN_QUEUE_TIMEOUT_SECONDS` | No | How long a queued chat turn waits before giving up with "please send again" (default 300). Keep at or under 300 so a timed-out sub-agent continuation is still re-claimed by the 5-minute report lease. 0 waits forever. |
 | `RERANK_ON_WORKER` | No | Enable FlashRank rerank on the Celery worker (default `false`). The model + session is ~45 MB, but until 2026-09-08 the onnxruntime *memory arena* grew with every concurrent rerank and never shrank (+240 MB RSS after four concurrent 20-passage batches, 1 GB reserved after eight) — the worker's post-burst memory ratchet. `documents/services/retrieval.py` now builds the session with the arena off, 2 intra-op threads and no spinning, and caps concurrent reranks at `RERANK_MAX_CONCURRENT` (default 2). Main-chat rerank (web) is controlled separately by `RERANK_ENABLED` and gets the same session. Worker restart required to take effect. |
 | `DOCUMENT_EXTRACT_CONCURRENCY` | No | Dyno-wide cap on concurrent document extract+chunk stages (default 2). A figure-heavy PDF is 100–200 MB of transient RSS even after the pypdf cache fix; four concurrent ingests R15-killed the 1 GB staging worker on 2026-09-08. Queued versions heartbeat `updated_at` so the stale sweeper leaves them alone. Embedding and scanning run outside the cap. |
 | `RERANK_MAX_CONCURRENT` / `RERANK_INTRA_OP_THREADS` | No | Process-wide cap on concurrent FlashRank reranks (default 2; each 20×512-token batch is ~60 MB of transient activations) and onnxruntime intra-op threads per rerank (default 2). |
