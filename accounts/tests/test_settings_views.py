@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.templatetags.static import static
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
@@ -2144,3 +2145,74 @@ class EditorBundleScopingTests(TestCase):
         response = self.client.get(reverse("accounts:usage"))
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, "js/editor.bundle")
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class BaseTemplateAssetLoadingTests(TestCase):
+    """How ``_base.html`` loads fonts and shared scripts — asserted on a plain settings
+    page, so these are pinned as properties of the base template rather than of chat.
+
+    The brand fonts use ``font-display: swap`` and are referenced only from ``url()``
+    inside the compiled CSS, so without a preload they are discovered three hops deep
+    (HTML → 118 KB of CSS downloads and parses → layout needs a glyph) and every page
+    visibly reflows as they swap in.
+    """
+
+    def setUp(self):
+        self.password = "test-pass-123"
+        self.user = User.objects.create_user(
+            email="baseassets@example.com", password=self.password,
+        )
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+        self.org = Organization.objects.create(name="Base Assets", slug="base-assets")
+        Membership.objects.create(user=self.user, org=self.org, role=Membership.Role.ADMIN)
+        self.client.login(email=self.user.email, password=self.password)
+
+    def _get(self):
+        response = self.client.get(reverse("accounts:settings"))
+        self.assertEqual(response.status_code, 200)
+        return response
+
+    def test_critical_latin_fonts_are_preloaded(self):
+        response = self._get()
+        for name in (
+            "fonts/hanken-grotesk-latin-wght-normal.woff2",
+            "fonts/source-serif-4-latin-wght-normal.woff2",
+        ):
+            with self.subTest(font=name):
+                self.assertContains(
+                    response,
+                    '<link rel="preload" as="font" type="font/woff2" crossorigin '
+                    'href="%s">' % static(name),
+                )
+
+    def test_only_the_two_critical_subsets_are_preloaded(self):
+        """Preloading all seven faces would put 227 KB of Maple Mono — used only by
+        ``code`` and ``.wf-mono`` — on the critical path, making the page slower, not
+        faster. The latin-ext subsets are likewise correctly conditional."""
+        html = self._get().content.decode()
+        self.assertEqual(html.count('rel="preload"'), 2)
+        self.assertNotIn("maple-mono", html)
+
+    def test_shared_vendor_scripts_are_deferred(self):
+        response = self._get()
+        for path in ("js/vendor/flowbite.min.js", "js/vendor/html2canvas-pro.min.js"):
+            with self.subTest(path=path):
+                self.assertContains(response, '<script src="%s" defer>' % static(path))
+
+    def test_feedback_widget_is_not_deferred(self):
+        """It installs ``window.onerror`` at parse time to buffer console errors for bug
+        reports; deferring it would blind that capture for anything thrown earlier."""
+        response = self._get()
+        self.assertContains(
+            response, '<script src="%s"></script>' % static("js/feedback-widget.js")
+        )
+
+    def test_stylesheet_is_fetched_before_the_favicons(self):
+        """One render-blocking stylesheet, hoisted to the top of <head> so nothing else
+        competes with it for the connection."""
+        html = self._get().content.decode()
+        self.assertLess(
+            html.index(static("src/output.css")), html.index('rel="icon"')
+        )

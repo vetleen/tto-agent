@@ -2,8 +2,45 @@
 {% load static %}
 {% load branding %}
 {% block body_class %}pt-16 bg-neutral-primary{% endblock %}
-{# Canvas mounts CodeMirror (window.WilfredEditor) at parse time below, so load the bundle synchronously here in <head>, before that script runs. #}
-{% block editor_bundle %}<script src="{% static 'js/editor.bundle.js' %}"></script>{% endblock %}
+{# Deliberately empty: chat loads editor.bundle.js from the body instead, so 560 KB of #}
+{# CodeMirror stops blocking first paint of the whole page. See the tag further down. #}
+{% block editor_bundle %}{% endblock %}
+{% block extra_head %}
+<style>
+  /* Server-emitted assistant turns ship RAW markdown as escaped text and are rewritten
+     in place by renderServerMarkdown() at DOMContentLoaded. Hide just those nodes until
+     then, so the first paint never shows literal ## / ** / table pipes.
+
+     Scoped to .md-pending — a class only chat/_message_list.html emits — so the canvas
+     preview pane, the live-streamed message bubbles, and other pages' .markdown-content
+     panes are all untouched. visibility (not display) keeps the layout box.
+
+     FAILS OPEN: the rule is gated on html.md-gate, which only the script below adds, so
+     with JS off (or the script CSP-blocked) the class is never set and the text shows. */
+  html.md-gate .md-pending { visibility: hidden; }
+</style>
+<script nonce="{{ request.csp_nonce }}">
+  (function () {
+    var el = document.documentElement;
+    function reveal() { el.classList.remove('md-gate'); }
+    el.classList.add('md-gate');
+    // These failsafes MUST live out here rather than in the page's main script block:
+    // its marked.use() calls run at parse time and two are unguarded, so a missing
+    // vendor global throws a ReferenceError that kills the rest of that block —
+    // hydration wiring included — and would otherwise strand the text invisible.
+    window.addEventListener('error', reveal);
+    document.addEventListener('DOMContentLoaded', function () {
+      // Registered from <head>, so this fires before the body script's own
+      // DOMContentLoaded listener. Hop one macrotask so hydration normally wins the
+      // race; if the body script never ran, the raw text appears a frame later.
+      // Anchoring on the event rather than a wall-clock guess matters: a flat timer
+      // shorter than DOMContentLoaded just reintroduces the flash, only later.
+      setTimeout(reveal, 0);
+    });
+    setTimeout(reveal, 5000);  // pathological case: DOMContentLoaded never fires at all
+  })();
+</script>
+{% endblock extra_head %}
 {% block feedback_widget %}{% include "feedback/_widget.html" with hide_mobile_fab=True %}{% endblock %}
 {% block content %}
 
@@ -557,7 +594,9 @@
 </div>
 
 {% include "_slide_theme_editor.html" %}
-<script src="{% static 'js/slide-theme-editor.js' %}"></script>
+{# Defers safely: this file does all its wiring inside its own DOMContentLoaded, and #}
+{# every consumer of window.SlideThemeEditor here is a click handler. #}
+<script src="{% static 'js/slide-theme-editor.js' %}" defer></script>
 
 </div>{# end #content-area #}
 
@@ -670,13 +709,21 @@
   </div>
 </div>
 
-{# Markdown rendering libraries #}
+{# Markdown rendering libraries. marked + marked-footnote + purify stay blocking: the #}
+{# script below calls marked.use() at parse time (twice unguarded), so deferring them #}
+{# would throw a ReferenceError and kill the rest of that block. diff is only touched #}
+{# inside renderDiffPreview(), so it defers safely. #}
 <script src="{% static 'js/vendor/marked.min.js' %}"></script>
 <script src="{% static 'js/vendor/marked-footnote.umd.min.js' %}"></script>
 <script src="{% static 'js/vendor/purify.min.js' %}"></script>
-<script src="{% static 'js/vendor/diff.min.js' %}"></script>
-<script src="{% static 'js/vendor/mermaid.min.js' %}"></script>
-<script src="{% static 'js/vendor/dom-to-image-more.min.js' %}"></script>
+<script src="{% static 'js/vendor/diff.min.js' %}" defer></script>
+{# mermaid (3.3 MB) and dom-to-image load on demand — see ensureMermaid() below. #}
+
+{# editor.bundle.js (CodeMirror, ~560 KB) lives here rather than in <head> so the #}
+{# sidebar, header, message list and composer all paint before it downloads. It stays #}
+{# SYNCHRONOUS: the canvas mounts window.WilfredEditor at parse time further down, #}
+{# behind a guard that fails silently, so deferring it would break the canvas quietly. #}
+<script src="{% static 'js/editor.bundle.js' %}"></script>
 
 {# Markdown styling #}
 {% include "_markdown_styles.html" %}
@@ -972,9 +1019,42 @@
   let pendingAttachmentNames = [];
   let pendingAttachmentTypes = [];
 
-  // -- Mermaid init --
+  // -- Mermaid: loaded on demand (3.3 MB) --
+  // Only a message or canvas containing a ```mermaid fence ever needs it, and nothing
+  // server-side emits a placeholder, so an ordinary thread never downloads a byte.
+  // dom-to-image comes along because it exists solely to rasterize a rendered diagram.
+  // Both URLs come from {% templatetag openblock %} static {% templatetag closeblock %} rather than a literal path: production
+  // serves content-hashed filenames, where /static/js/vendor/mermaid.min.js is a 404.
+  const MERMAID_SRC    = "{% static 'js/vendor/mermaid.min.js' %}";
+  const DOMTOIMAGE_SRC = "{% static 'js/vendor/dom-to-image-more.min.js' %}";
+  const CSP_NONCE      = "{{ request.csp_nonce }}";
   var mermaidIdCounter = 0;
-  try { mermaid.initialize({ startOnLoad: false, theme: 'default' }); } catch (e) { console.warn('Mermaid init failed:', e); }
+  var mermaidLoadPromise = null;
+
+  function loadScriptOnce(src) {
+    return new Promise(function (resolve, reject) {
+      var s = document.createElement('script');
+      s.src = src;
+      // script-src is 'self' plus a nonce with no strict-dynamic, so a same-origin
+      // injected script is already allowed. Carry the nonce anyway so that adding
+      // strict-dynamic later can't silently stop diagrams from loading.
+      s.nonce = CSP_NONCE;
+      s.onload = function () { resolve(); };
+      s.onerror = function () { reject(new Error('Could not load ' + src)); };
+      document.head.appendChild(s);
+    });
+  }
+
+  // Memoized so concurrent callers share one download. The memo is cleared on failure
+  // so a later diagram retries instead of being permanently dead for the session.
+  function ensureMermaid() {
+    if (!mermaidLoadPromise) {
+      mermaidLoadPromise = Promise.all([loadScriptOnce(MERMAID_SRC), loadScriptOnce(DOMTOIMAGE_SRC)])
+        .then(function () { mermaid.initialize({ startOnLoad: false, theme: 'default' }); })
+        .catch(function (err) { mermaidLoadPromise = null; throw err; });
+    }
+    return mermaidLoadPromise;
+  }
 
   // Enable footnote support ([^1] references and [^1]: definitions)
   if (typeof markedFootnote !== 'undefined') {
@@ -1319,37 +1399,57 @@
   var COPY_BTN_HTML = '<button type="button" class="copy-msg-btn self-end mt-1 p-1 text-body/40 hover:text-body/70 cursor-pointer transition-colors" title="Copy message"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg></button>';
 
   // -- Mermaid rendering & PNG export --
-  function renderMermaidBlocks(container) {
-    var placeholders = container.querySelectorAll('.mermaid-placeholder');
-    placeholders.forEach(function(el) {
-      var source = el.getAttribute('data-mermaid');
-      if (!source) return;
-      // Unescape HTML entities
-      var tmp = document.createElement('textarea');
-      tmp.innerHTML = source;
-      source = tmp.value;
-      var id = 'mermaid-' + (++mermaidIdCounter);
-      try {
-        mermaid.render(id, source).then(function(result) {
-          // Clean up the temp element mermaid inserts into the body
-          var tmp = document.getElementById('d' + id);
-          if (tmp) tmp.remove();
-          el.innerHTML = '<div class="mermaid-wrapper">' + sanitizeSvg(result.svg) +
-            '<button class="mermaid-download-btn" title="Download as PNG">PNG</button></div>';
-          el.querySelector('.mermaid-download-btn').addEventListener('click', function() {
-            var svgEl = this.closest('.mermaid-wrapper').querySelector('svg');
-            downloadMermaidAsPng(svgEl, 'diagram');
-          });
-        }).catch(function(err) {
-          var tmp = document.getElementById('d' + id);
-          if (tmp) tmp.remove();
-          el.innerHTML = '<pre style="color:var(--color-fg-danger);font-size:0.875rem;">Diagram error: ' + escapeHtml(err.message || String(err)) + '</pre>';
+  function renderOneMermaid(el) {
+    var source = el.getAttribute('data-mermaid');
+    if (!source) return;
+    // Unescape HTML entities
+    var tmp = document.createElement('textarea');
+    tmp.innerHTML = source;
+    source = tmp.value;
+    var id = 'mermaid-' + (++mermaidIdCounter);
+    try {
+      mermaid.render(id, source).then(function(result) {
+        // Clean up the temp element mermaid inserts into the body
+        var tmp = document.getElementById('d' + id);
+        if (tmp) tmp.remove();
+        el.innerHTML = '<div class="mermaid-wrapper">' + sanitizeSvg(result.svg) +
+          '<button class="mermaid-download-btn" title="Download as PNG">PNG</button></div>';
+        el.querySelector('.mermaid-download-btn').addEventListener('click', function() {
+          var svgEl = this.closest('.mermaid-wrapper').querySelector('svg');
+          downloadMermaidAsPng(svgEl, 'diagram');
         });
-      } catch (err) {
+      }).catch(function(err) {
         var tmp = document.getElementById('d' + id);
         if (tmp) tmp.remove();
         el.innerHTML = '<pre style="color:var(--color-fg-danger);font-size:0.875rem;">Diagram error: ' + escapeHtml(err.message || String(err)) + '</pre>';
-      }
+      });
+    } catch (err) {
+      var tmp = document.getElementById('d' + id);
+      if (tmp) tmp.remove();
+      el.innerHTML = '<pre style="color:var(--color-fg-danger);font-size:0.875rem;">Diagram error: ' + escapeHtml(err.message || String(err)) + '</pre>';
+    }
+  }
+
+  // Returns a promise, but every call site fires and forgets — the rejection is handled
+  // in here, because feedback-widget.js collects unhandled rejections into bug reports.
+  function renderMermaidBlocks(container) {
+    var placeholders = Array.prototype.slice.call(
+      container.querySelectorAll('.mermaid-placeholder:not([data-mermaid-rendered])'));
+    // The gate that keeps mermaid off the critical path: no fence, no download.
+    if (!placeholders.length) return Promise.resolve();
+    // Claim the nodes synchronously. This function was never idempotent (unlike
+    // renderImageBlocks/renderFileChips) and the render is now asynchronous, so a
+    // second call arriving before the first resolves would otherwise double-render.
+    placeholders.forEach(function(el) {
+      el.setAttribute('data-mermaid-rendered', '1');
+      el.textContent = 'Rendering diagram…';
+    });
+    return ensureMermaid().then(function() {
+      placeholders.forEach(renderOneMermaid);
+    }).catch(function(err) {
+      placeholders.forEach(function(el) {
+        el.innerHTML = '<pre style="color:var(--color-fg-danger);font-size:0.875rem;">Diagram error: ' + escapeHtml(err.message || String(err)) + '</pre>';
+      });
     });
   }
 
@@ -1374,29 +1474,34 @@
   // Render mermaid source to PNG blob (for docx export).
   // Returns a Promise<string> with a data:image/png;base64,... URL, or null on failure.
   function renderMermaidToPngDataUrl(mermaidSource) {
-    var tempId = 'mermaid-export-' + (++mermaidIdCounter);
-    return mermaid.render(tempId, mermaidSource).then(function(result) {
-      // Clean up the temp element mermaid inserts into the body
-      var tmp = document.getElementById('d' + tempId);
-      if (tmp) tmp.remove();
-      // Insert rendered SVG into an offscreen container so domtoimage can capture it
-      var container = document.createElement('div');
-      container.style.cssText = 'position:fixed;left:-9999px;top:0;';
-      container.innerHTML = sanitizeSvg(result.svg);
-      document.body.appendChild(container);
-      var svgEl = container.querySelector('svg');
-      return domtoimage.toPng(svgEl, { bgcolor: '#ffffff', scale: 2 }).then(function(dataUrl) {
-        document.body.removeChild(container);
-        return dataUrl;
+    // exportCanvas() only calls this once it has matched a ```mermaid fence, so the
+    // load is already gated. Resolving null on a load failure keeps the existing
+    // contract: the caller leaves the fence as literal text, same as a syntax error.
+    return ensureMermaid().then(function() {
+      var tempId = 'mermaid-export-' + (++mermaidIdCounter);
+      return mermaid.render(tempId, mermaidSource).then(function(result) {
+        // Clean up the temp element mermaid inserts into the body
+        var tmp = document.getElementById('d' + tempId);
+        if (tmp) tmp.remove();
+        // Insert rendered SVG into an offscreen container so domtoimage can capture it
+        var container = document.createElement('div');
+        container.style.cssText = 'position:fixed;left:-9999px;top:0;';
+        container.innerHTML = sanitizeSvg(result.svg);
+        document.body.appendChild(container);
+        var svgEl = container.querySelector('svg');
+        return domtoimage.toPng(svgEl, { bgcolor: '#ffffff', scale: 2 }).then(function(dataUrl) {
+          document.body.removeChild(container);
+          return dataUrl;
+        }).catch(function() {
+          document.body.removeChild(container);
+          return null;
+        });
       }).catch(function() {
-        document.body.removeChild(container);
+        var tmp = document.getElementById('d' + tempId);
+        if (tmp) tmp.remove();
         return null;
       });
-    }).catch(function() {
-      var tmp = document.getElementById('d' + tempId);
-      if (tmp) tmp.remove();
-      return null;
-    });
+    }).catch(function() { return null; });
   }
 
   // -- Email block rendering --
@@ -1587,7 +1692,29 @@
   // Wrap the handler: addEventListener passes an Event as the first arg, and
   // renderServerMarkdown treats a truthy first arg as `root` (would throw on
   // event.querySelectorAll and silently skip all server-markdown hydration).
-  if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', function() { renderServerMarkdown(); }); } else { renderServerMarkdown(); }
+  function hydrateInitialMessages() {
+    try {
+      renderServerMarkdown();
+    } finally {
+      // Reveal even if hydration threw partway through — a half-rendered thread beats
+      // an invisible one. Pairs with the md-gate script in {% templatetag openblock %} block extra_head {% templatetag closeblock %}.
+      document.documentElement.classList.remove('md-gate');
+      // Scroll only now: turning markdown into HTML changes every message's height, so
+      // scrolling before hydration lands a long thread in the wrong place.
+      scrollToBottom();
+    }
+  }
+  if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', hydrateInitialMessages); } else { hydrateInitialMessages(); }
+
+  // Mermaid SVGs and lazily-loaded attachment thumbnails settle after hydration and
+  // grow the thread, so re-pin once at load — unless the reader has taken control.
+  // Listen for wheel/touchmove/keydown rather than 'scroll': our own scrollToBottom()
+  // fires 'scroll' and would immediately mark the user as having scrolled.
+  var userTookOverScroll = false;
+  ['wheel', 'touchmove', 'keydown'].forEach(function(evt) {
+    scrollContainer.addEventListener(evt, function() { userTookOverScroll = true; }, { passive: true, once: true });
+  });
+  window.addEventListener('load', function() { if (!userTookOverScroll) scrollToBottom(); });
 
   function autoResize(ta) { ta.style.height = 'auto'; const h = Math.min(Math.max(ta.scrollHeight, 40), 200); ta.style.height = h + 'px'; ta.style.overflowY = ta.scrollHeight > 200 ? 'auto' : 'hidden'; }
   if (input) {
@@ -1597,6 +1724,9 @@
     autoResize(input); syncSendReady();
   }
 
+  // Keep the whole body inside requestAnimationFrame: currentStreamingElement is
+  // `let`-declared further down, so hydrateInitialMessages() (above) calling this on a
+  // bfcache restore would hit the temporal dead zone if the read happened synchronously.
   function scrollToBottom() {
     requestAnimationFrame(function() {
       if (currentStreamingElement) {
@@ -3548,7 +3678,9 @@
 
   connect();
   if (document.getElementById('budget-exceeded-banner')) { input.disabled = true; button.disabled = true; }
-  setTimeout(scrollToBottom, 100);
+  // The initial scroll now runs in hydrateInitialMessages(), after markdown rendering
+  // has settled every message's height — a fixed timer here raced hydration and landed
+  // long threads in the wrong place.
   window.addEventListener("beforeunload", disconnect);
 
   // --- "Show earlier messages": prepend the previous page of turns ---

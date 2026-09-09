@@ -5,6 +5,21 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    {# The one render-blocking stylesheet, hoisted to the top of <head> so its fetch #}
+    {# starts before anything else competes for the connection. #}
+    <link rel="stylesheet" href="{% static 'src/output.css' %}">
+    {# The two latin subsets every page paints with: body text (Hanken Grotesk, via #}
+    {# --font-body) and headings (Source Serif 4, via --font-serif). Without these the #}
+    {# faces are discovered only after output.css downloads AND parses AND layout needs #}
+    {# a glyph — a 3-hop critical path that guarantees a visible font swap. #}
+    {# Maple Mono (3 faces, 227 KB) is deliberately NOT preloaded: it only styles code #}
+    {# and .wf-mono. Nor are the latin-ext subsets, which are correctly conditional on #}
+    {# an extended glyph actually appearing. #}
+    {# crossorigin is REQUIRED even though these are same-origin: CSS fetches fonts in #}
+    {# CORS mode, so without it the browser downloads each file twice. A console warning #}
+    {# ("preloaded ... but not used") means this attribute got dropped. #}
+    <link rel="preload" as="font" type="font/woff2" crossorigin href="{% static 'fonts/hanken-grotesk-latin-wght-normal.woff2' %}">
+    <link rel="preload" as="font" type="font/woff2" crossorigin href="{% static 'fonts/source-serif-4-latin-wght-normal.woff2' %}">
     <title>{{ assistant_name }} — an AI colleague for technology transfer</title>
     <link rel="icon" type="image/svg+xml" href="{% static 'img/brand/wilfred-mark.svg' %}">
     <link rel="icon" type="image/x-icon" href="{% static 'favicons/favicon.ico' %}">
@@ -36,7 +51,6 @@
         }
       })();
     </script>
-    <link rel="stylesheet" href="{% static 'src/output.css' %}">
     {% if user.is_authenticated %}
     <meta name="csrf-token" content="{{ csrf_token }}">
     {% endif %}
@@ -142,7 +156,9 @@
     </nav>
     {% endblock navbar %}
     {% block content %}{% endblock content %}
-    <script src="{% static 'js/vendor/flowbite.min.js' %}"></script>
+    {# Flowbite initialises on window.load (not DOMContentLoaded), so defer cannot change #}
+    {# when its widgets wake up — it only stops 134 KB blocking the parser. #}
+    <script src="{% static 'js/vendor/flowbite.min.js' %}" defer></script>
     <script nonce="{{ request.csp_nonce }}">
       // Delegated handlers for declarative data-* attributes — these replace the
       // inline on*= handlers that a nonce-based CSP blocks. One global listener
@@ -177,8 +193,11 @@
       });
     </script>
     {% if user.is_authenticated %}
-    <script src="{% static 'js/vendor/html2canvas-pro.min.js' %}"></script>
+    {# Only used inside the feedback widget's screenshot handler, behind a typeof guard. #}
+    <script src="{% static 'js/vendor/html2canvas-pro.min.js' %}" defer></script>
     {% block feedback_widget %}{% include "feedback/_widget.html" %}{% endblock %}
+    {# NOT deferred: this installs window.onerror at parse time to buffer console errors #}
+    {# for bug reports, and deferring it would blind that capture. #}
     <script src="{% static 'js/feedback-widget.js' %}"></script>
     {% endif %}
   </body>
