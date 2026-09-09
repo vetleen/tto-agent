@@ -814,6 +814,15 @@ CELERY_BEAT_SCHEDULE = {
         "task": "chat.tasks.expire_stale_slide_renders",
         "schedule": 300.0,
     },
+    # Restart the worker dyno in the quiet early morning (03:45 UTC ≈ 04:45/
+    # 05:45 Oslo) so each business day starts from the lean boot footprint
+    # instead of yesterday's memory high-water mark. Scheduled clear of
+    # prune-document-versions (03:22) so the shutdown never interrupts it.
+    # No-op outside Heroku; see core.tasks.restart_worker_nightly.
+    "nightly-worker-restart": {
+        "task": "core.tasks.restart_worker_nightly",
+        "schedule": crontab(hour=3, minute=45),
+    },
 }
 
 # Channels / Redis
