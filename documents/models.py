@@ -10,6 +10,11 @@ from django.utils import timezone
 
 from core.retention import RETENTION_PERIODS
 
+# Presentation-only status for a document whose version is waiting in the
+# dispatch queue (documents.services.dispatch) — queued for the worker but not
+# yet handed to it. Never stored; see DataRoomDocument.presentation_status.
+QUEUED_STATUS = "queued"
+
 
 class DataRoom(models.Model):
     uuid = models.UUIDField(default=uuid.uuid4, editable=False, unique=True, db_index=True)
@@ -143,18 +148,23 @@ class DataRoomDocument(models.Model):
         return self.name or self.original_filename
 
     @staticmethod
-    def presentation_status(status, processing_error):
+    def presentation_status(status, processing_error, *, waiting=False):
         """Map a stored status to what the UI shows. A scan_failed carrying the
         transient dispatch-retry marker reads as the presentation-only
         ``scan_retrying`` (queued) state — it will self-heal, so it must not look
-        like a terminal failure. Everything else is its real status. Shared by the
-        ``display_status`` property and the document_status poll view so they agree.
+        like a terminal failure. An UPLOADED document whose version is ``waiting``
+        in the dispatch queue (queued but not yet handed to the worker) reads as
+        the presentation-only ``queued`` state. Everything else is its real
+        status. Shared by the ``display_status`` property and the document_status
+        poll view so they agree.
         """
         from documents.services.pii_scan import (
             SCAN_DISPATCH_RETRY_MESSAGE,
             SCAN_RETRYING_STATUS,
         )
 
+        if waiting and status == DataRoomDocument.Status.UPLOADED:
+            return QUEUED_STATUS
         if (
             status == DataRoomDocument.Status.SCAN_FAILED
             and processing_error == SCAN_DISPATCH_RETRY_MESSAGE
@@ -164,7 +174,11 @@ class DataRoomDocument(models.Model):
 
     @property
     def display_status(self):
-        return self.presentation_status(self.status, self.processing_error)
+        cv = self.current_version
+        waiting = bool(cv and cv.queued_at and not cv.dispatched_at)
+        return self.presentation_status(
+            self.status, self.processing_error, waiting=waiting,
+        )
 
     class Meta:
         ordering = ["-uploaded_at"]
@@ -260,6 +274,16 @@ class DataRoomDocumentVersion(models.Model):
 
     processing_error = models.TextField(null=True, blank=True)
     requeue_count = models.PositiveSmallIntegerField(default=0)
+    # Async-processing dispatch gate (documents.services.dispatch). ``queued_at``
+    # marks queue membership: only the gated async paths (upload, meeting export,
+    # sweeper orphan recovery) set it — versions processed synchronously on the
+    # web dyno never get it, so the dispatcher cannot double-process them.
+    # ``dispatched_at`` is the claim/slot marker: NULL while waiting in line (in
+    # no Celery queue, holding no slot); set when the dispatcher hands the
+    # version to Celery, from which point it holds one of DOCUMENT_WORKER_SLOTS
+    # until the pipeline ends (READY / FAILED / terminal scan_failed).
+    queued_at = models.DateTimeField(null=True, blank=True)
+    dispatched_at = models.DateTimeField(null=True, blank=True)
     token_count = models.PositiveIntegerField(null=True, blank=True)
     parser_type = models.CharField(max_length=64, blank=True)
     chunking_strategy = models.CharField(max_length=64, blank=True)
@@ -292,6 +316,9 @@ class DataRoomDocumentVersion(models.Model):
         indexes = [
             models.Index(fields=["document", "version_index"]),
             models.Index(fields=["document", "is_searchable"]),
+            # Dispatcher: "oldest waiting version" and the slot count filter on
+            # status over a table that keeps every historical version.
+            models.Index(fields=["status", "queued_at"]),
         ]
 
     def __str__(self) -> str:

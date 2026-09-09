@@ -258,3 +258,21 @@ class DataRoomDocumentStatusTests(TestCase):
         # Other statuses pass through untouched.
         self.assertEqual(ps(Status.READY, None), Status.READY)
         self.assertEqual(ps(Status.SCANNING, None), Status.SCANNING)
+
+    def test_presentation_status_maps_waiting_uploaded_to_queued(self):
+        from documents.models import QUEUED_STATUS
+
+        Status = DataRoomDocument.Status
+        ps = DataRoomDocument.presentation_status
+        # An UPLOADED doc whose version waits in the dispatch queue reads "queued".
+        self.assertEqual(ps(Status.UPLOADED, None, waiting=True), QUEUED_STATUS)
+        # Not waiting (dispatched or sync-path) stays the stored status.
+        self.assertEqual(ps(Status.UPLOADED, None, waiting=False), Status.UPLOADED)
+
+    def test_presentation_status_waiting_ignores_non_uploaded(self):
+        # The waiting flag only maps the UPLOADED state; a stale-reset row back
+        # in the queue mid-PROCESSING keeps showing "processing".
+        Status = DataRoomDocument.Status
+        ps = DataRoomDocument.presentation_status
+        self.assertEqual(ps(Status.PROCESSING, None, waiting=True), Status.PROCESSING)
+        self.assertEqual(ps(Status.READY, None, waiting=True), Status.READY)

@@ -660,7 +660,12 @@ class ProcessDocumentServiceTests(TestCase):
                     raise RuntimeError("parse failed")
         self.assertTrue(sem.acquire(timeout=1))
 
-    @override_settings(PGVECTOR_CONNECTION="", CHUNKING_STRATEGY="semantic")
+    @override_settings(
+        PGVECTOR_CONNECTION="", CHUNKING_STRATEGY="semantic",
+        # The fixture is a tiny .txt, which the light-file bypass would exempt
+        # from the slot; force every file through it for this ordering test.
+        DOCUMENT_EXTRACT_SLOT_BYPASS_MAX_BYTES=0,
+    )
     def test_extract_and_chunk_run_inside_the_slot(self):
         """Extraction and chunking happen while the slot is held; embedding happens after."""
         from contextlib import contextmanager
@@ -697,6 +702,83 @@ class ProcessDocumentServiceTests(TestCase):
                      patch("guardrails.tasks.scan_document_version.delay"):
                     svc.process_document(doc.id)
         self.assertEqual(events, ["enter", "extract", "chunk", "exit"])
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, DataRoomDocument.Status.SCANNING)
+
+    def test_needs_extraction_slot_pdf_always_takes_a_slot(self):
+        from documents.models import DataRoomDocumentVersion
+        from documents.services.process_document import _needs_extraction_slot
+
+        doc = DataRoomDocument(original_filename="tiny.pdf", size_bytes=100)
+        version = DataRoomDocumentVersion(native_filename="", size_bytes=100)
+        self.assertTrue(_needs_extraction_slot(version, doc))
+
+    def test_needs_extraction_slot_small_text_bypasses(self):
+        from documents.models import DataRoomDocumentVersion
+        from documents.services.process_document import _needs_extraction_slot
+
+        doc = DataRoomDocument(original_filename="notes.txt", size_bytes=5_000)
+        version = DataRoomDocumentVersion(native_filename="", size_bytes=5_000)
+        self.assertFalse(_needs_extraction_slot(version, doc))
+
+    def test_needs_extraction_slot_large_non_pdf_takes_a_slot(self):
+        from documents.models import DataRoomDocumentVersion
+        from documents.services.process_document import _needs_extraction_slot
+
+        doc = DataRoomDocument(original_filename="big.docx", size_bytes=15_000_000)
+        version = DataRoomDocumentVersion(native_filename="", size_bytes=15_000_000)
+        self.assertTrue(_needs_extraction_slot(version, doc))
+
+    @override_settings(DOCUMENT_EXTRACT_SLOT_BYPASS_MAX_BYTES=0)
+    def test_needs_extraction_slot_bypass_disabled_by_zero(self):
+        from documents.models import DataRoomDocumentVersion
+        from documents.services.process_document import _needs_extraction_slot
+
+        doc = DataRoomDocument(original_filename="notes.txt", size_bytes=5)
+        version = DataRoomDocumentVersion(native_filename="", size_bytes=5)
+        self.assertTrue(_needs_extraction_slot(version, doc))
+
+    def test_needs_extraction_slot_prefers_version_filename(self):
+        # A markdown edit (version) of a PDF-origin document is judged by the
+        # version's own filename, not the document's.
+        from documents.models import DataRoomDocumentVersion
+        from documents.services.process_document import _needs_extraction_slot
+
+        doc = DataRoomDocument(original_filename="report.pdf", size_bytes=20_000_000)
+        version = DataRoomDocumentVersion(native_filename="edit.md", size_bytes=2_000)
+        self.assertFalse(_needs_extraction_slot(version, doc))
+
+    @override_settings(PGVECTOR_CONNECTION="", CHUNKING_STRATEGY="semantic")
+    def test_small_file_processes_without_touching_the_slot(self):
+        """End-to-end: a tiny .txt never acquires the extraction semaphore."""
+        from contextlib import contextmanager
+
+        from django.core.files.base import ContentFile
+        from documents.services import process_document as svc
+
+        events = []
+
+        @contextmanager
+        def fake_slot(version_id):
+            events.append("enter")
+            try:
+                yield
+            finally:
+                events.append("exit")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = DataRoomDocument(
+                    data_room=self.data_room, uploaded_by=self.user,
+                    original_filename="light.txt", status=DataRoomDocument.Status.UPLOADED,
+                    size_bytes=11,
+                )
+                doc.original_file.save("light.txt", ContentFile(b"hello world"), save=True)
+                with patch.object(svc, "_extraction_slot", fake_slot), \
+                     patch("guardrails.tasks.scan_document_version.delay"):
+                    svc.process_document(doc.id)
+
+        self.assertEqual(events, [])
         doc.refresh_from_db()
         self.assertEqual(doc.status, DataRoomDocument.Status.SCANNING)
 

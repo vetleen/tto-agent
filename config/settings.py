@@ -589,6 +589,11 @@ WEB_FETCH_CONCURRENCY = _env_int("WEB_FETCH_CONCURRENCY", "4")
 # CELERY_WORKER_CONCURRENCY of them on the worker at once (2026-09-08 R15).
 # See documents/services/process_document.py.
 DOCUMENT_EXTRACT_CONCURRENCY = _env_int("DOCUMENT_EXTRACT_CONCURRENCY", "2")
+# Light-file bypass for that cap: non-PDF files under this size parse in
+# negligible memory and skip the extraction slot entirely, so a batch of small
+# text/office files never queues behind two long PDF parses. PDFs always take a
+# slot regardless of size. 0 disables the bypass.
+DOCUMENT_EXTRACT_SLOT_BYPASS_MAX_BYTES = _env_int("DOCUMENT_EXTRACT_SLOT_BYPASS_MAX_BYTES", "10000000")  # 10 MB
 
 # Document upload and chunking (MVP)
 DATA_UPLOAD_MAX_NUMBER_FILES = 100

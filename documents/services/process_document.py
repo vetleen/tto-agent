@@ -15,7 +15,7 @@ import datetime
 import logging
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 
 from django.conf import settings
 from django.db import transaction
@@ -60,6 +60,23 @@ def _touch_version(version_id: int) -> None:
     DataRoomDocumentVersion.objects.filter(pk=version_id).update(updated_at=timezone.now())
 
 
+def _needs_extraction_slot(version, doc) -> bool:
+    """Whether stages 1-2 must hold an extraction slot.
+
+    PDFs of any size (pypdf's parsed-object graph plus decoded rasters are the
+    measured 100–200 MB transient class) and anything large take a slot; small
+    non-PDFs parse in negligible memory and skip the wait entirely, so a batch
+    of light files never queues behind two long PDF parses.
+    """
+    filename = version.native_filename or doc.original_filename or ""
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext == "pdf":
+        return True
+    size = version.size_bytes or doc.size_bytes or 0
+    bypass_max = int(getattr(settings, "DOCUMENT_EXTRACT_SLOT_BYPASS_MAX_BYTES", 10_000_000))
+    return size >= max(0, bypass_max)
+
+
 @contextmanager
 def _extraction_slot(version_id: int):
     """Hold one of ``DOCUMENT_EXTRACT_CONCURRENCY`` slots; heartbeat while queued."""
@@ -90,15 +107,24 @@ def process_document(document_id: int) -> None:
     if not doc:
         logger.warning("process_document: document_id=%s not found", document_id)
         return
-    version_id = doc.current_version_id or _ensure_initial_version(doc).id
+    version_id = doc.current_version_id or ensure_initial_version(doc).id
+    # This legacy entry is already executing on the worker (a pre-gate Celery
+    # message, or the sweeper's back-compat path), so stamp the version as
+    # dispatched: it must count against DOCUMENT_WORKER_SLOTS rather than run
+    # invisibly beside gated work.
+    DataRoomDocumentVersion.objects.filter(
+        pk=version_id, dispatched_at__isnull=True,
+    ).update(queued_at=timezone.now(), dispatched_at=timezone.now())
     process_document_version(version_id)
 
 
-def _ensure_initial_version(doc) -> DataRoomDocumentVersion:
+def ensure_initial_version(doc) -> DataRoomDocumentVersion:
     """Create v0 (origin=uploaded) for a document that has no version yet.
 
     The native bytes stay on ``doc.original_file`` (no copy into native_blob);
-    extraction reads them from there.
+    extraction reads them from there. Called eagerly by the upload view (so the
+    version row can join the dispatch queue) and lazily by the back-compat
+    ``process_document`` entry point.
     """
     with transaction.atomic():
         d = DataRoomDocument.objects.select_for_update().get(pk=doc.pk)
@@ -298,8 +324,14 @@ def process_document_version(version_id: int, *, dispatch_scan: bool = True) -> 
     started_at = time.perf_counter()
     try:
         # Stages 1-2 hold an extraction slot (see _extraction_slot); the slot is
-        # released before the network-bound embed/scan stages.
-        with _extraction_slot(version_id):
+        # released before the network-bound embed/scan stages. Light files skip
+        # the slot entirely (_needs_extraction_slot).
+        slot = (
+            _extraction_slot(version_id)
+            if _needs_extraction_slot(version, doc)
+            else nullcontext()
+        )
+        with slot:
             # 1. Get cleaned text — markdown edits use stored content; uploads extract.
             if (version.content or "").strip():
                 cleaned = clean_extracted_text(version.content)

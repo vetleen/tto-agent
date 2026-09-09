@@ -1,9 +1,7 @@
 import json
-import sys
-import types
 from datetime import timedelta
 from io import BytesIO
-from unittest.mock import Mock, call, patch, MagicMock
+from unittest.mock import call, patch, MagicMock
 
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -238,43 +236,47 @@ class DocumentViewsTests(TestCase):
         self.assertContains(response, "data-error=")
         self.assertNotContains(response, "view-document-btn")
 
-    def test_document_upload_marks_failed_when_delay_fails(self):
-        """When task.delay() raises (e.g. broker unavailable), the document is
-        marked FAILED with a clear message — there is deliberately no synchronous
-        fallback (processing untrusted files would tie up the web dyno)."""
+    def test_document_upload_stays_queued_when_publish_fails(self):
+        """A broker blip during dispatch must NOT fail the document (the
+        pre-gate behaviour that failed 21 uploads on 2026-09-09): the dispatch
+        claim reverts and the row stays queued for the beat backstop."""
         self.client.force_login(self.user)
-        fake_task = Mock()
-        fake_task.delay.side_effect = RuntimeError("broker unavailable")
-        fake_module = types.SimpleNamespace(process_document_task=fake_task)
         f = BytesIO(b"hello")
         f.name = "enqueue-fail.txt"
 
-        with patch.dict(sys.modules, {"documents.tasks": fake_module}):
+        with patch(
+            "documents.tasks.process_document_version_task.delay",
+            side_effect=RuntimeError("broker unavailable"),
+        ):
             with patch(
                 "documents.services.process_document.process_document",
             ) as mock_sync:
-                with self.assertLogs("documents.views", level="ERROR"):
-                    response = self.client.post(
-                        reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
-                        {"file": f},
-                        follow=True,
-                    )
+                response = self.client.post(
+                    reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
+                    {"file": f},
+                    follow=True,
+                )
 
         self.assertEqual(response.status_code, 200)
         doc = DataRoomDocument.objects.get(data_room=self.data_room, original_filename="enqueue-fail.txt")
         mock_sync.assert_not_called()
-        self.assertEqual(doc.status, DataRoomDocument.Status.FAILED)
-        self.assertIn("broker unavailable", doc.processing_error)
-        self.assertContains(response, "processing could not be started")
+        self.assertEqual(doc.status, DataRoomDocument.Status.UPLOADED)
+        version = doc.current_version
+        self.assertIsNotNone(version.queued_at)
+        self.assertIsNone(version.dispatched_at)
+        self.assertNotContains(response, "processing could not be started")
 
-    def test_document_upload_marks_failed_when_tasks_unimportable(self):
-        """If the task module can't be imported, the document fails gracefully
-        instead of raising a 500."""
+    def test_document_upload_marks_failed_when_queueing_fails(self):
+        """Only a genuine failure to create/queue the version row (DB error)
+        still fails the document with the clear message."""
         self.client.force_login(self.user)
         f = BytesIO(b"hello")
         f.name = "sync-fail.txt"
 
-        with patch.dict(sys.modules, {"documents.tasks": None}):
+        with patch(
+            "documents.services.process_document.ensure_initial_version",
+            side_effect=RuntimeError("db exploded"),
+        ):
             with self.assertLogs("documents.views", level="ERROR"):
                 response = self.client.post(
                     reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
@@ -285,6 +287,7 @@ class DocumentViewsTests(TestCase):
         self.assertEqual(response.status_code, 200)
         doc = DataRoomDocument.objects.get(data_room=self.data_room, original_filename="sync-fail.txt")
         self.assertEqual(doc.status, DataRoomDocument.Status.FAILED)
+        self.assertIn("db exploded", doc.processing_error)
         self.assertContains(response, "processing could not be started")
 
     def test_document_upload_rejects_oversized_request_before_parsing(self):
@@ -1609,7 +1612,7 @@ class DocumentRateLimitTests(TestCase):
     def test_upload_is_not_throttled_for_normal_use(self):
         """600/h is an abuse backstop — a handful of uploads must pass freely."""
         url = reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid})
-        with patch("documents.tasks.process_document_task.delay"):
+        with patch("documents.tasks.process_document_version_task.delay"):
             for i in range(5):
                 f = BytesIO(b"hello")
                 f.name = f"rl-{i}.txt"
@@ -1646,7 +1649,7 @@ class DocumentUploadInFlightCapTests(TestCase):
         return self.client.post(self.url, {"file": files}, HTTP_ACCEPT="application/json")
 
     @override_settings(DOCUMENT_MAX_IN_FLIGHT_PER_USER=2)
-    @patch("documents.tasks.process_document_task.delay")
+    @patch("documents.tasks.process_document_version_task.delay")
     def test_at_cap_returns_429_and_creates_nothing(self, _delay):
         self.client.force_login(self.user)
         self._in_flight(2)
@@ -1661,7 +1664,7 @@ class DocumentUploadInFlightCapTests(TestCase):
         )
 
     @override_settings(DOCUMENT_MAX_IN_FLIGHT_PER_USER=2)
-    @patch("documents.tasks.process_document_task.delay")
+    @patch("documents.tasks.process_document_version_task.delay")
     def test_fills_remaining_slots_and_rejects_overflow(self, _delay):
         self.client.force_login(self.user)
         self._in_flight(1)  # one slot remaining
@@ -1681,7 +1684,7 @@ class DocumentUploadInFlightCapTests(TestCase):
         self.assertTrue(any("too many files" in e.lower() for e in resp.json().get("errors", [])))
 
     @override_settings(DOCUMENT_MAX_IN_FLIGHT_PER_USER=1)
-    @patch("documents.tasks.process_document_task.delay")
+    @patch("documents.tasks.process_document_version_task.delay")
     def test_terminal_docs_do_not_count(self, _delay):
         self.client.force_login(self.user)
         DataRoomDocument.objects.create(
@@ -1703,7 +1706,7 @@ class DocumentUploadInFlightCapTests(TestCase):
         )
 
     @override_settings(DOCUMENT_MAX_IN_FLIGHT_PER_USER=1)
-    @patch("documents.tasks.process_document_task.delay")
+    @patch("documents.tasks.process_document_version_task.delay")
     def test_auto_retrying_doc_counts_as_in_flight(self, _delay):
         from documents.services.pii_scan import SCAN_DISPATCH_RETRY_MESSAGE
 
@@ -1721,7 +1724,7 @@ class DocumentUploadInFlightCapTests(TestCase):
         self.assertEqual(resp.json()["code"], "in_flight_cap")
 
     @override_settings(DOCUMENT_MAX_IN_FLIGHT_PER_USER=1)
-    @patch("documents.tasks.process_document_task.delay")
+    @patch("documents.tasks.process_document_version_task.delay")
     def test_cap_is_per_user_across_data_rooms(self, _delay):
         self.client.force_login(self.user)
         other_room = DataRoom.objects.create(name="Other", slug="cap-other", created_by=self.user)
@@ -1731,6 +1734,99 @@ class DocumentUploadInFlightCapTests(TestCase):
         resp = self._upload(f)  # to self.data_room, but the user is at cap elsewhere
 
         self.assertEqual(resp.status_code, 429)
+
+
+class DocumentUploadDispatchGateTests(TestCase):
+    """Uploads enter the dispatch gate: v0 is created eagerly, joins the queue,
+    and only DOCUMENT_WORKER_SLOTS versions are handed to the worker at once."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="gateup@example.com", password="testpass")
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+        self.data_room = DataRoom.objects.create(name="GateUp", slug="gate-up", created_by=self.user)
+        self.url = reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid})
+        self.client.force_login(self.user)
+
+    @patch("documents.tasks.process_document_version_task.delay")
+    def test_upload_creates_v0_and_dispatches_through_the_gate(self, mock_delay):
+        f = BytesIO(b"hello world"); f.name = "gated.txt"
+
+        resp = self.client.post(self.url, {"file": f}, HTTP_ACCEPT="application/json")
+
+        self.assertEqual(resp.status_code, 200)
+        doc = DataRoomDocument.objects.get(uploaded_by=self.user, original_filename="gated.txt")
+        version = doc.current_version
+        self.assertIsNotNone(version)
+        self.assertEqual(version.version_index, 0)
+        self.assertIsNotNone(version.queued_at)
+        self.assertIsNotNone(version.dispatched_at)
+        mock_delay.assert_called_once_with(version.id)
+
+    @patch("documents.services.dispatch.DOCUMENT_WORKER_SLOTS", 1)
+    @patch("documents.tasks.process_document_version_task.delay")
+    def test_upload_beyond_slots_stays_queued(self, mock_delay):
+        from documents.models import DataRoomDocumentVersion
+        from documents.tests._helpers import make_version
+
+        # An existing slot-holder occupies the single slot.
+        holder_doc = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="holder.txt", status=DataRoomDocument.Status.PROCESSING,
+        )
+        holder = make_version(
+            holder_doc, status=DataRoomDocument.Status.PROCESSING,
+            make_active=False, searchable=False,
+        )
+        DataRoomDocumentVersion.objects.filter(pk=holder.pk).update(
+            queued_at=timezone.now(), dispatched_at=timezone.now(),
+        )
+        f = BytesIO(b"hello world"); f.name = "waits.txt"
+
+        resp = self.client.post(self.url, {"file": f}, HTTP_ACCEPT="application/json")
+
+        self.assertEqual(resp.status_code, 200)
+        doc = DataRoomDocument.objects.get(uploaded_by=self.user, original_filename="waits.txt")
+        version = doc.current_version
+        self.assertIsNotNone(version.queued_at)
+        self.assertIsNone(version.dispatched_at)
+        mock_delay.assert_not_called()
+        # Still counts as in-flight for the per-user quota (status uploaded).
+        self.assertEqual(doc.status, DataRoomDocument.Status.UPLOADED)
+
+    def test_document_status_poll_reports_waiting_docs_as_queued(self):
+        from documents.models import DataRoomDocumentVersion
+        from documents.tests._helpers import make_version
+
+        waiting_doc = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="waiting.txt", status=DataRoomDocument.Status.UPLOADED,
+        )
+        wv = make_version(
+            waiting_doc, status=DataRoomDocument.Status.UPLOADED,
+            make_active=False, searchable=False,
+        )
+        DataRoomDocumentVersion.objects.filter(pk=wv.pk).update(queued_at=timezone.now())
+
+        dispatched_doc = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="running.txt", status=DataRoomDocument.Status.UPLOADED,
+        )
+        dv = make_version(
+            dispatched_doc, status=DataRoomDocument.Status.UPLOADED,
+            make_active=False, searchable=False,
+        )
+        DataRoomDocumentVersion.objects.filter(pk=dv.pk).update(
+            queued_at=timezone.now(), dispatched_at=timezone.now(),
+        )
+
+        resp = self.client.get(
+            reverse("document_status", kwargs={"data_room_id": self.data_room.uuid})
+        )
+
+        statuses = resp.json()["statuses"]
+        self.assertEqual(statuses[str(waiting_doc.pk)], "queued")
+        self.assertEqual(statuses[str(dispatched_doc.pk)], "uploaded")
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
@@ -1767,7 +1863,7 @@ class DocumentUploadDedupeTests(TestCase):
     # recording the hash                                                   #
     # ------------------------------------------------------------------ #
 
-    @patch("documents.tasks.process_document_task.delay")
+    @patch("documents.tasks.process_document_version_task.delay")
     def test_upload_records_content_hash(self, _delay):
         import hashlib
 
@@ -1779,7 +1875,7 @@ class DocumentUploadDedupeTests(TestCase):
     # skipping                                                             #
     # ------------------------------------------------------------------ #
 
-    @patch("documents.tasks.process_document_task.delay")
+    @patch("documents.tasks.process_document_version_task.delay")
     def test_identical_bytes_are_skipped(self, delay):
         self._upload(b"Hello world", "a.txt")
         delay.reset_mock()
@@ -1793,7 +1889,7 @@ class DocumentUploadDedupeTests(TestCase):
         self.assertEqual(self._doc_count(), 1)
         delay.assert_not_called()
 
-    @patch("documents.tasks.process_document_task.delay")
+    @patch("documents.tasks.process_document_version_task.delay")
     def test_skip_matches_on_bytes_not_filename(self, _delay):
         """Renaming the file doesn't make it a new document…"""
         self._upload(b"Hello world", "a.txt")
@@ -1803,7 +1899,7 @@ class DocumentUploadDedupeTests(TestCase):
         self.assertEqual(resp.json()["status"], "skipped")
         self.assertEqual(self._doc_count(), 1)
 
-    @patch("documents.tasks.process_document_task.delay")
+    @patch("documents.tasks.process_document_version_task.delay")
     def test_same_filename_different_bytes_uploads(self, _delay):
         """…and reusing the filename for different bytes is a real new document."""
         self._upload(b"version one", "a.txt")
@@ -1813,7 +1909,7 @@ class DocumentUploadDedupeTests(TestCase):
         self.assertEqual(resp.json()["status"], "ok")
         self.assertEqual(self._doc_count(), 2)
 
-    @patch("documents.tasks.process_document_task.delay")
+    @patch("documents.tasks.process_document_version_task.delay")
     def test_skip_reports_current_display_name(self, _delay):
         self._upload(b"Hello world", "a.txt")
         doc = DataRoomDocument.objects.get(data_room=self.data_room)
@@ -1824,7 +1920,7 @@ class DocumentUploadDedupeTests(TestCase):
 
         self.assertEqual(resp.json()["skipped"][0]["duplicate_of"], "Q3 report")
 
-    @patch("documents.tasks.process_document_task.delay")
+    @patch("documents.tasks.process_document_version_task.delay")
     def test_duplicates_within_one_request_collapse(self, _delay):
         f1 = BytesIO(b"Hello world"); f1.name = "a.txt"
         f2 = BytesIO(b"Hello world"); f2.name = "b.txt"
@@ -1837,7 +1933,7 @@ class DocumentUploadDedupeTests(TestCase):
         self.assertEqual(body["skipped"][0]["duplicate_of"], "a.txt")
         self.assertEqual(self._doc_count(), 1)
 
-    @patch("documents.tasks.process_document_task.delay")
+    @patch("documents.tasks.process_document_version_task.delay")
     def test_non_ajax_post_reports_the_skip(self, _delay):
         self._upload(b"Hello world", "a.txt")
 
@@ -1850,7 +1946,7 @@ class DocumentUploadDedupeTests(TestCase):
     # what does NOT count as a duplicate                                   #
     # ------------------------------------------------------------------ #
 
-    @patch("documents.tasks.process_document_task.delay")
+    @patch("documents.tasks.process_document_version_task.delay")
     def test_same_bytes_in_another_data_room_upload(self, _delay):
         other_room = DataRoom.objects.create(name="Other", slug="dedupe-other", created_by=self.user)
         self._upload(b"Hello world", "a.txt")
@@ -1864,7 +1960,7 @@ class DocumentUploadDedupeTests(TestCase):
         self.assertEqual(self._doc_count(), 1)
         self.assertEqual(self._doc_count(other_room), 1)
 
-    @patch("documents.tasks.process_document_task.delay")
+    @patch("documents.tasks.process_document_version_task.delay")
     def test_archived_duplicate_uploads_again(self, _delay):
         self._upload(b"Hello world", "a.txt")
         DataRoomDocument.objects.filter(data_room=self.data_room).update(is_archived=True)
@@ -1874,7 +1970,7 @@ class DocumentUploadDedupeTests(TestCase):
         self.assertEqual(resp.json()["status"], "ok")
         self.assertEqual(self._doc_count(), 2)
 
-    @patch("documents.tasks.process_document_task.delay")
+    @patch("documents.tasks.process_document_version_task.delay")
     def test_failed_duplicate_uploads_again(self, _delay):
         """Re-uploading is the normal way to retry a document that failed."""
         self._upload(b"Hello world", "a.txt")
@@ -1887,7 +1983,7 @@ class DocumentUploadDedupeTests(TestCase):
         self.assertEqual(resp.json()["status"], "ok")
         self.assertEqual(self._doc_count(), 2)
 
-    @patch("documents.tasks.process_document_task.delay")
+    @patch("documents.tasks.process_document_version_task.delay")
     def test_legacy_row_without_a_hash_never_matches(self, _delay):
         DataRoomDocument.objects.create(
             data_room=self.data_room, uploaded_by=self.user,
@@ -1900,7 +1996,7 @@ class DocumentUploadDedupeTests(TestCase):
         self.assertEqual(self._doc_count(), 2)
 
     @override_settings(DOCUMENT_MAX_IN_FLIGHT_PER_USER=1)
-    @patch("documents.tasks.process_document_task.delay")
+    @patch("documents.tasks.process_document_version_task.delay")
     def test_skipped_duplicate_does_not_consume_an_in_flight_slot(self, _delay):
         """A skip is free: it must not push the user against the in-flight cap."""
         f1 = BytesIO(b"Hello world"); f1.name = "a.txt"
@@ -1926,7 +2022,7 @@ class DocumentUploadDedupeTests(TestCase):
             self.check_url, data=json.dumps({"hashes": hashes}), content_type="application/json"
         )
 
-    @patch("documents.tasks.process_document_task.delay")
+    @patch("documents.tasks.process_document_version_task.delay")
     def test_duplicate_check_reports_known_hashes(self, _delay):
         self._upload(b"Hello world", "a.txt")
         known = self._sha(b"Hello world")
@@ -1937,7 +2033,7 @@ class DocumentUploadDedupeTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["duplicates"], {known: "a.txt"})
 
-    @patch("documents.tasks.process_document_task.delay")
+    @patch("documents.tasks.process_document_version_task.delay")
     def test_duplicate_check_uses_display_name(self, _delay):
         self._upload(b"Hello world", "a.txt")
         DataRoomDocument.objects.filter(data_room=self.data_room).update(name="Q3 report")
@@ -1946,7 +2042,7 @@ class DocumentUploadDedupeTests(TestCase):
 
         self.assertEqual(list(resp.json()["duplicates"].values()), ["Q3 report"])
 
-    @patch("documents.tasks.process_document_task.delay")
+    @patch("documents.tasks.process_document_version_task.delay")
     def test_duplicate_check_ignores_archived_and_failed(self, _delay):
         self._upload(b"Hello world", "a.txt")
         DataRoomDocument.objects.filter(data_room=self.data_room).update(is_archived=True)

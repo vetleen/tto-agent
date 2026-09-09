@@ -19,6 +19,8 @@ import logging
 from celery import shared_task
 from django.conf import settings
 
+from documents.services.dispatch import DocumentPipelineTask
+
 logger = logging.getLogger(__name__)
 
 # Full chunks (not a 500-char preview) are classified, so batches are bounded by
@@ -66,7 +68,7 @@ def _batch_chunks_by_budget(chunks: list[dict]) -> list[list[dict]]:
     return batches
 
 
-@shared_task(bind=True, max_retries=3, time_limit=600, soft_time_limit=570)
+@shared_task(base=DocumentPipelineTask, bind=True, max_retries=3, time_limit=600, soft_time_limit=570)
 def scan_document_version(self, version_id: int) -> None:
     """Scan all chunks of a version for adversarial content, then release it.
 

@@ -32,32 +32,28 @@ def _next_version_index(document_id: int) -> int:
 
 
 def _enqueue_processing(version_id: int) -> None:
-    """Start async processing for a version (Celery), with a sync fallback."""
+    """Put a version in the async dispatch queue and kick the dispatcher.
+
+    The version joins the document dispatch gate (documents.services.dispatch)
+    rather than going straight to Celery: at most DOCUMENT_WORKER_SLOTS versions
+    occupy the worker at once. A broker blip no longer fails the version — it
+    simply stays queued and the beat backstop dispatches it. Only a failure to
+    write the queue row itself (DB error) marks the version failed.
+    """
     from documents.models import DataRoomDocumentVersion
+    from documents.services.dispatch import mark_version_queued, safe_dispatch
 
     try:
-        from documents.tasks import process_document_version_task
-
-        process_document_version_task.delay(version_id)
-    except ImportError:
-        try:
-            from documents.services.process_document import process_document_version
-
-            process_document_version(version_id)
-        except Exception as exc:  # pragma: no cover - defensive sync fallback
-            logger.exception(
-                "versioning: sync processing failed for version_id=%s", version_id
-            )
-            DataRoomDocumentVersion.objects.filter(pk=version_id).update(
-                status="failed", processing_error=str(exc)[:2000]
-            )
+        mark_version_queued(version_id)
     except Exception as exc:
         logger.exception(
-            "versioning: failed to enqueue processing for version_id=%s", version_id
+            "versioning: failed to queue processing for version_id=%s", version_id
         )
         DataRoomDocumentVersion.objects.filter(pk=version_id).update(
             status="failed", processing_error=str(exc)[:2000]
         )
+        return
+    safe_dispatch("create_version")
 
 
 def create_version(

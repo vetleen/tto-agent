@@ -692,8 +692,9 @@ class MeetingSaveToDataRoomTests(TestCase):
 
     @patch("documents.services.process_document.process_document_version")
     @patch("documents.tasks.process_document_version_task.delay", side_effect=RuntimeError("broker down"))
-    def test_save_marks_version_failed_when_enqueue_fails(self, mock_delay, mock_sync):
-        """A failed enqueue marks the v0 version FAILED (no synchronous fallback)."""
+    def test_save_stays_queued_when_publish_fails(self, mock_delay, mock_sync):
+        """A broker blip during dispatch leaves the version queued for the beat
+        backstop — it must NOT be marked FAILED (and no synchronous fallback)."""
         from documents.models import DataRoomDocument
         response = self.client.post(
             reverse("meeting_save_to_data_room", args=[self.meeting.uuid]),
@@ -703,8 +704,9 @@ class MeetingSaveToDataRoomTests(TestCase):
         mock_sync.assert_not_called()
         doc = DataRoomDocument.objects.get(data_room=self.my_room)
         version = doc.current_version
-        self.assertEqual(version.status, DataRoomDocument.Status.FAILED)
-        self.assertIn("broker down", version.processing_error)
+        self.assertEqual(version.status, DataRoomDocument.Status.UPLOADED)
+        self.assertIsNotNone(version.queued_at)
+        self.assertIsNone(version.dispatched_at)
 
     @patch("documents.tasks.process_document_version_task.delay")
     def test_save_saves_raw_transcript(self, mock_delay):

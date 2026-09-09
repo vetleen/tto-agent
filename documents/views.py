@@ -211,7 +211,11 @@ def data_room_documents(request, data_room_id):
     data_room = get_object_or_404(DataRoom, uuid=data_room_id)
     if not _user_can_access_data_room(request.user, data_room):
         return redirect("data_room_list")
-    all_docs = list(data_room.documents.order_by("-uploaded_at"))
+    # current_version feeds display_status (the "queued" mapping) — fetch it in
+    # the same query or the template would trigger one extra query per row.
+    all_docs = list(
+        data_room.documents.select_related("current_version").order_by("-uploaded_at")
+    )
     # PII tags live on versions now; summarise from each document's active (or
     # current) version for the per-document badge.
     from collections import defaultdict
@@ -470,20 +474,28 @@ def document_upload(request, data_room_id):
     # Provenance is recorded by the v0 version's origin=uploaded (set when
     # process_document creates it); no separate "source" tag is needed.
 
-    for doc in created_docs:
-        # No synchronous fallback: processing a document inline would tie up the
-        # web dyno for minutes parsing untrusted files. If the broker is down,
-        # fail the document with a clear message instead.
-        try:
-            from documents.tasks import process_document_task
+    # Create v0 eagerly and put it in the dispatch queue (the document dispatch
+    # gate hands at most DOCUMENT_WORKER_SLOTS versions to the worker at once —
+    # see documents.services.dispatch). A broker blip no longer fails the
+    # document: the row simply stays queued and the beat backstop dispatches it.
+    # Only a genuine DB failure writing the queue row marks the document FAILED.
+    from documents.services.dispatch import mark_version_queued, safe_dispatch
+    from documents.services.process_document import ensure_initial_version
 
-            process_document_task.delay(doc.id)
+    queued_any = False
+    for doc in created_docs:
+        try:
+            version = ensure_initial_version(doc)
+            mark_version_queued(version.id)
+            queued_any = True
         except Exception as exc:
-            logger.exception("document_upload: failed to enqueue processing for document_id=%s", doc.id)
+            logger.exception("document_upload: failed to queue processing for document_id=%s", doc.id)
             doc.status = DataRoomDocument.Status.FAILED
             doc.processing_error = str(exc)[:2000]
             doc.save(update_fields=["status", "processing_error", "updated_at"])
             errors.append(f"{doc.original_filename}: processing could not be started.")
+    if queued_any:
+        safe_dispatch("document_upload")
 
     if is_ajax:
         if created_docs:
@@ -815,9 +827,14 @@ def document_status(request, data_room_id):
     if not _user_can_access_data_room(request.user, data_room):
         return JsonResponse({"error": "Forbidden"}, status=403)
     statuses = {
-        str(pk): DataRoomDocument.presentation_status(status, err)
-        for pk, status, err in data_room.documents.filter(is_archived=False).values_list(
-            "id", "status", "processing_error"
+        str(pk): DataRoomDocument.presentation_status(
+            status, err, waiting=bool(q_at and not d_at),
+        )
+        for pk, status, err, q_at, d_at in data_room.documents.filter(
+            is_archived=False,
+        ).values_list(
+            "id", "status", "processing_error",
+            "current_version__queued_at", "current_version__dispatched_at",
         )
     }
     return JsonResponse({"statuses": statuses})

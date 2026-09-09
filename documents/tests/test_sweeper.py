@@ -1,7 +1,11 @@
 """Tests for documents.tasks.requeue_stale_documents.
 
-The sweeper operates on *versions* (the processing unit). The real pipeline is
-never run — ``process_document_version_task.delay`` is mocked.
+The sweeper operates on *versions* (the processing unit). With the dispatch
+gate, stale recovery means clearing the ``dispatched_at`` claim so the version
+rejoins the queue (never a direct ``.delay``); never-queued orphans (stranded
+synchronous saves) are given a ``queued_at`` instead. The end-of-sweep
+dispatcher kick is isolated via a ``safe_dispatch`` patch so these tests assert
+queue-state transitions, not dispatch behaviour (test_dispatch.py covers that).
 """
 from __future__ import annotations
 
@@ -20,14 +24,22 @@ from documents.tests._helpers import make_version
 User = get_user_model()
 
 
-class RequeueStaleDocumentsTests(TestCase):
+class _SweeperTestCase(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="sweep@example.com", password="pw")
         self.data_room = DataRoom.objects.create(
             name="Sweep", slug="sweep", created_by=self.user,
         )
+        # Isolate the end-of-sweep dispatcher kick; asserted explicitly in
+        # SweeperDispatchKickTests.
+        patcher = patch("documents.tasks.safe_dispatch")
+        self.mock_safe_dispatch = patcher.start()
+        self.addCleanup(patcher.stop)
 
-    def _make(self, status, minutes_old=0, requeue_count=0, processed_at=None):
+    def _make(
+        self, status, minutes_old=0, requeue_count=0, processed_at=None,
+        queued_minutes_ago=None, dispatched_minutes_ago=None,
+    ):
         """Create a fresh-upload document whose working (v0) version has *status*."""
         doc = DataRoomDocument.objects.create(
             data_room=self.data_room,
@@ -37,11 +49,20 @@ class RequeueStaleDocumentsTests(TestCase):
         )
         version = make_version(doc, status=status, make_active=False, searchable=False)
         # updated_at is auto_now — backdate via queryset update so the staleness
-        # windows fire; set per-version requeue_count / processed_at too.
+        # windows fire; set the queue/claim timestamps the same way.
+        now = timezone.now()
         DataRoomDocumentVersion.objects.filter(pk=version.pk).update(
-            updated_at=timezone.now() - timedelta(minutes=minutes_old),
+            updated_at=now - timedelta(minutes=minutes_old),
             requeue_count=requeue_count,
             processed_at=processed_at,
+            queued_at=(
+                now - timedelta(minutes=queued_minutes_ago)
+                if queued_minutes_ago is not None else None
+            ),
+            dispatched_at=(
+                now - timedelta(minutes=dispatched_minutes_ago)
+                if dispatched_minutes_ago is not None else None
+            ),
         )
         doc.refresh_from_db()
         return doc
@@ -49,31 +70,49 @@ class RequeueStaleDocumentsTests(TestCase):
     def _version(self, doc):
         return DataRoomDocumentVersion.objects.get(pk=doc.current_version_id)
 
+
+class RequeueStaleDocumentsTests(_SweeperTestCase):
     @patch("documents.tasks.process_document_version_task.delay")
-    def test_stale_uploaded_version_requeued(self, mock_delay):
-        doc = self._make(DataRoomDocument.Status.UPLOADED, minutes_old=20)
+    def test_stale_dispatched_uploaded_returned_to_queue(self, mock_delay):
+        # Dispatched 20 min ago, never started: claim cleared, budget spent,
+        # NO direct .delay — re-entry goes through the gate.
+        doc = self._make(
+            DataRoomDocument.Status.UPLOADED,
+            minutes_old=20, queued_minutes_ago=25, dispatched_minutes_ago=20,
+        )
 
         handled = requeue_stale_documents()
 
         self.assertEqual(handled, 1)
-        mock_delay.assert_called_once_with(doc.current_version_id)
-        self.assertEqual(self._version(doc).requeue_count, 1)
+        mock_delay.assert_not_called()
+        version = self._version(doc)
+        self.assertEqual(version.requeue_count, 1)
+        self.assertIsNone(version.dispatched_at)
+        self.assertIsNotNone(version.queued_at)  # keeps its place in line
 
     @patch("documents.tasks.process_document_version_task.delay")
-    def test_stale_processing_version_requeued(self, mock_delay):
-        doc = self._make(DataRoomDocument.Status.PROCESSING, minutes_old=20)
+    def test_stale_dispatched_processing_returned_to_queue(self, mock_delay):
+        doc = self._make(
+            DataRoomDocument.Status.PROCESSING,
+            minutes_old=20, queued_minutes_ago=25, dispatched_minutes_ago=20,
+        )
 
         handled = requeue_stale_documents()
 
         self.assertEqual(handled, 1)
-        mock_delay.assert_called_once_with(doc.current_version_id)
-        self.assertEqual(self._version(doc).requeue_count, 1)
+        mock_delay.assert_not_called()
+        version = self._version(doc)
+        self.assertEqual(version.requeue_count, 1)
+        self.assertIsNone(version.dispatched_at)
 
     @patch("documents.tasks.process_document_version_task.delay")
     def test_requeue_leaves_updated_at_stale(self, mock_delay):
-        """The requeue must NOT refresh the version's updated_at — the stale
-        guard in process_document_version would otherwise skip it."""
-        doc = self._make(DataRoomDocument.Status.PROCESSING, minutes_old=20)
+        """The claim reset must NOT refresh the version's updated_at — the stale
+        guard in process_document_version would otherwise skip the re-run."""
+        doc = self._make(
+            DataRoomDocument.Status.PROCESSING,
+            minutes_old=20, queued_minutes_ago=25, dispatched_minutes_ago=20,
+        )
         before = self._version(doc).updated_at
 
         requeue_stale_documents()
@@ -81,16 +120,53 @@ class RequeueStaleDocumentsTests(TestCase):
         self.assertEqual(self._version(doc).updated_at, before)
 
     @patch("documents.tasks.process_document_version_task.delay")
-    def test_fresh_versions_untouched(self, mock_delay):
-        uploaded = self._make(DataRoomDocument.Status.UPLOADED, minutes_old=5)
-        processing = self._make(DataRoomDocument.Status.PROCESSING, minutes_old=5)
+    def test_waiting_uploaded_version_is_never_stale(self, mock_delay):
+        """THE critical gate interaction: a version waiting in line (queued, no
+        claim) may sit in UPLOADED far past the stale window — it is inert, not
+        stranded, and must not be touched or penalized."""
+        doc = self._make(
+            DataRoomDocument.Status.UPLOADED, minutes_old=120, queued_minutes_ago=120,
+        )
+
+        handled = requeue_stale_documents()
+
+        self.assertEqual(handled, 0)
+        mock_delay.assert_not_called()
+        version = self._version(doc)
+        self.assertEqual(version.requeue_count, 0)
+        self.assertIsNone(version.dispatched_at)
+        self.assertEqual(version.status, DataRoomDocument.Status.UPLOADED)
+
+    @patch("documents.tasks.process_document_version_task.delay")
+    def test_waiting_processing_version_is_never_stale(self, mock_delay):
+        # A stale-reset row waiting for re-dispatch, however long.
+        doc = self._make(
+            DataRoomDocument.Status.PROCESSING,
+            minutes_old=120, queued_minutes_ago=120, requeue_count=1,
+        )
+
+        handled = requeue_stale_documents()
+
+        self.assertEqual(handled, 0)
+        self.assertEqual(self._version(doc).requeue_count, 1)
+
+    @patch("documents.tasks.process_document_version_task.delay")
+    def test_fresh_dispatched_versions_untouched(self, mock_delay):
+        uploaded = self._make(
+            DataRoomDocument.Status.UPLOADED,
+            minutes_old=5, queued_minutes_ago=6, dispatched_minutes_ago=5,
+        )
+        processing = self._make(
+            DataRoomDocument.Status.PROCESSING,
+            minutes_old=5, queued_minutes_ago=6, dispatched_minutes_ago=5,
+        )
 
         handled = requeue_stale_documents()
 
         self.assertEqual(handled, 0)
         mock_delay.assert_not_called()
         self.assertEqual(self._version(uploaded).requeue_count, 0)
-        self.assertEqual(self._version(uploaded).status, DataRoomDocument.Status.UPLOADED)
+        self.assertIsNotNone(self._version(uploaded).dispatched_at)
         self.assertEqual(self._version(processing).status, DataRoomDocument.Status.PROCESSING)
 
     @patch("documents.tasks.process_document_version_task.delay")
@@ -113,7 +189,9 @@ class RequeueStaleDocumentsTests(TestCase):
     @patch("documents.tasks.process_document_version_task.delay")
     def test_requeue_cap_marks_failed(self, mock_delay):
         doc = self._make(
-            DataRoomDocument.Status.PROCESSING, minutes_old=20, requeue_count=MAX_REQUEUES,
+            DataRoomDocument.Status.PROCESSING,
+            minutes_old=20, queued_minutes_ago=25, dispatched_minutes_ago=20,
+            requeue_count=MAX_REQUEUES,
         )
 
         handled = requeue_stale_documents()
@@ -125,6 +203,48 @@ class RequeueStaleDocumentsTests(TestCase):
         doc.refresh_from_db()
         self.assertEqual(doc.status, DataRoomDocument.Status.FAILED)
 
+
+class SweeperOrphanRecoveryTests(_SweeperTestCase):
+    """Never-queued orphans: a synchronous save (enqueue=False) killed mid-run
+    by a web-dyno restart joins the dispatch queue instead of being re-delayed
+    straight into Celery."""
+
+    @patch("documents.tasks.process_document_version_task.delay")
+    def test_stranded_sync_version_joins_queue(self, mock_delay):
+        doc = self._make(DataRoomDocument.Status.PROCESSING, minutes_old=20)
+
+        handled = requeue_stale_documents()
+
+        self.assertEqual(handled, 1)
+        mock_delay.assert_not_called()
+        version = self._version(doc)
+        self.assertIsNotNone(version.queued_at)
+        self.assertIsNone(version.dispatched_at)
+        self.assertEqual(version.requeue_count, 1)
+
+    @patch("documents.tasks.process_document_version_task.delay")
+    def test_fresh_sync_version_untouched(self, mock_delay):
+        # A sync save currently running on the web dyno (fresh updated_at).
+        doc = self._make(DataRoomDocument.Status.PROCESSING, minutes_old=5)
+
+        handled = requeue_stale_documents()
+
+        self.assertEqual(handled, 0)
+        self.assertIsNone(self._version(doc).queued_at)
+
+    @patch("documents.tasks.process_document_version_task.delay")
+    def test_orphan_cap_marks_failed(self, mock_delay):
+        doc = self._make(
+            DataRoomDocument.Status.UPLOADED, minutes_old=20, requeue_count=MAX_REQUEUES,
+        )
+
+        handled = requeue_stale_documents()
+
+        self.assertEqual(handled, 1)
+        self.assertEqual(self._version(doc).status, DataRoomDocument.Status.FAILED)
+
+
+class SweeperScanningTests(_SweeperTestCase):
     @patch("documents.tasks.process_document_version_task.delay")
     def test_stale_scanning_marked_scan_failed(self, mock_delay):
         doc = self._make(
@@ -164,6 +284,29 @@ class RequeueStaleDocumentsTests(TestCase):
         self.assertEqual(handled, 0)
         self.assertEqual(self._version(doc).status, DataRoomDocument.Status.SCANNING)
 
+
+class SweeperDispatchKickTests(_SweeperTestCase):
+    def test_sweep_kicks_dispatcher_even_when_idle(self):
+        handled = requeue_stale_documents()
+
+        self.assertEqual(handled, 0)
+        self.mock_safe_dispatch.assert_called_once_with("sweeper")
+
+    def test_db_blip_skips_the_dispatch_kick(self):
+        from django.db.utils import OperationalError
+
+        with patch.object(
+            DataRoomDocumentVersion.objects,
+            "filter",
+            side_effect=OperationalError("the database system is starting up"),
+        ):
+            result = requeue_stale_documents()
+
+        self.assertEqual(result, 0)
+        self.mock_safe_dispatch.assert_not_called()
+
+
+class SweeperDbErrorTests(_SweeperTestCase):
     def test_swallows_transient_db_error(self):
         from django.db.utils import OperationalError
 
@@ -188,15 +331,11 @@ class RequeueStaleDocumentsTests(TestCase):
                 requeue_stale_documents()
 
 
-class ScanDispatchRetryRecoveryTests(TestCase):
+class ScanDispatchRetryRecoveryTests(_SweeperTestCase):
     """The sweeper auto-recovers versions a broker blip left SCAN_FAILED with the
-    transient SCAN_DISPATCH_RETRY_MESSAGE marker (B-robust)."""
-
-    def setUp(self):
-        self.user = User.objects.create_user(email="scanretry@example.com", password="pw")
-        self.data_room = DataRoom.objects.create(
-            name="ScanRetry", slug="scanretry", created_by=self.user,
-        )
+    transient SCAN_DISPATCH_RETRY_MESSAGE marker (B-robust). These ride OUTSIDE
+    the dispatch gate — scan work is network-bound and re-entry must not depend
+    on a free document slot."""
 
     def _scan_failed(self, *, marker, requeue_count=0):
         """A fresh-upload document whose (v0) version is SCAN_FAILED with *marker*."""
@@ -214,9 +353,6 @@ class ScanDispatchRetryRecoveryTests(TestCase):
         )
         doc.refresh_from_db()
         return doc
-
-    def _version(self, doc):
-        return DataRoomDocumentVersion.objects.get(pk=doc.current_version_id)
 
     @patch("guardrails.tasks.scan_document_version.delay")
     def test_retryable_marker_redispatched(self, mock_delay):

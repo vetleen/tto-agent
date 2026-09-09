@@ -6,12 +6,14 @@ import logging
 
 from celery import shared_task
 
+from documents.services.dispatch import DocumentPipelineTask, safe_dispatch
 from documents.services.process_document import process_document, process_document_version
 
 logger = logging.getLogger(__name__)
 
 
 @shared_task(
+    base=DocumentPipelineTask,
     autoretry_for=(Exception,),
     retry_backoff=True,
     retry_kwargs={"max_retries": 5},
@@ -19,11 +21,12 @@ logger = logging.getLogger(__name__)
     soft_time_limit=540,
 )
 def process_document_task(document_id: int) -> None:
-    # Back-compat entry (upload path + stale sweeper): ensures v0 then processes it.
+    # Back-compat entry (pre-gate Celery messages): ensures v0 then processes it.
     process_document(document_id)
 
 
 @shared_task(
+    base=DocumentPipelineTask,
     autoretry_for=(Exception,),
     retry_backoff=True,
     retry_kwargs={"max_retries": 5},
@@ -69,18 +72,39 @@ def requeue_stale_documents() -> int:
     handled = 0
 
     try:
+        # Stale = DISPATCHED and silent. The UPLOADED window is clocked from
+        # dispatched_at (a version can legitimately sit UPLOADED in the dispatch
+        # queue for a long time — waiting rows hold no claim and are never
+        # stale); PROCESSING keeps the updated_at clock because the extraction
+        # path heartbeats it. Versions waiting in line (dispatched_at NULL) and
+        # sync-path versions (queued_at NULL) don't match — the latter are
+        # recovered by the orphan branch below.
         stale_pipeline = Q(
             status=Status.UPLOADED,
-            updated_at__lt=now - timedelta(minutes=STALE_UPLOADED_MINUTES),
+            dispatched_at__lt=now - timedelta(minutes=STALE_UPLOADED_MINUTES),
         ) | Q(
             status=Status.PROCESSING,
+            dispatched_at__isnull=False,
             updated_at__lt=now - timedelta(minutes=STALE_PROCESSING_MINUTES),
         )
+        # Never-queued orphans: a synchronous save (canvas/agent, enqueue=False)
+        # killed mid-run by a web-dyno restart. Pre-gate code re-delayed these
+        # into Celery directly; now they join the dispatch queue instead.
+        orphan_stale = Q(queued_at__isnull=True) & (
+            Q(
+                status=Status.UPLOADED,
+                updated_at__lt=now - timedelta(minutes=STALE_UPLOADED_MINUTES),
+            )
+            | Q(
+                status=Status.PROCESSING,
+                updated_at__lt=now - timedelta(minutes=STALE_PROCESSING_MINUTES),
+            )
+        )
 
-        # Requeue cap reached → permanent FAILED.
+        # Requeue cap reached → permanent FAILED (dispatched-stale and orphans alike).
         exhausted_ids = list(
             DataRoomDocumentVersion.objects.filter(
-                stale_pipeline, requeue_count__gte=MAX_REQUEUES,
+                stale_pipeline | orphan_stale, requeue_count__gte=MAX_REQUEUES,
             ).values_list("pk", flat=True)
         )
         if exhausted_ids:
@@ -89,7 +113,9 @@ def requeue_stale_documents() -> int:
             # not be clobbered to FAILED.
             failed_ids = list(
                 DataRoomDocumentVersion.objects.filter(
-                    stale_pipeline, pk__in=exhausted_ids, requeue_count__gte=MAX_REQUEUES,
+                    stale_pipeline | orphan_stale,
+                    pk__in=exhausted_ids,
+                    requeue_count__gte=MAX_REQUEUES,
                 ).values_list("pk", flat=True)
             )
             if failed_ids:
@@ -105,6 +131,9 @@ def requeue_stale_documents() -> int:
                 )
                 handled += len(failed_ids)
 
+        # Dispatched-stale with budget left → clear the claim so the version
+        # rejoins the dispatch queue (its original queued_at keeps it at the
+        # front of the line). No direct .delay — re-entry goes through the gate.
         requeue_ids = list(
             DataRoomDocumentVersion.objects.filter(
                 stale_pipeline, requeue_count__lt=MAX_REQUEUES,
@@ -113,12 +142,29 @@ def requeue_stale_documents() -> int:
         for version_id in requeue_ids:
             updated = DataRoomDocumentVersion.objects.filter(
                 stale_pipeline, pk=version_id, requeue_count__lt=MAX_REQUEUES,
-            ).update(requeue_count=F("requeue_count") + 1)
+            ).update(requeue_count=F("requeue_count") + 1, dispatched_at=None)
             if updated:
                 logger.warning(
-                    "requeue_stale_documents: version_id=%s stale, re-enqueueing", version_id,
+                    "requeue_stale_documents: version_id=%s stale, returned to the dispatch queue",
+                    version_id,
                 )
-                process_document_version_task.delay(version_id)
+                handled += 1
+
+        # Orphans with budget left → join the dispatch queue.
+        orphan_ids = list(
+            DataRoomDocumentVersion.objects.filter(
+                orphan_stale, requeue_count__lt=MAX_REQUEUES,
+            ).values_list("pk", flat=True)
+        )
+        for version_id in orphan_ids:
+            updated = DataRoomDocumentVersion.objects.filter(
+                orphan_stale, pk=version_id, requeue_count__lt=MAX_REQUEUES,
+            ).update(requeue_count=F("requeue_count") + 1, queued_at=now)
+            if updated:
+                logger.warning(
+                    "requeue_stale_documents: version_id=%s stranded sync save, queued for async processing",
+                    version_id,
+                )
                 handled += 1
 
         # Stuck SCANNING → fail closed.
@@ -236,6 +282,11 @@ def requeue_stale_documents() -> int:
         )
         return 0
 
+    # Backstop dispatch: covers a missed after_return (worker restart), a
+    # publish that failed and was reverted, and the claims cleared above. Runs
+    # even when handled == 0. Skipped on the DB-blip path above — the dispatcher
+    # would hit the same outage.
+    safe_dispatch("sweeper")
     return handled
 
 
@@ -258,7 +309,7 @@ def _mirror_doc_status(version_ids, status, now, error=None):
     ).update(**fields)
 
 
-@shared_task(bind=True, max_retries=3, time_limit=600, soft_time_limit=540)
+@shared_task(base=DocumentPipelineTask, bind=True, max_retries=3, time_limit=600, soft_time_limit=540)
 def finalize_document_metadata(self, version_id: int) -> None:
     """Thin Celery wrapper around :func:`finalize_version` (the shared scan sink).
 

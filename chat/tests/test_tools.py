@@ -705,7 +705,7 @@ class CanvasSaveToDocumentToolTests(TestCase):
         self.assertIn("Second Room", result["error"])
         self.assertFalse(DataRoomDocument.objects.exists())
 
-    @patch("documents.tasks.process_document_task.delay")
+    @patch("documents.tasks.process_document_version_task.delay")
     def test_multiple_rooms_with_name_saves_to_named_room(self, mock_delay):
         second = DataRoom.objects.create(
             name="Second Room", slug="save-canvas-2", created_by=self.user,
