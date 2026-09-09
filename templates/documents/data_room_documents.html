@@ -53,10 +53,30 @@
       {% csrf_token %}
       <div class="mb-4">
         <label class="block mb-2.5 text-sm font-medium text-heading" for="file_input">Files</label>
-    <input class="cursor-pointer border border-default bg-neutral-primary-soft text-heading text-sm rounded-base block w-full placeholder:text-body" id="file_input" name="file" type="file" accept="{{ upload_accept }}" required multiple aria-describedby="file_input_help">
-        <p class="mt-2 text-xs text-body" id="file_input_help">Max {{ upload_max_size_mb }} MB per file, up to {{ upload_in_flight_cap }} files processing at a time.</p>
+        {% comment %}
+        The field is ours, not the browser's: a native file input can't hold the
+        per-file pills, and its "N files" text gives no way to drop one again.
+        The real input stays as the (sr-only) focusable control and form field;
+        clicking anywhere in the box opens the picker. `required` is deliberately
+        absent — a non-focusable required control blocks submit outright — the
+        submit button is disabled instead while nothing is staged.
+        {% endcomment %}
+        <div id="file-field" class="cursor-pointer flex flex-wrap items-center gap-2 w-full px-2 py-2 border border-default bg-neutral-primary-soft rounded-base focus-within:ring-2 focus-within:ring-brand-medium">
+          <span class="shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-heading bg-neutral-secondary-soft border border-default-medium rounded-base">
+            <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v6m3-3H9m12 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/></svg>
+            Choose files
+          </span>
+          <span id="file-placeholder" class="text-sm text-body">No files chosen</span>
+          {# Pills for the files staged in the input — each removable before upload. #}
+          <div id="selected-files" class="contents"></div>
+          <input class="sr-only" id="file_input" name="file" type="file" accept="{{ upload_accept }}" multiple aria-describedby="file_input_help">
+        </div>
+        <div class="mt-2 flex items-start justify-between gap-3">
+          <p class="text-xs text-body" id="file_input_help">Max {{ upload_max_size_mb }} MB per file, up to {{ upload_in_flight_cap }} files processing at a time.</p>
+          <button type="button" id="clear-selected-files" class="hidden shrink-0 text-xs font-medium text-body hover:text-heading underline underline-offset-2">Clear all</button>
+        </div>
       </div>
-      <button id="upload-btn" type="submit" class="bg-brand text-on-brand hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium box-border border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none">
+      <button id="upload-btn" type="submit" disabled class="bg-brand text-on-brand hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium box-border border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed">
         Add to data room
       </button>
       <p class="mt-2 text-xs text-body">Added files are processed: text is extracted, split into searchable chunks, and indexed. {{ assistant_name }} can search the indexed content whenever this data room is attached to the chat.</p>
@@ -387,6 +407,121 @@
     var progressBar = document.getElementById('upload-progress-bar');
     var progressSpinner = document.getElementById('upload-spinner');
     var errorList = document.getElementById('upload-error-list');
+    var selectedFilesEl = document.getElementById('selected-files');
+    var fileField = document.getElementById('file-field');
+    var filePlaceholder = document.getElementById('file-placeholder');
+    var clearAllBtn = document.getElementById('clear-selected-files');
+
+    // ── Staged files ────────────────────────────────────────────────
+    // A FileList is read-only, so removing one picked file means keeping our own
+    // array as the source of truth and writing it back to the input through a
+    // DataTransfer (which keeps the form field itself in step with the pills).
+    var selectedFiles = [];
+
+    function fileKey(f) { return f.name + '|' + f.size + '|' + f.lastModified; }
+
+    function formatSize(bytes) {
+      if (bytes >= 1048576) return (bytes / 1048576).toFixed(bytes >= 10485760 ? 0 : 1) + ' MB';
+      if (bytes >= 1024) return Math.round(bytes / 1024) + ' KB';
+      return bytes + ' B';
+    }
+
+    function syncInputFiles() {
+      // Best-effort: where DataTransfer isn't constructible the array still drives
+      // the upload, the input just keeps showing its own stale label.
+      try {
+        var dt = new DataTransfer();
+        selectedFiles.forEach(function(f) { dt.items.add(f); });
+        fileInput.files = dt.files;
+      } catch (err) { /* selectedFiles remains authoritative */ }
+    }
+
+    var CLOSE_ICON = '<svg class="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.2" stroke="currentColor"><path stroke-linecap="round" d="M6 18 18 6M6 6l12 12"/></svg>';
+
+    function renderSelectedFiles() {
+      selectedFilesEl.innerHTML = '';
+      filePlaceholder.classList.toggle('hidden', selectedFiles.length > 0);
+      clearAllBtn.classList.toggle('hidden', selectedFiles.length < 2);
+      // Nothing staged means nothing to submit (the input can't carry `required`).
+      if (!uploading) uploadBtn.disabled = selectedFiles.length === 0;
+
+      selectedFiles.forEach(function(f, i) {
+        // Filenames are user-controlled: build with textContent/setAttribute only.
+        var pill = document.createElement('span');
+        pill.className = 'inline-flex items-center gap-1.5 max-w-full ps-3 pe-1 py-1 text-xs font-medium text-heading bg-neutral-secondary-soft border border-default rounded-full';
+
+        var name = document.createElement('span');
+        name.className = 'truncate max-w-[18rem]';
+        name.title = f.name;
+        name.textContent = f.name;
+
+        var size = document.createElement('span');
+        size.className = 'shrink-0 wf-mono text-body-subtle';
+        size.textContent = formatSize(f.size);
+
+        var remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'remove-selected-file shrink-0 inline-flex items-center justify-center w-4 h-4 rounded-full text-body-subtle hover:bg-neutral-tertiary hover:text-heading focus:outline-none focus:ring-2 focus:ring-brand-medium';
+        remove.dataset.index = i;
+        remove.title = 'Remove';
+        remove.setAttribute('aria-label', 'Remove ' + f.name);
+        remove.innerHTML = CLOSE_ICON;
+
+        pill.append(name, size, remove);
+        selectedFilesEl.appendChild(pill);
+      });
+    }
+
+    function setSelectedFiles(files) {
+      selectedFiles = files;
+      syncInputFiles();
+      renderSelectedFiles();
+    }
+
+    // Additive, so removing one file and picking another doesn't wipe the rest
+    // (a second trip through the native picker would otherwise replace the lot).
+    function addFiles(fileList) {
+      var seen = Object.create(null);
+      selectedFiles.forEach(function(f) { seen[fileKey(f)] = true; });
+      var next = selectedFiles.slice();
+      Array.prototype.forEach.call(fileList, function(f) {
+        var key = fileKey(f);
+        if (seen[key]) return;
+        seen[key] = true;
+        next.push(f);
+      });
+      setSelectedFiles(next);
+    }
+
+    fileField.addEventListener('click', function(e) {
+      var btn = e.target.closest('.remove-selected-file');
+      if (btn) {
+        var index = Number(btn.dataset.index);
+        var next = selectedFiles.slice();
+        next.splice(index, 1);
+        setSelectedFiles(next);
+        // Keep the keyboard where the removed pill was, rather than at page top.
+        var buttons = selectedFilesEl.querySelectorAll('.remove-selected-file');
+        if (buttons.length) buttons[Math.min(index, buttons.length - 1)].focus();
+        else fileInput.focus();
+        return;
+      }
+      // Anywhere else in the field is the picker — but not the input itself,
+      // which opens it natively and would otherwise re-enter here.
+      if (uploading || e.target === fileInput) return;
+      fileInput.click();
+    });
+
+    clearAllBtn.addEventListener('click', function() {
+      setSelectedFiles([]);
+      fileInput.focus();
+    });
+
+    fileInput.addEventListener('change', function() {
+      addFiles(fileInput.files);
+    });
+
+    renderSelectedFiles();
 
     function getExtension(name) {
       var dot = name.lastIndexOf('.');
@@ -505,10 +640,16 @@
 
     function setFormEnabled(enabled) {
       fileInput.disabled = !enabled;
-      uploadBtn.disabled = !enabled;
+      uploadBtn.disabled = true;
+      fileField.classList.toggle('opacity-60', !enabled);
+      fileField.classList.toggle('cursor-pointer', enabled);
       if (enabled) {
         uploadBtn.textContent = 'Add to data room';
-        fileInput.value = '';
+        // Re-assert whatever is still staged. Submitting clears the staging up
+        // front, so this empties the field on the normal path — but a drag-drop
+        // upload must not silently discard files the user picked and kept.
+        syncInputFiles();
+        renderSelectedFiles();
       }
     }
 
@@ -669,8 +810,9 @@
     uploadForm.addEventListener('submit', function(e) {
       e.preventDefault();
       if (uploading) return;
-      var files = fileInput.files;
-      if (!files || !files.length) return;
+      if (!selectedFiles.length) return;
+      var files = selectedFiles.slice();
+      setSelectedFiles([]);
       uploadFiles(files);
     });
 
