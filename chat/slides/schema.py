@@ -78,6 +78,21 @@ _DASH = ("solid", "dash", "dot", "dashdot")
 _ALIGN = ("left", "center", "right", "justify")
 _VALIGN = ("top", "middle", "bottom")
 
+# The shape vocabulary. Every name here is drawn faithfully by BOTH renderers —
+# the Pillow preview (pillow_render._POLY_SHAPES + the rect/oval/harvey paths)
+# and the .pptx build (pptx_build.SHAPE_MAP) — so the preview the model inspects
+# never lies about a shape. Adding one = a Pillow polygon + a SHAPE_MAP entry +
+# this tuple; the skill catalogue is generated from it.
+SHAPE_NAMES = (
+    "rect", "rounded_rect", "oval",
+    "right_arrow", "left_arrow", "up_arrow", "down_arrow",
+    "chevron", "pentagon", "diamond", "hexagon", "star", "plus", "cross",
+    "harvey",
+)
+# Spellings older decks may carry — accepted, never advertised.
+SHAPE_ALIASES = ("rectangle", "ellipse", "circle")
+_ALL_SHAPES = SHAPE_NAMES + SHAPE_ALIASES
+
 
 # --- Canonical serialization ------------------------------------------------
 def canonical_deck_text(obj) -> str:
@@ -150,7 +165,7 @@ class ShapeElement(_Strict):
     y: float
     w: float
     h: float
-    shape: str = "rect"
+    shape: Literal[_ALL_SHAPES] = "rect"  # type: ignore[valid-type]
     fill: str | None = None
     gradient: Gradient | None = None  # a linear gradient fill (rect/rounded_rect/oval)
     line: LineStyle | None = None
@@ -233,6 +248,7 @@ class LineElement(_Strict):
 
 _CHART_KINDS = ("column", "bar", "line", "area", "pie", "doughnut", "waterfall",
                 "marimekko", "funnel", "combo", "scatter", "histogram", "dot", "bullet")
+CHART_KINDS = _CHART_KINDS  # public: the skill catalogue lists these
 
 
 class ChartSeries(_Strict):
@@ -545,7 +561,7 @@ def _counter(prefix: str, used: set[str]):
 # Bump when the RENDERERS change what pixels an unchanged slide produces (bullet
 # glyphs, text insets, corner radii, edge trimming, …) so cached previews of
 # existing decks go stale and re-render instead of diverging from the export.
-RENDERER_REV = 2
+RENDERER_REV = 3  # 3: up/down arrows, plus and cross drawn as polygons (were rects)
 
 
 def slide_content_hash(deck: dict, index: int) -> str:

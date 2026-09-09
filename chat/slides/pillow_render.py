@@ -24,7 +24,7 @@ from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from chat.slides import theme as theme_mod
 
@@ -256,19 +256,44 @@ def _para_words(theme, para, base_style, scale):
     return words, breaks
 
 
+def _split_word_head(word, max_w):
+    """Split a word wider than a line: the longest prefix (≥1 char) that fits
+    ``max_w`` and the remainder as a new word (``None`` if nothing is left).
+    PowerPoint breaks an over-long word mid-word instead of overflowing the box
+    — a label like "down_arrow" in a narrow arrow shaft wraps as dow/n_ar/row —
+    so the preview must too, or it hides the overflow the download will show."""
+    text = word.text
+    cut = 1
+    for n in range(2, len(text) + 1):
+        if word.font.getlength(text[:n]) > max_w:
+            break
+        cut = n
+    head = _Word(text[:cut], word.font, word.color, word.underline)
+    tail = _Word(text[cut:], word.font, word.color, word.underline) if cut < len(text) else None
+    return head, tail
+
+
 def _wrap(words, breaks, max_w):
     """Greedily pack words into lines that fit ``max_w`` px. Returns list of lines;
     each line is a list of ``(word, x_offset)`` plus its width and height."""
     lines = []
     cur, cur_w = [], 0.0
     for i, word in enumerate(words):
-        add = word.w if not cur else word.space_w + word.w
-        if cur and cur_w + add > max_w:
-            lines.append(cur)
-            cur, cur_w = [], 0.0
-            add = word.w
-        cur.append(word)
-        cur_w += add
+        pending = [word]
+        while pending:
+            word = pending.pop(0)
+            add = word.w if not cur else word.space_w + word.w
+            if cur and cur_w + add > max_w:
+                lines.append(cur)
+                cur, cur_w = [], 0.0
+                add = word.w
+            if not cur and word.w > max_w and len(word.text) > 1:
+                word, tail = _split_word_head(word, max_w)
+                add = word.w
+                if tail is not None:
+                    pending.insert(0, tail)
+            cur.append(word)
+            cur_w += add
         if i in breaks:
             lines.append(cur)
             cur, cur_w = [], 0.0
@@ -458,6 +483,89 @@ def panel_text_insets(shape_name: str, w_pt: float, h_pt: float) -> tuple[float,
     return (_INSET_LR, _INSET_TB)
 
 
+def shape_text_rect(shape_name: str, x: float, y: float, w: float, h: float):
+    """The preset's inner TEXT rectangle ``(x, y, w, h)`` — where PowerPoint lays
+    a shape's text out (the OOXML ``<a:rect>`` of each preset at its default
+    adjustments): a diamond's is the inscribed half-size box, an arrow's its
+    shaft, a chevron's excludes the notches. The preview wraps text inside this
+    rect so it breaks lines exactly where the download does. Any units."""
+    ss = min(w, h)
+    if shape_name in ("oval", "ellipse", "circle"):
+        ix, iy = w * 0.14645, h * 0.14645  # (1 − cos 45°) / 2
+        return (x + ix, y + iy, w - 2 * ix, h - 2 * iy)
+    if shape_name == "diamond":
+        return (x + w / 4, y + h / 4, w / 2, h / 2)
+    if shape_name == "chevron":
+        n = ss * 0.5
+        return (x + n, y, max(1.0, w - 2 * n), h)
+    if shape_name == "pentagon":
+        return (x, y, w - ss * 0.25, h)
+    if shape_name == "hexagon":
+        # OOXML hexagon il/it: a piecewise fraction of w/h that shrinks the
+        # inset as the box gets wider than tall (q8/24 with q8 ∈ [1, 4]).
+        max_adj = 50000 * w / ss
+        a = min(25000, max_adj)
+        q1 = -max_adj / 2
+        q2 = a + q1
+        q3, q4 = (4, 3) if q2 > 0 else (2, 2)
+        q5 = q1 if q2 > 0 else 0
+        q6 = (a + q5) / q1
+        q8 = q3 - q6 * q4
+        ix, iy = w * q8 / 24, h * q8 / 24
+        return (x + ix, y + iy, w - 2 * ix, h - 2 * iy)
+    if shape_name == "star":
+        # The inner pentagon's bounding box (see _star_pts for the geometry).
+        cx, cy = x + w / 2, y + (h / 2) * _STAR_VF
+        iw, ih = (w / 2) * _STAR_HF * _STAR_INNER, (h / 2) * _STAR_VF * _STAR_INNER
+        left, top = cx - iw * math.cos(math.radians(18)), cy - ih * math.sin(math.radians(54))
+        return (left, top, 2 * iw * math.cos(math.radians(18)), ih * (1 + math.sin(math.radians(54))))
+    if shape_name in ("right_arrow", "left_arrow"):
+        head = ss * 0.5
+        tx = x + (head / 2 if shape_name == "left_arrow" else 0)
+        return (tx, y + h / 4, w - head / 2, h / 2)
+    if shape_name in ("up_arrow", "down_arrow"):
+        head = ss * 0.5
+        ty = y + (head / 2 if shape_name == "up_arrow" else 0)
+        return (x + w / 4, ty, w / 2, h - head / 2)
+    if shape_name == "plus":  # mathPlus: the horizontal arm
+        return (x + w * (0.5 - 0.36745), y + h / 2 - ss * 0.1176, w * 2 * 0.36745, ss * 2 * 0.1176)
+    if shape_name == "cross":  # plus: the centre square
+        i = ss * 0.25
+        return (x + i, y + i, w - 2 * i, h - 2 * i)
+    return (x, y, w, h)  # rect / rounded_rect / anything else: the full box
+
+
+def _fill_shape_mask(md, name, el, ox, oy, w, h, scale):
+    """Paint the silhouette of shape ``name`` (box ``w``×``h`` px at ``(ox, oy)``)
+    at full alpha onto an "L" mask via ``md``."""
+    if name in ("oval", "ellipse", "circle"):
+        md.ellipse([ox, oy, ox + w - 1, oy + h - 1], fill=255)
+    elif name == "rounded_rect":
+        md.rounded_rectangle([ox, oy, ox + w - 1, oy + h - 1],
+                             radius=round_rect_radius_pt(el["w"], el["h"]) * scale, fill=255)
+    elif name in _POLY_SHAPES:
+        md.polygon(_POLY_SHAPES[name](ox, oy, w, h), fill=255)
+    else:
+        md.rectangle([ox, oy, ox + w - 1, oy + h - 1], fill=255)
+
+
+def _draw_shape_shadow(img, name, el, x, y, w, h, scale):
+    """A soft drop shadow (theme ``effects.shape_shadow``): the shape's blurred
+    black silhouette, offset straight down, at the same blur/distance/alpha the
+    .pptx builder writes as ``<a:outerShdw>`` (theme.SHAPE_SHADOW)."""
+    spec = theme_mod.SHAPE_SHADOW
+    blur, dist = spec["blur_pt"] * scale, spec["dist_pt"] * scale
+    pad = int(math.ceil(blur * 3)) + 1
+    gw, gh = max(1, int(round(w))), max(1, int(round(h)))
+    mask = Image.new("L", (gw + 2 * pad, gh + 2 * pad), 0)
+    _fill_shape_mask(ImageDraw.Draw(mask), name, el, pad, pad, gw, gh, scale)
+    mask = mask.filter(ImageFilter.GaussianBlur(blur))
+    alpha = spec["alpha"]
+    mask = mask.point(lambda v: int(v * alpha))
+    black = Image.new("RGB", mask.size, (0, 0, 0))
+    img.paste(black, (int(round(x)) - pad, int(round(y + dist)) - pad), mask)
+
+
 def _draw_shape(draw, theme, el, scale, img=None):
     x, y, w, h = (el["x"] * scale, el["y"] * scale, el["w"] * scale, el["h"] * scale)
     box = theme.get("boxes", {}).get(el["box"]) if el.get("box") else None
@@ -482,6 +590,10 @@ def _draw_shape(draw, theme, el, scale, img=None):
                      fill or _rgb(theme, "dk2", (50, 50, 50)), scale)
         return
 
+    # Deck-wide drop shadow (theme effects) goes under the shape, first.
+    if img is not None and (theme.get("effects") or {}).get("shape_shadow"):
+        _draw_shape_shadow(img, name, el, x, y, w, h, scale)
+
     # Linear-gradient fill: paint a masked gradient bitmap, then let the shape
     # dispatch below stroke only its outline (fill=None). Needs the target image.
     grad = el.get("gradient") or box.get("gradient")
@@ -490,16 +602,7 @@ def _draw_shape(draw, theme, el, scale, img=None):
         gw, gh = max(1, int(round(w))), max(1, int(round(h)))
         gimg = _gradient_rgb(gw, gh, c1, c2, grad.get("angle", 90.0))
         mask = Image.new("L", (gw, gh), 0)
-        md = ImageDraw.Draw(mask)
-        if name in ("oval", "ellipse", "circle"):
-            md.ellipse([0, 0, gw - 1, gh - 1], fill=255)
-        elif name == "rounded_rect":
-            md.rounded_rectangle([0, 0, gw - 1, gh - 1],
-                                 radius=round_rect_radius_pt(el["w"], el["h"]) * scale, fill=255)
-        elif name in _POLY_SHAPES:
-            md.polygon([(px - x, py - y) for (px, py) in _POLY_SHAPES[name](x, y, w, h)], fill=255)
-        else:
-            md.rectangle([0, 0, gw - 1, gh - 1], fill=255)
+        _fill_shape_mask(ImageDraw.Draw(mask), name, el, 0, 0, gw, gh, scale)
         img.paste(gimg, (int(round(x)), int(round(y))), mask)
         fill = None  # gradient already painted; shape dispatch strokes outline only
 
@@ -530,7 +633,10 @@ def _draw_shape(draw, theme, el, scale, img=None):
             "paragraphs": _inject_default_color(text.get("paragraphs"), default_color),
             "valign": text.get("valign", "middle"),
         }
-        _draw_text_frame(draw, theme, frame, (x, y, w, h), scale,
+        # Lay the text out in the preset's inner text rect (an arrow's shaft, a
+        # diamond's inscribed box…) exactly as PowerPoint does, then apply the
+        # same frame insets the .pptx builder writes.
+        _draw_text_frame(draw, theme, frame, shape_text_rect(name, x, y, w, h), scale,
                          insets=panel_text_insets(name, el["w"], el["h"]))
 
 
@@ -588,15 +694,51 @@ def _inject_default_color(paragraphs, default_color):
     return out
 
 
+# Preset geometry below follows the OOXML presetShapeDefinitions at their DEFAULT
+# adjustments — what python-pptx emits for MSO_SHAPE.* — so the preview matches
+# the downloaded .pptx: block-arrow heads and the chevron/pentagon tips are half
+# the SHORT side, hexagon corners a quarter of it, the star fills its box.
 def _block_arrow_pts(x, y, w, h, name):
-    head = min(w * 0.4, h)  # arrowhead length
-    shaft = h * 0.5
+    head = min(w, h) * 0.5  # rightArrow/leftArrow adj2 = 50000 → 0.5 × ss
+    shaft = h * 0.5         # adj1 = 50000 → shaft is half the height
     sy0, sy1 = y + (h - shaft) / 2, y + (h + shaft) / 2
     if name == "right_arrow":
         return [(x, sy0), (x + w - head, sy0), (x + w - head, y), (x + w, y + h / 2),
                 (x + w - head, y + h), (x + w - head, sy1), (x, sy1)]
     return [(x + w, sy0), (x + head, sy0), (x + head, y), (x, y + h / 2),
             (x + head, y + h), (x + head, sy1), (x + w, sy1)]
+
+
+def _up_down_arrow_pts(x, y, w, h, name):
+    # upArrow/downArrow: the transposed twin of _block_arrow_pts.
+    head = min(w, h) * 0.5
+    shaft = w * 0.5
+    sx0, sx1 = x + (w - shaft) / 2, x + (w + shaft) / 2
+    if name == "up_arrow":
+        return [(sx0, y + h), (sx0, y + head), (x, y + head), (x + w / 2, y),
+                (x + w, y + head), (sx1, y + head), (sx1, y + h)]
+    return [(sx0, y), (sx0, y + h - head), (x, y + h - head), (x + w / 2, y + h),
+            (x + w, y + h - head), (sx1, y + h - head), (sx1, y)]
+
+
+def _plus_pts(x, y, w, h):
+    # OOXML mathPlus at its default adjustment (23520): the arms span 73.49% of
+    # the box and are 23.52% of the short side thick, centred — a thin "+".
+    cx, cy = x + w / 2, y + h / 2
+    dx, dy = w * 0.36745, h * 0.36745
+    t = min(w, h) * 0.1176
+    return [(cx - t, cy - dy), (cx + t, cy - dy), (cx + t, cy - t), (cx + dx, cy - t),
+            (cx + dx, cy + t), (cx + t, cy + t), (cx + t, cy + dy), (cx - t, cy + dy),
+            (cx - t, cy + t), (cx - dx, cy + t), (cx - dx, cy - t), (cx - t, cy - t)]
+
+
+def _cross_pts(x, y, w, h):
+    # OOXML plus / MSO CROSS at its default adjustment (25000): a full-box Greek
+    # cross whose corner notches are a quarter of the short side.
+    i = min(w, h) * 0.25
+    x1, x2, y1, y2 = x + i, x + w - i, y + i, y + h - i
+    return [(x1, y), (x2, y), (x2, y1), (x + w, y1), (x + w, y2), (x2, y2),
+            (x2, y + h), (x1, y + h), (x1, y2), (x, y2), (x, y1), (x1, y1)]
 
 
 def _chevron_pts(x, y, w, h):
@@ -608,34 +750,50 @@ def _chevron_pts(x, y, w, h):
             (x, y + h), (x + notch, y + h / 2)]
 
 
+_STAR_HF, _STAR_VF, _STAR_INNER = 1.05146, 1.10557, 0.38196  # star5 hf / vf / adj÷50000
+
+
 def _star_pts(x, y, w, h):
-    cx, cy = x + w / 2, y + h / 2
+    # OOXML star5: the outer radii are stretched (hf/vf) and the centre pushed
+    # down (svc = vc·vf) so the five points touch all four box edges; the inner
+    # radius is the golden 0.382 of the outer.
+    swd2, shd2 = (w / 2) * _STAR_HF, (h / 2) * _STAR_VF
+    cx, cy = x + w / 2, y + (h / 2) * _STAR_VF
     pts = []
     for i in range(10):
         ang = -math.pi / 2 + i * math.pi / 5
-        f = 1.0 if i % 2 == 0 else 0.40
-        pts.append((cx + (w / 2) * f * math.cos(ang), cy + (h / 2) * f * math.sin(ang)))
+        f = 1.0 if i % 2 == 0 else _STAR_INNER
+        pts.append((cx + swd2 * f * math.cos(ang), cy + shd2 * f * math.sin(ang)))
     return pts
 
 
 def _hexagon_pts(x, y, w, h):
-    return [(x, y + h / 2), (x + w * 0.25, y), (x + w * 0.75, y),
-            (x + w, y + h / 2), (x + w * 0.75, y + h), (x + w * 0.25, y + h)]
+    inset = min(w, h) * 0.25  # hexagon adj = 25000 → 0.25 × ss
+    return [(x, y + h / 2), (x + inset, y), (x + w - inset, y),
+            (x + w, y + h / 2), (x + w - inset, y + h), (x + inset, y + h)]
 
 
 def _pentagon_pts(x, y, w, h):  # MSO "home plate" pentagon, pointing right
-    return [(x, y), (x + w * 0.55, y), (x + w, y + h / 2), (x + w * 0.55, y + h), (x, y + h)]
+    tip = min(w, h) * 0.5  # homePlate adj = 50000 → 0.5 × ss
+    return [(x, y), (x + w - tip, y), (x + w, y + h / 2), (x + w - tip, y + h), (x, y + h)]
 
 
 def _diamond_pts(x, y, w, h):
     return [(x + w / 2, y), (x + w, y + h / 2), (x + w / 2, y + h), (x, y + h / 2)]
 
 
+# Every polygon shape the preview draws. Together with rect/rounded_rect/oval
+# (+ aliases) and harvey this MUST cover chat.slides.schema.SHAPE_NAMES — the
+# schema rejects anything else so the preview never shows a shape as a plain
+# rectangle that the .pptx would draw differently.
 _POLY_SHAPES = {
     "diamond": _diamond_pts, "star": _star_pts, "hexagon": _hexagon_pts, "pentagon": _pentagon_pts,
     "right_arrow": lambda x, y, w, h: _block_arrow_pts(x, y, w, h, "right_arrow"),
     "left_arrow": lambda x, y, w, h: _block_arrow_pts(x, y, w, h, "left_arrow"),
+    "up_arrow": lambda x, y, w, h: _up_down_arrow_pts(x, y, w, h, "up_arrow"),
+    "down_arrow": lambda x, y, w, h: _up_down_arrow_pts(x, y, w, h, "down_arrow"),
     "chevron": _chevron_pts,
+    "plus": _plus_pts, "cross": _cross_pts,
 }
 
 

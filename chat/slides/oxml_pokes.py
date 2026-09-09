@@ -104,6 +104,29 @@ def set_shape_fill_alpha(shape, opacity: float) -> None:
     clr.append(clr.makeelement(qn("a:alpha"), {"val": str(val)}))
 
 
+def set_shape_outer_shadow(shape, blur_pt: float, dist_pt: float, alpha: float) -> None:
+    """A soft black drop shadow straight down (``<a:outerShdw>``) on an autoshape,
+    replacing whatever the theme's effect style would have made it inherit.
+
+    ``shape.shadow.inherit = False`` makes python-pptx put an empty
+    ``<a:effectLst/>`` in the right spPr slot; the shadow is appended to it.
+    """
+    shape.shadow.inherit = False
+    lst = shape._element.spPr.find(qn("a:effectLst"))
+    if lst is None:
+        return
+    for ex in lst.findall(qn("a:outerShdw")):
+        lst.remove(ex)
+    shdw = lst.makeelement(qn("a:outerShdw"), {
+        "blurRad": str(int(Pt(blur_pt))), "dist": str(int(Pt(dist_pt))),
+        "dir": "5400000", "algn": "ctr", "rotWithShape": "0",
+    })
+    clr = shdw.makeelement(qn("a:srgbClr"), {"val": "000000"})
+    clr.append(clr.makeelement(qn("a:alpha"), {"val": str(int(round(alpha * 100000)))}))
+    shdw.append(clr)
+    lst.append(shdw)
+
+
 def set_picture_alpha(picture, opacity: float) -> None:
     """Fade a picture (``<a:alphaModFix>`` on its blip). ``opacity`` 0..1."""
     amt = max(0, min(100000, int(round((opacity or 0) * 100000))))

@@ -39,6 +39,38 @@ class SkillWiringTests(SimpleTestCase):
         slugs = {s["slug"] for s in SYSTEM_SKILLS}
         self.assertIn("slide_deck_collaborator", slugs)
 
+    def test_skill_advertises_every_shape_box_chart_and_icon(self):
+        """What the model is told exists is generated from the code, so nothing
+        drawable is hidden and nothing advertised is rejected."""
+        from agent_skills.seed_skills.slide_deck_collaborator import SLIDE_DECK_COLLABORATOR
+        from chat.slides.icons import ICON_NAMES
+        from chat.slides.schema import CHART_KINDS, SHAPE_NAMES
+        from chat.slides.theme import WILFRED_BASE_THEME
+
+        text = SLIDE_DECK_COLLABORATOR["instructions"]
+        self.assertNotIn("__", text.replace("__init__", ""))  # every placeholder filled
+        for name in [*ICON_NAMES, *SHAPE_NAMES, *CHART_KINDS, *WILFRED_BASE_THEME["boxes"]]:
+            self.assertIn(name, text, name)
+        # pptx-only presets are gone from the shape list.
+        shapes_line = next(l for l in text.splitlines() if "`shape` must be one of" in l)
+        for gone in ("cloud", "callout", "lightning"):
+            self.assertNotIn(gone, shapes_line)
+
+    def test_skill_carries_the_retired_layouts_as_recipes(self):
+        from agent_skills.seed_skills.slide_deck_collaborator import SLIDE_DECK_COLLABORATOR
+
+        text = SLIDE_DECK_COLLABORATOR["instructions"]
+        self.assertIn("x=48/254/460/666", text)            # process chevrons
+        self.assertIn("x=352 y=179 w=256 h=256", text)      # cycle ring
+        self.assertIn("x1=48 y1=256 x2=912 y2=256", text)   # timeline rule
+        self.assertIn("(264,140) (552,140) (264,296) (552,296)", text)  # 2×2 tiles
+        self.assertIn("x=210 y=150 w=560 h=330", text)      # ecosystem network
+        self.assertIn('"col_widths":[312,276,276]', text)   # the table example
+        self.assertIn("shape_shadow", text)                 # the deck-wide shadow switch
+        for layout_ref in ("`matrix_2x2` layout", "`ecosystem` layout", "`process` (chevrons)",
+                           "`table` layout", "`cycle` layout"):
+            self.assertNotIn(layout_ref, text)
+
 
 class SetThemeHandlerTests(TransactionTestCase):
     """Exercise the ``chat.slides_set_theme`` handler end-to-end (DB writes +

@@ -790,11 +790,13 @@ class ListThemesTool(ContextAwareTool):
     start_label: str = "Listing themes..."
     end_label: str = "Listed themes"
     description: str = (
-        "List the slide themes available for the current deck — the built-in themes, the "
-        "organization's themes, and the user's own themes. Each has an id, a name, a scope "
-        "(builtin/org/user) and a short summary of its palette and footer, and the deck's current "
-        "theme is flagged. Apply one with slides_set_theme; the user manages their own themes from "
-        "the deck panel."
+        "List the slide themes available for the current deck — the five built-in themes "
+        "(Forest, Slate, Warm sand, Monochrome, Ocean) plus any the organization and the user "
+        "have saved. Each has an id, a name, a scope (builtin/org/user) and a short summary of "
+        "its palette and footer, and the deck's current theme is flagged. A new deck already "
+        "carries the user's (else the org's) default theme, so only look for another when the "
+        "user wants a different look. Apply one with slides_set_theme; you cannot create or save "
+        "named themes — the user manages those from the deck panel."
     )
     args_schema: type[BaseModel] = ListThemesInput
 
@@ -872,7 +874,7 @@ class SetThemeTool(ContextAwareTool):
             if deck is None:
                 return json.dumps({"status": "error", "message": "The deck was deleted."})
             content = deck.content or {}
-            content["theme"] = override
+            content["theme"] = theme_mod.keep_deck_effects(content.get("theme"), override)
             service.save_deck_content(deck, content)
             service.create_deck_checkpoint(
                 deck, source="ai_edit", description=f"Applied '{chosen['label']}' theme"

@@ -34,8 +34,10 @@ logger = logging.getLogger(__name__)
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 TEMPLATE_DIR = ASSETS_DIR / "templates"
 
-# Curated shape vocabulary (friendly name -> MSO_SHAPE). Verified members only;
-# unknown names fall back to RECTANGLE with a warning.
+# Shape vocabulary (friendly name -> MSO_SHAPE): exactly chat.slides.schema's
+# SHAPE_NAMES + SHAPE_ALIASES minus ``harvey`` (rasterised, see _add_harvey).
+# Every name here has a matching Pillow polygon so the preview and the download
+# agree; unknown names fall back to RECTANGLE with a warning.
 SHAPE_MAP = {
     "rect": MSO_SHAPE.RECTANGLE,
     "rectangle": MSO_SHAPE.RECTANGLE,
@@ -54,19 +56,6 @@ SHAPE_MAP = {
     "star": MSO_SHAPE.STAR_5_POINT,
     "plus": MSO_SHAPE.MATH_PLUS,
     "cross": MSO_SHAPE.CROSS,
-    "cloud": MSO_SHAPE.CLOUD,
-    "heart": MSO_SHAPE.HEART,
-    "donut": MSO_SHAPE.DONUT,
-    "plaque": MSO_SHAPE.PLAQUE,
-    "frame": MSO_SHAPE.FRAME,
-    "bevel": MSO_SHAPE.BEVEL,
-    "cube": MSO_SHAPE.CUBE,
-    "can": MSO_SHAPE.CAN,
-    "callout": MSO_SHAPE.LINE_CALLOUT_1,
-    "block_arc": MSO_SHAPE.BLOCK_ARC,
-    "tear": MSO_SHAPE.TEAR,
-    "lightning": MSO_SHAPE.LIGHTNING_BOLT,
-    "smiley": MSO_SHAPE.SMILEY_FACE,
 }
 
 # The deck theme names our shipped OFL font clones (Caladea/Carlito/…). Those
@@ -297,6 +286,14 @@ def _add_shape(slide, el, theme, warnings):
             shp.adjustments[0] = round_rect_radius_pt(el["w"], el["h"]) / mn if mn else 0.14
         except Exception:  # noqa: BLE001 — corner tuning is best-effort
             logger.debug("rounded_rect adjustment failed", exc_info=True)
+
+    # Flat by default — an autoshape would otherwise inherit the template's
+    # effect style (a shadow the preview never drew). The deck-wide
+    # effects.shape_shadow switch draws the SAME soft shadow in both renderers.
+    if (theme.get("effects") or {}).get("shape_shadow"):
+        pokes.set_shape_outer_shadow(shp, **theme_mod.SHAPE_SHADOW)
+    else:
+        shp.shadow.inherit = False
 
     fill_v = el.get("fill") if el.get("fill") is not None else box.get("fill")
     grad = el.get("gradient") or box.get("gradient")

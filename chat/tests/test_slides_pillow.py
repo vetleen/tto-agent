@@ -128,6 +128,106 @@ class PillowRenderTests(SimpleTestCase):
         png, w, h = pillow_render.render_slide_png(deck, 0, dpi=96)
         self.assertGreater(len(_colours(_open(png))), 3)
 
+    def test_every_schema_shape_is_drawn_as_its_silhouette(self):
+        """Each advertised polygon shape leaves a corner of its box empty (bg) and
+        fills its centre — i.e. it is NOT a fallback rectangle."""
+        from chat.slides.schema import SHAPE_NAMES
+
+        empty_corner = {  # (dx, dy) fractions of a corner the silhouette does not cover
+            "up_arrow": (0, 0), "down_arrow": (0, 1), "plus": (0, 0), "cross": (0, 0),
+            "pentagon": (1, 0), "chevron": (1, 0), "hexagon": (0, 0), "star": (0, 0),
+            "diamond": (0, 0), "right_arrow": (0, 0), "left_arrow": (0, 0), "oval": (0, 0),
+        }
+        bg = _open(pillow_render.render_slide_png(
+            self._deck([{"id": "s1", "bg": "lt1", "elements": []}]), 0, dpi=96)[0]).getpixel((5, 5))
+        for name in SHAPE_NAMES:
+            if name not in empty_corner:
+                continue  # rect/rounded_rect fill their corners; harvey is a ring
+            deck = self._deck([{"id": "s1", "bg": "lt1", "skip_footer": True, "elements": [
+                {"type": "shape", "x": 100, "y": 100, "w": 200, "h": 100, "shape": name, "fill": "accent1"},
+            ]}])
+            img = _open(pillow_render.render_slide_png(deck, 0, dpi=96)[0])
+            s = 96 / 72
+            fx, fy = empty_corner[name]
+            px = int((100 + (200 - 6 if fx else 3)) * s)
+            py = int((100 + (100 - 6 if fy else 3)) * s)
+            self.assertEqual(img.getpixel((px, py)), bg, f"{name}: corner should be empty")
+            self.assertNotEqual(img.getpixel((int(200 * s), int(150 * s))), bg, f"{name}: centre should be filled")
+
+    def test_preset_geometry_matches_ooxml_defaults(self):
+        """Tips, heads and corners follow the OOXML presets at their default
+        adjustments (what python-pptx emits), so the preview matches the .pptx."""
+        # homePlate: the tip is half the SHORT side deep, not a fraction of w.
+        self.assertEqual(pillow_render._pentagon_pts(0, 0, 120, 60)[1], (90, 0))
+        # hexagon: corners inset a quarter of the short side.
+        self.assertEqual(pillow_render._hexagon_pts(0, 0, 120, 60)[1], (15, 0))
+        # rightArrow: head = 0.5 × ss; shaft = h/2.
+        pts = pillow_render._block_arrow_pts(0, 0, 120, 60, "right_arrow")
+        self.assertEqual(pts[1], (90, 15))
+        self.assertEqual(pts[3], (120, 30))
+        # upArrow is the transposed twin.
+        pts = pillow_render._up_down_arrow_pts(0, 0, 60, 120, "up_arrow")
+        self.assertEqual(pts[3], (30, 0))
+        self.assertEqual(pts[1], (15, 30))
+        # star5 fills its box on all four sides.
+        xs = [p[0] for p in pillow_render._star_pts(0, 0, 120, 60)]
+        ys = [p[1] for p in pillow_render._star_pts(0, 0, 120, 60)]
+        self.assertAlmostEqual(min(xs), 0, delta=0.5)
+        self.assertAlmostEqual(max(xs), 120, delta=0.5)
+        self.assertAlmostEqual(min(ys), 0, delta=0.5)
+        self.assertAlmostEqual(max(ys), 60, delta=0.5)
+
+    def test_shape_text_rect_follows_the_preset(self):
+        rect = pillow_render.shape_text_rect
+        self.assertEqual(rect("rect", 0, 0, 100, 50), (0, 0, 100, 50))
+        self.assertEqual(rect("diamond", 0, 0, 100, 100), (25, 25, 50, 50))
+        self.assertEqual(rect("right_arrow", 0, 0, 120, 60), (0, 15, 105, 30))
+        self.assertEqual(rect("left_arrow", 0, 0, 120, 60), (15, 15, 105, 30))
+        self.assertEqual(rect("up_arrow", 0, 0, 60, 120), (15, 15, 30, 105))
+        self.assertEqual(rect("chevron", 0, 0, 120, 60), (30, 0, 60, 60))
+        self.assertEqual(rect("pentagon", 0, 0, 120, 60), (0, 0, 105, 60))
+        self.assertEqual(rect("cross", 0, 0, 100, 100), (25, 25, 50, 50))
+        x, y, w, h = rect("oval", 0, 0, 100, 100)
+        self.assertAlmostEqual(x, 14.645, places=2)
+        self.assertAlmostEqual(w, 70.71, places=1)
+        # OOXML hexagon il = w·q8/24: q8 = 4 for a square (a sixth), 3 at 2:1 (an eighth).
+        self.assertAlmostEqual(rect("hexagon", 0, 0, 120, 120)[0], 20, places=5)
+        self.assertAlmostEqual(rect("hexagon", 0, 0, 120, 60)[0], 15, places=5)
+
+    def test_overlong_word_breaks_inside_the_box(self):
+        """A single word wider than the frame breaks mid-word (as PowerPoint does)
+        instead of spilling past the box's right edge."""
+        deck = self._deck([{"id": "s1", "bg": "lt1", "skip_footer": True, "elements": [
+            {"type": "text", "x": 100, "y": 100, "w": 60, "h": 200, "class": "body",
+             "paragraphs": [{"runs": [{"t": "Supercalifragilistic", "size": 14}]}]},
+        ]}])
+        img = _open(pillow_render.render_slide_png(deck, 0, dpi=96)[0])
+        bg = img.getpixel((5, 5))
+        s = 96 / 72
+        right_edge = int((100 + 60 + 2) * s)
+        spilled = [x for x in range(right_edge, right_edge + int(80 * s))
+                   for y in range(int(100 * s), int(140 * s)) if img.getpixel((x, y)) != bg]
+        self.assertEqual(spilled, [])
+        # ...and it did draw (several lines' worth of ink inside the box).
+        inside = [1 for x in range(int(100 * s), right_edge)
+                  for y in range(int(100 * s), int(200 * s)) if img.getpixel((x, y)) != bg]
+        self.assertGreater(len(inside), 200)
+
+    def test_shape_shadow_effect_draws_under_the_shape(self):
+        el = {"type": "shape", "x": 200, "y": 100, "w": 200, "h": 100, "shape": "rect", "fill": "accent1"}
+        flat = self._deck([{"id": "s1", "bg": "lt1", "skip_footer": True, "elements": [el]}])
+        shadowed = self._deck([{"id": "s1", "bg": "lt1", "skip_footer": True, "elements": [el]}])
+        shadowed["theme"] = {"effects": {"shape_shadow": True}}
+        s = 96 / 72
+        probe = (int(300 * s), int(203 * s))  # 3pt below the bottom edge, centred
+        f_img = _open(pillow_render.render_slide_png(flat, 0, dpi=96)[0])
+        s_img = _open(pillow_render.render_slide_png(shadowed, 0, dpi=96)[0])
+        self.assertEqual(f_img.getpixel(probe), f_img.getpixel((5, 5)))     # flat: bare bg
+        self.assertLess(sum(s_img.getpixel(probe)), sum(f_img.getpixel(probe)) - 30)  # shadow ink
+        # The shape itself is unchanged.
+        centre = (int(300 * s), int(150 * s))
+        self.assertEqual(f_img.getpixel(centre), s_img.getpixel(centre))
+
     def test_shape_gradient_produces_many_colours(self):
         # A gradient-filled shape must yield a smooth ramp (many distinct colours),
         # unlike a flat fill which adds just one.

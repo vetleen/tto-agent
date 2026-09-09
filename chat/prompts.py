@@ -690,6 +690,16 @@ def build_dynamic_context(
             ) if k in colours
         )
         fnt = ", ".join(f"{k}={fonts[k]}" for k in ("headline", "subhead", "body", "data") if k in fonts)
+        # Which named theme the deck carries (provenance written by the theme
+        # tools / picker); no override at all == the built-in Forest default.
+        override = (active_slide_set.content or {}).get("theme") or {}
+        theme_label = override.get("_theme_label") or (
+            "Forest (built-in default)" if not override else "a deck-level custom palette"
+        )
+        section += (
+            f"Theme: {theme_label} — already the user's default; switch it with "
+            "`slides_set_theme` only if they want a different look.\n"
+        )
         section += f"Theme colours (name=hex): {pal}.\nTheme fonts: {fnt}.\n"
         section += f"```json\n{canonical_deck_text(active_slide_set.content or {})}\n```"
         parts.append(section)

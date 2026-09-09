@@ -65,6 +65,29 @@ class BuildDeckTests(SimpleTestCase):
     def test_no_warnings(self):
         self.assertEqual(self.warnings, [])
 
+    def test_shape_map_matches_schema_vocabulary(self):
+        """One shape vocabulary: everything the schema allows (bar the rasterised
+        harvey) maps to an MSO preset, and nothing pptx-only is left behind."""
+        from chat.slides.pptx_build import SHAPE_MAP
+        from chat.slides.schema import SHAPE_ALIASES, SHAPE_NAMES
+
+        expected = set(SHAPE_NAMES + SHAPE_ALIASES) - {"harvey"}
+        self.assertEqual(set(SHAPE_MAP), expected)
+
+    def test_shapes_flat_by_default_shadow_on_deck_switch(self):
+        # Autoshapes would inherit the template's effect-style shadow; the builder
+        # neutralises it (empty effectLst) unless the deck asks for shadows, in
+        # which case every shape gets the same explicit outer shadow.
+        self.assertIn("<a:effectLst/>", self.s2)
+        self.assertNotIn("outerShdw", self.s2)
+        deck = _rich_deck()
+        deck["theme"]["effects"] = {"shape_shadow": True}
+        data, warns = build_deck_pptx(deck, image_resolver=_resolver)
+        xml = zipfile.ZipFile(io.BytesIO(data)).read("ppt/slides/slide2.xml").decode()
+        self.assertEqual(xml.count("<a:outerShdw"), 2)  # the callout box + the arrow
+        self.assertIn('blurRad="50800"', xml)        # 4pt, shared with the preview
+        self.assertEqual(warns, [])
+
     def test_background_image_scrim_and_opacity(self):
         tok = "[[image:11111111-1111-1111-1111-111111111111]]"
         deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1",

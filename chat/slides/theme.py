@@ -112,6 +112,11 @@ WILFRED_BASE_THEME: dict = {
         "grid_color": "accent3",
         "text_class": "data",
     },
+    # Deck-wide rendering effects — a deck choice (set on ``content["theme"]``),
+    # NOT part of any named theme, so a theme switch carries it over (see
+    # keep_deck_effects). ``shape_shadow``: every shape gets the same soft drop
+    # shadow (SHAPE_SHADOW) in both the preview and the .pptx; off = flat.
+    "effects": {"shape_shadow": False},
     # Footer band — stamped by the builder on every non-skip_footer slide (never in
     # slide JSON). A theme's footer is a full-bleed band (FOOTER_BAND_H tall, at the
     # bottom of the slide) carrying three grid sections; see default_footer().
@@ -129,6 +134,26 @@ WILFRED_BASE_THEME: dict = {
         ],
     },
 }
+
+
+# The one drop shadow ``effects.shape_shadow`` turns on: blur radius and downward
+# offset in points, black at this alpha. Both renderers read it, so the preview's
+# blurred silhouette and the .pptx ``<a:outerShdw>`` match.
+SHAPE_SHADOW = {"blur_pt": 4.0, "dist_pt": 3.0, "alpha": 0.35}
+
+
+def keep_deck_effects(prev_theme: dict | None, override: dict) -> dict:
+    """Carry a deck's ``effects`` block across a named-theme switch.
+
+    Effects (shape_shadow) are a per-deck choice the model or user made, not a
+    property of any named theme, so replacing ``content["theme"]`` with a theme's
+    override must not silently reset them."""
+    effects = (prev_theme or {}).get("effects")
+    if not effects:
+        return override
+    out = dict(override)
+    out["effects"] = copy.deepcopy(effects)
+    return out
 
 
 # ---------------------------------------------------------------------------

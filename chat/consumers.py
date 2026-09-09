@@ -813,7 +813,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     return None
                 deck = locked
                 content = deck.content or {}
-                content["theme"] = override
+                content["theme"] = theme_mod.keep_deck_effects(content.get("theme"), override)
                 service.save_deck_content(deck, content)
                 service.create_deck_checkpoint(
                     deck, source="user_save", description=f"Applied '{name}' theme"

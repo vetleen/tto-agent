@@ -55,14 +55,14 @@ class SlideToolTests(TestCase):
         self.assertEqual(deck.content["slides"], [])
         self.assertEqual([c.source for c in deck.checkpoints.all()], ["original"])
         # ...and it's a valid deck we can immediately seed a layout into.
-        seed = self._run(AddSlideTool(), layout="title_01")
+        seed = self._run(AddSlideTool(), layout="title")
         self.assertEqual(seed["status"], "ok")
 
     def test_create_with_layouts_storyboard(self):
         """The ordered layouts list seeds one slide per id, in order, and the result
         carries the full seeded deck JSON — the model edits placeholders from it,
         since the deck JSON in the turn context is a pre-turn snapshot."""
-        r = self._run(CreateDeckTool(), title="Deck A", layouts=["title_01", "bullets", "closing"])
+        r = self._run(CreateDeckTool(), title="Deck A", layouts=["title", "bullets", "closing"])
         self.assertEqual(r["status"], "ok")
         self.assertEqual(r["slide_ids"], ["s1", "s2", "s3"])
         self.assertEqual(r["changed_slide_ids"], ["s1", "s2", "s3"])
@@ -71,10 +71,10 @@ class SlideToolTests(TestCase):
         deck = SlideSet.objects.get(pk=r["deck_id"])
         self.assertTrue(deck.is_active)
         self.assertEqual(len(deck.content["slides"]), 3)
-        self.assertEqual(deck.content["slides"][0]["name"], "Title 1")
+        self.assertEqual(deck.content["slides"][0]["name"], "Title")
 
     def test_create_unknown_layout_is_all_or_nothing(self):
-        r = self._run(CreateDeckTool(), title="Deck A", layouts=["title_01", "nope"])
+        r = self._run(CreateDeckTool(), title="Deck A", layouts=["title", "nope"])
         self.assertEqual(r["status"], "error")
         self.assertIn("bullets", r["available_layouts"])
         self.assertFalse(SlideSet.objects.filter(thread=self.thread).exists())
@@ -151,7 +151,7 @@ class SlideToolTests(TestCase):
         self.assertTrue(r["issues"])
 
     def test_add_slide(self):
-        self._run(CreateDeckTool(), title="Deck A", layouts=["title_01"])
+        self._run(CreateDeckTool(), title="Deck A", layouts=["title"])
         r = self._run(AddSlideTool(), layout="bullets")
         self.assertEqual(r["status"], "ok")
         self.assertEqual(r["slide_id"], "s2")
@@ -161,7 +161,7 @@ class SlideToolTests(TestCase):
         """add_slide / edit must return the full ordered slide_ids (and add names the
         new one in changed_slide_ids). The client rebuilds its filmstrip from this list,
         so without it a newly added slide never appears live — it needed a manual F5."""
-        self._run(CreateDeckTool(), title="Deck A", layouts=["title_01"])
+        self._run(CreateDeckTool(), title="Deck A", layouts=["title"])
         added = self._run(AddSlideTool(), layout="bullets")
         self.assertEqual(added["slide_ids"], ["s1", "s2"])
         self.assertEqual(added["changed_slide_ids"], ["s2"])
@@ -179,9 +179,52 @@ class SlideToolTests(TestCase):
         from chat.slides.layouts import layout_catalog
 
         ids = [c["id"] for c in layout_catalog()]
-        for lid in ("title_01", "title_02", "title_03", "section", "section_02", "image_bleed"):
+        for lid in ("title", "title_split", "photo", "section", "bullets", "two_col", "chart",
+                    "image_bleed", "swimlane", "roadmap_gantt", "issue_tree", "closing", "blank"):
             self.assertIn(lid, ids)
-        self.assertNotIn("team", ids)  # removed pending a redesign
+        # Consolidated 2026-09: one cover + one divider (their extras live in the
+        # slide comment); table/comparison/process/cycle/timeline/matrix/ecosystem
+        # moved into the skill as element recipes; "team" removed pending a redesign.
+        for gone in ("title_01", "title_02", "title_03", "section_02", "table", "comparison",
+                     "process", "cycle", "timeline", "matrix_2x2", "ecosystem", "team"):
+            self.assertNotIn(gone, ids)
+
+    def test_layout_descriptions_say_when_to_use(self):
+        """Every catalogue line tells the model WHEN to pick the layout."""
+        from chat.slides.layouts import layout_catalog
+
+        for c in layout_catalog():
+            self.assertIn("use ", c["description"].lower(), c["id"])
+
+    def test_retired_layout_elements_survive_as_comments(self):
+        """The optional elements of the retired cover/divider/comparison seeds are
+        pre-designed in the surviving layouts' comments (exact geometry included)."""
+        from chat.slides.layouts import get_layout
+
+        title = get_layout("title")["comment"]
+        self.assertIn("[[image:company-logo]]", title)
+        self.assertIn("y1=462", title)          # the hairline info band
+        section = get_layout("section")["comment"]
+        self.assertIn("'01'", section)          # optional section number
+        self.assertIn("y=336", section)         # optional sub-heading
+        two_col = get_layout("two_col")["comment"]
+        self.assertIn("x1=474", two_col)        # the comparison variant's divider
+        chart = get_layout("chart")["comment"]
+        self.assertIn("RIGHT", chart)           # how to flip the chart side
+
+    def test_set_theme_keeps_deck_effects(self):
+        """A named-theme switch must not reset the deck-wide shadow choice."""
+        r = self._run(CreateDeckTool(), title="Deck A", layouts=["title"])
+        deck = SlideSet.objects.get(pk=r["deck_id"])
+        content = deck.content
+        content.setdefault("theme", {})["effects"] = {"shape_shadow": True}
+        deck.content = content
+        deck.save(update_fields=["content"])
+        s = self._run(SetThemeTool(), theme="slate")
+        self.assertEqual(s["status"], "ok")
+        deck.refresh_from_db()
+        self.assertEqual(deck.content["theme"]["_theme_id"], "slate")
+        self.assertTrue(deck.content["theme"]["effects"]["shape_shadow"])
 
     def test_add_slide_carries_layout_comment(self):
         """A seed's authoring ``comment`` travels into the inserted slide JSON."""
@@ -192,7 +235,7 @@ class SlideToolTests(TestCase):
         self.assertIn("either side", r["slide_json"])
 
     def test_edit_valid(self):
-        w = self._run(CreateDeckTool(), title="Deck A", layouts=["title_01"])
+        w = self._run(CreateDeckTool(), title="Deck A", layouts=["title"])
         r = self._run(EditDeckTool(), edits=[{"old_text": '"Presentation title"', "new_text": '"Welcome"'}])
         self.assertEqual(r["status"], "ok")
         self.assertEqual(r["applied"], 1)
@@ -201,7 +244,7 @@ class SlideToolTests(TestCase):
         self.assertIn("Welcome", json.dumps(deck.content))
 
     def test_edit_json_guard_rejects_and_preserves(self):
-        w = self._run(CreateDeckTool(), title="Deck A", layouts=["title_01"])
+        w = self._run(CreateDeckTool(), title="Deck A", layouts=["title"])
         deck = SlideSet.objects.get(pk=w["deck_id"])
         before = json.dumps(deck.content, sort_keys=True)
         r = self._run(EditDeckTool(), edits=[{"old_text": '"version": 1', "new_text": '"version": 1 OOPS'}])
@@ -282,7 +325,7 @@ class DeckConcurrentWriteTests(TestCase):
         self.assertEqual(first["status"], "ok")
 
         with mock.patch("chat.slides.service.resolve_deck", return_value=(stale, None)):
-            second = self._run(AddSlideTool(), layout="title_01")
+            second = self._run(AddSlideTool(), layout="title")
         self.assertEqual(second["status"], "ok")
 
         deck = SlideSet.objects.get(pk=w["deck_id"])
@@ -293,7 +336,7 @@ class DeckConcurrentWriteTests(TestCase):
         self.assertNotEqual(first["slide_id"], second["slide_id"])
 
     def test_edit_deck_reads_fresh_content_under_lock(self):
-        w = self._run(CreateDeckTool(), title="Deck A", layouts=["title_01"])
+        w = self._run(CreateDeckTool(), title="Deck A", layouts=["title"])
         stale = self._stale(w["deck_id"])  # one slide
 
         added = self._run(AddSlideTool(), layout="bullets")
@@ -318,7 +361,7 @@ class DeckConcurrentWriteTests(TestCase):
         to the stale-instance trick above. The real race needs true concurrency, which
         only the row lock closes.
         """
-        w = self._run(CreateDeckTool(), title="Deck A", layouts=["title_01"])
+        w = self._run(CreateDeckTool(), title="Deck A", layouts=["title"])
         self._run(AddSlideTool(), layout="bullets")
         self._run(AddSlideTool(), layout="closing")
         self._run(EditDeckTool(), edits=[{"old_text": '"Presentation title"', "new_text": '"Welcome"'}])

@@ -56,6 +56,33 @@ class ValidateDeckTests(SimpleTestCase):
         deck = {"slides": [{"elements": [{"type": "widget", "x": 1, "y": 1, "w": 1, "h": 1}]}]}
         self.assertTrue(schema.validate_deck(deck))
 
+    def test_shape_vocabulary_is_closed(self):
+        """Only shapes BOTH renderers draw faithfully validate; pptx-only presets
+        (cloud, callout, …) are rejected so the preview never lies. Aliases
+        older decks may carry still pass."""
+        def deck_with(shape):
+            return {"slides": [{"elements": [
+                {"type": "shape", "x": 1, "y": 1, "w": 10, "h": 10, "shape": shape}]}]}
+
+        for name in schema.SHAPE_NAMES + schema.SHAPE_ALIASES:
+            self.assertEqual(schema.validate_deck(deck_with(name)), [], name)
+        for bad in ("cloud", "callout", "lightning", "smiley", "blob"):
+            issues = schema.validate_deck(deck_with(bad))
+            self.assertTrue(issues, bad)
+            self.assertIn("shape", issues[0]["path"])
+
+    def test_keep_deck_effects_across_theme_switch(self):
+        prev = {"colors": {"accent1": "#000000"}, "effects": {"shape_shadow": True}}
+        override = {"colors": {"accent1": "#123456"}, "_theme_id": "slate"}
+        out = theme.keep_deck_effects(prev, override)
+        self.assertEqual(out["effects"], {"shape_shadow": True})
+        self.assertEqual(out["_theme_id"], "slate")
+        self.assertNotIn("effects", override)  # input untouched
+        self.assertIs(theme.keep_deck_effects(None, override), override)
+        # The base theme is flat; a deck override switches the shadow on.
+        self.assertFalse(theme.resolve_theme({})["effects"]["shape_shadow"])
+        self.assertTrue(theme.resolve_theme({"theme": prev})["effects"]["shape_shadow"])
+
     def test_slide_comment_is_valid(self):
         # ``comment`` is the layout seeds' authoring-note channel — it must
         # survive validation (unlike arbitrary unknown keys).

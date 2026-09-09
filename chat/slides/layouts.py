@@ -83,9 +83,10 @@ def _gtext(a, b, y, h, cls, paragraphs, **extra):
 
 
 _LAYOUTS: dict[str, dict] = {
-    "title_01": {
-        "name": "Title 1",
-        "description": "Editorial cover — a big left-aligned title with a subtitle underneath, nothing else.",
+    "title": {
+        "name": "Title",
+        "description": "A simple cover — a big left-aligned title with a subtitle underneath, nothing else; optional extras (company-logo slot, a hairline band with date / author / contact) are pre-designed in the slide comment. Use as the default title slide.",
+        "comment": "Optional extras, pre-designed for this cover — add any that apply: (1) a company-logo slot above the title: image x=48 y=40 w=100 h=40 token [[image:company-logo]] fit contain (only if the theme or the user has a logo); (2) a hairline info band near the bottom: line x1=48 y1=462 x2=912 y2=462 color accent3 w=1, plus up to three `data` text elements at y=476 h=26 — date on cols 1-4 (x=48 w=276, left), author centred on cols 5-8 (x=336 w=276), contact right-aligned on cols 9-12 (x=624 w=288); keep the hairline whenever you use any of the three. The cover skips the stamped footer (set skip_footer false to show it — but not together with the info band). For a photo cover use the 'Photo cover' or 'Split cover' layout instead.",
         "skip_footer": True,
         "bg": "lt1",
         "elements": [
@@ -93,25 +94,9 @@ _LAYOUTS: dict[str, dict] = {
             _gtext(1, 10, 330, 40, "subhead", [_p("Subtitle or author · date", size=22)]),
         ],
     },
-    "title_02": {
-        "name": "Title 2",
-        "description": "Editorial cover — a big left-aligned title with a company-logo slot above it and a hairline footer band carrying date, author and contact.",
-        "comment": "Drop the logo image or any of the three footer slots that don't apply, but keep the hairline — it's what anchors the band. For a photo cover use the 'Photo cover' layout instead.",
-        "skip_footer": True,
-        "bg": "lt1",
-        "elements": [
-            {"type": "image", "x": _ML, "y": 40, "w": 100, "h": 40, "token": "[[image:company-logo]]", "fit": "contain"},
-            _gtext(1, 10, 170, 130, "headline", [_p("Presentation title", size=54)], valign="bottom"),
-            _gtext(1, 10, 312, 40, "subhead", [_p("Subtitle or tagline", size=22)]),
-            {"type": "line", "x1": _ML, "y1": 462, "x2": _MR, "y2": 462, "color": "accent3", "w": 1},
-            _gtext(1, 4, 476, 26, "data", [_p("Date")]),
-            _gtext(5, 8, 476, 26, "data", [_p("Author", align="center")]),
-            _gtext(9, 12, 476, 26, "data", [_p("presenter@example.com", align="right")]),
-        ],
-    },
-    "title_03": {
-        "name": "Title 3",
-        "description": "Split cover — title, subtitle and author on a full-height colour panel, with a cover image bleeding off the other half.",
+    "title_split": {
+        "name": "Split cover",
+        "description": "Split cover — title, subtitle and author on a full-height colour panel, with a cover image bleeding off the other half. Use when you have (or want) an illustrative picture on the front page.",
         "comment": "Replace the image token with a real cover photo (fit=cover crops it to the panel). To mirror the layout, move the panel and its text to the right (panel x=552) and the image to x=0.",
         "skip_footer": True,
         "bg": "lt1",
@@ -128,27 +113,17 @@ _LAYOUTS: dict[str, dict] = {
     },
     "section": {
         "name": "Section",
-        "description": "Section divider — a large centred heading on a dark background to break the deck into parts.",
+        "description": "Section divider — a large centred heading on a dark background, with an optional section number above it and a one-line sub-heading below (pre-designed in the slide comment). Use to open each part of a longer deck.",
+        "comment": "Optional extras, pre-designed for this divider — add either or both: (1) a section number above the heading: `headline` text x=48 y=186 w=864 h=52 valign bottom, run '01' size 40 color accent1 align center (if the heading wraps to two lines, move it up to y=146); (2) a one-line sub-heading under the rule: `body` text x=120 y=336 w=708 h=30, run size 16 color lt2 align center. Keep the heading to one line where you can.",
         "bg": "dk2",
         "elements": [
             _gtext(1, 12, 210, 90, "headline", [_p("Section heading", color="lt1", align="center")], valign="bottom"),
             {"type": "line", "x1": 420, "y1": 320, "x2": 540, "y2": 320, "color": "accent1", "w": 3},
         ],
     },
-    "section_02": {
-        "name": "Section 2",
-        "description": "Section divider — a giant section number beside the heading and a one-line sub-heading, split by a vertical hairline.",
-        "bg": "dk2",
-        "elements": [
-            _gtext(1, 4, 145, 250, "headline", [_p("01", size=180, color="accent1", align="center")], valign="middle"),
-            {"type": "line", "x1": 330, "y1": 135, "x2": 330, "y2": 405, "color": "lt2", "w": 1},  # gutter between cols 4 and 5
-            _gtext(5, 12, 200, 130, "headline", [_p("Section heading", size=44, color="lt1")], valign="bottom"),
-            _gtext(5, 12, 344, 56, "body", [_p("One line on what this section covers", size=16, color="lt2")]),
-        ],
-    },
     "bullets": {
         "name": "Bullets",
-        "description": "The workhorse content slide — a title over a simple bulleted list (levels 0–2 get ‣ / – / ◦ markers).",
+        "description": "The workhorse content slide — a title over a simple bulleted list with levels. Use for a plain list of points, or as the base slide for a table or a diagram recipe from the skill.",
         "elements": [
             _gtext(1, 12, 44, 60, "headline", [_p("Slide title")]),
             _gtext(1, 12, 130, 340, "body", [
@@ -161,7 +136,8 @@ _LAYOUTS: dict[str, dict] = {
     },
     "two_col": {
         "name": "Two columns",
-        "description": "A title over two even side-by-side columns, each opened by a rule and its own column heading.",
+        "description": "A title over two even side-by-side columns, each opened by a rule and its own column heading; fill the columns with whatever elements suit the point. Use for two parallel topics, a before/after, or an A-vs-B comparison (variant in the slide comment).",
+        "comment": "The content per column is just a placeholder — replace it with non-text elements as you see fit. If you keep the column headings and rules, give both the same colour unless a colour difference is meant to draw attention. Variant — an A-vs-B comparison: replace each column's rule + heading with a `subhead` option name (y=140 h=40; the recommended option in accent1, the other dk2 — both dk2 when the comparison is neutral), start the bullets at y=196, and add a vertical hairline between the columns: line x1=474 y1=140 x2=474 y2=450 color accent3 w=2.",
         "elements": [
             _gtext(1, 12, 44, 60, "headline", [_p("Slide title")]),
             {"type": "line", "x1": 48, "y1": 132, "x2": 468, "y2": 132, "color": "dk2", "w": 1},
@@ -182,8 +158,8 @@ _LAYOUTS: dict[str, dict] = {
     },
     "three_column": {
         "name": "Three columns",
-        "description": "A title over three even ruled columns — a heading and a short bulleted list in each.",
-        "comment": "Three columns on the grid: cols 1-4 / 5-8 / 9-12, 12pt gutters. For two columns use the 'Two columns' layout, which keeps the same rule-and-heading treatment on a wider grid.",
+        "description": "A title over three even ruled columns — a heading and a short bulleted list in each; fill the columns with whatever elements suit the point. Use for three parallel topics, options, or pillars.",
+        "comment": "Three columns on the grid: cols 1-4 / 5-8 / 9-12, 12pt gutters. The content per column is just a placeholder — replace it with non-text elements as you see fit. If you keep the column headings and rules, give all three the same colour unless a colour difference is meant to draw attention.",
         "elements": [
             _gtext(1, 12, 44, 60, "headline", [_p("Slide title")]),
             {"type": "line", "x1": 48, "y1": 132, "x2": 324, "y2": 132, "color": "dk2", "w": 1},
@@ -211,7 +187,7 @@ _LAYOUTS: dict[str, dict] = {
     },
     "image_right": {
         "name": "Image right",
-        "description": "Bullets on the left, an image on the right.",
+        "description": "Bullets on the left, an image or another element (like a chart) on the right. Use when a visual supports a few points.",
         "comment": "The image can sit on either side: swap the x of the text column (48) and the image (480) to flip the layout.",
         "elements": [
             _gtext(1, 12, 44, 60, "headline", [_p("Slide title")]),
@@ -224,7 +200,7 @@ _LAYOUTS: dict[str, dict] = {
     },
     "image_bleed": {
         "name": "Image half-bleed",
-        "description": "Title + bullets on the left, an image bleeding off the right half of the slide (full height, edge to edge).",
+        "description": "Title + bullets on the left, an image (or another element, like a chart) bleeding off the right half of the slide (full height, edge to edge). Use for a high-impact photo or hero visual with a short message.",
         "comment": "The image takes the larger side edge-to-edge (fit=cover crops it). To mirror the layout, put the image at x=0 (w=624) and move the text column to columns 9-12 (x=624).",
         "skip_footer": True,
         "elements": [
@@ -236,26 +212,9 @@ _LAYOUTS: dict[str, dict] = {
             ]),
         ],
     },
-    "table": {
-        "name": "Table",
-        "description": "A title over a data table (header row + banded rows; col_widths sets relative column widths).",
-        "comment": "Fill in the source line (what data, which period, who analysed it) — or drop it only if the table truly needs no sourcing.",
-        "elements": [
-            _gtext(1, 12, 44, 60, "headline", [_p("Slide title")]),
-            {"type": "table", "x": _ML, "y": 130, "w": _MW, "h": 300, "header": True, "banding": True,
-             "col_widths": [312, 276, 276],
-             "rows": [
-                 [{"t": "Column A"}, {"t": "Column B"}, {"t": "Column C"}],
-                 [{"t": "Row 1"}, {"t": "—"}, {"t": "—"}],
-                 [{"t": "Row 2"}, {"t": "—"}, {"t": "—"}],
-                 [{"t": "Row 3"}, {"t": "—"}, {"t": "—"}],
-             ]},
-            _gtext(1, 12, 488, 20, "caption", [_p("Source: [dataset / report, period]; team analysis.", size=9)]),
-        ],
-    },
     "metric": {
         "name": "Metric",
-        "description": "One big hero number on a full-height colour panel, with the supporting bullets beside it.",
+        "description": "One big hero number on a full-height colour panel, with the supporting bullets beside it. Use when a slide is about a single number, like a KPI or metric.",
         "elements": [
             {"type": "shape", "x": 0, "y": 0, "w": 408, "h": 540, "shape": "rect", "fill": "dk2"},  # panel through col 5
             _gtext(1, 4, 44, 60, "headline", [_p("Key results", color="lt1")]),
@@ -272,8 +231,8 @@ _LAYOUTS: dict[str, dict] = {
     },
     "chart": {
         "name": "Chart",
-        "description": "A chart on the left with takeaway bullets on the right.",
-        "comment": "Pick the chart kind that fits the question: change the type from 'column' to 'line' (trend), 'bar' (ranked, horizontal), 'scatter' (relationship between two measures — uses point [x,y]/[x,y,size]), 'histogram' (distribution — set 'bins'), 'dot' (a ranked dot plot), 'bullet' (target vs actual — set 'targets'/'bands'), or 'waterfall' (contribution to a change). Set legend:true only with more than one series. Fill in the source line (what data, which period, who analysed it) — or drop it only if the chart truly needs no sourcing. For the full-bleed chart, widen it to x=48 w=864 and drop the bullets.",
+        "description": "A chart on one side with takeaway bullets on the other (the chart can be swapped for another element, like a picture). Use for any trend, comparison, distribution or bridge — the takeaway goes in the bullets.",
+        "comment": "Pick the chart kind that fits the question: change the type from 'column' to 'line' (trend), 'bar' (ranked, horizontal), 'scatter' (relationship between two measures — uses point [x,y]/[x,y,size]), 'histogram' (distribution — set 'bins'), 'dot' (a ranked dot plot), 'bullet' (target vs actual — set 'targets'/'bands'), or 'waterfall' (contribution to a change). Set legend:true only with more than one series. Fill in the source line (what data, which period, who analysed it) — or drop it only if the chart truly needs no sourcing. To put the chart on the RIGHT instead: bullets on cols 1-4 (x=48 w=276) and the chart at x=336 w=576. For a full-width chart, widen it to x=48 w=864 and drop the bullets.",
         "elements": [
             _gtext(1, 12, 44, 60, "headline", [_p("Slide title")]),
             {"type": "chart", "x": 48, "y": 130, "w": 564, "h": 320, "chart": "column",
@@ -289,7 +248,7 @@ _LAYOUTS: dict[str, dict] = {
     },
     "photo": {
         "name": "Photo cover",
-        "description": "Full-bleed photo cover — a big headline anchored bottom-left over a background image with a dark scrim.",
+        "description": "Full-bleed photo cover — a big headline anchored bottom-left over a background image with a dark scrim. Use for a photographic cover or a dramatic section opener.",
         "skip_footer": True,
         "bg": "dk2",
         "bg_image": "",  # set a "[[image:UUID]]" token to fill the slide with a photo
@@ -301,7 +260,7 @@ _LAYOUTS: dict[str, dict] = {
     },
     "agenda": {
         "name": "Agenda",
-        "description": "A numbered agenda / contents list — big editorial numerals, a topic and a one-line gloss per row, with an optional duration on the right.",
+        "description": "A numbered agenda / contents list — big editorial numerals, a topic and a one-line gloss per row, with an optional duration on the right. Use when a slide should show an agenda or list the presentation content.",
         "comment": "Four 88pt rows from y=144, separated by hairlines. Drop a row (numeral + topic + gloss + duration, and the hairline above it) for a shorter agenda; drop the right-hand duration column if timings aren't relevant.",
         "elements": [
             _gtext(1, 12, 44, 60, "headline", [_p("Agenda")]),
@@ -328,7 +287,8 @@ _LAYOUTS: dict[str, dict] = {
     },
     "exec_summary": {
         "name": "Executive summary",
-        "description": "The bottom line — an action-title recommendation on the left, three numbered supporting messages stacked on the right.",
+        "description": "The bottom line — an action-title recommendation on the left, numbered supporting messages stacked on the right. Use as the first content slide of a recommendation deck — the answer up front.",
+        "comment": "For more or fewer messages, re-space the rows to fit between y=88 and y≈460: each message is a `subhead` number (h=30) over a `body` line (h=70), separated by a hairline from x=408 to x=912.",
         "elements": [
             _gtext(1, 4, 88, 260, "headline", [_p("The bottom line — write the recommendation as the title", size=34)]),
             _gtext(6, 12, 88, 30, "subhead", [_p("1")]),
@@ -343,7 +303,8 @@ _LAYOUTS: dict[str, dict] = {
     },
     "kpi_row": {
         "name": "KPI row",
-        "description": "Three KPIs side by side — a big number, its label and one line of context each, split by vertical hairlines.",
+        "description": "Two to four KPIs side by side — a big number, its label and one line of context each, split by vertical hairlines. Use when a few headline numbers tell the story together.",
+        "comment": "This example has three KPIs on thirds. For two, use the halves (x=48 w=420 and x=480 w=432, one hairline at x=474); for four, the quarters (x=48/264/480/696, w=204/204/204/216, hairlines at x=258/474/690) and drop the number size a step (e.g. 48) so it fits.",
         "elements": [
             _gtext(1, 12, 44, 60, "headline", [_p("Key results")]),
             # Three columns (cols 1-4 / 5-8 / 9-12) with a hairline centred in each gutter.
@@ -360,32 +321,9 @@ _LAYOUTS: dict[str, dict] = {
             _gtext(9, 12, 322, 90, "caption", [_p("One line of context on why this number matters.", size=12)]),
         ],
     },
-    "process": {
-        "name": "Process",
-        "description": "A left-to-right process flow of 4 interlocking chevron steps, each with a line of detail underneath.",
-        "comment": "The chevrons interlock: the notch/tip depth is h/2 (48pt here), so each chevron starts 40pt before the previous one ends — an 8pt seam. For a 3-step flow use w=312 at x=48/324/600. Steps are peers, so they share one colour; recolour a single chevron (e.g. dk2) only to spotlight the step that matters.",
-        "elements": [
-            _gtext(1, 12, 44, 60, "headline", [_p("How it works")]),
-            # Four interlocking chevrons filling cols 1-12: w=246, notch 48 (h/2),
-            # each offset 206pt (w - notch + 8pt seam); the last ends flush at 912.
-            # The captions inset 8pt from each chevron's bottom-left corner.
-            {"type": "shape", "x": 48, "y": 176, "w": 246, "h": 96, "shape": "chevron", "fill": "accent1",
-             "text": {"paragraphs": [{"align": "center", "runs": [{"t": "Step 1", "color": "lt1", "b": True}]}]}},
-            {"type": "shape", "x": 254, "y": 176, "w": 246, "h": 96, "shape": "chevron", "fill": "accent1",
-             "text": {"paragraphs": [{"align": "center", "runs": [{"t": "Step 2", "color": "lt1", "b": True}]}]}},
-            {"type": "shape", "x": 460, "y": 176, "w": 246, "h": 96, "shape": "chevron", "fill": "accent1",
-             "text": {"paragraphs": [{"align": "center", "runs": [{"t": "Step 3", "color": "lt1", "b": True}]}]}},
-            {"type": "shape", "x": 666, "y": 176, "w": 246, "h": 96, "shape": "chevron", "fill": "accent1",
-             "text": {"paragraphs": [{"align": "center", "runs": [{"t": "Step 4", "color": "lt1", "b": True}]}]}},
-            _text(56, 292, 190, 90, "body", [_p("One line on what happens in this step.", size=13)]),
-            _text(262, 292, 190, 90, "body", [_p("One line on what happens in this step.", size=13)]),
-            _text(468, 292, 190, 90, "body", [_p("One line on what happens in this step.", size=13)]),
-            _text(674, 292, 190, 90, "body", [_p("One line on what happens in this step.", size=13)]),
-        ],
-    },
     "swimlane": {
         "name": "Swimlane",
-        "description": "A swimlane process — role/function lanes down the side, stages across the top, and the steps that hand off between lanes joined by arrows.",
+        "description": "A swimlane process — role/function lanes down the side, stages across the top, and the steps that hand off between lanes joined by arrows. Use for an operating model or who-does-what across stages.",
         "comment": "Rename the three lane labels to the owners/functions and the four column headers to your stages. Move each step box into the lane×stage cell that owns it, and connect consecutive steps with arrows — a straight arrow within one lane, an elbow when the work hands off to another lane. Drop a lane (its band, label and separators) or a stage column to resize the grid.",
         "elements": [
             _gtext(1, 12, 44, 60, "headline", [_p("Operating model")]),
@@ -426,51 +364,9 @@ _LAYOUTS: dict[str, dict] = {
             {"type": "line", "x1": 818, "y1": 306, "x2": 818, "y2": 384, "color": "accent3", "w": 1.5, "arrow": "end"},
         ],
     },
-    "cycle": {
-        "name": "Cycle / flywheel",
-        "description": "A cyclical / flywheel diagram — four stages marked around a ring with the loop's name at its centre.",
-        "elements": [
-            _gtext(1, 12, 44, 60, "headline", [_p("The growth cycle")]),
-            # A 256pt ring centred on (480, 307); the four station dots sit ON the
-            # ring at its N/E/S/W points, each label reading outward from it.
-            {"type": "shape", "x": 352, "y": 179, "w": 256, "h": 256, "shape": "oval",
-             "line": {"color": "accent3", "w": 2}},
-            _text(380, 294, 200, 30, "subhead", [_p("Growth", size=20, align="center")]),
-            {"type": "shape", "x": 470, "y": 169, "w": 20, "h": 20, "shape": "oval", "fill": "dk2"},
-            _text(380, 112, 200, 30, "subhead", [_p("Stage 1", size=18, color="dk2", align="center")], valign="bottom"),
-            {"type": "shape", "x": 598, "y": 297, "w": 20, "h": 20, "shape": "oval", "fill": "dk2"},
-            _text(632, 292, 190, 30, "subhead", [_p("Stage 2", size=18, color="dk2")], valign="middle"),
-            {"type": "shape", "x": 470, "y": 425, "w": 20, "h": 20, "shape": "oval", "fill": "dk2"},
-            _text(380, 456, 200, 30, "subhead", [_p("Stage 3", size=18, color="dk2", align="center")]),
-            {"type": "shape", "x": 342, "y": 297, "w": 20, "h": 20, "shape": "oval", "fill": "dk2"},
-            _text(138, 292, 190, 30, "subhead", [_p("Stage 4", size=18, color="dk2", align="right")], valign="middle"),
-        ],
-    },
-    "timeline": {
-        "name": "Timeline",
-        "description": "A horizontal timeline / roadmap — milestone dots on a line, each with a label and a line of detail beneath it.",
-        "elements": [
-            _gtext(1, 12, 44, 60, "headline", [_p("Roadmap")]),
-            # One line across the content width; a dot sits ON it at the start of
-            # each 216pt column, with the milestone text hanging left-aligned below.
-            {"type": "line", "x1": _ML, "y1": 256, "x2": _MR, "y2": 256, "color": "accent3", "w": 2},
-            {"type": "shape", "x": _ML, "y": 246, "w": 20, "h": 20, "shape": "oval", "fill": "accent1"},
-            _text(_ML, 292, 180, 30, "subhead", [_p("Q1 · Milestone", size=20, color="dk2")]),
-            _text(_ML, 328, 180, 70, "caption", [_p("One line on what lands here.", size=12)]),
-            {"type": "shape", "x": 264, "y": 246, "w": 20, "h": 20, "shape": "oval", "fill": "accent1"},
-            _text(264, 292, 180, 30, "subhead", [_p("Q2 · Milestone", size=20, color="dk2")]),
-            _text(264, 328, 180, 70, "caption", [_p("One line on what lands here.", size=12)]),
-            {"type": "shape", "x": 480, "y": 246, "w": 20, "h": 20, "shape": "oval", "fill": "accent1"},
-            _text(480, 292, 180, 30, "subhead", [_p("Q3 · Milestone", size=20, color="dk2")]),
-            _text(480, 328, 180, 70, "caption", [_p("One line on what lands here.", size=12)]),
-            {"type": "shape", "x": 696, "y": 246, "w": 20, "h": 20, "shape": "oval", "fill": "accent1"},
-            _text(696, 292, 180, 30, "subhead", [_p("Q4 · Milestone", size=20, color="dk2")]),
-            _text(696, 328, 180, 70, "caption", [_p("One line on what lands here.", size=12)]),
-        ],
-    },
     "roadmap_gantt": {
         "name": "Roadmap / Gantt",
-        "description": "A multi-workstream roadmap — tracks down the side, quarters across the top, and duration bars spanning the periods each workstream runs, with milestone diamonds and a 'now' marker.",
+        "description": "A multi-workstream roadmap — tracks down the side, quarters across the top, and duration bars spanning the periods each workstream runs, with milestone diamonds and a 'now' marker. Use for a schedule or roadmap with several parallel workstreams (for a single track use the timeline recipe in the skill).",
         "comment": "Rename the four workstream labels and the Q1–Q4 headers, then stretch each duration bar to span its real periods: a bar's left edge is its start quarter's x (156 / 345 / 534 / 723) and its right edge the end quarter's right edge (345 / 534 / 723 / 912). Move the diamonds to real milestone dates, slide the dashed 'Now' line to today, and drop a row (label + bar) for fewer workstreams.",
         "elements": [
             _gtext(1, 12, 44, 60, "headline", [_p("Roadmap")]),
@@ -507,33 +403,9 @@ _LAYOUTS: dict[str, dict] = {
             {"type": "line", "x1": 600, "y1": 150, "x2": 600, "y2": 470, "color": "accent1", "w": 1.5, "dash": "dash"},
         ],
     },
-    "matrix_2x2": {
-        "name": "2x2 matrix",
-        "description": "A 2×2 matrix of filled quadrant tiles with labelled axes — fill the quadrant that carries the recommendation in the accent colour.",
-        "comment": "Quadrant B is the highlighted tile (accent1 fill, light text); the other three are pale panels with dark text. Move the highlight by swapping the fills and the text colours.",
-        "elements": [
-            _gtext(1, 12, 44, 60, "headline", [_p("Prioritisation")]),
-            # Four 276×148 tiles on the grid (cols 4-7 / 8-11), 12pt column gap / 8pt row
-            # gap, inset from the left edge to leave room for the vertical axis label.
-            {"type": "shape", "x": 264, "y": 140, "w": 276, "h": 148, "shape": "rect", "fill": "lt2"},
-            _text(284, 156, 236, 28, "body", [_p("Quadrant A", bold=True, size=15, color="dk2")]),
-            _text(284, 184, 236, 60, "body", [_p("One line on what sits here.", size=12)]),
-            {"type": "shape", "x": 552, "y": 140, "w": 276, "h": 148, "shape": "rect", "fill": "accent1"},
-            _text(572, 156, 236, 28, "body", [_p("Quadrant B — do first", bold=True, size=15, color="lt1")]),
-            _text(572, 184, 236, 60, "body", [_p("One line on what sits here.", size=12, color="lt1")]),
-            {"type": "shape", "x": 264, "y": 296, "w": 276, "h": 148, "shape": "rect", "fill": "lt2"},
-            _text(284, 312, 236, 28, "body", [_p("Quadrant C", bold=True, size=15, color="dk2")]),
-            _text(284, 340, 236, 60, "body", [_p("One line on what sits here.", size=12)]),
-            {"type": "shape", "x": 552, "y": 296, "w": 276, "h": 148, "shape": "rect", "fill": "lt2"},
-            _text(572, 312, 236, 28, "body", [_p("Quadrant D", bold=True, size=15, color="dk2")]),
-            _text(572, 340, 236, 60, "body", [_p("One line on what sits here.", size=12)]),
-            _gtext(4, 11, 456, 24, "body", [_p("Effort →", bold=True, size=12, align="center")]),
-            _text(150, 284, 140, 24, "body", [_p("Impact →", bold=True, size=12, align="center")], rotation=-90),
-        ],
-    },
     "issue_tree": {
         "name": "Issue tree",
-        "description": "A left-to-right issue tree (MECE decomposition) — a key question breaking into branches and their sub-drivers, joined by elbow connectors.",
+        "description": "A left-to-right issue tree (MECE decomposition) — a key question breaking into branches and their sub-drivers, joined by elbow connectors. Use for a hypothesis / driver tree or any 'break the question down' slide.",
         "comment": "A MECE issue tree: the key question on the left, three mutually-exclusive branches, each split into two sub-drivers/tests. Keep the branches distinct and collectively exhaustive, and phrase each leaf as a testable driver. Drop a leaf pair (with its stub + bus + feeder lines) for a one-level tree, or copy a branch box and its connectors to add a fourth.",
         "elements": [
             _gtext(1, 12, 44, 60, "headline", [_p("Issue tree")]),
@@ -583,55 +455,9 @@ _LAYOUTS: dict[str, dict] = {
             {"type": "line", "x1": 582, "y1": 457, "x2": 624, "y2": 457, "color": "accent3", "w": 1.5, "arrow": "end"},
         ],
     },
-    "ecosystem": {
-        "name": "Ecosystem / network",
-        "description": "An ecosystem / network map — a central hub connected to surrounding partners.",
-        "elements": [
-            _gtext(1, 12, 44, 60, "headline", [_p("Our ecosystem")]),
-            {
-                "type": "network", "x": 210, "y": 150, "w": 560, "h": 330,
-                "node_color": "accent2", "edge_color": "accent2", "node_r": 6, "label_size": 13,
-                "nodes": [
-                    {"x": 270, "y": 150, "label": "Us", "label_pos": "c", "emphasis": True,
-                     "r": 0, "size": 26, "color": "dk1"},
-                    {"x": 270, "y": 18, "label": "Partner A", "label_pos": "t"},
-                    {"x": 500, "y": 70, "label": "Partner B", "label_pos": "r"},
-                    {"x": 520, "y": 240, "label": "Partner C", "label_pos": "r"},
-                    {"x": 270, "y": 300, "label": "Partner D", "label_pos": "b"},
-                    {"x": 40, "y": 240, "label": "Partner E", "label_pos": "l"},
-                    {"x": 20, "y": 70, "label": "Partner F", "label_pos": "l"},
-                ],
-                "edges": [
-                    {"a": 0, "b": 1}, {"a": 0, "b": 2}, {"a": 0, "b": 3},
-                    {"a": 0, "b": 4}, {"a": 0, "b": 5}, {"a": 0, "b": 6},
-                    {"a": 1, "b": 2}, {"a": 2, "b": 3}, {"a": 3, "b": 4},
-                    {"a": 4, "b": 5}, {"a": 5, "b": 6}, {"a": 6, "b": 1},
-                ],
-            },
-        ],
-    },
-    "comparison": {
-        "name": "Comparison",
-        "description": "A side-by-side comparison of two options (A vs B).",
-        "comment": "The accent subhead marks the recommended option — move it to the winner, or colour both dk2 when the comparison is neutral.",
-        "elements": [
-            _gtext(1, 12, 44, 60, "headline", [_p("Comparison")]),
-            {"type": "line", "x1": 474, "y1": 140, "x2": 474, "y2": 450, "color": "accent3", "w": 2},
-            _gtext(1, 6, 140, 40, "subhead", [_p("Option A", bold=True, color="dk2")]),
-            _gtext(1, 6, 196, 240, "body", [
-                _p("First point", bullet=True, space_after=8),
-                _p("Second point", bullet=True, space_after=8),
-            ]),
-            _gtext(7, 12, 140, 40, "subhead", [_p("Option B", bold=True, color="accent1")]),
-            _gtext(7, 12, 196, 240, "body", [
-                _p("First point", bullet=True, space_after=8),
-                _p("Second point", bullet=True, space_after=8),
-            ]),
-        ],
-    },
     "quote": {
         "name": "Quote",
-        "description": "A large pull-quote with attribution.",
+        "description": "A large pull-quote with attribution. Use for a customer / expert quote or a memorable line that anchors a section.",
         "bg": "lt2",
         "elements": [
             _text(96, 70, 200, 160, "headline", [_p("“", size=150, bold=True, color="accent3", align="left")]),
@@ -641,7 +467,7 @@ _LAYOUTS: dict[str, dict] = {
     },
     "closing": {
         "name": "Closing",
-        "description": "A closing / thank-you slide with contact details on a dark background.",
+        "description": "A closing / thank-you slide with contact details on a dark background. Use as the last slide.",
         "skip_footer": True,
         "bg": "dk2",
         "elements": [
@@ -651,7 +477,7 @@ _LAYOUTS: dict[str, dict] = {
     },
     "blank": {
         "name": "Blank",
-        "description": "An empty slide to build from scratch.",
+        "description": "An empty slide to build from scratch. Use only when no premade layout fits — and even then build it from the premade elements and the skill's diagram recipes.",
         "elements": [],
     },
 }

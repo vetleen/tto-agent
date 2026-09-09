@@ -699,6 +699,26 @@ class BuildDynamicContextTests(TestCase):
         self.assertIn("Draft B", result)
         self.assertIn("Content B", result)
 
+    def test_active_slide_deck_names_its_theme(self):
+        """The deck section says which named theme the deck carries (so the model
+        doesn't go looking for one) — Forest when there is no override at all."""
+        class FakeDeck:
+            title = "Board deck"
+            content = {"version": 1, "size": {"w": 960, "h": 540}, "slides": []}
+
+        result = build_dynamic_context(active_slide_set=FakeDeck())
+        self.assertIn('# Active Slide Deck: "Board deck"', result)
+        self.assertIn("Theme: Forest (built-in default)", result)
+        self.assertIn("Theme colours (name=hex): dk1=#12241B", result)
+
+        FakeDeck.content = {**FakeDeck.content, "theme": {"_theme_id": "slate", "_theme_label": "Slate"}}
+        self.assertIn("Theme: Slate", build_dynamic_context(active_slide_set=FakeDeck()))
+
+        FakeDeck.content = {**FakeDeck.content, "theme": {"colors": {"accent1": "#123456"}}}
+        result = build_dynamic_context(active_slide_set=FakeDeck())
+        self.assertIn("Theme: a deck-level custom palette", result)
+        self.assertIn("accent1=#123456", result)
+
     def test_single_canvas_content(self):
         """Old single-canvas API via 'canvas' param."""
         class FakeCanvas:
