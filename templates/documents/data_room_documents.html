@@ -61,8 +61,8 @@
         absent — a non-focusable required control blocks submit outright — the
         submit button is disabled instead while nothing is staged.
         {% endcomment %}
-        <div id="file-field" class="cursor-pointer flex flex-wrap items-center gap-2 w-full px-2 py-2 border border-default bg-neutral-primary-soft rounded-base focus-within:ring-2 focus-within:ring-brand-medium">
-          <span class="shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-heading bg-neutral-secondary-soft border border-default-medium rounded-base">
+        <div id="file-field" class="cursor-pointer flex flex-wrap items-center gap-2 w-full px-2 py-2 border border-default bg-neutral-primary-soft rounded shadow-inset dark:shadow-[inset_0_1px_2px_rgb(0_0_0/0.30)] focus-within:ring-2 focus-within:ring-brand-medium">
+          <span class="shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-heading bg-neutral-secondary-soft border border-default-medium rounded-md transition-colors hover:bg-neutral-secondary-medium">
             <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v6m3-3H9m12 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/></svg>
             Choose files
           </span>
@@ -76,7 +76,7 @@
           <button type="button" id="clear-selected-files" class="hidden shrink-0 text-xs font-medium text-body hover:text-heading underline underline-offset-2">Clear all</button>
         </div>
       </div>
-      <button id="upload-btn" type="submit" disabled class="bg-brand text-on-brand hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium box-border border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed">
+      <button id="upload-btn" type="submit" disabled class="bg-brand text-on-brand hover:bg-brand-strong focus:ring-4 focus:ring-brand-medium box-border border border-transparent shadow-xs font-medium rounded text-sm px-4 py-2.5 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed">
         Add to data room
       </button>
       <p class="mt-2 text-xs text-body">Added files are processed: text is extracted, split into searchable chunks, and indexed. {{ assistant_name }} can search the indexed content whenever this data room is attached to the chat.</p>
@@ -461,7 +461,7 @@
 
         var remove = document.createElement('button');
         remove.type = 'button';
-        remove.className = 'remove-selected-file shrink-0 inline-flex items-center justify-center w-4 h-4 rounded-full text-body-subtle hover:bg-neutral-tertiary hover:text-heading focus:outline-none focus:ring-2 focus:ring-brand-medium';
+        remove.className = 'remove-selected-file shrink-0 inline-flex items-center justify-center w-4 h-4 rounded-full text-body-subtle hover:bg-neutral-tertiary-medium hover:text-heading focus:outline-none focus:ring-2 focus:ring-brand-medium';
         remove.dataset.index = i;
         remove.title = 'Remove';
         remove.setAttribute('aria-label', 'Remove ' + f.name);
