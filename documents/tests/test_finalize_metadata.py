@@ -32,6 +32,20 @@ except ImportError:
 _MODELS = dict(LLM_DEFAULT_MID_MODEL="openai/gpt-4o-mini", LLM_DEFAULT_CHEAP_MODEL="openai/gpt-4o-mini")
 
 
+def _pii(categories=None, detail=""):
+    """Build the PIIScanResult that scan_pii_categories_for_version now returns."""
+    from documents.services.pii_scan import PIIScanResult
+    return PIIScanResult(categories or {}, detail)
+
+
+def _reviewer_decision(article_9=False, article_10=False, findings="", reasoning="r", confidence=0.9):
+    from llm.types.structured import PIIReviewDecision
+    return PIIReviewDecision(
+        article_9=article_9, article_10=article_10, confidence=confidence,
+        reasoning=reasoning, findings=findings,
+    )
+
+
 class FinalizeDocumentMetadataTests(TestCase):
     """Description + PII now run in finalize_document_metadata, not process_document."""
 
@@ -62,7 +76,7 @@ class FinalizeDocumentMetadataTests(TestCase):
         doc = self._ready_doc()
         with patch("documents.services.description.generate_description_and_tags_from_text",
                    return_value={"description": "A description", "tags": {"document_type": "Report"}, "document_date": None}), \
-             patch("documents.services.pii_scan.scan_pii_categories_for_version", return_value={}):
+             patch("documents.services.pii_scan.scan_pii_categories_for_version", return_value=_pii()):
             finalize_document_metadata(doc.current_version_id)
 
         doc.refresh_from_db()
@@ -76,7 +90,7 @@ class FinalizeDocumentMetadataTests(TestCase):
         doc = self._ready_doc()
         with patch("documents.services.description.generate_description_and_tags_from_text",
                    side_effect=RuntimeError("LLM down")), \
-             patch("documents.services.pii_scan.scan_pii_categories_for_version", return_value={}):
+             patch("documents.services.pii_scan.scan_pii_categories_for_version", return_value=_pii()):
             finalize_document_metadata(doc.current_version_id)  # must not raise
 
         doc.refresh_from_db()
@@ -114,7 +128,7 @@ class FinalizeDocumentMetadataTests(TestCase):
         with patch("documents.services.description.generate_description_and_tags_from_text",
                    return_value={"description": "", "tags": {}, "document_date": None}), \
              patch("documents.services.pii_scan.scan_pii_categories_for_version",
-                   return_value={"pii_ordinary_identity": True, "pii_special_category": True}):
+                   return_value=_pii({"pii_ordinary_identity": True, "pii_special_category": True})):
             finalize_document_metadata(doc.current_version_id)
 
         tags = dict(
@@ -160,12 +174,19 @@ class FinalizeDocumentMetadataTests(TestCase):
         with patch("documents.services.description.generate_description_and_tags_from_text",
                    return_value={"description": "", "tags": {}, "document_date": None}), \
              patch("documents.services.pii_scan.scan_pii_categories_for_version",
-                   return_value={"pii_ordinary_identity": True, "pii_special_category": True}):
+                   return_value=_pii(
+                       {"pii_ordinary_identity": True, "pii_special_category": True},
+                       detail="Row 3 states a named patient's diagnosis.",
+                   )):
             finalize_document_metadata(doc.current_version_id)
 
         doc.refresh_from_db()
         self.assertTrue(doc.is_quarantined)
         self.assertIn("Article 9", doc.quarantine_reason)
+        self.assertEqual(
+            doc.current_version.quarantine_detail,
+            "Row 3 states a named patient's diagnosis.",
+        )
 
     @override_settings(**_MODELS)
     def test_quarantine_on_criminal_offence(self):
@@ -175,7 +196,7 @@ class FinalizeDocumentMetadataTests(TestCase):
         with patch("documents.services.description.generate_description_and_tags_from_text",
                    return_value={"description": "", "tags": {}, "document_date": None}), \
              patch("documents.services.pii_scan.scan_pii_categories_for_version",
-                   return_value={"pii_criminal_offence": True}):
+                   return_value=_pii({"pii_criminal_offence": True})):
             finalize_document_metadata(doc.current_version_id)
 
         doc.refresh_from_db()
@@ -190,7 +211,7 @@ class FinalizeDocumentMetadataTests(TestCase):
         with patch("documents.services.description.generate_description_and_tags_from_text",
                    return_value={"description": "", "tags": {}, "document_date": None}), \
              patch("documents.services.pii_scan.scan_pii_categories_for_version",
-                   return_value={"pii_ordinary_identity": True}):
+                   return_value=_pii({"pii_ordinary_identity": True})):
             finalize_document_metadata(doc.current_version_id)
 
         doc.refresh_from_db()
@@ -212,7 +233,7 @@ class FinalizeDocumentMetadataTests(TestCase):
         with patch("documents.services.description.generate_description_and_tags_from_text",
                    return_value={"description": "", "tags": {}, "document_date": None}), \
              patch("documents.services.pii_scan.scan_pii_categories_for_version",
-                   return_value={"pii_special_category": True}):
+                   return_value=_pii({"pii_special_category": True})):
             finalize_document_metadata(doc.current_version_id)
 
         doc.refresh_from_db()
@@ -407,28 +428,33 @@ class ScanPIICategoriesForDocumentTests(TestCase):
         )
         return doc
 
+    _REVIEWER = "documents.services.pii_review.review_flagged_pii_window"
+
     @override_settings(PII_SCAN_WINDOW_TOKENS=10)
     def test_multiple_windows_union_categories(self):
         from documents.services.pii_scan import scan_pii_categories_for_version
 
         doc = self._doc_with_chunks(2, token_each=10)  # each chunk fills its own window
         with patch("documents.services.pii_scan.scan_pii_categories",
-                   side_effect=[{"pii_ordinary_identity": True}, {"pii_special_category": True}]) as mock_scan:
+                   side_effect=[{"pii_ordinary_identity": True}, {"pii_special_category": True}]) as mock_scan, \
+             patch(self._REVIEWER, return_value=_reviewer_decision(article_9=True, findings="f")):
             result = scan_pii_categories_for_version(doc.current_version_id)
 
         self.assertEqual(mock_scan.call_count, 2)
-        self.assertEqual(result, {"pii_ordinary_identity": True, "pii_special_category": True})
+        self.assertEqual(result.categories, {"pii_ordinary_identity": True, "pii_special_category": True})
 
     def test_single_window_one_call(self):
         from documents.services.pii_scan import scan_pii_categories_for_version
 
         doc = self._doc_with_chunks(2, token_each=10)  # default budget (6000) -> one window
         with patch("documents.services.pii_scan.scan_pii_categories",
-                   return_value={"pii_ordinary_identity": True}) as mock_scan:
+                   return_value={"pii_ordinary_identity": True}) as mock_scan, \
+             patch(self._REVIEWER) as mock_review:
             result = scan_pii_categories_for_version(doc.current_version_id)
 
         self.assertEqual(mock_scan.call_count, 1)
-        self.assertEqual(result, {"pii_ordinary_identity": True})
+        self.assertEqual(result.categories, {"pii_ordinary_identity": True})
+        mock_review.assert_not_called()  # ordinary categories never escalate
 
     @override_settings(PII_SCAN_WINDOW_TOKENS=10)
     def test_early_exit_when_all_categories_found(self):
@@ -436,11 +462,13 @@ class ScanPIICategoriesForDocumentTests(TestCase):
 
         doc = self._doc_with_chunks(5, token_each=10)  # 5 windows available
         all_true = {cat: True for cat in PII_CATEGORIES}
-        with patch("documents.services.pii_scan.scan_pii_categories", return_value=all_true) as mock_scan:
+        with patch("documents.services.pii_scan.scan_pii_categories", return_value=all_true) as mock_scan, \
+             patch(self._REVIEWER,
+                   return_value=_reviewer_decision(article_9=True, article_10=True, findings="f")):
             result = scan_pii_categories_for_version(doc.current_version_id)
 
         self.assertEqual(mock_scan.call_count, 1)  # first window found everything -> stop
-        self.assertEqual(len(result), len(PII_CATEGORIES))
+        self.assertEqual(len(result.categories), len(PII_CATEGORIES))
 
     @override_settings(PII_SCAN_WINDOW_TOKENS=10)
     def test_window_failure_propagates(self):
@@ -452,6 +480,135 @@ class ScanPIICategoriesForDocumentTests(TestCase):
         doc = self._doc_with_chunks(2, token_each=10)
         with patch("documents.services.pii_scan.scan_pii_categories",
                    side_effect=[RuntimeError("boom"), {"pii_ordinary_identity": True}]):
+            with self.assertRaises(RuntimeError):
+                scan_pii_categories_for_version(doc.current_version_id)
+
+    def test_reviewer_confirms_candidate(self):
+        """A confirmed Art. 9 candidate lands in the categories with its findings
+        in detail, and leaves a `confirmed` PIIReviewEvent."""
+        from documents.models import PIIReviewEvent
+        from documents.services.pii_scan import scan_pii_categories_for_version
+
+        doc = self._doc_with_chunks(1)
+        with patch("documents.services.pii_scan.scan_pii_categories",
+                   return_value={"pii_special_category": True}), \
+             patch(self._REVIEWER,
+                   return_value=_reviewer_decision(
+                       article_9=True, findings="Row 3 states a named patient's diagnosis.",
+                   )) as mock_review:
+            result = scan_pii_categories_for_version(
+                doc.current_version_id, user_id=self.user.id,
+                data_room_id=self.data_room.id, org_id=None,
+            )
+
+        self.assertEqual(result.categories, {"pii_special_category": True})
+        self.assertEqual(result.detail, "Row 3 states a named patient's diagnosis.")
+        # The reviewer saw the window text, candidates, and the document title.
+        args = mock_review.call_args.args
+        self.assertIn("window text 0", args[0])
+        self.assertEqual(args[1], ["pii_special_category"])
+        self.assertEqual(args[2], "piidoc.txt")
+        event = PIIReviewEvent.objects.get()
+        self.assertEqual(event.action, PIIReviewEvent.Action.CONFIRMED)
+        self.assertTrue(event.article_9)
+        self.assertFalse(event.article_10)
+        self.assertEqual(event.candidate_categories, ["pii_special_category"])
+        self.assertEqual(event.document_id, doc.id)
+        self.assertEqual(event.data_room_id, self.data_room.id)
+        self.assertEqual(event.version_id, doc.current_version_id)
+        self.assertIn("window text 0", event.excerpt)
+        self.assertIsNotNone(event.retain_until)
+
+    def test_reviewer_dismisses_candidate(self):
+        """A dismissed candidate is dropped (no category, no detail) but leaves a
+        `dismissed` near-hit event for calibration — the St. Olavs regression case."""
+        from documents.models import PIIReviewEvent
+        from documents.services.pii_scan import scan_pii_categories_for_version
+
+        doc = self._doc_with_chunks(1)
+        with patch("documents.services.pii_scan.scan_pii_categories",
+                   return_value={"pii_ordinary_identity": True, "pii_special_category": True}), \
+             patch(self._REVIEWER,
+                   return_value=_reviewer_decision(
+                       findings="Anonymous cohort references are not personal data.",
+                   )):
+            result = scan_pii_categories_for_version(doc.current_version_id)
+
+        self.assertEqual(result.categories, {"pii_ordinary_identity": True})
+        self.assertEqual(result.detail, "")
+        event = PIIReviewEvent.objects.get()
+        self.assertEqual(event.action, PIIReviewEvent.Action.DISMISSED)
+        self.assertFalse(event.article_9)
+        self.assertEqual(event.findings, "Anonymous cohort references are not personal data.")
+
+    def test_reviewer_unconfigured_keeps_classifier_flag(self):
+        """No reviewer model -> the classifier verdict stands (legacy behavior),
+        recorded as a `fallback` event."""
+        from documents.models import PIIReviewEvent
+        from documents.services.pii_scan import scan_pii_categories_for_version
+
+        doc = self._doc_with_chunks(1)
+        with patch("documents.services.pii_scan.scan_pii_categories",
+                   return_value={"pii_special_category": True}), \
+             patch(self._REVIEWER, return_value=None):
+            result = scan_pii_categories_for_version(doc.current_version_id)
+
+        self.assertEqual(result.categories, {"pii_special_category": True})
+        self.assertEqual(result.detail, "")
+        event = PIIReviewEvent.objects.get()
+        self.assertEqual(event.action, PIIReviewEvent.Action.FALLBACK)
+        self.assertTrue(event.article_9)
+
+    @override_settings(PII_SCAN_WINDOW_TOKENS=10)
+    def test_confirmed_article_skips_review_in_later_windows(self):
+        """Once an article is confirmed, later windows flagging the same category
+        are not re-reviewed (one event, not N)."""
+        from documents.models import PIIReviewEvent
+        from documents.services.pii_scan import scan_pii_categories_for_version
+
+        doc = self._doc_with_chunks(3, token_each=10)
+        with patch("documents.services.pii_scan.scan_pii_categories",
+                   return_value={"pii_special_category": True}), \
+             patch(self._REVIEWER,
+                   return_value=_reviewer_decision(article_9=True, findings="f")) as mock_review:
+            result = scan_pii_categories_for_version(doc.current_version_id)
+
+        self.assertEqual(mock_review.call_count, 1)
+        self.assertEqual(PIIReviewEvent.objects.count(), 1)
+        self.assertEqual(result.categories, {"pii_special_category": True})
+
+    @override_settings(PII_SCAN_WINDOW_TOKENS=10)
+    def test_dismissed_candidate_rereviewed_in_later_window(self):
+        """A dismissal only clears THAT window — a later window flagging the same
+        category is new evidence and gets its own review."""
+        from documents.models import PIIReviewEvent
+        from documents.services.pii_scan import scan_pii_categories_for_version
+
+        doc = self._doc_with_chunks(2, token_each=10)
+        with patch("documents.services.pii_scan.scan_pii_categories",
+                   return_value={"pii_special_category": True}), \
+             patch(self._REVIEWER,
+                   side_effect=[
+                       _reviewer_decision(findings="benign"),
+                       _reviewer_decision(article_9=True, findings="Row 9 names a patient."),
+                   ]) as mock_review:
+            result = scan_pii_categories_for_version(doc.current_version_id)
+
+        self.assertEqual(mock_review.call_count, 2)
+        self.assertEqual(result.categories, {"pii_special_category": True})
+        self.assertEqual(result.detail, "Row 9 names a patient.")
+        actions = list(PIIReviewEvent.objects.order_by("window_index").values_list("action", flat=True))
+        self.assertEqual(actions, ["dismissed", "confirmed"])
+
+    def test_reviewer_failure_propagates(self):
+        """A reviewer call failure fails the scan closed (retry -> SCAN_FAILED),
+        never silently releasing or quarantining an unreviewed candidate."""
+        from documents.services.pii_scan import scan_pii_categories_for_version
+
+        doc = self._doc_with_chunks(1)
+        with patch("documents.services.pii_scan.scan_pii_categories",
+                   return_value={"pii_special_category": True}), \
+             patch(self._REVIEWER, side_effect=RuntimeError("reviewer down")):
             with self.assertRaises(RuntimeError):
                 scan_pii_categories_for_version(doc.current_version_id)
 
@@ -637,7 +794,7 @@ class ScanGateTransitionTests(TestCase):
         doc = self._scanning_doc()
         with patch("documents.services.description.generate_description_and_tags_from_text",
                    return_value=self._DESC), \
-             patch("documents.services.pii_scan.scan_pii_categories_for_version", return_value={}):
+             patch("documents.services.pii_scan.scan_pii_categories_for_version", return_value=_pii()):
             finalize_document_metadata(doc.current_version_id)
 
         doc.refresh_from_db()
@@ -652,7 +809,7 @@ class ScanGateTransitionTests(TestCase):
         with patch("documents.services.description.generate_description_and_tags_from_text",
                    return_value=self._DESC), \
              patch("documents.services.pii_scan.scan_pii_categories_for_version",
-                   return_value={"pii_special_category": True}):
+                   return_value=_pii({"pii_special_category": True})):
             finalize_document_metadata(doc.current_version_id)
 
         doc.refresh_from_db()
@@ -756,7 +913,7 @@ class ScanGateTransitionTests(TestCase):
 
         doc = self._scanning_doc(description="Already described")
         with patch("documents.services.description.generate_description_and_tags_from_text") as mock_desc, \
-             patch("documents.services.pii_scan.scan_pii_categories_for_version", return_value={}):
+             patch("documents.services.pii_scan.scan_pii_categories_for_version", return_value=_pii()):
             finalize_document_metadata(doc.current_version_id)
 
         mock_desc.assert_not_called()

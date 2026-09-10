@@ -7,6 +7,7 @@ RETENTION_PERIODS = {
     "documents.DataRoom": timedelta(days=365),
     "meetings.Meeting": timedelta(days=90),
     "guardrails.GuardrailEvent": timedelta(days=180),
+    "documents.PIIReviewEvent": timedelta(days=180),
     "feedback.Feedback": timedelta(days=90),
     "accounts.EmailVerificationToken": timedelta(days=1),
 }

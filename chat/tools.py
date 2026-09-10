@@ -318,6 +318,7 @@ def _apply_agent_save_policy(canvas, verdict, *, doc_index, discard_fn):
         "version": verdict.version_index,
         "reasons": verdict.reasons,
         "blocked_reason": verdict.detail,
+        "reviewer_finding": verdict.reviewer_reasoning or "",
         "note": (
             "After repeated attempts the content still couldn't be cleared. It has been "
             "filed as a quarantined draft (saved but NOT searchable). The user has been "

@@ -271,6 +271,10 @@ class DataRoomDocumentVersion(models.Model):
     is_quarantined = models.BooleanField(default=False, db_index=True)
     is_partially_quarantined = models.BooleanField(default=False, db_index=True)
     quarantine_reason = models.TextField(blank=True, default="")
+    # User-facing specifics from the PII reviewer ("row 23 states a named
+    # patient's diagnosis…"), set alongside quarantine_reason on an Article 9/10
+    # quarantine. Surfaced through sync_scan.Verdict as "reviewer_finding".
+    quarantine_detail = models.TextField(blank=True, default="")
 
     processing_error = models.TextField(null=True, blank=True)
     requeue_count = models.PositiveSmallIntegerField(default=0)
@@ -399,3 +403,72 @@ class DataRoomDocumentTag(models.Model):
 
     def __str__(self) -> str:
         return f"{self.key}={self.value} (version={self.version_id})"
+
+
+class PIIReviewEvent(models.Model):
+    """Immutable audit record for PII reviewer escalations (hits AND near-hits).
+
+    One row per reviewed window: the cheap classifier flagged an Article 9/10
+    candidate and the reviewer made the final call (documents.services.pii_review).
+    Dismissals ("near-hits") are the calibration signal — they show where the
+    classifier over-triggers. Rows deliberately outlive the scanned version
+    (blocked sync-save versions are deleted immediately), so the version link is
+    a plain integer and the document title is snapshotted.
+    """
+
+    class Action(models.TextChoices):
+        CONFIRMED = "confirmed", "Confirmed"
+        DISMISSED = "dismissed", "Dismissed"
+        # Reviewer model unconfigured — classifier verdict kept (legacy behavior).
+        FALLBACK = "fallback", "Fallback"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    document = models.ForeignKey(
+        DataRoomDocument,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="pii_review_events",
+    )
+    data_room = models.ForeignKey(
+        DataRoom,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="pii_review_events",
+    )
+    # Plain int, not an FK: rejected sync-save versions are deleted right after
+    # the verdict, and this audit row must survive them.
+    version_id = models.IntegerField(null=True, blank=True)
+    user_id = models.IntegerField(null=True, blank=True)
+    org_id = models.IntegerField(null=True, blank=True)
+    window_index = models.PositiveIntegerField(default=0)
+    document_title = models.CharField(max_length=255, blank=True, default="")
+
+    # The pii_* keys the classifier flagged for this window (Art. 9/10 only).
+    candidate_categories = models.JSONField(default=list, blank=True)
+    action = models.CharField(max_length=20, choices=Action.choices)
+    article_9 = models.BooleanField(default=False)
+    article_10 = models.BooleanField(default=False)
+    confidence = models.FloatField(null=True, blank=True)
+    reasoning = models.TextField(blank=True, default="")
+    findings = models.TextField(blank=True, default="")
+    # Window text truncated to 2000 chars (same cap as guardrails chunk events).
+    excerpt = models.TextField(blank=True, default="")
+    retain_until = models.DateTimeField(null=True, blank=True, db_index=True)
+
+    def save(self, *args, **kwargs):
+        if self._state.adding:
+            self.retain_until = timezone.now() + RETENTION_PERIODS["documents.PIIReviewEvent"]
+        super().save(*args, **kwargs)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["action", "-created_at"]),
+            models.Index(fields=["org_id", "-created_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"PIIReviewEvent {self.id} ({self.action})"

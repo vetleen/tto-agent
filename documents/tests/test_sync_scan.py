@@ -42,11 +42,16 @@ def _partial_scan(version):
 
 
 def _no_pii(*args, **kwargs):
-    return {}
+    from documents.services.pii_scan import PIIScanResult
+    return PIIScanResult()
+
+
+_ARTICLE9_FINDING = "This file contains Article 9 data: row 3 states a named patient's diagnosis."
 
 
 def _article9(*args, **kwargs):
-    return {"pii_special_category": True}
+    from documents.services.pii_scan import PIIScanResult
+    return PIIScanResult({"pii_special_category": True}, _ARTICLE9_FINDING)
 
 
 class SyncScanOrchestratorTests(TestCase):
@@ -99,6 +104,20 @@ class SyncScanOrchestratorTests(TestCase):
         self.assertIn("Article 9", verdict.reasons[0])
         self.doc.refresh_from_db()
         self.assertIsNone(self.doc.active_searchable_version_id)
+
+    def test_blocked_verdict_carries_reviewer_finding(self):
+        """The reviewer's findings land in quarantine_detail and surface through
+        both the tool JSON and the button JSON as reviewer_finding."""
+        version, verdict = self._run(_clean_scan, _article9)
+        version.refresh_from_db()
+        self.assertEqual(version.quarantine_detail, _ARTICLE9_FINDING)
+        self.assertEqual(verdict.reviewer_reasoning, _ARTICLE9_FINDING)
+        self.assertEqual(verdict.to_tool_json()["reviewer_finding"], _ARTICLE9_FINDING)
+        self.assertEqual(verdict.to_http_json()["reviewer_finding"], _ARTICLE9_FINDING)
+
+    def test_clean_tool_json_has_no_reviewer_finding(self):
+        _, verdict = self._run(_clean_scan, _no_pii)
+        self.assertNotIn("reviewer_finding", verdict.to_tool_json())
 
     def test_scan_error_is_scan_failed(self):
         def _boom(version):
@@ -177,7 +196,7 @@ class FinalizeVersionEagerTests(TestCase):
         from documents.tasks import finalize_version
         doc = self._held_version()
         with patch("documents.services.pii_scan.resolve_pii_gate", return_value=_GATE_ON), \
-             patch("documents.services.pii_scan.scan_pii_categories_for_version", return_value={}), \
+             patch("documents.services.pii_scan.scan_pii_categories_for_version", side_effect=_no_pii), \
              patch("documents.services.description.generate_description_and_tags_from_text",
                    return_value={"description": "d", "tags": {}, "document_date": None}):
             finalize_version(doc.current_version_id, eager=True)

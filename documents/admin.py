@@ -5,6 +5,7 @@ from .models import (
     DataRoomDocumentChunk,
     DataRoomDocumentTag,
     DataRoomDocumentVersion,
+    PIIReviewEvent,
 )
 
 
@@ -94,3 +95,32 @@ class DataRoomDocumentChunkAdmin(admin.ModelAdmin):
     search_fields = ("text", "heading")
     raw_id_fields = ("version",)
     ordering = ("version", "chunk_index")
+
+
+@admin.register(PIIReviewEvent)
+class PIIReviewEventAdmin(admin.ModelAdmin):
+    """Read-only review queue for PII reviewer hits and near-hits (calibration)."""
+
+    list_display = (
+        "created_at", "action", "article_9", "article_10", "confidence",
+        "document_title", "org_id",
+    )
+    list_filter = ("action", "article_9", "article_10")
+    search_fields = ("document_title", "findings", "reasoning", "excerpt")
+    raw_id_fields = ("document", "data_room")
+    readonly_fields = (
+        "id", "created_at", "document", "data_room", "version_id", "user_id",
+        "org_id", "window_index", "document_title", "candidate_categories",
+        "action", "article_9", "article_10", "confidence", "reasoning",
+        "findings", "excerpt", "retain_until",
+    )
+    ordering = ("-created_at",)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return request.user.is_superuser

@@ -34,7 +34,10 @@ def _verdict(status, **kw):
             ["Contains GDPR Article 9 (special category) personal data."] if status == "blocked"
             else (["Reviewer: prompt_injection (confidence: 0.95)"] if status == "warn" else [])
         ),
-        reviewer_reasoning=("Reviewer: prompt_injection (confidence: 0.95)" if status == "warn" else None),
+        reviewer_reasoning=(
+            "Reviewer: prompt_injection (confidence: 0.95)" if status == "warn"
+            else ("Row 3 states a named patient's diagnosis." if status == "blocked" else None)
+        ),
         version_index=1,
         became_active=(status in ("clean", "warn")),
     )
@@ -67,12 +70,15 @@ class CanvasSaveRetryPolicyTests(TestCase):
         for expected in (1, 2):
             res = self._overwrite(_verdict("blocked"))
             self.assertEqual(res["verdict"], "blocked")
+            # The reviewer's user-facing finding rides along so the agent can remediate.
+            self.assertEqual(res["reviewer_finding"], "Row 3 states a named patient's diagnosis.")
             self.assertEqual(self._attempts(), expected)
             self.assertEqual(self.doc.versions.count(), 1)  # rejected version discarded
 
         # Attempt 3: deferred — keep the quarantined draft, reset counter, warn the user.
         res = self._overwrite(_verdict("blocked"))
         self.assertEqual(res["verdict"], "deferred")
+        self.assertEqual(res["reviewer_finding"], "Row 3 states a named patient's diagnosis.")
         self.assertEqual(self._attempts(), 0)
         self.assertEqual(self.doc.versions.count(), 2)  # draft kept
 
@@ -205,6 +211,7 @@ class SaveToDataRoomEndpointTests(TestCase):
         self.assertFalse(data["ok"])
         self.assertEqual(data["verdict"], "blocked")
         self.assertIn("Article 9", data["reason"])
+        self.assertEqual(data["reviewer_finding"], "Row 3 states a named patient's diagnosis.")
         self.assertTrue(data["saved"])
         # The draft persists (not discarded for the button path).
         self.assertEqual(DataRoomDocument.objects.filter(data_room=self.room).count(), before + 1)

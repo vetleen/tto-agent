@@ -23,6 +23,7 @@ ALL_TARGETS = [
     "DataRoom",
     "Meeting",
     "GuardrailEvent",
+    "PIIReviewEvent",
     "Feedback",
     "EmailVerificationToken",
     "LLMCallLog",
@@ -32,7 +33,7 @@ ALL_TARGETS = [
 def _build_targets(now):
     from accounts.models import EmailVerificationToken
     from chat.models import ChatThread
-    from documents.models import DataRoom
+    from documents.models import DataRoom, PIIReviewEvent
     from feedback.models import Feedback
     from guardrails.models import GuardrailEvent
     from llm.models import LLMCallLog
@@ -44,6 +45,7 @@ def _build_targets(now):
         ("DataRoom", "delete", DataRoom.objects.filter(**retain_filter)),
         ("Meeting", "delete", Meeting.objects.filter(**retain_filter)),
         ("GuardrailEvent", "delete", GuardrailEvent.objects.filter(**retain_filter)),
+        ("PIIReviewEvent", "delete", PIIReviewEvent.objects.filter(**retain_filter)),
         ("Feedback", "delete", Feedback.objects.filter(**retain_filter)),
         (
             "EmailVerificationToken",

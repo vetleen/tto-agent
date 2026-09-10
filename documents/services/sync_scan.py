@@ -65,12 +65,15 @@ class Verdict:
                          "Review and edit if that is not what you intended."),
             }
         if self.status == "blocked":
-            return {
+            result = {
                 "status": "blocked", "verdict": "blocked", "reasons": self.reasons,
                 "detail": self.detail,
                 "note": ("Saved content was rejected. Edit the canvas to remove the "
                          "flagged content and save again."),
             }
+            if self.reviewer_reasoning:
+                result["reviewer_finding"] = self.reviewer_reasoning
+            return result
         return {
             "status": "error", "verdict": "scan_failed", "reasons": self.reasons,
             "detail": self.detail,
@@ -79,7 +82,10 @@ class Verdict:
 
     def to_http_json(self) -> dict:
         """Button-facing result. Callers merge in doc-specific fields."""
-        return {"ok": self.ok, "verdict": self.status, "reason": self.detail}
+        return {
+            "ok": self.ok, "verdict": self.status, "reason": self.detail,
+            "reviewer_finding": self.reviewer_reasoning or "",
+        }
 
 
 def scan_version_synchronously(version_id: int) -> Verdict:
@@ -156,7 +162,8 @@ def _build_verdict(version_id: int) -> Verdict:
         return Verdict(
             status="blocked", is_quarantined=True,
             is_partially_quarantined=version.is_partially_quarantined,
-            reasons=[reason], reviewer_reasoning=None,
+            reasons=[reason],
+            reviewer_reasoning=version.quarantine_detail or None,
             version_index=version.version_index, became_active=False,
         )
 

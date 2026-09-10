@@ -2799,6 +2799,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                                     "doc_index": result.get("doc_index"),
                                     "reason": result.get("blocked_reason", ""),
                                     "reasons": result.get("reasons", []),
+                                    "reviewer_finding": result.get("reviewer_finding", ""),
                                 })
                         except (json.JSONDecodeError, AttributeError):
                             pass

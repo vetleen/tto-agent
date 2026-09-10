@@ -63,3 +63,41 @@ class PIICategoryOutput(BaseModel):
         default=False,
         description="GDPR Article 10 data: criminal convictions and offences.",
     )
+
+
+class PIIReviewDecision(BaseModel):
+    """Structured output for the Layer 2 PII reviewer (Article 9/10 final call).
+
+    The cheap classifier only raises candidate flags; this decision — made by
+    the primary model with the full window as context — determines whether the
+    document version is actually quarantined. See documents/services/pii_review.py.
+    """
+
+    article_9: bool = Field(
+        description=(
+            "Final determination: the window contains GDPR Article 9 (special "
+            "category) personal data relating to an identifiable natural person."
+        )
+    )
+    article_10: bool = Field(
+        description=(
+            "Final determination: the window contains GDPR Article 10 (criminal "
+            "offence) personal data relating to an identifiable natural person."
+        )
+    )
+    confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+        description="Certainty in the determination, 0.0-1.0",
+    )
+    reasoning: str = Field(
+        description="Full internal analysis; logged for calibration review"
+    )
+    findings: str = Field(
+        description=(
+            "One or two sentences addressed to the document's owner naming "
+            "specifically what was found and where, so they can locate and "
+            "remediate it; on a full dismissal, briefly why the flagged content "
+            "is not personal data"
+        )
+    )

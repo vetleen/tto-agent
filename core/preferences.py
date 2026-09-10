@@ -108,7 +108,12 @@ FEATURE_DEFAULTS: dict[str, FeatureDefault] = {
     "skill_emoji": FeatureDefault("cheap", 1, "org"),
     "guardrail_chunk_scan": FeatureDefault("cheap", 1, "org"),
     "guardrail_web_scan": FeatureDefault("cheap", 1, "org"),
-    "pii_scan": FeatureDefault("mid", 2, "org"),
+    # Two-stage PII scan: the cheap classifier only raises Art. 9/10 candidate
+    # flags; the primary-model reviewer makes the final quarantine decision
+    # (documents/services/pii_review.py). Ordinary-category tags stay
+    # classifier-only.
+    "pii_scan": FeatureDefault("cheap", 1, "org"),
+    "pii_reviewer": FeatureDefault("primary", 3, "org"),
 }
 
 _SLOT_TO_ATTR = {"primary": "top_model", "mid": "mid_model", "cheap": "cheap_model"}

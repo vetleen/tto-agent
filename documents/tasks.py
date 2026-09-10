@@ -470,13 +470,16 @@ def finalize_version(version_id: int, *, eager: bool = False, on_pii_retry=None)
                 version_id,
             )
 
-    # --- PII category scan (entire version, windowed) ---
+    # --- PII category scan (entire version, windowed; Art. 9/10 reviewer-gated) ---
     pii_result: dict[str, bool] = {}
+    pii_detail = ""
     if pii_enabled and pii_model:
         try:
-            pii_result = scan_pii_categories_for_version(
+            scan_result = scan_pii_categories_for_version(
                 version_id, user_id=doc.uploaded_by_id, data_room_id=doc.data_room_id, org_id=org_id,
             )
+            pii_result = scan_result.categories
+            pii_detail = scan_result.detail
             for category in pii_result:
                 DataRoomDocumentTag.objects.update_or_create(
                     version=version, key=category, defaults={"value": "true"},
@@ -530,6 +533,7 @@ def finalize_version(version_id: int, *, eager: bool = False, on_pii_retry=None)
             DataRoomDocumentVersion.objects.filter(pk=version_id).update(
                 is_quarantined=True,
                 quarantine_reason="Contains GDPR " + " and ".join(articles) + " personal data.",
+                quarantine_detail=pii_detail,
             )
             recompute_document_sensitivity(document_id)
             logger.warning(

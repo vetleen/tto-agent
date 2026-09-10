@@ -102,6 +102,32 @@ class EnforceRetentionCommandTests(TestCase):
 
         self.assertFalse(GuardrailEvent.objects.filter(pk=event.pk).exists())
 
+    # ── PIIReviewEvent ──────────────────────────────────────────────
+
+    def test_expired_pii_review_event_deleted(self):
+        from documents.models import PIIReviewEvent
+
+        event = PIIReviewEvent.objects.create(
+            action="dismissed",
+            candidate_categories=["pii_special_category"],
+            excerpt="test",
+        )
+        self.assertIsNotNone(event.retain_until)  # stamped on insert
+        _backdate_retain(PIIReviewEvent, event.pk, self.now - timedelta(days=1))
+
+        call_command("enforce_retention", stdout=StringIO())
+
+        self.assertFalse(PIIReviewEvent.objects.filter(pk=event.pk).exists())
+
+    def test_active_pii_review_event_not_deleted(self):
+        from documents.models import PIIReviewEvent
+
+        event = PIIReviewEvent.objects.create(action="confirmed")
+
+        call_command("enforce_retention", stdout=StringIO())
+
+        self.assertTrue(PIIReviewEvent.objects.filter(pk=event.pk).exists())
+
     # ── Feedback ────────────────────────────────────────────────────
 
     def test_expired_feedback_deleted(self):
