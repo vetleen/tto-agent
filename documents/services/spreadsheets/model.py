@@ -587,6 +587,8 @@ def load_workbook_model(path, only_sheets=None) -> WorkbookModel:
     max_cells = getattr(settings, "XLSX_MAX_CELLS", 1_000_000)
     max_sheets = getattr(settings, "XLSX_MAX_SHEETS", 50)
     max_cell_chars = getattr(settings, "XLSX_MAX_CELL_CHARS", 500)
+    max_scan_cells = getattr(settings, "XLSX_MAX_SCAN_CELLS", 50_000_000)
+    max_scan_cols = getattr(settings, "XLSX_MAX_SCAN_COLS", 1024)
 
     _check_zip_budget(path)
 
@@ -658,7 +660,23 @@ def load_workbook_model(path, only_sheets=None) -> WorkbookModel:
                 # tiles all show what the user sees); original coordinates kept.
                 hidden_rows = sheet.hidden_rows
                 cf_capped = False
-                for row in ws.iter_rows():
+                # Bound the scan box. openpyxl read-only iter_rows() pads to the
+                # declared <dimension>, so a stray far-corner cell would spin over
+                # billions of empty cells. Cap columns and derive a row cap so the
+                # padded scan stays within max_scan_cells; genuine bulk data still
+                # trips XLSX_MAX_CELLS below.
+                dim_rows = ws.max_row or 0
+                dim_cols = ws.max_column or 0
+                scan_cols = max(1, min(dim_cols, max_scan_cols) if dim_cols else max_scan_cols)
+                row_cap = max(1, max_scan_cells // scan_cols)
+                scan_rows = min(dim_rows, row_cap) if dim_rows else row_cap
+                if dim_rows > scan_rows or dim_cols > scan_cols:
+                    logger.warning(
+                        "spreadsheets: sheet %r declared range %d×%d exceeds scan "
+                        "box %d×%d; clamping (possible stray far cell)",
+                        ws.title, dim_rows, dim_cols, scan_rows, scan_cols,
+                    )
+                for row in ws.iter_rows(max_row=scan_rows, max_col=scan_cols):
                     row_cells: list = []
                     excel_row = None
                     n_text = 0

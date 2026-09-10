@@ -238,6 +238,44 @@ class LoadWorkbookModelTests(SimpleTestCase):
         self.assertEqual(len(text), 10)
         self.assertTrue(text.endswith("…"))
 
+    @override_settings(XLSX_MAX_SCAN_CELLS=100, XLSX_MAX_SCAN_COLS=10)
+    def test_far_corner_cell_is_clamped(self):
+        # "Printer trick": a stray value in a far cell inflates the declared
+        # <dimension> to ~17B cells. Without the scan-box clamp, read-only
+        # iter_rows() would pad to it and hang. The clamp must bound the scan
+        # (10×10 here), keep the real data, and drop the stray far cell.
+        from openpyxl import Workbook
+
+        wb = Workbook()
+        ws = wb.active
+        for i in range(3):
+            ws.append([f"a{i}", f"b{i}", f"c{i}"])
+        ws.cell(row=1048576, column=16384, value="stray")  # XFD1048576
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = _save(wb, tmpdir)
+            with self.assertLogs(
+                "documents.services.spreadsheets.model", "WARNING"
+            ) as cm:
+                model = load_workbook_model(path)  # must return, not hang
+        sheet = model.sheets[0]
+        self.assertEqual(sheet.max_data_row, 3)
+        self.assertLessEqual(sheet.max_data_col, 10)
+        all_text = [t for _, cells in sheet.rows for _, t in cells]
+        self.assertNotIn("stray", all_text)
+        self.assertTrue(any("clamping" in msg for msg in cm.output))
+
+    def test_normal_workbook_not_clamped(self):
+        # A normal small workbook ingests fully with no clamp warning.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = _save(_basic_workbook(), tmpdir)
+            with self.assertNoLogs(
+                "documents.services.spreadsheets.model", "WARNING"
+            ):
+                model = load_workbook_model(path)
+        sheet = model.sheets[0]
+        self.assertEqual(sheet.max_data_row, 3)
+        self.assertEqual(sheet.max_data_col, 3)
+
 
 def _sheet(rows, **kwargs) -> SheetModel:
     """Synthetic SheetModel: rows as {excel_row: {col: text}}."""

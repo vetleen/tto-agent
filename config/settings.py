@@ -635,6 +635,12 @@ XLSX_MAX_UNCOMPRESSED_BYTES = _env_int("XLSX_MAX_UNCOMPRESSED_BYTES", "250000000
 XLSX_MAX_CELLS = _env_int("XLSX_MAX_CELLS", "1000000")
 XLSX_MAX_SHEETS = _env_int("XLSX_MAX_SHEETS", "50")
 XLSX_MAX_CELL_CHARS = _env_int("XLSX_MAX_CELL_CHARS", "500")
+# Bound the padded scan when a workbook declares a huge used range: a stray
+# far-corner cell (the "printer trick") makes openpyxl read-only iter_rows()
+# pad to the stored <dimension>, not the non-empty extent. Cap the column
+# axis; the row cap is derived so the padded scan stays within SCAN_CELLS.
+XLSX_MAX_SCAN_CELLS = _env_int("XLSX_MAX_SCAN_CELLS", "50000000")
+XLSX_MAX_SCAN_COLS = _env_int("XLSX_MAX_SCAN_COLS", "1024")
 XLSX_ROWS_PER_CHUNK_MAX = _env_int("XLSX_ROWS_PER_CHUNK_MAX", "25")
 # Sheets that get a vision description + header adjudication per workbook.
 XLSX_MAX_DESCRIBED_SHEETS = _env_int("XLSX_MAX_DESCRIBED_SHEETS", "10")
