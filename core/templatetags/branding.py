@@ -4,14 +4,19 @@ from django.utils.html import format_html
 
 register = template.Library()
 
-# Per-variant (img classes, initials-span classes) for user_avatar. "nav" is the
-# top-bar dropdown trigger; "chat" reuses the .wf-avatar rule from chat.html.
+# Per-variant (img classes, initials-span classes, px size) for user_avatar. "nav"
+# is the top-bar dropdown trigger; "chat" reuses the .wf-avatar rule from chat.html.
+# The size is also emitted as width/height attributes on the <img>: those give the
+# picture an intrinsic size the browser honours before any CSS applies, so an
+# uploaded 1000px portrait can never paint full-bleed for a frame if the rule that
+# sizes it arrives late (or at all).
 _AVATAR_VARIANTS = {
     "nav": (
         "inline-block h-8 w-8 shrink-0 rounded-full object-cover",
         "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-semibold",
+        32,
     ),
-    "chat": ("wf-avatar", "wf-avatar"),
+    "chat": ("wf-avatar", "wf-avatar", 28),
 }
 
 # Avatar tone cycle — forest-light / forest / copper. A given seed (e.g. a
@@ -44,10 +49,15 @@ def user_avatar(user, variant="chat"):
     Keeps the picture-or-initials branch in one place so the nav and chat stay in
     sync. ``variant`` selects the sizing/classes ("nav" or "chat").
     """
-    img_class, span_class = _AVATAR_VARIANTS.get(variant, _AVATAR_VARIANTS["chat"])
+    img_class, span_class, size = _AVATAR_VARIANTS.get(
+        variant, _AVATAR_VARIANTS["chat"]
+    )
     pic = getattr(user, "profile_picture", None)
     if pic:
-        return format_html('<img src="{}" alt="" class="{}">', pic.url, img_class)
+        return format_html(
+            '<img src="{}" alt="" class="{}" width="{}" height="{}">',
+            pic.url, img_class, size, size,
+        )
     email = getattr(user, "email", "") or ""
     return format_html(
         '<span class="{}" style="{}">{}</span>',

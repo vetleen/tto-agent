@@ -10,20 +10,48 @@ therefore easy to undo by accident:
 * the scripts that can defer do, and the ones that must not, don't
 * server-rendered markdown carries ``md-pending`` and the ``md-gate`` rule that hides it
   is emitted in <head>, ahead of the message markup it applies to
+* the chat design-system CSS (.umsg/.wmsg/.wf-avatar, sidebar, composer) is emitted in
+  <head> too, so the message list and ledger never paint unstyled
 
 They follow the ``EditorBundleScopingTests`` precedent in
 ``accounts/tests/test_settings_views.py``. Expected strings are built with ``static()``
 rather than hardcoded, so they stay honest if the storage backend ever changes.
 """
 
+from html.parser import HTMLParser
+
 from django.contrib.auth import get_user_model
 from django.templatetags.static import static
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 
 from chat.models import ChatMessage, ChatThread
+from core.templatetags.branding import user_avatar
 
 User = get_user_model()
+
+
+class _HeadText(HTMLParser):
+    """Collects text nodes in <head> that aren't the contents of an element allowed to
+    have any (<style>, <script>, <title>)."""
+
+    _CARRIERS = {"style", "script", "title"}
+
+    def __init__(self):
+        super().__init__()
+        self.stack = []
+        self.stray = []
+
+    def handle_starttag(self, tag, attrs):
+        self.stack.append(tag)
+
+    def handle_endtag(self, tag):
+        if tag in self.stack:
+            del self.stack[self.stack.index(tag):]
+
+    def handle_data(self, data):
+        if data.strip() and not self._CARRIERS.intersection(self.stack):
+            self.stray.append(" ".join(data.split())[:120])
 
 
 class ChatPageLoadTests(TestCase):
@@ -111,10 +139,10 @@ class ChatPageLoadTests(TestCase):
         self.assertContains(response, "markdown-content md-pending")
 
     def test_hide_gate_css_precedes_the_message_markup(self):
-        """The rule has to be in <head>. The page's other <style> blocks sit *after* the
-        message list, so a rule placed there would let the raw markdown paint first —
-        exactly the bug. This ordering is invisible on a fast machine in a browser, which
-        is why it is asserted here."""
+        """The rule has to be in <head>. A <style> placed further down the body — where
+        the modal CSS still lives — would let the raw markdown paint first: exactly the
+        bug. This ordering is invisible on a fast machine in a browser, which is why it
+        is asserted here."""
         html = self._get().content.decode()
         self.assertLess(
             html.index("md-gate .md-pending"), html.index('id="chat-messages"')
@@ -140,3 +168,77 @@ class ChatPageLoadTests(TestCase):
         self.assertIn("message-content markdown-content", html)
         bubble = html[html.index("message-content markdown-content"):][:120]
         self.assertNotIn("md-pending", bubble)
+
+    # -- Design-system CSS ordering --------------------------------------------
+
+    def test_message_css_is_in_head_and_precedes_the_message_markup(self):
+        """.umsg/.wmsg/.wf-avatar are custom classes, defined only in this template —
+        output.css knows nothing about them. They used to sit in a <style> ~500 lines
+        below the server-rendered message list *and* below the synchronous
+        editor.bundle.js, which halts the parser: the browser painted the ledger as bare
+        links and the user's avatar at the picture's natural size (a full-width portrait)
+        until the bundle finished. Assert every message rule lands in <head>."""
+        html = self._get().content.decode()
+        head, _, _ = html.partition("</head>")
+        for rule in (".umsg {", ".umsg__bubble {", ".wmsg {", ".wmsg__av {", ".wf-avatar {"):
+            with self.subTest(rule=rule):
+                self.assertIn(rule, head)
+        self.assertLess(html.index(".wf-avatar {"), html.index('id="chat-messages"'))
+
+    def test_head_carries_no_stray_text(self):
+        """A multi-line ``{# ... #}`` is not a Django comment — the lexer's pattern does
+        not cross newlines — so a comment written that way renders as literal text. When
+        it sits in <head>, the parser hoists it into the body and it paints as a banner
+        across the top of the chat UI. Found in review of exactly that mistake while
+        moving the CSS below into <head>; pinning the whole head catches the next one
+        wherever it lands, including in _base.html."""
+        html = self._get().content.decode()
+        head = html[html.index("<head") : html.index("</head>")]
+        parser = _HeadText()
+        parser.feed(head)
+        self.assertEqual(parser.stray, [], "text leaked into <head>")
+
+    def test_wf_token_aliases_precede_the_rules_that_use_them(self):
+        """The message rules resolve their colours through --wf-* aliases. Hoisting the
+        rules without the :root block that defines them would trade a bloated avatar for
+        a transparent bubble, so pin that they travel together."""
+        html = self._get().content.decode()
+        head, _, _ = html.partition("</head>")
+        self.assertIn("--wf-sunken:", head)
+        self.assertIn("--wf-border-subtle:", head)
+
+    def test_live_avatar_markup_carries_intrinsic_dimensions(self):
+        """The JS-rendered avatar mirrors the server tag. width/height attributes make
+        the picture 28px even with no CSS applied yet, which is the belt to the
+        head-CSS braces."""
+        self.assertContains(self._get(), 'class="wf-avatar" src="${USER_AVATAR_URL}" alt="" width="28" height="28"')
+
+
+class UserAvatarTagTests(SimpleTestCase):
+    """``user_avatar`` emits width/height so a profile picture has an intrinsic size
+    before any stylesheet applies — the picture is the one avatar that can paint at
+    hundreds of pixels if the sizing rule is late."""
+
+    class _Pic:
+        url = "/media/user_avatars/2026/09/me.jpg"
+
+    class _User:
+        email = "pic@example.com"
+
+        def __init__(self, pic=None):
+            self.profile_picture = pic
+
+    def test_chat_picture_is_sized_to_28(self):
+        html = user_avatar(self._User(self._Pic()), "chat")
+        self.assertIn('class="wf-avatar"', html)
+        self.assertIn('width="28" height="28"', html)
+
+    def test_nav_picture_is_sized_to_32(self):
+        html = user_avatar(self._User(self._Pic()), "nav")
+        self.assertIn('width="32" height="32"', html)
+
+    def test_initials_chip_is_unchanged(self):
+        """No <img>, so nothing to size — the chip is CSS-only in both variants."""
+        html = user_avatar(self._User(), "chat")
+        self.assertIn('<span class="wf-avatar"', html)
+        self.assertNotIn("width=", html)
