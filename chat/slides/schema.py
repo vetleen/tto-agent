@@ -528,16 +528,24 @@ def mint_ids(deck: dict) -> dict:
     must never change). Returns the same dict for convenience.
     """
     slides = deck.get("slides") or []
-    used_slide_ids = {s["id"] for s in slides if s.get("id")}
+    # Defensive: a malformed deck (e.g. a slide/element sent as a bare string)
+    # must never crash id-minting. Callers that feed raw model input validate
+    # first (which rejects non-dict entries with structured issues); this guard
+    # protects the callers that mint trusted content without a preceding validate.
+    used_slide_ids = {s["id"] for s in slides if isinstance(s, dict) and s.get("id")}
     next_slide = _counter("s", used_slide_ids)
     for slide in slides:
+        if not isinstance(slide, dict):
+            continue
         if not slide.get("id"):
             slide["id"] = next_slide()
             used_slide_ids.add(slide["id"])
         elements = slide.get("elements") or []
-        used_el_ids = {e["id"] for e in elements if e.get("id")}
+        used_el_ids = {e["id"] for e in elements if isinstance(e, dict) and e.get("id")}
         next_el = _counter("e", used_el_ids)
         for el in elements:
+            if not isinstance(el, dict):
+                continue
             if not el.get("id"):
                 el["id"] = next_el()
                 used_el_ids.add(el["id"])

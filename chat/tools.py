@@ -238,6 +238,19 @@ def _get_user(user_id):
         return None
 
 
+def _get_user_ctx(context):
+    """Resolve the acting user, reusing the run-cached instance when present.
+
+    A sub-agent run seeds ``context._cached_user`` once so tools share a single
+    User instance (keeps the UserSettings/Membership memoization warm). On the
+    main pipeline the cache is unset and this falls back to a fresh load.
+    """
+    cached = getattr(context, "_cached_user", None) if context else None
+    if cached is not None:
+        return cached
+    return _get_user(context.user_id if context else None)
+
+
 # Prepended to an image-as-document's text wherever it's surfaced (search/read).
 # That text IS the vision-generated description — not text inside the image —
 # and without this note the model tends to "describe the description".
@@ -834,7 +847,7 @@ class CanvasSaveToDocumentTool(ContextAwareTool):
         if not (canvas.content or "").strip():
             return json.dumps({"error": f"Canvas '{canvas.title}' is empty; nothing to save."})
 
-        user = _get_user(user_id)
+        user = _get_user_ctx(context)
         if user is None:
             return json.dumps({"error": "User not found."})
 
@@ -1096,7 +1109,7 @@ class EditDocumentTool(ContextAwareTool):
         if locked:
             return json.dumps({"error": locked})
 
-        user = _get_user(context.user_id if context else None)
+        user = _get_user_ctx(context)
 
         if mode == "rewrite":
             if not (content or "").strip():

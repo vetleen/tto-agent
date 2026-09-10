@@ -268,9 +268,10 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
         run.tool_names = tool_list
         run.save(update_fields=["model_used", "tool_names"])
 
-        # Get org name for prompt
-        from accounts.models import Membership
-        membership = Membership.objects.filter(user=user).select_related("org").first()
+        # Get org name for prompt (memoized on the user instance — shared with the
+        # preference/skill resolvers above so it's one query per run).
+        from accounts.models import get_membership
+        membership = get_membership(user)
         org_name = membership.org.name if membership else None
 
         # Build data room info for prompt
@@ -314,6 +315,10 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
         )
         context.run_id = str(run_id)
         context.agent_kind = "subagent"
+        # Reuse this one (already memoized) User instance for every tool call in the
+        # run, so UserSettings/Membership are read once instead of per tool. Set on
+        # this single thread before the streaming tool loop spawns its workers.
+        context._cached_user = user
 
         # Cooperative cancellation: check if the run has been marked FAILED
         def _is_cancelled():

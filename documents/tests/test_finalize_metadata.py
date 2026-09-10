@@ -84,6 +84,42 @@ class FinalizeDocumentMetadataTests(TestCase):
         self.assertEqual(DataRoomDocumentTag.objects.get(version__document=doc, key="document_type").value, "Report")
 
     @override_settings(**_MODELS)
+    def test_existing_tag_value_updated(self):
+        """The tag upsert (WILFRED-83, was update_or_create) updates an existing
+        (version, key) row's value rather than duplicating or crashing on it."""
+        from documents.tasks import finalize_document_metadata
+
+        doc = self._ready_doc()
+        version = doc.current_version
+        DataRoomDocumentTag.objects.create(version=version, key="document_type", value="OldValue")
+        with patch("documents.services.description.generate_description_and_tags_from_text",
+                   return_value={"description": "d", "tags": {"document_type": "Report"}, "document_date": None}), \
+             patch("documents.services.pii_scan.scan_pii_categories_for_version", return_value=_pii()):
+            finalize_document_metadata(doc.current_version_id)
+
+        rows = DataRoomDocumentTag.objects.filter(version=version, key="document_type")
+        self.assertEqual(rows.count(), 1)
+        self.assertEqual(rows.first().value, "Report")
+
+    @override_settings(**_MODELS)
+    def test_pii_tags_upserted_on_rerun(self):
+        """Re-running finalize re-writes the same (version, key) PII tags via the
+        ON CONFLICT upsert — the unique constraint must not raise on the 2nd pass."""
+        from documents.tasks import finalize_document_metadata
+
+        doc = self._ready_doc()
+        with patch("documents.services.description.generate_description_and_tags_from_text",
+                   return_value={"description": "", "tags": {}, "document_date": None}), \
+             patch("documents.services.pii_scan.scan_pii_categories_for_version",
+                   return_value=_pii({"pii_ordinary_identity": True})):
+            finalize_document_metadata(doc.current_version_id)
+            finalize_document_metadata(doc.current_version_id)  # rerun must not raise
+
+        rows = DataRoomDocumentTag.objects.filter(version__document=doc, key="pii_ordinary_identity")
+        self.assertEqual(rows.count(), 1)
+        self.assertEqual(rows.first().value, "true")
+
+    @override_settings(**_MODELS)
     def test_description_failure_doesnt_raise(self):
         from documents.tasks import finalize_document_metadata
 

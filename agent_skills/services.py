@@ -117,9 +117,9 @@ def _org_disabled_info(user) -> tuple[set[str], set[str]]:
     The org settings page queries ``AgentSkill`` directly and intentionally
     bypasses this so admins can still toggle disabled skills back on.
     """
-    from accounts.models import Membership
+    from accounts.models import get_membership
 
-    membership = Membership.objects.filter(user=user).select_related("org").first()
+    membership = get_membership(user)
     if not membership or not membership.org:
         return set(), set()
     org_skills = (membership.org.preferences or {}).get("skills") or {}
@@ -154,9 +154,9 @@ def get_accessible_skills(user) -> list[AgentSkill]:
     """Return every active skill the user has access to (no shadowing)."""
     from django.db.models import Q
 
-    from accounts.models import Membership
+    from accounts.models import get_membership
 
-    membership = Membership.objects.filter(user=user).select_related("org").first()
+    membership = get_membership(user)
 
     q = Q(level="system")
     if membership:

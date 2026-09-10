@@ -736,6 +736,8 @@ class OrgDisabledSkillVisibilityTests(TestCase):
         self.assertIsNotNone(get_skill_for_user(self.outsider, str(skill.pk)))
 
     def test_re_enabling_restores_visibility(self):
+        from accounts.models import invalidate_membership_cache
+
         skill = AgentSkill.objects.create(
             slug="research", name="Research", instructions="i", level="system",
         )
@@ -743,6 +745,13 @@ class OrgDisabledSkillVisibilityTests(TestCase):
         self.assertEqual(get_accessible_skills(self.member), [])
         self.org.preferences = {"skills": {"research": {"enabled": True}}}
         self.org.save(update_fields=["preferences"])
+        # get_accessible_skills now reads membership/org via the per-instance memoized
+        # get_membership (one query per run instead of N). This test re-uses one User
+        # instance across an org-preferences change, so it must invalidate the cache —
+        # exactly the contract get_membership documents for long-lived holders. In
+        # production a re-enable is a POST→redirect→fresh GET (a new instance), so the
+        # next read is naturally fresh.
+        invalidate_membership_cache(self.member)
         self.assertEqual([s.pk for s in get_accessible_skills(self.member)], [skill.pk])
 
 

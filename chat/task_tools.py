@@ -101,8 +101,14 @@ class UpdateTasksTool(ContextAwareTool):
         if to_delete:
             ThreadTask.objects.filter(id__in=to_delete).delete()
 
-        # Update existing and create new
+        # Update existing and create new — batched so N incoming tasks cost one
+        # bulk_update + one bulk_create, not one query per task.
+        from django.utils import timezone
+
+        now = timezone.now()
         result_tasks = []
+        to_update = []
+        to_create = []
         for item in incoming:
             if item["existing_id"] and item["existing_id"] in current_tasks:
                 # Update existing
@@ -110,21 +116,33 @@ class UpdateTasksTool(ContextAwareTool):
                 task.title = item["title"]
                 task.status = item["status"]
                 task.order = item["order"]
-                task.save(update_fields=["title", "status", "order", "updated_at"])
+                # bulk_update does not fire auto_now, so stamp updated_at ourselves.
+                task.updated_at = now
+                to_update.append(task)
             else:
-                # Create new
-                task = ThreadTask.objects.create(
+                # Create new. ThreadTask.id has a uuid4 default applied at
+                # instantiation, so task.id is usable in the result before insert;
+                # bulk_create fills created_at/updated_at (auto_now(_add)) on insert.
+                task = ThreadTask(
                     thread_id=thread_id,
                     title=item["title"],
                     status=item["status"],
                     order=item["order"],
                 )
+                to_create.append(task)
             result_tasks.append({
                 "id": str(task.id),
                 "title": task.title,
                 "status": task.status,
                 "order": task.order,
             })
+
+        if to_update:
+            ThreadTask.objects.bulk_update(
+                to_update, fields=["title", "status", "order", "updated_at"]
+            )
+        if to_create:
+            ThreadTask.objects.bulk_create(to_create)
 
         # Build summary
         counts = {"pending": 0, "in_progress": 0, "completed": 0}

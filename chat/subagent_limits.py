@@ -314,7 +314,12 @@ def dispatch_pending_subagents() -> list[uuid.UUID]:
             SubAgentRun.objects.filter(
                 pk=run_id, status=SubAgentRun.Status.PENDING, dispatched_at=now,
             ).update(dispatched_at=None, celery_task_id="")
-            logger.warning(
+            # INFO, not WARNING: this self-heals. The run is reverted to waiting and
+            # the level-triggered dispatcher (sweeper ≤120s, or any freed slot)
+            # re-attempts it, bounded by the STALE_WAITING_MINUTES valve that FAILs
+            # it visibly if it can never dispatch. A transient broker blip under
+            # connection pressure needs no Sentry event of its own.
+            logger.info(
                 "Could not enqueue sub-agent run %s (%s); left waiting in the queue",
                 run_id, type(exc).__name__,
             )

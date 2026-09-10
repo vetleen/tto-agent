@@ -360,11 +360,21 @@ class WriteDeckTool(ContextAwareTool):
         else:
             return json.dumps({"status": "error", "message": "content must be a JSON object (the full deck)."})
 
+        # Validate the raw model-supplied deck BEFORE minting ids: mint_ids assumes
+        # every slide/element is a dict, so a malformed deck (e.g. a slide sent as a
+        # bare string) must be rejected with structured issues here, not crash mid-mint.
+        # Mirrors slide_canvas_edit, which already validates before it mints.
+        issues = schema.validate_deck(deck)
+        if issues:
+            return json.dumps({"status": "error", "message": "Deck JSON is invalid.", "issues": issues[:20]})
+
         schema.mint_ids(deck)
 
         # Keep the deck's theme across a rewrite when the model didn't set one (so a
         # user's picker choice survives); a theme-less deck falls back to the default
         # like at creation. A deck that carries an explicit theme is left untouched.
+        # (The theme applied here is a trusted stored/builtin override, so it does not
+        # need re-validation.)
         if not deck.get("theme"):
             from chat.slides import theme as theme_mod
 
@@ -375,10 +385,6 @@ class WriteDeckTool(ContextAwareTool):
                 default = theme_mod.default_theme_for(_tool_user(self), _tool_org(self))
                 if default.get("id") != "forest":
                     deck["theme"] = theme_mod.theme_to_deck_override(default)
-
-        issues = schema.validate_deck(deck)
-        if issues:
-            return json.dumps({"status": "error", "message": "Deck JSON is invalid.", "issues": issues[:20]})
 
         try:
             # write_deck checkpoints the result itself, inside the row lock it takes

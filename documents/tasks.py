@@ -450,9 +450,18 @@ def finalize_version(version_id: int, *, eager: bool = False, on_pii_retry=None)
                     doc.document_date = result["document_date"]
                     update_fields.append("document_date")
                 doc.save(update_fields=update_fields)
-                for tag_key, tag_value in result.get("tags", {}).items():
-                    DataRoomDocumentTag.objects.update_or_create(
-                        version=version, key=tag_key, defaults={"value": tag_value},
+                tag_items = result.get("tags", {})
+                if tag_items:
+                    # One upsert (ON CONFLICT) instead of an update_or_create —
+                    # i.e. a SELECT…FOR UPDATE + write — per tag.
+                    DataRoomDocumentTag.objects.bulk_create(
+                        [
+                            DataRoomDocumentTag(version=version, key=k, value=v)
+                            for k, v in tag_items.items()
+                        ],
+                        update_conflicts=True,
+                        unique_fields=["version", "key"],
+                        update_fields=["value"],
                     )
         except DataRoomDocument.NotUpdated:
             logger.info(
@@ -480,9 +489,16 @@ def finalize_version(version_id: int, *, eager: bool = False, on_pii_retry=None)
             )
             pii_result = scan_result.categories
             pii_detail = scan_result.detail
-            for category in pii_result:
-                DataRoomDocumentTag.objects.update_or_create(
-                    version=version, key=category, defaults={"value": "true"},
+            if pii_result:
+                # One upsert instead of an update_or_create per category.
+                DataRoomDocumentTag.objects.bulk_create(
+                    [
+                        DataRoomDocumentTag(version=version, key=category, value="true")
+                        for category in pii_result
+                    ],
+                    update_conflicts=True,
+                    unique_fields=["version", "key"],
+                    update_fields=["value"],
                 )
         except (LLMPolicyDenied, LLMConfigurationError, LLMAuthError):
             logger.exception(

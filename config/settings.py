@@ -844,7 +844,23 @@ _redis_is_tls = _redis_url.startswith("rediss://")  # CERT_NONE rationale: see R
 _CHANNEL_POOL_MAX = int(os.environ.get("CHANNELS_REDIS_MAX_CONNECTIONS", "6"))
 _CACHE_POOL_MAX = int(os.environ.get("CACHE_REDIS_MAX_CONNECTIONS", "6"))
 
-_channel_host: dict = {"address": _redis_url, "max_connections": _CHANNEL_POOL_MAX}
+# Detect and replace a Redis connection the addon has silently dropped (idle
+# timeout / failover) BEFORE issuing a command on it. Without this, the long-lived
+# pub/sub subscriber connection can go stale and the next SUBSCRIBE at
+# WebSocket-connect rides the dead socket, failing the handshake (WILFRED-7B):
+# the connect-time subscribe is NOT covered by the background reader's retry loop.
+# redis-py PINGs an idle connection and reconnects if it's dead; TCP keepalive
+# keeps the persistent publisher/subscriber pair alive. Both are passed straight
+# through to redis-py's ConnectionPool.from_url (like max_connections/ssl_cert_reqs)
+# and don't change the RESP2 behaviour the redis pin relies on.
+_REDIS_HEALTH_CHECK_INTERVAL = int(os.environ.get("REDIS_HEALTH_CHECK_INTERVAL", "30"))
+
+_channel_host: dict = {
+    "address": _redis_url,
+    "max_connections": _CHANNEL_POOL_MAX,
+    "health_check_interval": _REDIS_HEALTH_CHECK_INTERVAL,
+    "socket_keepalive": True,
+}
 if _redis_is_tls:
     _channel_host["ssl_cert_reqs"] = ssl.CERT_NONE
 _channel_hosts = [_channel_host]
@@ -885,7 +901,11 @@ _cache_config: dict = {
     "BACKEND": "core.cache.ResilientRedisCache",
     "LOCATION": f"{_cache_redis_base}/1",
     # Django passes unrecognised OPTIONS straight to ConnectionPool.from_url.
-    "OPTIONS": {"max_connections": _CACHE_POOL_MAX},
+    "OPTIONS": {
+        "max_connections": _CACHE_POOL_MAX,
+        "health_check_interval": _REDIS_HEALTH_CHECK_INTERVAL,
+        "socket_keepalive": True,
+    },
 }
 if _redis_is_tls:
     _cache_config["OPTIONS"]["ssl_cert_reqs"] = ssl.CERT_NONE

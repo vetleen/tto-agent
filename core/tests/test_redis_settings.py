@@ -55,6 +55,23 @@ class ChannelLayerSettingsTest(SimpleTestCase):
         self.assertGreaterEqual(max_connections, 2)
         self.assertLess(max_connections, 20)
 
+    def test_channel_layer_connection_is_health_checked(self):
+        """A silently-dropped pub/sub connection must be detected before use.
+
+        Without health_check_interval / socket_keepalive the long-lived subscriber
+        connection can go stale and the next SUBSCRIBE at WebSocket-connect fails the
+        handshake (WILFRED-7B). Both keys are passed straight to ConnectionPool.from_url.
+        """
+        host = settings.CHANNEL_LAYERS["default"]["CONFIG"]["hosts"][0]
+        self.assertGreaterEqual(host.get("health_check_interval", 0), 1)
+        self.assertIs(host.get("socket_keepalive"), True)
+
+    def test_cache_connection_is_health_checked(self):
+        """The cache shares the instance and the same stale-connection risk."""
+        options = settings.CACHES["default"].get("OPTIONS", {})
+        self.assertGreaterEqual(options.get("health_check_interval", 0), 1)
+        self.assertIs(options.get("socket_keepalive"), True)
+
     def test_cache_pool_is_bounded(self):
         """The Django cache shares the same instance and needs the same bound."""
         options = settings.CACHES["default"].get("OPTIONS", {})

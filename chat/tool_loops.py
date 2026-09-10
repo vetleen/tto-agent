@@ -33,6 +33,9 @@ def _get_user(context):
     """Resolve the acting user from run context. Returns ``(user, error_json)``."""
     from django.contrib.auth import get_user_model
 
+    cached = getattr(context, "_cached_user", None) if context else None
+    if cached is not None:
+        return cached, None
     user_id = context.user_id if context else None
     if not user_id:
         return None, json.dumps({"status": "error", "message": "No user context available."})

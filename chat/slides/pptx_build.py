@@ -1610,12 +1610,37 @@ def make_image_resolver(slide_set):
     thread or the deck itself resolve, so a model-supplied token can't leak
     another user's asset bytes. Caches per (uuid) within one build.
     """
+    import json
+
     from django.db.models import Q
 
     from chat.assets import image_asset_source
     from chat.models import Asset
 
     cache: dict[str, tuple[bytes, str] | None] = {}
+
+    # An asset resolves only if it belongs to this deck: the deck's own render
+    # assets, a thread-owned image (generated / web-viewed), or a data-room image
+    # whose data room is ATTACHED to this deck's thread. This Q is the ACL — a
+    # model-supplied token can't pull an image from a data room the thread hasn't
+    # attached — and is constant for the whole build.
+    owner = Q(slide_set=slide_set)
+    if slide_set.thread_id:
+        owner |= Q(thread_id=slide_set.thread_id)
+        owner |= Q(
+            version__document__data_room__thread_links__thread_id=slide_set.thread_id
+        )
+
+    # Batch-load every asset the deck references in ONE query, instead of one
+    # SELECT per distinct token during rendering. The ACL Q is applied here, so an
+    # id absent from the map is simply not owned → resolves to None, identical to
+    # the old per-token filter. (Byte reads still happen per distinct image below —
+    # that's the real download, not the N+1.)
+    aids = {m.group(1).lower() for m in _TOKEN_RE.finditer(json.dumps(slide_set.content or {}))}
+    assets_by_id: dict[str, Asset] = (
+        {str(a.pk): a for a in Asset.objects.filter(Q(pk__in=aids) & owner)}
+        if aids else {}
+    )
 
     def resolve(token: str):
         t = token or ""
@@ -1637,18 +1662,9 @@ def make_image_resolver(slide_set):
             return cache[aid]
         result = None
         try:
-            # An asset resolves only if it belongs to this deck: the deck's own
-            # render assets, a thread-owned image (generated / web-viewed), or a
-            # data-room image whose data room is ATTACHED to this deck's thread.
-            # The attached-room gate is the ACL — a model-supplied token can't
-            # pull an image from a data room the thread hasn't attached.
-            owner = Q(slide_set=slide_set)
-            if slide_set.thread_id:
-                owner |= Q(thread_id=slide_set.thread_id)
-                owner |= Q(
-                    version__document__data_room__thread_links__thread_id=slide_set.thread_id
-                )
-            asset = Asset.objects.filter(Q(pk=aid) & owner).first()
+            # Looked up from the batch-loaded, ACL-filtered map above (an id not in
+            # the map is not owned by this deck → None).
+            asset = assets_by_id.get(aid)
             if asset is not None:
                 source, ct = image_asset_source(asset)
                 if source is not None:

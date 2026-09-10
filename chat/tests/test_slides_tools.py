@@ -150,6 +150,15 @@ class SlideToolTests(TestCase):
         self.assertEqual(r["status"], "error")
         self.assertTrue(r["issues"])
 
+    def test_write_string_slide_returns_error_not_crash(self):
+        """WILFRED-81: a slide sent as a bare string used to crash mint_ids (it runs
+        before validation). It must now come back as a structured validation error."""
+        self._run(CreateDeckTool(), title="X")
+        bad = json.dumps({"version": 1, "size": {"w": 960, "h": 540}, "slides": ["not a dict"]})
+        r = self._run(WriteDeckTool(), content_json=bad)
+        self.assertEqual(r["status"], "error")
+        self.assertTrue(r["issues"])
+
     def test_add_slide(self):
         self._run(CreateDeckTool(), title="Deck A", layouts=["title"])
         r = self._run(AddSlideTool(), layout="bullets")
@@ -401,6 +410,38 @@ class BuildResolverTests(TestCase):
         import zipfile
         z = zipfile.ZipFile(io.BytesIO(data))
         self.assertTrue(any(n.startswith("ppt/media/") for n in z.namelist()))
+
+    def test_resolver_batch_loads_assets_in_one_query(self):
+        """WILFRED-86: the resolver pre-loads every referenced asset in ONE query
+        instead of one SELECT per distinct token during render."""
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        from chat.assets import store_thread_image
+        from chat.slides.pptx_build import make_image_resolver
+
+        a1 = store_thread_image(self.thread, img_bytes=_PNG, content_type="image/png")
+        a2 = store_thread_image(self.thread, img_bytes=_PNG + b"x", content_type="image/png")
+        a3 = store_thread_image(self.thread, img_bytes=_PNG + b"yy", content_type="image/png")
+        deck = SlideSet.objects.create(
+            thread=self.thread, title="multi",
+            content={"version": 1, "size": {"w": 960, "h": 540}, "slides": [
+                {"id": "s1", "elements": [
+                    {"id": f"e{i}", "type": "image", "x": 1, "y": 1, "w": 10, "h": 10,
+                     "token": f"[[image:{a.id}]]"}
+                    for i, a in enumerate((a1, a2, a3))
+                ]},
+            ]},
+        )
+        with CaptureQueriesContext(connection) as cap:
+            resolve = make_image_resolver(deck)
+            results = [resolve(f"[[image:{a.id}]]") for a in (a1, a2, a3)]
+        asset_selects = [
+            q for q in cap.captured_queries
+            if "chat_asset" in q["sql"].lower() and q["sql"].lstrip().lower().startswith("select")
+        ]
+        self.assertEqual(len(asset_selects), 1, asset_selects)
+        self.assertTrue(all(r is not None for r in results))
 
     def test_cross_owner_token_is_blocked(self):
         from chat.assets import store_thread_image

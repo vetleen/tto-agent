@@ -230,6 +230,14 @@ class MintAndHashTests(SimpleTestCase):
         self.assertIn("s2", ids)
         self.assertEqual(len(set(ids)), 2)
 
+    def test_mint_ignores_non_dict_entries(self):
+        """WILFRED-81: a malformed deck (a slide/element as a bare string) must not
+        crash id-minting — real dict entries still get ids."""
+        deck = {"slides": ["oops not a dict", {"elements": ["nope", {"type": "text"}]}]}
+        schema.mint_ids(deck)  # must not raise
+        self.assertTrue(deck["slides"][1]["id"])
+        self.assertTrue(deck["slides"][1]["elements"][1]["id"])
+
     def test_canonical_determinism_under_key_shuffle(self):
         deck = _valid_deck()
         shuffled = json.loads(json.dumps(deck))

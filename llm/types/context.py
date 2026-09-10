@@ -61,6 +61,13 @@ class RunContext(BaseModel):
     # Native-asset budget bookkeeping — locked for the same reason as above.
     _native_asset_lock: Any = PrivateAttr(default_factory=threading.Lock)
     _native_asset_b64_used: int = PrivateAttr(default=0)
+    # The acting User instance, resolved once and reused for the whole run so the
+    # per-instance memoization on accounts.models.get_membership /
+    # get_user_preferences_dict holds across every tool call (otherwise each tool
+    # loads a fresh User and re-queries UserSettings + Membership). Seeded at run
+    # setup on a single thread before tools spawn; tools only read it. Left None on
+    # the main pipeline (which does not seed it) so its behaviour is unchanged.
+    _cached_user: Any = PrivateAttr(default=None)
 
     def try_add_native_asset(self, item: dict) -> bool:
         """Queue a native asset if the run's byte budget allows it.

@@ -174,7 +174,12 @@ class ChatGenerateImageTool(ContextAwareTool):
 
 
 def _resolve_user(context):
-    if context is None or not getattr(context, "user_id", None):
+    if context is None:
+        return None
+    cached = getattr(context, "_cached_user", None)
+    if cached is not None:
+        return cached
+    if not getattr(context, "user_id", None):
         return None
     from django.contrib.auth import get_user_model
 

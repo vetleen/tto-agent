@@ -142,6 +142,35 @@ class UpdateTasksToolTests(TestCase):
         self.assertEqual(len(result["tasks"]), 0)
         self.assertEqual(ThreadTask.objects.filter(thread=self.thread).count(), 0)
 
+    def test_bulk_create_does_not_scale_queries(self):
+        """Creating N tasks must be a fixed number of queries, not one INSERT each
+        (WILFRED-7V — the per-task ThreadTask.objects.create() N+1)."""
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        def query_count_for(n):
+            thread = ChatThread.objects.create(created_by=self.user)
+            ctx = _ctx(self.user.pk, thread.id)
+            tasks = [{"title": f"T{i}", "status": "pending"} for i in range(n)]
+            with CaptureQueriesContext(connection) as cap:
+                _invoke({"tasks": tasks}, ctx)
+            return len(cap)
+
+        self.assertEqual(query_count_for(2), query_count_for(12))
+
+    def test_update_persists_to_db(self):
+        """bulk_update path must actually write (auto_now updated_at stamped too)."""
+        result = _invoke({"tasks": [
+            {"title": "Original", "status": "pending"},
+        ]}, self.ctx)
+        task_id = result["tasks"][0]["id"]
+        _invoke({"tasks": [
+            {"id": task_id, "title": "Renamed", "status": "completed"},
+        ]}, self.ctx)
+        row = ThreadTask.objects.get(id=task_id)
+        self.assertEqual(row.title, "Renamed")
+        self.assertEqual(row.status, "completed")
+
     def test_mix_new_and_existing(self):
         """Can update existing tasks and add new ones in same call."""
         result = _invoke({"tasks": [
