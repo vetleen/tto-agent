@@ -281,17 +281,18 @@ def _render_one_skill(skill: Any) -> str:
         block += f"## Skill description:\n{skill.description}\n"
     block += f"## Skill instructions:\n{deepened}\n"
 
-    templates = list(skill.templates.all())
-    if templates:
+    resources = [r for r in skill.templates.order_by("name") if not r.is_quarantined]
+    if resources:
         block += (
-            "\n## Skill templates\n\n"
-            "This skill has the following templates available. "
-            "Use `skill_template_view` to read a template's content, "
-            "or `skill_template_load` to load one into the canvas "
-            "as a starting point.\n\n"
+            "\n## Skill resources\n\n"
+            "This skill bundles the resources below. Read one on demand with "
+            "`skill_template_view` (text is returned inline; PDFs and images are "
+            "attached for you to view directly). A template resource can also be "
+            "loaded into the canvas as a starting point with `skill_template_load`."
+            "\n\n"
         )
-        for tmpl in templates:
-            block += f"- **{tmpl.name}**\n"
+        for r in resources:
+            block += f"- **{r.name}** — {r.kind}, {r.file_type}\n"
     return block
 
 

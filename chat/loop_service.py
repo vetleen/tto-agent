@@ -383,7 +383,7 @@ def _build_loop_fields(body, *, now, tz_name, default_max_runs):
 
 def _link_loop_resources(thread, user, data_room_ids, skill_ids, model=None):
     """Attach validated data rooms + skills + model to a loop's thread (idempotent)."""
-    from agent_skills.models import MAX_THREAD_SKILLS
+    from agent_skills.resources import trim_ids_to_budget
     from chat.models import ChatThreadDataRoom, ChatThreadSkill
     from core.preferences import get_preferences
     from documents.access import accessible_data_rooms
@@ -409,7 +409,7 @@ def _link_loop_resources(thread, user, data_room_ids, skill_ids, model=None):
         sid = str(sid)
         if sid in allowed and sid not in resolved_skill_ids:
             resolved_skill_ids.append(sid)
-    resolved_skill_ids = resolved_skill_ids[:MAX_THREAD_SKILLS]
+    resolved_skill_ids = trim_ids_to_budget(resolved_skill_ids)
     ChatThreadSkill.objects.filter(thread=thread).delete()
     ChatThreadSkill.objects.bulk_create(
         [ChatThreadSkill(thread=thread, skill_id=sid) for sid in resolved_skill_ids]

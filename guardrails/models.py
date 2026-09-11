@@ -18,6 +18,7 @@ class GuardrailEvent(models.Model):
         WEB_CONTENT = "web_content", "Web Content"
         TOOL_RESULT = "tool_result", "Tool Result"
         IDENTITY_FIELD = "identity_field", "Identity Field"
+        SKILL_RESOURCE = "skill_resource", "Skill Resource"
 
     class CheckType(models.TextChoices):
         HEURISTIC = "heuristic", "Heuristic"

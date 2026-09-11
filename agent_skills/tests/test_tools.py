@@ -551,8 +551,11 @@ class ViewTemplateToolTests(TestCase):
     def test_view_existing_template(self):
         result = json.loads(self.tool._run(template_name="Report Format"))
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["template_name"], "Report Format")
-        self.assertEqual(result["content"], "# Title\n## Summary\n## Details")
+        self.assertEqual(result["resource_name"], "Report Format")
+        # Content is wrapped in begin/end markers so a later detach stays legible.
+        self.assertIn("# Title\n## Summary\n## Details", result["content"])
+        self.assertIn('begin resource "Report Format"', result["content"])
+        self.assertIn('end resource "Report Format"', result["content"])
 
     def test_view_template_from_second_attached_skill(self):
         """A template on any attached skill resolves, not just the first."""
@@ -568,7 +571,7 @@ class ViewTemplateToolTests(TestCase):
         ChatThreadSkill.objects.create(thread=self.thread, skill=other)
         result = json.loads(self.tool._run(template_name="Other Tmpl"))
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["content"], "other body")
+        self.assertIn("other body", result["content"])
 
     def test_view_template_collision_picks_first_attached_with_note(self):
         """When two attached skills share a template name, the earliest-attached
@@ -586,7 +589,7 @@ class ViewTemplateToolTests(TestCase):
         result = json.loads(self.tool._run(template_name="Report Format"))
         self.assertEqual(result["status"], "ok")
         # self.skill was attached first in setUp, so its template wins.
-        self.assertEqual(result["content"], "# Title\n## Summary\n## Details")
+        self.assertIn("# Title\n## Summary\n## Details", result["content"])
         self.assertIn("note", result)
         self.assertIn("VT Skill 3", result["note"])
 
@@ -612,7 +615,8 @@ class ViewTemplateToolTests(TestCase):
         )
         result = json.loads(self.tool._run(template_name="Huge"))
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(len(result["content"]), MAX_TEMPLATE_CHARS)
+        # Content is capped at MAX_TEMPLATE_CHARS (plus the wrap markers).
+        self.assertEqual(result["content"].count("z"), MAX_TEMPLATE_CHARS)
         self.assertIs(result["truncated"], True)
         self.assertIn("note", result)
 
@@ -621,6 +625,38 @@ class ViewTemplateToolTests(TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertNotIn("truncated", result)
         self.assertNotIn("note", result)
+
+    def test_view_image_resource_attaches_inline(self):
+        from django.core.files.base import ContentFile
+
+        from agent_skills.models import SkillResource
+
+        res = SkillResource(
+            skill=self.skill, name="Diagram", kind="reference",
+            file_type="image", original_filename="d.png",
+            media_type="image/png", status="ready",
+        )
+        res.original_file.save("d.png", ContentFile(b"\x89PNG-fake-bytes"), save=False)
+        res.save()
+
+        result = json.loads(self.tool._run(template_name="Diagram"))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["file_type"], "image")
+        self.assertIn("attached below", result["content"])
+        self.assertIn('begin resource "Diagram"', result["content"])
+        # Queued for the pipeline to drain into an inline image content block.
+        self.assertEqual(len(self.tool.context.pending_native_assets), 1)
+        self.assertEqual(self.tool.context.pending_native_assets[0]["kind"], "image")
+
+    def test_quarantined_resource_not_viewable(self):
+        from agent_skills.models import SkillResource
+
+        SkillResource.objects.create(
+            skill=self.skill, name="Bad", content="secret",
+            is_quarantined=True, status="quarantined",
+        )
+        result = json.loads(self.tool._run(template_name="Bad"))
+        self.assertEqual(result["status"], "error")
 
 
 class LoadTemplateToCanvasToolTests(TestCase):

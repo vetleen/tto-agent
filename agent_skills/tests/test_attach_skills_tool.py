@@ -1,12 +1,13 @@
 """Tests for agent_skills.tools.AttachSkillsTool (declarative multi-skill set)."""
 
 import json
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from accounts.models import Membership, Organization
-from agent_skills.models import MAX_THREAD_SKILLS, AgentSkill
+from agent_skills.models import AgentSkill
 from agent_skills.tools import AttachSkillsTool
 from chat.models import ChatThread, ChatThreadSkill
 from llm.types import RunContext
@@ -28,6 +29,16 @@ def _attached_ids(thread):
     ]
 
 
+def _approve(skill):
+    """Mark a skill approved so the attach gate lets it through (a real skill
+    reaches this state by being enabled, which runs the scan)."""
+    from agent_skills.resources import compute_skill_content_hash
+
+    skill.scan_state = AgentSkill.ScanState.APPROVED
+    skill.approved_content_hash = compute_skill_content_hash(skill)
+    skill.save(update_fields=["scan_state", "approved_content_hash"])
+
+
 class AttachSkillsToolTests(TestCase):
     def setUp(self):
         AgentSkill.objects.all().delete()
@@ -36,6 +47,7 @@ class AttachSkillsToolTests(TestCase):
             slug="my-skill", name="My Skill", instructions="Do the thing.",
             description="Does the thing.", level="user", created_by=self.user,
         )
+        _approve(self.skill)
         self.thread = ChatThread.objects.create(created_by=self.user, title="t")
         self.tool = AttachSkillsTool()
         self.tool.context = _ctx(self.user, self.thread)
@@ -54,14 +66,16 @@ class AttachSkillsToolTests(TestCase):
         self.assertFalse(result["no_change"])
         self.assertEqual(_attached_ids(self.thread), [str(self.skill.id)])
 
-    def test_attach_multiple_up_to_cap(self):
+    def test_attach_many_beyond_old_count_cap(self):
+        # No count cap any more: attach 7 small skills, all fit the token budget.
         slugs = ["my-skill"]
         ids = [str(self.skill.id)]
-        for i in range(1, MAX_THREAD_SKILLS):
+        for i in range(1, 7):
             s = AgentSkill.objects.create(
                 slug=f"s{i}", name=f"S{i}", instructions="x",
                 level="user", created_by=self.user,
             )
+            _approve(s)
             slugs.append(s.slug)
             ids.append(str(s.id))
         result = self._attach(*slugs)
@@ -69,15 +83,33 @@ class AttachSkillsToolTests(TestCase):
         self.assertEqual([s["id"] for s in result["skills"]], ids)
         self.assertEqual(_attached_ids(self.thread), ids)
 
-    def test_over_cap_rejected(self):
-        slugs = ["my-skill"]
-        for i in range(MAX_THREAD_SKILLS):  # one too many overall
-            s = AgentSkill.objects.create(
-                slug=f"x{i}", name=f"X{i}", instructions="x",
-                level="user", created_by=self.user,
-            )
-            slugs.append(s.slug)
-        result = self._attach(*slugs)
+    @override_settings(SKILL_ATTACH_TOKEN_BUDGET=1)
+    def test_over_token_budget_rejected(self):
+        second = AgentSkill.objects.create(
+            slug="s2", name="S2", instructions="x", level="user",
+            created_by=self.user,
+        )
+        _approve(second)
+        result = self._attach("my-skill", second.slug)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("budget", result["message"])
+        self.assertEqual(_attached_ids(self.thread), [])
+
+    def test_blocked_skill_rejected(self):
+        self.skill.scan_state = AgentSkill.ScanState.BLOCKED
+        self.skill.save(update_fields=["scan_state"])
+        result = self._attach("my-skill")
+        self.assertEqual(result["status"], "error")
+        self.assertIn("enabled", result["message"])
+        self.assertEqual(_attached_ids(self.thread), [])
+
+    def test_unscanned_rejected_when_scanning_configured(self):
+        fresh = AgentSkill.objects.create(
+            slug="fresh", name="Fresh", instructions="x",
+            level="user", created_by=self.user,
+        )  # never enabled -> unscanned
+        with patch("agent_skills.resources._scanning_configured", return_value=True):
+            result = json.loads(self.tool._run(skill_slugs=[fresh.slug]))
         self.assertEqual(result["status"], "error")
         self.assertEqual(_attached_ids(self.thread), [])
 
@@ -101,6 +133,7 @@ class AttachSkillsToolTests(TestCase):
             slug="second", name="Second", instructions="x",
             level="user", created_by=self.user,
         )
+        _approve(second)
         self._attach("my-skill")
         result = self._attach("second")  # full replace, not additive
         self.assertEqual(result["status"], "ok")

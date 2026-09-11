@@ -300,75 +300,10 @@ class SkillsSaveViewTests(TestCase):
         self.skill.refresh_from_db()
         self.assertEqual(self.skill.name, "My Skill")
 
-    def test_save_creates_new_template(self):
-        templates_json = json.dumps([{"id": None, "name": "T1", "content": "Hello"}])
-        self.client.force_login(self.user)
-        self._post("save", templates_json=templates_json)
-        self.assertEqual(self.skill.templates.count(), 1)
-        self.assertEqual(self.skill.templates.first().name, "T1")
-
-    def test_save_deletes_missing_template(self):
-        SkillTemplate.objects.create(skill=self.skill, name="Old", content="x")
-        self.client.force_login(self.user)
-        self._post("save", templates_json="[]")
-        self.assertEqual(self.skill.templates.count(), 0)
-
-    def test_save_rejects_duplicate_template_names(self):
-        """Two templates with the same name should fail validation cleanly."""
-        templates_json = json.dumps([
-            {"id": None, "name": "Same", "content": "A"},
-            {"id": None, "name": "Same", "content": "B"},
-        ])
-        self.client.force_login(self.user)
-        # Pre-existing template that should NOT be touched on validation failure.
-        SkillTemplate.objects.create(skill=self.skill, name="Existing", content="x")
-
-        response = self._post("save", templates_json=templates_json)
-        self.assertEqual(response.status_code, 302)
-        self.assertEqual(
-            response["Location"],
-            reverse("agent_skills_detail", kwargs={"skill_id": self.skill.id}),
-        )
-
-        # The skill must be untouched: name unchanged, existing template intact.
-        self.skill.refresh_from_db()
-        self.assertEqual(self.skill.name, "My Skill")
-        self.assertEqual(self.skill.templates.count(), 1)
-        self.assertEqual(self.skill.templates.first().name, "Existing")
-
-    def test_save_handles_remove_then_rename_collision(self):
-        """Removing B and renaming A→B in the same submission should work."""
-        a = SkillTemplate.objects.create(skill=self.skill, name="A", content="ca")
-        SkillTemplate.objects.create(skill=self.skill, name="B", content="cb")
-        templates_json = json.dumps([
-            {"id": str(a.id), "name": "B", "content": "ca"},
-        ])
-        self.client.force_login(self.user)
-        response = self._post("save", templates_json=templates_json)
-        self.assertEqual(response.status_code, 302)
-
-        templates = list(self.skill.templates.all())
-        self.assertEqual(len(templates), 1)
-        self.assertEqual(templates[0].pk, a.pk)
-        self.assertEqual(templates[0].name, "B")
-        self.assertEqual(templates[0].content, "ca")
-
-    def test_save_tolerates_malformed_template_entries(self):
-        """Regression: a non-UUID template id (or non-string name/content)
-        previously raised an unhandled ValidationError in the pk filter — a
-        500. A bad id must degrade to "new template"."""
-        templates_json = json.dumps([
-            {"id": "not-a-uuid", "name": 123, "content": None},
-        ])
-        self.client.force_login(self.user)
-        response = self._post("save", templates_json=templates_json)
-        self.assertEqual(response.status_code, 302)
-        self.assertEqual(response["Location"], reverse("agent_skills_list"))
-
-        templates = list(self.skill.templates.all())
-        self.assertEqual(len(templates), 1)
-        self.assertEqual(templates[0].name, "123")
-        self.assertEqual(templates[0].content, "")
+    # NOTE: resources (formerly templates) are no longer managed by the Save
+    # form — they have dedicated upload/create/update/delete endpoints, covered
+    # by SkillResourceEndpointTests. The old form-reconciliation tests were
+    # removed with that behavior.
 
     def test_save_slug_rename_migrates_prefs(self):
         """Renaming the slug on the detail form carries the user's slug-keyed
@@ -540,19 +475,15 @@ class SkillsCopyWorkflowTests(TransactionTestCase):
         self.assertEqual(self.source.templates.count(), 2)
 
     def test_save_as_user_uses_edited_form_values(self):
-        """If the form data differs from the source, the copy reflects the form."""
+        """The copy reflects the form's edited text fields; resources are copied
+        from the source unchanged (resources aren't edited via the Save form)."""
         self.client.force_login(self.user)
-        edited_templates = json.dumps([
-            {"id": str(self.t1.id), "name": "Template A", "content": "Edited A"},
-            {"id": None, "name": "Template C", "content": "Body C"},
-        ])
         response = self.client.post(
             reverse("agent_skills_save", kwargs={"skill_id": self.source.id}),
             self._detail_payload(
                 "save_as_user",
                 name="My Edited Copy",
                 instructions="Edited instructions.",
-                templates_json=edited_templates,
             ),
         )
         self.assertEqual(response.status_code, 302)
@@ -560,9 +491,9 @@ class SkillsCopyWorkflowTests(TransactionTestCase):
         copy = AgentSkill.objects.get(level="user", created_by=self.user)
         self.assertEqual(copy.name, "My Edited Copy")
         self.assertEqual(copy.instructions, "Edited instructions.")
-
-        templates = {t.name: t.content for t in copy.templates.all()}
-        self.assertEqual(templates, {"Template A": "Edited A", "Template C": "Body C"})
+        # Resources came across from the source unchanged.
+        resources = {t.name: t.content for t in copy.templates.all()}
+        self.assertEqual(resources, {"Template A": "Body A", "Template B": "Body B"})
 
     def test_standalone_copy_url_preserves_templates(self):
         """The dropdown-menu Copy URL must also preserve templates."""
@@ -598,33 +529,10 @@ class SkillsCopyWorkflowTests(TransactionTestCase):
         SkillTemplate.objects.create(skill=skill, name="Keep", content="kept")
         return skill
 
-    def test_save_as_org_on_existing_org_skill_error_keeps_skill(self):
-        """Regression: save_as_org on an *existing* org skill no-ops in
-        promote_skill_to_org (it returns the original row). A validation
-        error must not delete the original — the old error path did, then
-        500'd building the redirect (skill.id was None after delete)."""
-        org_skill = self._make_org_skill()
-        self.client.force_login(self.user)
-        dup_templates = json.dumps([
-            {"id": None, "name": "Dup", "content": "a"},
-            {"id": None, "name": "Dup", "content": "b"},
-        ])
-        response = self.client.post(
-            reverse("agent_skills_save", kwargs={"skill_id": org_skill.id}),
-            self._detail_payload(
-                "save_as_org", name="Org Keeper", templates_json=dup_templates
-            ),
-        )
-        self.assertEqual(response.status_code, 302)
-        self.assertEqual(
-            response["Location"],
-            reverse("agent_skills_detail", kwargs={"skill_id": org_skill.id}),
-        )
-        # The original org skill (and its templates) must survive.
-        org_skill.refresh_from_db()
-        self.assertEqual(org_skill.templates.count(), 1)
-        msgs = [str(m) for m in get_messages(response.wsgi_request)]
-        self.assertTrue(any("share the name" in m for m in msgs))
+    # (Removed: the save_as_org "duplicate template name → validation error"
+    # regression test — the Save form no longer reconciles resources, so that
+    # error path no longer exists. Resource errors live on the resource
+    # endpoints now, covered by SkillResourceEndpointTests.)
 
     def test_save_as_org_on_existing_org_skill_saves_in_place(self):
         """save_as_org on an org skill in the same org edits it in place —
@@ -720,10 +628,14 @@ class SkillsCopyDeleteToggleTests(TestCase):
             level="org", organization=self.org,
         )
         self.client.force_login(self.user)
-        response = self.client.post(
-            reverse("agent_skills_toggle", kwargs={"skill_id": org_skill.id}),
-            {"enabled": "1"},
-        )
+        # This test is about shadow-replacement, not scanning — treat the skill
+        # as already approved so the enable doesn't run the scan gate.
+        from unittest.mock import patch
+        with patch("agent_skills.resources.skill_is_approved", return_value=True):
+            response = self.client.post(
+                reverse("agent_skills_toggle", kwargs={"skill_id": org_skill.id}),
+                {"enabled": "1"},
+            )
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertTrue(data["now_active"])
@@ -829,3 +741,134 @@ class OrgDisabledSkillViewTests(TestCase):
         self.client.force_login(admin)
         response = self.client.get(reverse("agent_skills_list"))
         self.assertNotContains(response, "Research Skill")
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class SkillResourceEndpointTests(TestCase):
+    def setUp(self):
+        from unittest.mock import patch
+
+        AgentSkill.objects.all().delete()
+        self.user = User.objects.create_user(email="res@example.com", password="pw")
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+        self.skill = AgentSkill.objects.create(
+            slug="r", name="R", instructions="i", level="user", created_by=self.user,
+        )
+        self.client.force_login(self.user)
+        self._clean = patch.multiple(
+            "agent_skills.resources",
+            _scan_text_guardrail=lambda *a, **k: ("allow", "", []),
+            _scan_text_pii=lambda *a, **k: ({}, False, "", ""),
+        )
+
+    def _url(self, name, **kw):
+        return reverse(name, kwargs={"skill_id": self.skill.id, **kw})
+
+    def test_create_text_resource(self):
+        resp = self.client.post(
+            self._url("agent_skills_resource_create"),
+            {"name": "Notes", "content": "Body", "kind": "reference"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["resource"]["name"], "Notes")
+        self.assertEqual(self.skill.templates.count(), 1)
+
+    def test_create_rejects_duplicate_name(self):
+        self.client.post(
+            self._url("agent_skills_resource_create"), {"name": "Dup", "content": "a"}
+        )
+        resp = self.client.post(
+            self._url("agent_skills_resource_create"), {"name": "Dup", "content": "b"}
+        )
+        self.assertEqual(resp.json()["error"], "duplicate_name")
+        self.assertEqual(self.skill.templates.count(), 1)
+
+    def test_create_denied_for_non_owner(self):
+        # Another user can't even see this user-level skill -> 404 (not 403), so
+        # its existence isn't revealed.
+        other = User.objects.create_user(email="o@example.com", password="pw")
+        self.client.force_login(other)
+        resp = self.client.post(
+            self._url("agent_skills_resource_create"), {"name": "X", "content": "y"}
+        )
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(self.skill.templates.count(), 0)
+
+    def test_upload_text_file_scanned(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        with self._clean:
+            resp = self.client.post(
+                self._url("agent_skills_resource_upload"),
+                {"file": SimpleUploadedFile("notes.txt", b"reference body", content_type="text/plain")},
+            )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(len(data["resources"]), 1)
+        self.assertEqual(data["resources"][0]["file_type"], "text")
+        self.assertEqual(data["resources"][0]["status"], "ready")
+
+    def test_upload_unsupported_type_reported(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        resp = self.client.post(
+            self._url("agent_skills_resource_upload"),
+            {"file": SimpleUploadedFile("clip.mp3", b"\x00\x01", content_type="audio/mpeg")},
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["resources"], [])
+        self.assertTrue(any("unsupported" in e for e in data["errors"]))
+
+    def test_update_renames_and_edits_content(self):
+        r = self.client.post(
+            self._url("agent_skills_resource_create"), {"name": "A", "content": "x"}
+        ).json()["resource"]
+        resp = self.client.post(
+            reverse("agent_skills_resource_update",
+                    kwargs={"skill_id": self.skill.id, "resource_id": r["id"]}),
+            {"name": "B", "content": "y"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()["resource"]
+        self.assertEqual(data["name"], "B")
+        self.assertEqual(data["content"], "y")
+
+    def test_delete_resource(self):
+        r = self.client.post(
+            self._url("agent_skills_resource_create"), {"name": "A", "content": "x"}
+        ).json()["resource"]
+        resp = self.client.post(
+            reverse("agent_skills_resource_delete",
+                    kwargs={"skill_id": self.skill.id, "resource_id": r["id"]}),
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(self.skill.templates.count(), 0)
+
+    def test_toggle_enable_blocks_when_scan_blocks(self):
+        from unittest.mock import patch
+
+        with patch("agent_skills.resources.skill_is_approved", return_value=False), \
+                patch("agent_skills.resources.scan_and_approve_skill", return_value=False):
+            resp = self.client.post(
+                reverse("agent_skills_toggle", kwargs={"skill_id": self.skill.id}),
+                {"enabled": "1"},
+            )
+        data = resp.json()
+        self.assertFalse(data["ok"])
+        self.assertEqual(data["error"], "blocked")
+
+    def test_toggle_enable_runs_scan_then_enables(self):
+        from unittest.mock import patch
+
+        with patch("agent_skills.resources.skill_is_approved", return_value=False), \
+                patch("agent_skills.resources.scan_and_approve_skill", return_value=True) as scan:
+            resp = self.client.post(
+                reverse("agent_skills_toggle", kwargs={"skill_id": self.skill.id}),
+                {"enabled": "1"},
+            )
+        self.assertTrue(resp.json()["ok"])
+        scan.assert_called_once()

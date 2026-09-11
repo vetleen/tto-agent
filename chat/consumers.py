@@ -1118,13 +1118,18 @@ class ChatConsumer(AsyncWebsocketConsumer):
         session and (if a thread is loaded) the DB are updated to match, and a
         single ``skills.set`` event carries the resolved set back to the UI.
         """
-        from agent_skills.models import MAX_THREAD_SKILLS
+        from asgiref.sync import sync_to_async
+
+        from agent_skills.resources import trim_ids_to_budget
 
         thread_id = data.get("thread_id")
         skill_ids = data.get("skill_ids") or []
 
         skills = await self._validate_skills(skill_ids)
-        skills = skills[:MAX_THREAD_SKILLS]
+        kept = set(
+            await sync_to_async(trim_ids_to_budget)([s["id"] for s in skills])
+        )
+        skills = [s for s in skills if str(s["id"]) in kept]
 
         self.active_skill_ids = [s["id"] for s in skills]
 
@@ -1818,12 +1823,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
         payload_skill_ids = data.get("skill_ids")
         payload_skills_validated: list[str] | None = None
         if isinstance(payload_skill_ids, list):
-            from agent_skills.models import MAX_THREAD_SKILLS
+            from asgiref.sync import sync_to_async
+
+            from agent_skills.resources import trim_ids_to_budget
 
             validated_skills = await self._validate_skills(payload_skill_ids)
-            payload_skills_validated = [
-                s["id"] for s in validated_skills
-            ][:MAX_THREAD_SKILLS]
+            payload_skills_validated = await sync_to_async(trim_ids_to_budget)(
+                [s["id"] for s in validated_skills]
+            )
 
         try:
             # Get or create thread

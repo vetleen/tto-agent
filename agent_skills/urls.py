@@ -17,6 +17,26 @@ urlpatterns = [
     path("<uuid:skill_id>/delete/", views.skills_delete, name="agent_skills_delete"),
     path("<uuid:skill_id>/toggle/", views.skills_toggle, name="agent_skills_toggle"),
     path(
+        "<uuid:skill_id>/resources/upload/",
+        views.skills_resource_upload,
+        name="agent_skills_resource_upload",
+    ),
+    path(
+        "<uuid:skill_id>/resources/create/",
+        views.skills_resource_create,
+        name="agent_skills_resource_create",
+    ),
+    path(
+        "<uuid:skill_id>/resources/<uuid:resource_id>/update/",
+        views.skills_resource_update,
+        name="agent_skills_resource_update",
+    ),
+    path(
+        "<uuid:skill_id>/resources/<uuid:resource_id>/delete/",
+        views.skills_resource_delete,
+        name="agent_skills_resource_delete",
+    ),
+    path(
         "<uuid:skill_id>/edit-in-chat/",
         views.skills_edit_in_chat,
         name="agent_skills_edit_in_chat",

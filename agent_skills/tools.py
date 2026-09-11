@@ -6,7 +6,6 @@ import json
 import logging
 from pydantic import BaseModel, Field
 
-from agent_skills.models import MAX_THREAD_SKILLS
 from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
 
 logger = logging.getLogger(__name__)
@@ -657,7 +656,7 @@ def _resolve_thread_template(thread_id, template_name):
     note is a tool-result field for the model's awareness — it is not prompt
     text and carries no conflict-resolution instructions.
     """
-    from agent_skills.models import SkillTemplate
+    from agent_skills.models import SkillResource
     from chat.models import ChatThreadSkill
 
     skill_ids = list(
@@ -668,13 +667,14 @@ def _resolve_thread_template(thread_id, template_name):
     if not skill_ids:
         return None, "No skills attached to this thread."
 
+    # Quarantined resources are never resolvable — they cannot be read or loaded.
     matches = list(
-        SkillTemplate.objects.filter(
-            skill_id__in=skill_ids, name=template_name
+        SkillResource.objects.filter(
+            skill_id__in=skill_ids, name=template_name, is_quarantined=False
         ).select_related("skill")
     )
     if not matches:
-        return None, f"Template '{template_name}' not found on any attached skill."
+        return None, f"Resource '{template_name}' not found on any attached skill."
     if len(matches) == 1:
         return matches[0], None
 
@@ -690,52 +690,134 @@ def _resolve_thread_template(thread_id, template_name):
 
 
 class ViewTemplateTool(ContextAwareTool):
-    """View the content of a template from an attached skill."""
+    """View the content of a resource from an attached skill (read whole, by name).
+
+    Text resources come back wrapped in begin/end markers so the read stays
+    legible even if the skill is later detached. PDF/image resources are handed
+    to the model inline (as an attached file) rather than as text.
+    """
 
     name: str = "skill_template_view"
     audience: str = "main"
-    start_label: str = "Loading template..."
-    end_label: str = "Viewed template"
+    start_label: str = "Loading resource..."
+    end_label: str = "Viewed resource"
     description: str = (
-        "View the full content of a named template from an attached skill. "
-        "Returns the template text so you can reference it when generating output."
+        "View the full content of a named resource from an attached skill. Text "
+        "resources are returned as text; PDF and image resources are attached "
+        "inline for you to read directly. Use this to consult a skill's bundled "
+        "reference material or a template before generating output."
     )
     args_schema: type[BaseModel] = ViewTemplateInput
     section: str = "skills"
 
     def _run(self, template_name: str, **kwargs) -> str:
+        from agent_skills.models import MAX_RESOURCE_CHARS, SkillResource
+
         thread_id = self.context.conversation_id if self.context else None
         if not thread_id:
             return json.dumps({"status": "error", "message": "No thread context."})
 
-        tmpl, note = _resolve_thread_template(thread_id, template_name)
-        if tmpl is None:
+        resource, note = _resolve_thread_template(thread_id, template_name)
+        if resource is None:
             return json.dumps({"status": "error", "message": note})
 
-        # Bound what goes into the LLM context. Write paths now cap content at
-        # MAX_TEMPLATE_CHARS, so this only fires for pre-existing oversized rows.
-        from agent_skills.models import MAX_TEMPLATE_CHARS
+        skill_name = resource.skill.name
+        begin = (
+            f'--- begin resource "{resource.name}" ({resource.file_type}) '
+            f'from skill "{skill_name}" ---'
+        )
+        end = f'--- end resource "{resource.name}" ---'
 
-        content = tmpl.content
-        truncated = len(content) > MAX_TEMPLATE_CHARS
-        if truncated:
-            content = content[:MAX_TEMPLATE_CHARS]
+        # PDF / image: hand the model the file itself, inline.
+        if resource.file_type in (
+            SkillResource.FileType.PDF, SkillResource.FileType.IMAGE
+        ) and self.context is not None:
+            if self._add_native_asset(resource):
+                stub = (
+                    f"{begin}\nThe {resource.file_type} file is attached below "
+                    f"for you to view directly.\n{end}"
+                )
+                result = {
+                    "status": "ok", "resource_name": resource.name,
+                    "file_type": resource.file_type, "content": stub,
+                }
+                if note:
+                    result["note"] = note
+                return json.dumps(result)
+            if resource.file_type == SkillResource.FileType.IMAGE:
+                return json.dumps({
+                    "status": "error",
+                    "message": (
+                        f"The image resource '{resource.name}' could not be "
+                        "attached (attachment budget exhausted this turn)."
+                    ),
+                })
+            # PDF: fall through to the extracted-text fallback below.
 
+        content = (resource.content or "")[:MAX_RESOURCE_CHARS]
+        if not content.strip():
+            return json.dumps({
+                "status": "error",
+                "message": f"Resource '{resource.name}' has no readable text content.",
+            })
+        truncated = len(resource.content or "") > MAX_RESOURCE_CHARS
         result = {
-            "status": "ok",
-            "template_name": tmpl.name,
-            "content": content,
+            "status": "ok", "resource_name": resource.name,
+            "file_type": resource.file_type,
+            "content": f"{begin}\n{content}\n{end}",
         }
         notes = [note] if note else []
         if truncated:
             result["truncated"] = True
             notes.append(
-                f"Template content exceeded {MAX_TEMPLATE_CHARS} characters "
+                f"Resource content exceeded {MAX_RESOURCE_CHARS} characters "
                 "and was truncated."
             )
         if notes:
             result["note"] = " ".join(notes)
         return json.dumps(result)
+
+    def _add_native_asset(self, resource) -> bool:
+        """Queue a PDF/image resource's bytes for inline injection by the
+        pipeline. Returns False when there are no bytes or the per-turn native
+        asset budget is exhausted."""
+        import base64
+        import logging
+
+        from agent_skills.models import SkillResource
+
+        if not resource.original_file:
+            return False
+        try:
+            with resource.original_file.open("rb") as fh:
+                data = fh.read()
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "skill_template_view: could not read resource %s bytes", resource.pk
+            )
+            return False
+
+        b64 = base64.b64encode(data).decode("ascii")
+        if resource.file_type == SkillResource.FileType.PDF:
+            item = {
+                "kind": "pdf", "b64": b64,
+                "filename": resource.original_filename or resource.name,
+                "description": (
+                    f"PDF resource '{resource.name}' from skill "
+                    f"'{resource.skill.name}'"
+                ),
+                "extracted_text": resource.content or "",
+            }
+        else:
+            item = {
+                "kind": "image", "b64": b64,
+                "media_type": resource.media_type or "image/png",
+                "description": (
+                    f"Image resource '{resource.name}' from skill "
+                    f"'{resource.skill.name}'"
+                ),
+            }
+        return bool(self.context.try_add_native_asset(item))
 
 
 class LoadTemplateToCanvasTool(ContextAwareTool):
@@ -766,6 +848,16 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
         tmpl, note = _resolve_thread_template(thread_id, template_name)
         if tmpl is None:
             return json.dumps({"status": "error", "message": note})
+
+        if not (tmpl.content or "").strip():
+            return json.dumps({
+                "status": "error",
+                "message": (
+                    f"Resource '{tmpl.name}' has no text content to load into the "
+                    "canvas (it may be an image or PDF — use skill_template_view "
+                    "to view those)."
+                ),
+            })
 
         content = tmpl.content[:CANVAS_MAX_CHARS]
         title = canvas_name or tmpl.name
@@ -878,9 +970,10 @@ class AttachSkillsInput(ReasonBaseModel):
         default_factory=list,
         description=(
             "The complete set of skill slugs that should be attached to this "
-            f"thread (up to {MAX_THREAD_SKILLS}). This REPLACES whatever is "
-            "currently attached, so pass every slug you want attached — not "
-            "just new ones. Pass an empty list to detach all skills."
+            "thread. This REPLACES whatever is currently attached, so pass every "
+            "slug you want attached — not just new ones. Pass an empty list to "
+            "detach all skills. You may attach as many skills as fit the thread's "
+            "combined skill size budget."
         ),
     )
 
@@ -904,11 +997,12 @@ class AttachSkillsTool(ContextAwareTool):
         return "Updated attached skills"
 
     description: str = (
-        "Set the skills attached to this chat thread to the given set of "
-        f"slugs (up to {MAX_THREAD_SKILLS}), replacing whatever is currently "
-        "attached. Pass an empty list to detach all. A skill's tools and "
-        "instructions become active immediately — from your next step in this "
-        "same turn — so you can attach a skill and then use its tools right away."
+        "Set the skills attached to this chat thread to the given set of slugs, "
+        "replacing whatever is currently attached. Pass an empty list to detach "
+        "all. A skill's tools and instructions become active immediately — from "
+        "your next step in this same turn — so you can attach a skill and then "
+        "use its tools right away. You may attach any number of skills as long as "
+        "their combined size fits the thread's skill budget."
     )
     args_schema: type[BaseModel] = AttachSkillsInput
     section: str = "chat"
@@ -931,15 +1025,6 @@ class AttachSkillsTool(ContextAwareTool):
             slug = raw.strip()
             if slug and slug not in slugs:
                 slugs.append(slug)
-        if len(slugs) > MAX_THREAD_SKILLS:
-            return json.dumps({
-                "status": "error",
-                "message": (
-                    f"At most {MAX_THREAD_SKILLS} skills can be attached per "
-                    f"thread; you passed {len(slugs)}."
-                ),
-            })
-
         User = get_user_model()
         try:
             user = User.objects.get(pk=user_id)
@@ -964,6 +1049,37 @@ class AttachSkillsTool(ContextAwareTool):
                     "available_slugs": [s.slug for s in available],
                 })
             chosen.append(skill)
+
+        # Approval gate: an unscanned/blocked skill must never reach a thread.
+        from agent_skills.resources import (
+            attach_token_budget,
+            skill_is_approved,
+            skills_within_budget,
+        )
+
+        unapproved = [s for s in chosen if not skill_is_approved(s)]
+        if unapproved:
+            return json.dumps({
+                "status": "error",
+                "message": (
+                    "These skills aren't enabled yet — enable them in Skills "
+                    "(which runs a safety scan) before attaching: "
+                    + ", ".join(s.slug for s in unapproved)
+                ),
+            })
+
+        # Token budget replaces the old fixed count cap.
+        _, dropped = skills_within_budget(chosen)
+        if dropped:
+            return json.dumps({
+                "status": "error",
+                "message": (
+                    "Attaching all of these would exceed this thread's skill "
+                    f"size budget (~{attach_token_budget()} tokens). Drop one of: "
+                    + ", ".join(s.slug for s in dropped)
+                    + "."
+                ),
+            })
 
         # Unlock the attached skills' tools for the REST OF THIS TURN. The chat
         # pipeline drains ctx.added_tool_names each tool-loop iteration and unions

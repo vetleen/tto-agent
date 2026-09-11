@@ -62,10 +62,11 @@ class ExportSkillTests(TestCase):
         )
         self.assertEqual(data["description"], ["A skill that researches things."])
         self.assertEqual(data["tool_names"], ["skill_template_view"])
-        # Templates ordered by name, content as line arrays.
-        self.assertEqual([t["name"] for t in data["templates"]], ["Notes", "Outline"])
-        outline = next(t for t in data["templates"] if t["name"] == "Outline")
+        # Resources ordered by name, content as line arrays, carrying a kind.
+        self.assertEqual([t["name"] for t in data["resources"]], ["Notes", "Outline"])
+        outline = next(t for t in data["resources"] if t["name"] == "Outline")
         self.assertEqual(outline["content"], ["# Title", "", "## Findings"])
+        self.assertEqual(outline["kind"], "reference")
 
     def test_dump_json_is_readable_envelope(self):
         raw = dump_skills_json([self.skill])
@@ -101,10 +102,39 @@ class ParseImportServiceTests(TestCase):
         self.assertEqual(imported.level, "user")
         self.assertEqual(imported.created_by, self.user)
         self.assertIsNone(imported.parent)
-        # Templates survive with exact content.
+        # Resources survive with exact content.
         tmpls = {t.name: t.content for t in imported.templates.all()}
         self.assertEqual(tmpls["Outline"], "# Title\n\n## Findings")
         self.assertEqual(tmpls["Notes"], "single line")
+
+    def test_v1_templates_import_as_resources(self):
+        # A legacy v1 export (``templates`` key) still imports, as kind=template.
+        raw = json.dumps({"wilfred_skill_export": 1, "skills": [{
+            "name": "Legacy", "instructions": ["x"],
+            "templates": [{"name": "Old", "content": ["body"]}],
+        }]}).encode("utf-8")
+        payloads = parse_skill_export(raw)
+        self.assertEqual(payloads[0]["resources"][0]["kind"], "template")
+        imported = import_skill(self.user, payloads[0])
+        res = imported.templates.get(name="Old")
+        self.assertEqual(res.content, "body")
+        self.assertEqual(res.kind, "template")
+
+    def test_resource_kind_round_trips(self):
+        source = AgentSkill.objects.create(
+            slug="kinded", name="Kinded", instructions="i", level="system",
+        )
+        from agent_skills.models import SkillResource
+        SkillResource.objects.create(
+            skill=source, name="Ref", content="r", kind="reference",
+        )
+        SkillResource.objects.create(
+            skill=source, name="Tmpl", content="t", kind="template",
+        )
+        payloads = parse_skill_export(dump_skills_json([source]).encode("utf-8"))
+        imported = import_skill(self.user, payloads[0])
+        kinds = {r.name: r.kind for r in imported.templates.all()}
+        self.assertEqual(kinds, {"Ref": "reference", "Tmpl": "template"})
 
     def test_import_strips_non_skill_tool_names(self):
         # skill_template_view is a skills-section tool (kept); chat_subagent_create is a
@@ -194,8 +224,8 @@ class ParseImportServiceTests(TestCase):
         }]}).encode("utf-8")
         payloads = parse_skill_export(raw)
         # Normalization caps the payload...
-        self.assertEqual(len(payloads[0]["templates"][0]["content"]), MAX_TEMPLATE_CHARS)
-        # ...and so does the persisted template.
+        self.assertEqual(len(payloads[0]["resources"][0]["content"]), MAX_TEMPLATE_CHARS)
+        # ...and so does the persisted resource.
         skill = import_skill(self.user, payloads[0])
         tmpl = skill.templates.get(name="Huge")
         self.assertEqual(len(tmpl.content), MAX_TEMPLATE_CHARS)

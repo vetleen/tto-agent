@@ -11,9 +11,9 @@ from django.utils.text import slugify
 
 from agent_skills.models import (
     MAX_INSTRUCTIONS_CHARS,
-    MAX_TEMPLATE_CHARS,
+    MAX_RESOURCE_CHARS,
     AgentSkill,
-    SkillTemplate,
+    SkillResource,
 )
 
 if TYPE_CHECKING:
@@ -454,12 +454,11 @@ def fork_skill(
     )
 
     if copy_templates:
-        for tmpl in source_skill.templates.all():
-            SkillTemplate.objects.create(
-                skill=new_skill,
-                name=tmpl.name,
-                content=tmpl.content,
-            )
+        from agent_skills.resources import copy_resource, recompute_standing_tokens
+
+        for res in source_skill.templates.all():
+            copy_resource(res, new_skill)
+        recompute_standing_tokens(new_skill)
 
     return new_skill
 
@@ -647,12 +646,11 @@ def promote_skill_to_org(
     )
 
     if copy_templates:
-        for tmpl in source_skill.templates.all():
-            SkillTemplate.objects.create(
-                skill=new_skill,
-                name=tmpl.name,
-                content=tmpl.content,
-            )
+        from agent_skills.resources import copy_resource, recompute_standing_tokens
+
+        for res in source_skill.templates.all():
+            copy_resource(res, new_skill)
+        recompute_standing_tokens(new_skill)
 
     return new_skill
 
@@ -749,8 +747,9 @@ def move_skill_to_personal(user, skill: AgentSkill) -> AgentSkill:
 # ----- Export / import --------------------------------------------------
 
 # Bump when the export format changes incompatibly. Importers reject files
-# carrying a higher version than they understand.
-EXPORT_VERSION = 1
+# carrying a higher version than they understand. v2 renamed ``templates`` ->
+# ``resources`` (with a ``kind``); importers still accept a v1 ``templates`` key.
+EXPORT_VERSION = 2
 
 # Upper bound on skills per import file. The per-user slug dedup does one
 # EXISTS query per collision, so an unbounded list of same-slug entries would
@@ -806,9 +805,12 @@ def export_skill(skill: AgentSkill) -> dict:
         "description": _lines(skill.description),
         "instructions": _lines(skill.instructions),
         "tool_names": list(skill.tool_names or []),
-        "templates": [
-            {"name": t.name, "content": _lines(t.content)}
-            for t in skill.templates.order_by("name")
+        # Only text resources are portable; PDF/image files can't ride along in
+        # JSON and are omitted from the export.
+        "resources": [
+            {"name": r.name, "kind": r.kind, "content": _lines(r.content)}
+            for r in skill.templates.order_by("name")
+            if r.file_type == SkillResource.FileType.TEXT
         ],
     }
 
@@ -857,21 +859,33 @@ def _normalize_skill_payload(entry: dict) -> dict:
         if isinstance(raw_tools, list) else []
     )
 
-    templates: list[dict] = []
+    # v2 uses ``resources`` (with a ``kind``); fall back to a v1 ``templates``
+    # list, mapping each entry to kind=template.
+    raw_resources = entry.get("resources")
+    if not isinstance(raw_resources, list):
+        raw_resources = [
+            {"name": t.get("name"), "content": t.get("content"), "kind": "template"}
+            for t in (entry.get("templates") or [])
+            if isinstance(t, dict)
+        ]
+
+    resources: list[dict] = []
     seen_names: set[str] = set()
-    raw_templates = entry.get("templates")
-    if isinstance(raw_templates, list):
-        for t in raw_templates:
-            if not isinstance(t, dict):
-                continue
-            tname = str(t.get("name") or "").strip()[:255]
-            if not tname or tname in seen_names:
-                continue
-            seen_names.add(tname)
-            templates.append({
-                "name": tname,
-                "content": _join_lines(t.get("content"))[:MAX_TEMPLATE_CHARS],
-            })
+    for r in raw_resources:
+        if not isinstance(r, dict):
+            continue
+        rname = str(r.get("name") or "").strip()[:255]
+        if not rname or rname in seen_names:
+            continue
+        seen_names.add(rname)
+        kind = str(r.get("kind") or "").strip().lower()
+        if kind not in SkillResource.Kind.values:
+            kind = SkillResource.Kind.REFERENCE
+        resources.append({
+            "name": rname,
+            "kind": kind,
+            "content": _join_lines(r.get("content"))[:MAX_RESOURCE_CHARS],
+        })
 
     return {
         "slug": slug,
@@ -881,7 +895,7 @@ def _normalize_skill_payload(entry: dict) -> dict:
         "description": description,
         "instructions": instructions,
         "tool_names": tool_names,
-        "templates": templates,
+        "resources": resources,
     }
 
 
@@ -982,11 +996,24 @@ def import_skill(user, payload: dict) -> AgentSkill:
         ),
     )
 
-    for tmpl in payload.get("templates", []):
-        SkillTemplate.objects.create(
+    from agent_skills.resources import recompute_standing_tokens, resource_content_hash
+    from core.tokens import count_tokens
+
+    for res in payload.get("resources", []):
+        content = (res.get("content", "") or "")[:MAX_RESOURCE_CHARS]
+        kind = res.get("kind") or SkillResource.Kind.REFERENCE
+        if kind not in SkillResource.Kind.values:
+            kind = SkillResource.Kind.REFERENCE
+        SkillResource.objects.create(
             skill=skill,
-            name=tmpl["name"],
-            content=(tmpl.get("content", "") or "")[:MAX_TEMPLATE_CHARS],
+            name=res["name"],
+            kind=kind,
+            file_type=SkillResource.FileType.TEXT,
+            content=content,
+            content_sha256=resource_content_hash(content),
+            token_count=count_tokens(content),
+            status=SkillResource.Status.READY,
         )
+    recompute_standing_tokens(skill)
 
     return skill

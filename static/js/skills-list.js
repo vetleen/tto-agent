@@ -55,6 +55,32 @@
     }
   }
 
+  var SCAN_SPINNER =
+    '<svg class="w-4 h-4 animate-spin text-body" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>';
+
+  // Enabling a not-yet-approved skill runs a safety scan server-side, which can
+  // take a few seconds — show a spinner by the toggle and lock it until it lands.
+  function setToggleBusy(row, busy) {
+    var checkbox = row.querySelector(".skill-toggle");
+    if (checkbox) checkbox.disabled = busy;
+    var btn = row.querySelector(".skill-toggle-btn");
+    if (btn) btn.disabled = busy;
+    var existing = row.querySelector(".skill-scan-spinner");
+    if (busy && !existing) {
+      var label = checkbox ? checkbox.closest("label") : null;
+      var anchor = label || checkbox;
+      if (anchor && anchor.parentNode) {
+        var sp = document.createElement("span");
+        sp.className = "skill-scan-spinner inline-flex items-center ms-2 align-middle";
+        sp.setAttribute("title", "Scanning…");
+        sp.innerHTML = SCAN_SPINNER;
+        anchor.parentNode.insertBefore(sp, anchor.nextSibling);
+      }
+    } else if (!busy && existing) {
+      existing.remove();
+    }
+  }
+
   function postToggle(row, enabled) {
     var url = row.getAttribute("data-toggle-url");
     if (!url) return;
@@ -62,6 +88,8 @@
     var body = new URLSearchParams();
     body.set("enabled", enabled ? "1" : "0");
     body.set("csrfmiddlewaretoken", getCsrf());
+
+    setToggleBusy(row, true);
 
     fetch(url, {
       method: "POST",
@@ -77,9 +105,16 @@
         return resp.json();
       })
       .then(function (data) {
+        setToggleBusy(row, false);
         if (!data || !data.ok) {
-          showToast("Could not update this skill. Please try again.");
-          // Revert checkbox state.
+          if (data && data.error === "blocked") {
+            showToast(
+              data.detail ||
+                "This skill couldn't be enabled — its content was flagged by the safety scan."
+            );
+          } else {
+            showToast("Could not update this skill. Please try again.");
+          }
           var checkbox = row.querySelector(".skill-toggle");
           if (checkbox) checkbox.checked = !enabled;
           return;
@@ -96,6 +131,7 @@
         }
       })
       .catch(function () {
+        setToggleBusy(row, false);
         showToast("Could not update this skill. Please try again.");
         var checkbox = row.querySelector(".skill-toggle");
         if (checkbox) checkbox.checked = !enabled;

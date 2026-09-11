@@ -294,6 +294,10 @@ def skills_detail(request, skill_id):
 
     templates = list(skill.templates.order_by("name"))
 
+    from agent_skills.resources import RESOURCE_COUNT_CAP, skill_is_approved
+
+    is_approved = skill_is_approved(skill)
+
     # Colleague count for the org-skill save warning.
     colleague_count = 0
     if skill.level == "org" and skill.organization_id:
@@ -319,10 +323,9 @@ def skills_detail(request, skill_id):
         {
             "skill": skill,
             "templates": templates,
-            "templates_json": json.dumps([
-                {"id": str(t.id), "name": t.name, "content": t.content}
-                for t in templates
-            ]),
+            "resources_data": [_resource_json(t) for t in templates],
+            "is_approved": is_approved,
+            "resource_count_cap": RESOURCE_COUNT_CAP,
             "tool_names_json": json.dumps(list(skill.tool_names or [])),
             "editable": editable,
             "available_tools": _available_skill_tools(skill.audience),
@@ -436,21 +439,6 @@ def _apply_skill_form(skill: AgentSkill, request) -> None:
                 )
             skill.slug = new_slug
 
-    # Reconcile templates: incoming list is the source of truth.
-    incoming = _parse_templates_json(request.POST.get("templates_json", ""))
-
-    # Validate within-submission name uniqueness BEFORE writing anything.
-    # The (skill, name) DB constraint would otherwise raise mid-loop and
-    # leave the skill in a half-updated state.
-    seen_names: set[str] = set()
-    for entry in incoming:
-        if entry["name"] in seen_names:
-            raise SkillFormValidationError(
-                f"Two templates share the name '{entry['name']}'. "
-                "Template names must be unique within a skill."
-            )
-        seen_names.add(entry["name"])
-
     skill.name = name[:255]
     skill.emoji = emoji
     skill.description = description[:1024]
@@ -467,27 +455,12 @@ def _apply_skill_form(skill: AgentSkill, request) -> None:
 
         migrate_skill_slug_prefs(skill, old_slug, skill.slug)
 
-    # Delete templates the user removed BEFORE updating kept ones, so a
-    # rename like "remove B, rename A→B" doesn't trip the unique constraint.
-    keep_existing_ids: set[str] = set()
-    for entry in incoming:
-        tmpl_id = entry["id"]
-        if tmpl_id and skill.templates.filter(pk=tmpl_id).exists():
-            keep_existing_ids.add(str(tmpl_id))
-    skill.templates.exclude(pk__in=keep_existing_ids).delete()
+    # Resources (formerly "templates") are managed via their own endpoints
+    # (upload/create/edit/delete), so the main Save never touches them. Editing
+    # instructions changes the standing prompt cost, so recompute it here.
+    from agent_skills.resources import recompute_standing_tokens
 
-    # Update kept templates and create new ones.
-    for entry in incoming:
-        tmpl_id = entry["id"]
-        if tmpl_id and str(tmpl_id) in keep_existing_ids:
-            tmpl = skill.templates.get(pk=tmpl_id)
-            tmpl.name = entry["name"]
-            tmpl.content = entry["content"]
-            tmpl.save(update_fields=["name", "content", "updated_at"])
-        else:
-            SkillTemplate.objects.create(
-                skill=skill, name=entry["name"], content=entry["content"],
-            )
+    recompute_standing_tokens(skill)
 
 
 @login_required
@@ -511,11 +484,10 @@ def skills_save(request, skill_id):
         return redirect("agent_skills_list")
 
     if action == "save_as_user":
-        # Make a user copy first, then write the form data into it.
-        # ``copy_templates=False`` because _apply_skill_form will recreate
-        # the templates from the submitted form data — letting fork_skill
-        # also copy them would trip the unique_template_per_skill constraint.
-        copy = fork_skill(request.user, skill, copy_templates=False)
+        # Make a user copy (carrying its resources), then write the form's text
+        # fields into it. Resources are copied by fork_skill now that the form
+        # no longer recreates them.
+        copy = fork_skill(request.user, skill, copy_templates=True)
         try:
             _apply_skill_form(copy, request)
         except SkillFormValidationError as exc:
@@ -531,7 +503,7 @@ def skills_save(request, skill_id):
             return HttpResponseForbidden("Org admin required.")
         try:
             promoted = promote_skill_to_org(
-                request.user, skill, org, copy_templates=False
+                request.user, skill, org, copy_templates=True
             )
         except PermissionError:
             return HttpResponseForbidden("Org admin required.")
@@ -859,5 +831,177 @@ def skills_toggle(request, skill_id):
     enabled_raw = request.POST.get("enabled", "")
     enabled = enabled_raw in ("1", "true", "True", "on")
 
+    # Enabling an unapproved skill runs the safety scan first (synchronous — a
+    # couple of LLM calls, so the client shows a spinner). Only a clean scan
+    # actually enables the selection; a block is surfaced and nothing enables.
+    if enabled:
+        from agent_skills.resources import scan_and_approve_skill, skill_is_approved
+
+        if not skill_is_approved(skill):
+            if not scan_and_approve_skill(skill, request.user):
+                return JsonResponse({
+                    "ok": False,
+                    "error": "blocked",
+                    "detail": skill.scan_detail or "This skill couldn't be enabled.",
+                })
+
     result = set_user_skill_selection(request.user, skill, enabled)
     return JsonResponse({"ok": True, **result})
+
+
+# ----- Skill resources (files + text) -----------------------------------
+
+def _resource_pii_summary(resource) -> dict:
+    cats = resource.pii_categories or {}
+    return {
+        "special": bool(cats.get("pii_special_category")),
+        "criminal": bool(cats.get("pii_criminal_offence")),
+        "ordinary": any(
+            v for k, v in cats.items() if k.startswith("pii_ordinary_")
+        ),
+    }
+
+
+def _resource_json(resource) -> dict:
+    editable = (
+        resource.file_type == "text" and not resource.original_filename
+    )
+    return {
+        "id": str(resource.id),
+        "name": resource.name,
+        "kind": resource.kind,
+        "file_type": resource.file_type,
+        "status": resource.status,
+        "is_quarantined": resource.is_quarantined,
+        "quarantine_reason": resource.quarantine_reason,
+        "editable_content": editable,
+        "content": resource.content if editable else "",
+        "pii": _resource_pii_summary(resource),
+        "error": resource.error,
+        "updated_display": _relative_date(resource.updated_at),
+    }
+
+
+def _editable_skill_or_error(request, skill_id):
+    """Resolve an editable skill for the user, or an error JsonResponse."""
+    skill = get_skill_for_user(request.user, str(skill_id))
+    if skill is None:
+        return None, JsonResponse({"ok": False, "error": "not_found"}, status=404)
+    if not can_edit_skill(request.user, skill):
+        return None, JsonResponse({"ok": False, "error": "forbidden"}, status=403)
+    return skill, None
+
+
+@login_required
+@require_POST
+def skills_resource_upload(request, skill_id):
+    skill, err = _editable_skill_or_error(request, skill_id)
+    if err:
+        return err
+
+    from django.conf import settings
+
+    from agent_skills.resources import (
+        RESOURCE_COUNT_CAP,
+        UnsupportedResourceType,
+        ingest_file,
+    )
+
+    files = request.FILES.getlist("file")
+    if not files:
+        return JsonResponse({"ok": False, "error": "no_file"}, status=400)
+
+    max_size = getattr(settings, "DOCUMENT_UPLOAD_MAX_SIZE_BYTES", 50_000_000)
+    count = skill.templates.count()
+    created, errors = [], []
+    for f in files:
+        if count >= RESOURCE_COUNT_CAP:
+            errors.append(f"{f.name}: resource limit ({RESOURCE_COUNT_CAP}) reached")
+            continue
+        if f.size and f.size > max_size:
+            errors.append(f"{f.name}: file is too large")
+            continue
+        try:
+            resource = ingest_file(
+                skill, data=f.read(), filename=f.name, user=request.user
+            )
+            created.append(_resource_json(resource))
+            count += 1
+        except UnsupportedResourceType:
+            errors.append(f"{f.name}: unsupported file type")
+        except Exception:
+            logger.exception("skills_resource_upload: failed for %s", f.name)
+            errors.append(f"{f.name}: could not be processed")
+    return JsonResponse({"ok": True, "resources": created, "errors": errors})
+
+
+@login_required
+@require_POST
+def skills_resource_create(request, skill_id):
+    skill, err = _editable_skill_or_error(request, skill_id)
+    if err:
+        return err
+
+    from agent_skills.models import SkillResource
+    from agent_skills.resources import RESOURCE_COUNT_CAP, create_text_resource
+
+    name = (request.POST.get("name") or "").strip()
+    content = request.POST.get("content") or ""
+    kind = (request.POST.get("kind") or SkillResource.Kind.REFERENCE).strip().lower()
+    if kind not in SkillResource.Kind.values:
+        kind = SkillResource.Kind.REFERENCE
+    if not name:
+        return JsonResponse({"ok": False, "error": "name_required"}, status=400)
+    if skill.templates.count() >= RESOURCE_COUNT_CAP:
+        return JsonResponse({"ok": False, "error": "limit"}, status=400)
+    if skill.templates.filter(name=name[:255]).exists():
+        return JsonResponse({"ok": False, "error": "duplicate_name"}, status=400)
+
+    resource = create_text_resource(
+        skill, name=name, content=content, kind=kind, user=request.user
+    )
+    return JsonResponse({"ok": True, "resource": _resource_json(resource)})
+
+
+@login_required
+@require_POST
+def skills_resource_update(request, skill_id, resource_id):
+    skill, err = _editable_skill_or_error(request, skill_id)
+    if err:
+        return err
+
+    from django.db import IntegrityError
+
+    from agent_skills.models import SkillResource
+    from agent_skills.resources import update_resource
+
+    resource = SkillResource.objects.filter(pk=resource_id, skill=skill).first()
+    if resource is None:
+        return JsonResponse({"ok": False, "error": "not_found"}, status=404)
+
+    name = request.POST.get("name")
+    content = request.POST.get("content")
+    try:
+        update_resource(resource, name=name, content=content)
+    except IntegrityError:
+        return JsonResponse({"ok": False, "error": "duplicate_name"}, status=400)
+    resource.refresh_from_db()
+    return JsonResponse({"ok": True, "resource": _resource_json(resource)})
+
+
+@login_required
+@require_POST
+def skills_resource_delete(request, skill_id, resource_id):
+    skill, err = _editable_skill_or_error(request, skill_id)
+    if err:
+        return err
+
+    from agent_skills.models import SkillResource
+    from agent_skills.resources import recompute_standing_tokens
+
+    resource = SkillResource.objects.filter(pk=resource_id, skill=skill).first()
+    if resource is None:
+        return JsonResponse({"ok": False, "error": "not_found"}, status=404)
+    resource.delete()
+    recompute_standing_tokens(skill)
+    return JsonResponse({"ok": True})

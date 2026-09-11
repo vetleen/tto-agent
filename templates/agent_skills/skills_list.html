@@ -30,7 +30,7 @@
     <li class="me-2" role="presentation">
       <button class="inline-block px-4 py-2 border-b-2 rounded-t-base" id="tab-subagent"
               data-tabs-target="#panel-subagent" type="button" role="tab"
-              aria-controls="panel-subagent" aria-selected="false">Sub-agent skills</button>
+              aria-controls="panel-subagent" aria-selected="false">Sub-agent specializations</button>
     </li>
   </ul>
 
@@ -39,7 +39,7 @@
       {% include "agent_skills/_skill_tier_sections.html" with audience="main" user_rows=main_user_rows org_rows=main_org_rows system_rows=main_system_rows %}
     </div>
     <div class="hidden" id="panel-subagent" role="tabpanel" aria-labelledby="tab-subagent">
-      <p class="mb-4 text-sm text-body">Sub-agent skills are <em>specializations</em> {{ assistant_name }} can give a sub-agent when it delegates a task (e.g. a focused web researcher). They are never attached to your own chats.</p>
+      <p class="mb-4 text-sm text-body"><em>Specializations</em> {{ assistant_name }} can give a sub-agent when it delegates a task (e.g. a focused web researcher). They are never attached to your own chats.</p>
       {% include "agent_skills/_skill_tier_sections.html" with audience="subagent" user_rows=sub_user_rows org_rows=sub_org_rows system_rows=sub_system_rows %}
     </div>
   </div>

@@ -22,7 +22,6 @@
     {% csrf_token %}
     <input type="hidden" name="action" id="skill-form-action" value="save">
     <input type="hidden" name="tool_names_json" id="tool-names-json" value="{{ tool_names_json }}">
-    <input type="hidden" name="templates_json" id="templates-json" value="{{ templates_json }}">
 
     {# ----- Header card ----- #}
     <section class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
@@ -115,27 +114,57 @@
       </div>
     </section>
 
-    {# ----- Templates ----- #}
-    <section id="templates-section">
-      <div class="flex items-center justify-between gap-3 mb-3">
-        <div class="min-w-0">
-          <h2 class="text-base font-semibold text-heading">Templates</h2>
-          <p class="mt-0.5 text-sm text-body">Reusable text snippets the skill can load — for example a standard reply structure or a checklist.</p>
-        </div>
-        {% if editable %}
-        <button type="button" id="add-template-btn" class="shrink-0 inline-flex items-center gap-1.5 bg-neutral-primary-soft hover:bg-neutral-secondary border border-default text-heading shadow-xs font-medium rounded-base text-xs px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand">
-          <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
-          Add template
-        </button>
-        {% endif %}
-      </div>
-      <div class="rounded-base border border-default bg-neutral-primary-soft p-5 dark:shadow-sm">
-        <div id="template-list" class="space-y-3">
-          {# Populated by JS from templates-json #}
-        </div>
-      </div>
-    </section>
+    {# Resources (formerly "templates") are managed below, outside this form,
+       via their own upload/create/edit/delete endpoints. #}
   </form>
+
+  {# ----- Templates & other resources ----- #}
+  {{ resources_data|json_script:"resources-data" }}
+  <section id="resources-section" class="mt-6"
+           data-skill-id="{{ skill.id }}"
+           data-editable="{{ editable|yesno:'1,0' }}"
+           data-cap="{{ resource_count_cap }}"
+           data-upload-url="{% url 'agent_skills_resource_upload' skill_id=skill.id %}"
+           data-create-url="{% url 'agent_skills_resource_create' skill_id=skill.id %}"
+           data-update-url-tpl="{% url 'agent_skills_resource_update' skill_id=skill.id resource_id='00000000-0000-0000-0000-000000000000' %}"
+           data-delete-url-tpl="{% url 'agent_skills_resource_delete' skill_id=skill.id resource_id='00000000-0000-0000-0000-000000000000' %}">
+    <div class="flex items-center justify-between gap-3 mb-3">
+      <div class="min-w-0">
+        <h2 class="text-base font-semibold text-heading">Templates &amp; other resources</h2>
+        <p class="mt-0.5 text-sm text-body">Files and text {{ assistant_name }} can open on demand while this skill is active — reference material, examples, or a template to fill in. PDFs and images are shown as-is; other files are read as text.</p>
+      </div>
+      {% if editable %}
+      <button type="button" id="create-resource-btn" class="shrink-0 inline-flex items-center gap-1.5 bg-neutral-primary-soft hover:bg-neutral-secondary border border-default text-heading shadow-xs font-medium rounded-base text-xs px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand">
+        <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+        Create resource
+      </button>
+      {% endif %}
+    </div>
+
+    {% if editable %}
+    <label id="resource-dropzone" class="block mb-3 rounded-base border border-dashed border-default hover:border-brand-subtle bg-neutral-primary-soft px-4 py-6 text-center cursor-pointer transition-colors">
+      <input type="file" id="resource-file-input" class="hidden" multiple>
+      <svg class="w-6 h-6 mx-auto mb-1.5 text-body" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.6" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5"/></svg>
+      <p class="text-sm text-body">Drop files here or <span class="text-fg-accent font-medium">browse</span></p>
+      <p class="text-xs text-body mt-1">PDF, images, Word, Excel, PowerPoint, or text — up to 50&nbsp;MB each.</p>
+    </label>
+    {% endif %}
+
+    {# Bulk-action bar (shown when rows are selected) #}
+    <div id="resource-bulk-bar" class="hidden items-center justify-between gap-3 mb-2 px-3 py-2 rounded-base bg-neutral-secondary-soft border border-default">
+      <span id="resource-bulk-count" class="text-xs text-body"></span>
+      <button type="button" id="resource-bulk-delete" class="inline-flex items-center gap-1.5 text-fg-danger hover:bg-danger-soft border border-default rounded-base text-xs px-2.5 py-1">
+        <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+        Delete selected
+      </button>
+    </div>
+
+    <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
+      <div id="resource-list" class="divide-y divide-default-subtle">
+        {# Rows rendered by skills-resources.js from #resources-data #}
+      </div>
+    </div>
+  </section>
 
   {# Action bar lives outside #skill-detail-form so the Edit-in-chat / Delete  #}
   {# inner forms are real top-level forms (HTML5 ignores nested <form> tags).  #}
@@ -265,23 +294,64 @@
     </div>
   </div>
 
-  {# ----- Template row template (for JS cloning) ----- #}
-  <template id="template-row-template">
-    <div class="template-row" data-template-id="">
-      <div class="flex items-center gap-2 mb-2">
-    <input type="text" class="template-name wf-input text-heading text-sm font-medium rounded-base block flex-1 px-3 py-2" placeholder="Template name" maxlength="255">
-        <button type="button" class="template-preview-btn inline-flex items-center gap-1 cursor-pointer px-2 py-1 rounded-base text-xs text-body hover:text-heading hover:bg-neutral-tertiary" title="Toggle preview">
-          <span>Preview</span>
-          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
-        </button>
-        <button type="button" class="remove-template-btn inline-flex items-center justify-center w-8 h-8 text-fg-danger hover:bg-danger-soft rounded-base focus:outline-none focus:ring-2 focus:ring-brand" aria-label="Remove template">
-          <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/></svg>
-        </button>
+  {# ----- Resource row template (for JS cloning) ----- #}
+  <template id="resource-row-template">
+    <div class="resource-row flex items-center gap-3 px-4 py-3" data-resource-id="">
+      <input type="checkbox" class="resource-checkbox shrink-0 w-4 h-4 rounded border-default text-brand focus:ring-brand cursor-pointer" aria-label="Select resource">
+      <span class="resource-status shrink-0 inline-flex items-center justify-center w-5 h-5" title=""></span>
+      <span class="resource-icon shrink-0 inline-flex items-center justify-center w-5 h-5 text-body"></span>
+      <div class="flex-1 min-w-0">
+        <span class="resource-name block truncate text-sm text-heading"></span>
+        <span class="resource-error block truncate text-xs text-fg-danger"></span>
       </div>
-   <textarea class="template-content wf-input text-heading text-sm rounded-base block w-full px-3 py-2.5 font-mono" rows="6" placeholder="Template content (markdown supported)"></textarea>
-      <div class="template-content-preview hidden w-full rounded-base wf-input px-3 py-2 text-sm text-body markdown-content overflow-y-auto" style="min-height: 9rem;"></div>
+      <span class="resource-pii flex items-center gap-1 shrink-0"></span>
+      <span class="resource-time text-xs text-body shrink-0 hidden sm:inline"></span>
+      <div class="resource-menu-wrap relative shrink-0">
+        <button type="button" class="resource-menu-btn inline-flex items-center justify-center w-8 h-8 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary" aria-label="Options" aria-haspopup="true" aria-expanded="false">
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>
+        </button>
+        <div class="resource-menu hidden absolute right-0 top-full mt-1 z-20 w-40 py-1 bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg">
+          <button type="button" data-action="edit" class="resource-menu-item block w-full text-left px-3 py-1.5 text-sm text-body hover:bg-neutral-tertiary">View / edit</button>
+          <button type="button" data-action="rename" class="resource-menu-item block w-full text-left px-3 py-1.5 text-sm text-body hover:bg-neutral-tertiary">Rename</button>
+          <button type="button" data-action="delete" class="resource-menu-item block w-full text-left px-3 py-1.5 text-sm text-fg-danger hover:bg-danger-soft">Delete</button>
+        </div>
+      </div>
     </div>
   </template>
+
+  {# ----- Resource create/edit modal ----- #}
+  <div id="resource-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed inset-0 z-50 hidden items-center justify-center p-4">
+    <div class="resource-modal-close absolute inset-0 bg-black/40" aria-hidden="true"></div>
+    <div class="relative w-full max-w-2xl bg-neutral-primary-medium border border-default-subtle rounded-xl shadow-xl overflow-hidden flex flex-col max-h-[calc(100vh-4rem)]">
+      <div class="flex items-center justify-between px-6 py-4 border-b border-default-subtle">
+        <h2 id="resource-modal-title" class="font-serif text-lg font-semibold text-heading">Create resource</h2>
+        <button type="button" class="resource-modal-close inline-flex items-center justify-center w-8 h-8 rounded-base text-body hover:text-heading hover:bg-neutral-secondary-soft" aria-label="Close"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg></button>
+      </div>
+      <div class="px-6 py-4 space-y-4 overflow-y-auto">
+        <div>
+          <label for="resource-modal-name" class="block mb-1.5 text-xs font-medium uppercase tracking-wide text-body">Name</label>
+          <input type="text" id="resource-modal-name" maxlength="255" placeholder="e.g. Objection handling"
+                 class="wf-input text-heading text-sm rounded-base block w-full px-3 py-2 placeholder:text-body">
+        </div>
+        <div id="resource-modal-content-wrap">
+          <label class="block mb-1.5 text-xs font-medium uppercase tracking-wide text-body">Content</label>
+          <div id="resource-modal-editor" class="wf-input rounded-base overflow-hidden"></div>
+        </div>
+        <div id="resource-modal-file-note" class="hidden items-center gap-3 rounded-base border border-default bg-neutral-primary-soft px-4 py-6">
+          <span id="resource-modal-file-icon" class="inline-flex items-center justify-center w-8 h-8 shrink-0"></span>
+          <span class="text-sm text-body">This is a <span id="resource-modal-file-type" class="font-medium text-heading"></span> file — its content isn't edited here. Rename it below, or delete and re-upload to replace it.</span>
+        </div>
+        <p id="resource-modal-error" class="hidden text-sm text-fg-danger-strong"></p>
+      </div>
+      <div class="flex items-center justify-end gap-3 px-6 py-4 border-t border-default-subtle bg-neutral-primary-soft">
+        <button type="button" class="resource-modal-close text-sm font-medium text-body hover:text-heading px-3 py-2">Cancel</button>
+        <button type="button" id="resource-modal-save" class="inline-flex items-center gap-2 text-on-brand bg-brand hover:bg-brand-strong font-medium rounded-base text-sm px-4 py-2 focus:outline-none focus:ring-2 focus:ring-brand">
+          <span class="resource-modal-save-spinner hidden w-4 h-4 animate-spin"><svg viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg></span>
+          <span class="resource-modal-save-label">Save</span>
+        </button>
+      </div>
+    </div>
+  </div>
 
   {# ----- Tool chip template ----- #}
   <template id="tool-chip-template">
@@ -301,5 +371,6 @@
 <script src="{% static 'js/vendor/marked.min.js' %}"></script>
 <script src="{% static 'js/vendor/purify.min.js' %}"></script>
 <script src="{% static 'js/skills-detail.js' %}"></script>
+<script src="{% static 'js/skills-resources.js' %}"></script>
 <script src="{% static 'js/wilfred-ai-button.js' %}?v=20260611" defer></script>
 {% endblock %}

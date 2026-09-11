@@ -624,6 +624,10 @@ DOCUMENT_UPLOAD_REQUEST_MAX_BYTES = _env_int("DOCUMENT_UPLOAD_REQUEST_MAX_BYTES"
 # for the client-side per-drag limit — bounds concurrent processing load (the shared
 # Redis) and blocks drip-feeding a second batch into an already-processing window.
 DOCUMENT_MAX_IN_FLIGHT_PER_USER = _env_int("DOCUMENT_MAX_IN_FLIGHT_PER_USER", "100")
+# Standing prompt-token budget for skills attached to one chat thread (instructions
+# + resource manifest, summed). Replaces the old fixed count cap — a thread may
+# attach any number of skills as long as their combined standing cost fits here.
+SKILL_ATTACH_TOKEN_BUDGET = _env_int("SKILL_ATTACH_TOKEN_BUDGET", "40000")
 # Decompression-bomb guards for the processing pipeline (worker has ~512 MB).
 DOCX_MAX_UNCOMPRESSED_BYTES = _env_int("DOCX_MAX_UNCOMPRESSED_BYTES", "250000000")  # 250 MB
 DOCUMENT_MAX_EXTRACTED_CHARS = _env_int("DOCUMENT_MAX_EXTRACTED_CHARS", "20000000")  # 20M chars

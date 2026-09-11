@@ -14,11 +14,9 @@
   );
 
   var toolNamesInput = document.getElementById("tool-names-json");
-  var templatesInput = document.getElementById("templates-json");
   var actionInput = document.getElementById("skill-form-action");
 
   var toolChipsEl = document.getElementById("tool-chips");
-  var templateListEl = document.getElementById("template-list");
 
   // ----- State -----
   var toolNames = [];
@@ -26,13 +24,6 @@
     toolNames = JSON.parse(toolNamesInput.value || "[]");
   } catch (e) {
     toolNames = [];
-  }
-
-  var templates = [];
-  try {
-    templates = JSON.parse(templatesInput.value || "[]");
-  } catch (e) {
-    templates = [];
   }
 
   // ----- Markdown preview helpers -----
@@ -246,86 +237,8 @@
     });
   }
 
-  // ----- Templates UI -----
-  var templateEditors = [];
-
-  function renderTemplates() {
-    // Tear down CM instances from the previous render before clearing the DOM.
-    templateEditors.forEach(function (ed) {
-      if (ed) ed.destroy();
-    });
-    templateEditors = [];
-    templateListEl.innerHTML = "";
-    if (!templates.length) {
-      var empty = document.createElement("p");
-      empty.className = "text-xs text-body italic";
-      empty.textContent = "No templates yet.";
-      templateListEl.appendChild(empty);
-      return;
-    }
-    var tmpl = document.getElementById("template-row-template");
-    templates.forEach(function (entry, idx) {
-      var node = tmpl.content.firstElementChild.cloneNode(true);
-      node.setAttribute("data-template-id", entry.id || "");
-      var nameInput = node.querySelector(".template-name");
-      var contentInput = node.querySelector(".template-content");
-      var contentPreview = node.querySelector(".template-content-preview");
-      var previewToggleBtn = node.querySelector(".template-preview-btn");
-      var removeBtn = node.querySelector(".remove-template-btn");
-      nameInput.value = entry.name || "";
-      contentInput.value = entry.content || "";
-      if (!editable) {
-        nameInput.setAttribute("readonly", "");
-        removeBtn.remove();
-        // Keep previewToggleBtn: read-only templates still toggle preview/source.
-      } else {
-        nameInput.addEventListener("input", function () {
-          templates[idx].name = nameInput.value;
-          syncTemplatesInput();
-        });
-        removeBtn.addEventListener("click", function () {
-          templates.splice(idx, 1);
-          syncTemplatesInput();
-          renderTemplates();
-        });
-      }
-      templateListEl.appendChild(node);
-      var ed = mountMarkdownEditor({
-        textarea: contentInput,
-        preview: contentPreview,
-        previewBtn: previewToggleBtn,
-        readOnly: !editable,
-        defaultPreview: !editable,
-        minHeight: "9rem",
-        maxHeight: "24rem",
-        onChange: function (val) {
-          templates[idx].content = val;
-          syncTemplatesInput();
-        },
-      });
-      if (!ed && editable) {
-        // Fallback (no editor bundle): keep the plain textarea wired up.
-        contentInput.addEventListener("input", function () {
-          templates[idx].content = contentInput.value;
-          syncTemplatesInput();
-        });
-      }
-      templateEditors.push(ed);
-    });
-  }
-
-  function syncTemplatesInput() {
-    templatesInput.value = JSON.stringify(templates);
-  }
-
-  var addTemplateBtn = document.getElementById("add-template-btn");
-  if (addTemplateBtn) {
-    addTemplateBtn.addEventListener("click", function () {
-      templates.push({ id: null, name: "", content: "" });
-      syncTemplatesInput();
-      renderTemplates();
-    });
-  }
+  // Resources (formerly "templates") are managed by skills-resources.js via
+  // dedicated endpoints, not this form.
 
   // ----- Save buttons -----
   function levelLabel(level) {
@@ -443,7 +356,6 @@
 
   // ----- Initial render -----
   renderToolChips();
-  renderTemplates();
 
   // Mount CM editors over the instructions/description fields. Template rows are
   // mounted inside renderTemplates so they re-attach on add/remove. These two
