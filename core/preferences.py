@@ -445,6 +445,15 @@ def get_preferences(user) -> ResolvedPreferences:
                 if tool_toggles.get(t, True) is not False
                 and org_tools.get(t, True) is not False
             ]
+            # The resource-view tools are always granted to a main/shared skill,
+            # so the agent can read whatever a skill's manifest advertises the
+            # moment the skill is attached — the author never has to add them by
+            # hand, and there's no dependence on a resource existing yet. They are
+            # main-only (section=skills, audience=main); honour org tool toggles.
+            if skill.audience in ("main", "shared"):
+                for t in ("skill_resource_view", "skill_resource_load"):
+                    if t not in filtered_tools and org_tools.get(t, True) is not False:
+                        filtered_tools.append(t)
             entries.append({
                 "id": str(skill.id),
                 "slug": skill.slug,

@@ -113,6 +113,18 @@ class AttachSkillsToolTests(TestCase):
         self.assertEqual(result["status"], "error")
         self.assertEqual(_attached_ids(self.thread), [])
 
+    def test_already_attached_unapproved_not_rejected(self):
+        # A re-list of a skill already on the thread is a no-op, not an approval
+        # event — even if the skill is unapproved and scanning is configured.
+        self.skill.scan_state = AgentSkill.ScanState.UNSCANNED
+        self.skill.approved_content_hash = ""
+        self.skill.save(update_fields=["scan_state", "approved_content_hash"])
+        ChatThreadSkill.objects.create(thread=self.thread, skill=self.skill)
+        with patch("agent_skills.resources._scanning_configured", return_value=True):
+            result = self._attach("my-skill")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(_attached_ids(self.thread), [str(self.skill.id)])
+
     def test_empty_list_detaches_all(self):
         ChatThreadSkill.objects.create(thread=self.thread, skill=self.skill)
         result = self._attach()
@@ -216,18 +228,18 @@ class AttachSkillsToolTests(TestCase):
 
     def test_attach_populates_added_tool_names(self):
         """Attaching unlocks the skill's (org-filtered) tools for this turn."""
-        self.tool.context.skill_tool_map = {"my-skill": ["skill_template_view"]}
+        self.tool.context.skill_tool_map = {"my-skill": ["skill_resource_view"]}
         self._attach("my-skill")
-        self.assertEqual(self.tool.context.added_tool_names, ["skill_template_view"])
+        self.assertEqual(self.tool.context.added_tool_names, ["skill_resource_view"])
 
     def test_attach_no_change_still_populates_added_tool_names(self):
         """Declarative: an already-attached skill still surfaces its tools (the
         pipeline dedupes), so a redundant re-attach never errors or hides tools."""
         ChatThreadSkill.objects.create(thread=self.thread, skill=self.skill)
-        self.tool.context.skill_tool_map = {"my-skill": ["skill_template_view"]}
+        self.tool.context.skill_tool_map = {"my-skill": ["skill_resource_view"]}
         result = self._attach("my-skill")
         self.assertTrue(result["no_change"])
-        self.assertEqual(self.tool.context.added_tool_names, ["skill_template_view"])
+        self.assertEqual(self.tool.context.added_tool_names, ["skill_resource_view"])
 
     def test_attach_unmapped_skill_adds_no_tools(self):
         """Fail-closed: a skill absent from skill_tool_map (org-disabled tools /

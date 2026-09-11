@@ -697,7 +697,7 @@ class ViewTemplateTool(ContextAwareTool):
     to the model inline (as an attached file) rather than as text.
     """
 
-    name: str = "skill_template_view"
+    name: str = "skill_resource_view"
     audience: str = "main"
     start_label: str = "Loading resource..."
     end_label: str = "Viewed resource"
@@ -793,7 +793,7 @@ class ViewTemplateTool(ContextAwareTool):
                 data = fh.read()
         except Exception:
             logging.getLogger(__name__).exception(
-                "skill_template_view: could not read resource %s bytes", resource.pk
+                "skill_resource_view: could not read resource %s bytes", resource.pk
             )
             return False
 
@@ -823,7 +823,7 @@ class ViewTemplateTool(ContextAwareTool):
 class LoadTemplateToCanvasTool(ContextAwareTool):
     """Load a template from an attached skill into the canvas."""
 
-    name: str = "skill_template_load"
+    name: str = "skill_resource_load"
     audience: str = "main"
     start_label: str = "Loading template to canvas..."
     end_label: str = "Loaded template to canvas"
@@ -854,7 +854,7 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
                 "status": "error",
                 "message": (
                     f"Resource '{tmpl.name}' has no text content to load into the "
-                    "canvas (it may be an image or PDF — use skill_template_view "
+                    "canvas (it may be an image or PDF — use skill_resource_view "
                     "to view those)."
                 ),
             })
@@ -1050,14 +1050,25 @@ class AttachSkillsTool(ContextAwareTool):
                 })
             chosen.append(skill)
 
-        # Approval gate: an unscanned/blocked skill must never reach a thread.
         from agent_skills.resources import (
             attach_token_budget,
             skill_is_approved,
             skills_within_budget,
         )
 
-        unapproved = [s for s in chosen if not skill_is_approved(s)]
+        # What's already on the thread — a re-attach of an active skill is a
+        # no-op, never an approval event (its content is already in context).
+        previous_ids = [
+            str(i) for i in ChatThreadSkill.objects.filter(
+                thread=thread
+            ).values_list("skill_id", flat=True)
+        ]
+
+        # Approval gate applies only to NEWLY-attached skills: refusing a skill
+        # the user already attached would just strand the agent (and its manifest
+        # already told the agent to use its resource tools).
+        newly = [s for s in chosen if str(s.id) not in previous_ids]
+        unapproved = [s for s in newly if not skill_is_approved(s)]
         if unapproved:
             return json.dumps({
                 "status": "error",
@@ -1096,11 +1107,6 @@ class AttachSkillsTool(ContextAwareTool):
                     if t not in ctx.added_tool_names:
                         ctx.added_tool_names.append(t)
 
-        previous_ids = [
-            str(i) for i in ChatThreadSkill.objects.filter(
-                thread=thread
-            ).values_list("skill_id", flat=True)
-        ]
         desired_ids = [str(s.id) for s in chosen]
         no_change = previous_ids == desired_ids
 

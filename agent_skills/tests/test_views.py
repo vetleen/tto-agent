@@ -261,11 +261,11 @@ class SkillsSaveViewTests(TestCase):
     def test_save_strips_non_skill_tool_names(self):
         self.client.force_login(self.user)
         self._post("save", tool_names_json=json.dumps(
-            ["skill_template_view", "chat_task_update", "totally_made_up"]
+            ["skill_resource_view", "chat_task_update", "totally_made_up"]
         ))
         self.skill.refresh_from_db()
         # Only the skills-section tool survives.
-        self.assertEqual(self.skill.tool_names, ["skill_template_view"])
+        self.assertEqual(self.skill.tool_names, ["skill_resource_view"])
 
     def test_save_caps_oversized_instructions(self):
         self.client.force_login(self.user)

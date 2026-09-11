@@ -30,7 +30,7 @@ A skill is a database record with these fields:
 - **description** — 1-1024 chars. This is the ONLY text the system sees when deciding whether to activate the skill. It is the primary trigger mechanism. Keep it short.
 - **instructions** — The full playbook injected into your system prompt when the skill is active. This is where the skill's logic lives.
 - **tool_names** — List of tool names the skill needs (e.g. `["document_search", "document_read"]`). These tools become available only when they are attached to an active skill.
-- **templates** — Named text templates associated with the skill (e.g. a patent claim format, a report skeleton). When the skill is active, template names are listed in the system prompt; the agent accesses their content on demand via `skill_template_view` or `skill_template_load`. This is the skill's progressive-disclosure layer: heavy content lives in templates and loads only when needed.
+- **templates** — Named text templates associated with the skill (e.g. a patent claim format, a report skeleton). When the skill is active, template names are listed in the system prompt; the agent accesses their content on demand via `skill_resource_view` or `skill_resource_load`. This is the skill's progressive-disclosure layer: heavy content lives in templates and loads only when needed.
 
 Skills exist at three levels: **system** (provided by the application, not editable), **org** (shared within an organization), and **user** (personal). Higher levels shadow lower ones by slug — a user-level skill with the same slug as a system skill overrides it for the user by default, but user may toggle which version is active in the settings.
 
@@ -260,8 +260,8 @@ heavy reference content out of the always-loaded instructions.
 When adding a template to the skill, draft it in its own canvas tab (`Template: <name>`), iterate with
 the user, then persist alongside the other fields in Step 3.
 
-**Important:** When a skill has templates, add `skill_template_view` and
-`skill_template_load` to the skill's `tool_names` — otherwise the agent
+**Important:** When a skill has templates, add `skill_resource_view` and
+`skill_resource_load` to the skill's `tool_names` — otherwise the agent
 won't be able to access the templates at runtime.
 
 ---
@@ -286,7 +286,7 @@ To discover and attach tools:
 1. Use `skill_tool_list` to see available skill-specific tools
 2. Use `skill_tool_inspect` to inspect a specific tool in more detail
 3. Discuss with the user which tools the skill actually needs
-4. Save the list via `skill_edit`, e.g. `updates={{"tool_names": ["skill_template_view", "skill_template_load"]}}`
+4. Save the list via `skill_edit`, e.g. `updates={{"tool_names": ["skill_resource_view", "skill_resource_load"]}}`
 
 Unknown or incompatible tool names are silently dropped on save — check the
 `tool_names` in the response to confirm what was actually stored.

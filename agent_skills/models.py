@@ -154,7 +154,7 @@ class SkillResource(models.Model):
 
     class Kind(models.TextChoices):
         # Semantic role. Only TEMPLATE is behaviorally special (canvas-loadable
-        # via skill_resource_load / skill_template_load). REFERENCE is read-only.
+        # via skill_resource_load). REFERENCE is read-only.
         REFERENCE = "reference", "Reference"
         TEMPLATE = "template", "Template"
 

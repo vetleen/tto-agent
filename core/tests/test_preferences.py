@@ -1195,3 +1195,69 @@ class AllowAgentAttachSkillsTest(TestCase):
         Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
         prefs = get_preferences(user)
         self.assertTrue(prefs.allow_agent_attach_skills)
+
+
+class SkillResourceAutoGrantsViewToolsTest(TestCase):
+    """Every main/shared skill auto-grants skill_resource_view/load so the agent
+    can read a skill's resources the moment it's attached — the author never adds
+    them by hand, and it doesn't depend on a resource existing yet. Sub-agent
+    specializations don't get them (the tools are main-only)."""
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5.4",
+        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_CHEAP_MODEL="",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_main_skills_grant_view_tools(self, mock_registry, mock_allowed):
+        mock_registry.return_value.list_tools.return_value = {}
+
+        from agent_skills.models import AgentSkill
+
+        user = _create_user(email="autogrant@example.com")
+        # A main skill with no resources still gets them (available on attach).
+        AgentSkill.objects.create(
+            slug="bare", name="Bare", instructions="i", level="user",
+            created_by=user, audience="main",
+        )
+        # A sub-agent specialization must NOT get the main-only tools.
+        AgentSkill.objects.create(
+            slug="sub", name="Sub", instructions="i", level="user",
+            created_by=user, audience="subagent",
+        )
+
+        prefs = get_preferences(user)
+        main = {e["slug"]: e for e in prefs.allowed_skills}
+        self.assertIn("skill_resource_view", main["bare"]["tool_names"])
+        self.assertIn("skill_resource_load", main["bare"]["tool_names"])
+
+        specs = {e["slug"]: e for e in prefs.allowed_specializations}
+        self.assertNotIn("skill_resource_view", specs["sub"]["tool_names"])
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5.4",
+        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_CHEAP_MODEL="",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_org_can_disable_the_view_tools(self, mock_registry, mock_allowed):
+        mock_registry.return_value.list_tools.return_value = {}
+
+        from accounts.models import Membership, Organization
+        from agent_skills.models import AgentSkill
+
+        user = _create_user(email="autogrant-off@example.com")
+        org = Organization.objects.create(
+            name="O", slug="o",
+            preferences={"tools": {"skill_resource_view": False}},
+        )
+        Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
+        AgentSkill.objects.create(
+            slug="bare", name="Bare", instructions="i", level="user",
+            created_by=user, audience="main",
+        )
+        prefs = get_preferences(user)
+        entry = next(e for e in prefs.allowed_skills if e["slug"] == "bare")
+        self.assertNotIn("skill_resource_view", entry["tool_names"])

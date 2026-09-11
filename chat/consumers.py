@@ -66,7 +66,7 @@ def _valid_uuids(values):
 # the UI (regression source: document_open_to_canvas, dropped here in the tool rename).
 CANVAS_UPDATED_TOOLS = (
     "canvas_write", "canvas_edit", "document_open_to_canvas",
-    "skill_field_load", "skill_template_load",
+    "skill_field_load", "skill_resource_load",
 )
 
 # Slide-deck tools whose status:ok + deck_id payload should refresh the deck

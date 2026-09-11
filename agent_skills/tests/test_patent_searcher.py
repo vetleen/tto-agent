@@ -62,16 +62,16 @@ class PatentSearcherSeedTests(TestCase):
         self.assertEqual(skill.audience, "subagent")
         for name in _PATENT_TOOLS:
             self.assertIn(name, skill.tool_names)
-        self.assertNotIn("skill_template_view", skill.tool_names)
+        self.assertNotIn("skill_resource_view", skill.tool_names)
         self.assertTrue(skill.templates.filter(name="Patent Search Report").exists())
 
     def test_filter_keeps_patent_tools_for_subagent(self):
         kept = filter_to_skill_tools(
-            _PATENT_TOOLS + ["skill_template_view"], skill_audience="subagent"
+            _PATENT_TOOLS + ["skill_resource_view"], skill_audience="subagent"
         )
         for name in _PATENT_TOOLS:
             self.assertIn(name, kept)
-        self.assertNotIn("skill_template_view", kept)
+        self.assertNotIn("skill_resource_view", kept)
 
     def test_surfaces_as_subagent_specialization_only(self):
         sub_slugs = {s.slug for s in get_subagent_skills(self.user)}
@@ -85,7 +85,7 @@ class PatentSearcherSeedTests(TestCase):
         self.assertIn("patent-searcher", specs)
         for name in _PATENT_TOOLS:
             self.assertIn(name, specs["patent-searcher"]["tool_names"])
-        self.assertNotIn("skill_template_view", specs["patent-searcher"]["tool_names"])
+        self.assertNotIn("skill_resource_view", specs["patent-searcher"]["tool_names"])
         # Must not leak into the main-agent skill list.
         self.assertNotIn("patent-searcher", {s["slug"] for s in prefs.allowed_skills})
 
@@ -97,4 +97,4 @@ class PatentSearcherSeedTests(TestCase):
         for name in _PATENT_TOOLS:
             self.assertIn(name, tools)
         self.assertIn("subagent_canvas_load_template", tools)
-        self.assertNotIn("skill_template_view", tools)
+        self.assertNotIn("skill_resource_view", tools)

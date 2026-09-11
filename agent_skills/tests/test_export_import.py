@@ -35,7 +35,7 @@ def _make_skill(**overrides):
         emoji="🔎",
         description="A skill that researches things.",
         instructions="# Researcher\n\nDo the research.\nThen report.",
-        tool_names=["skill_template_view"],
+        tool_names=["skill_resource_view"],
         level="system",
     )
     defaults.update(overrides)
@@ -61,7 +61,7 @@ class ExportSkillTests(TestCase):
             ["# Researcher", "", "Do the research.", "Then report."],
         )
         self.assertEqual(data["description"], ["A skill that researches things."])
-        self.assertEqual(data["tool_names"], ["skill_template_view"])
+        self.assertEqual(data["tool_names"], ["skill_resource_view"])
         # Resources ordered by name, content as line arrays, carrying a kind.
         self.assertEqual([t["name"] for t in data["resources"]], ["Notes", "Outline"])
         outline = next(t for t in data["resources"] if t["name"] == "Outline")
@@ -137,16 +137,16 @@ class ParseImportServiceTests(TestCase):
         self.assertEqual(kinds, {"Ref": "reference", "Tmpl": "template"})
 
     def test_import_strips_non_skill_tool_names(self):
-        # skill_template_view is a skills-section tool (kept); chat_subagent_create is a
+        # skill_resource_view is a skills-section tool (kept); chat_subagent_create is a
         # chat-section tool and totally_made_up_tool is unknown (both dropped).
         payload = {
             "name": "Tooly",
             "instructions": "x",
-            "tool_names": ["skill_template_view", "chat_subagent_create", "totally_made_up_tool"],
+            "tool_names": ["skill_resource_view", "chat_subagent_create", "totally_made_up_tool"],
             "templates": [],
         }
         skill = import_skill(self.user, payload)
-        self.assertEqual(skill.tool_names, ["skill_template_view"])
+        self.assertEqual(skill.tool_names, ["skill_resource_view"])
 
     def test_import_truncates_oversized_instructions(self):
         raw = json.dumps({"skills": [{

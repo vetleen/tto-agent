@@ -169,7 +169,7 @@ class ResolveSubagentToolsTests(TestCase):
         for name in [
             "canvas_activate", "canvas_write", "canvas_edit",
             "canvas_save_to_document", "chat_subagent_create",
-            "chat_skill_attach", "skill_create", "skill_template_load",
+            "chat_skill_attach", "skill_create", "skill_resource_load",
         ]:
             self.assertNotIn(name, tools)
 
@@ -749,7 +749,7 @@ class CreateSubagentToolSpecializationTests(TestCase):
         AgentSkill.objects.create(
             slug="web-researcher", name="Web Researcher", level="user",
             created_by=self.user, audience="subagent",
-            tool_names=["skill_template_view"],
+            tool_names=["skill_resource_view"],
         )
 
     def test_unknown_type_rejected(self):

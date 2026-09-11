@@ -293,9 +293,9 @@ def _render_one_skill(skill: Any) -> str:
         block += (
             "\n## Skill resources\n\n"
             "This skill bundles the resources below. Read one on demand with "
-            "`skill_template_view` (text is returned inline; PDFs and images are "
+            "`skill_resource_view` (text is returned inline; PDFs and images are "
             "attached for you to view directly). A template resource can also be "
-            "loaded into the canvas as a starting point with `skill_template_load`."
+            "loaded into the canvas as a starting point with `skill_resource_load`."
             "\n\n"
         )
         for r in resources:
@@ -373,20 +373,25 @@ def build_semi_static_prompt(
         prompt += "</about>\n"
 
     # -- Available skills catalogue --
-    if available_skills:
+    # Skills already attached (rendered under "# Relevant skills" below with
+    # their resource tools active) are excluded from this catalogue so the agent
+    # doesn't try to re-attach one it already has.
+    _attached_ids = {str(getattr(sk, "id", "")) for sk in (skills or [])}
+    catalogue = [s for s in (available_skills or []) if s.get("id") not in _attached_ids]
+    if catalogue:
         prompt += (
             "\n# Skills available to this user\n"
-            "The following skills are available. Call "
+            "The following skills are NOT yet attached. Call "
             "`chat_skill_attach(skill_slugs=[\"<slug>\", ...])` with the full set "
-            "of slugs you want attached (up to 5) when they fit the user's "
-            "request. The list replaces whatever is currently attached; pass an "
-            "empty list to detach all.\n"
+            "of slugs you want attached when they fit the user's request (the list "
+            "replaces whatever is currently attached, so include any already-active "
+            "skills you want to keep; pass an empty list to detach all).\n"
             "Note that several core capabilities are delivered through "
             "skills rather than as always-on tools. Therefore, be eager to attach a "
             "relevant skill when the task calls for that capability, and keep any other active "
             "skills in the same list, since it is declarative.\n"
         )
-        for s in available_skills:
+        for s in catalogue:
             desc = (s.get("description") or "").strip().replace("\n", " ")
             if len(desc) > 160:
                 desc = desc[:157] + "..."

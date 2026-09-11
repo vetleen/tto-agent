@@ -151,13 +151,13 @@ class EditSkillToolTests(TestCase):
         """Standard (chat-section) tools are silently removed from tool_names."""
         result = json.loads(self.tool._run(
             skill_slug="editable",
-            updates={"tool_names": ["skill_template_view", "chat_task_update", "chat_subagent_create"]},
+            updates={"tool_names": ["skill_resource_view", "chat_task_update", "chat_subagent_create"]},
         ))
         self.assertEqual(result["status"], "ok")
         # chat_task_update and chat_subagent_create are chat-section tools — silently removed
-        self.assertEqual(result["tool_names"], ["skill_template_view"])
+        self.assertEqual(result["tool_names"], ["skill_resource_view"])
         self.skill.refresh_from_db()
-        self.assertEqual(self.skill.tool_names, ["skill_template_view"])
+        self.assertEqual(self.skill.tool_names, ["skill_resource_view"])
 
     def test_tool_names_all_standard_results_in_empty_list(self):
         """If only standard tools are passed, tool_names becomes empty."""
@@ -172,12 +172,12 @@ class EditSkillToolTests(TestCase):
         """Unknown tool names are dropped (allow-list), not passed through."""
         result = json.loads(self.tool._run(
             skill_slug="editable",
-            updates={"tool_names": ["skill_template_view", "totally_made_up_tool"]},
+            updates={"tool_names": ["skill_resource_view", "totally_made_up_tool"]},
         ))
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["tool_names"], ["skill_template_view"])
+        self.assertEqual(result["tool_names"], ["skill_resource_view"])
         self.skill.refresh_from_db()
-        self.assertEqual(self.skill.tool_names, ["skill_template_view"])
+        self.assertEqual(self.skill.tool_names, ["skill_resource_view"])
 
     def test_find_replace_caps_instructions(self):
         """A find-replace that would grow instructions past the cap is clamped."""

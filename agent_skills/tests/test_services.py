@@ -641,26 +641,26 @@ class FilterToSkillToolsTests(TestCase):
     """The allow-list keeps only registered skills-section tools.
 
     Relies on the real tool registry, populated at startup: agent_skills.tools
-    registers the skills-section tools (skill_template_view, ...) and chat.tools
+    registers the skills-section tools (skill_resource_view, ...) and chat.tools
     registers chat-section tools (chat_task_update, chat_subagent_create).
     """
 
     def test_keeps_skills_section_tools(self):
         self.assertEqual(
-            filter_to_skill_tools(["skill_template_view", "skill_template_load"]),
-            ["skill_template_view", "skill_template_load"],
+            filter_to_skill_tools(["skill_resource_view", "skill_resource_load"]),
+            ["skill_resource_view", "skill_resource_load"],
         )
 
     def test_drops_chat_section_and_unknown_tools(self):
         result = filter_to_skill_tools(
-            ["skill_template_view", "chat_task_update", "chat_subagent_create", "totally_made_up"]
+            ["skill_resource_view", "chat_task_update", "chat_subagent_create", "totally_made_up"]
         )
-        self.assertEqual(result, ["skill_template_view"])
+        self.assertEqual(result, ["skill_resource_view"])
 
     def test_preserves_order(self):
         self.assertEqual(
-            filter_to_skill_tools(["skill_template_load", "skill_template_view"]),
-            ["skill_template_load", "skill_template_view"],
+            filter_to_skill_tools(["skill_resource_load", "skill_resource_view"]),
+            ["skill_resource_load", "skill_resource_view"],
         )
 
     def test_handles_none_and_non_strings(self):

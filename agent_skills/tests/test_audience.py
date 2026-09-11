@@ -48,12 +48,12 @@ class FilterToSkillToolsAudienceTests(TestCase):
 
     def test_template_view_is_main_only(self):
         self.assertEqual(
-            filter_to_skill_tools(["skill_template_view"], skill_audience="subagent"),
+            filter_to_skill_tools(["skill_resource_view"], skill_audience="subagent"),
             [],
         )
         self.assertEqual(
-            filter_to_skill_tools(["skill_template_view"], skill_audience="main"),
-            ["skill_template_view"],
+            filter_to_skill_tools(["skill_resource_view"], skill_audience="main"),
+            ["skill_resource_view"],
         )
 
     def test_no_audience_keeps_section_skills_tools(self):
@@ -127,7 +127,7 @@ class SeedWebResearcherTests(TestCase):
         skill = AgentSkill.objects.filter(slug="web-researcher", level="system").first()
         self.assertIsNotNone(skill)
         self.assertEqual(skill.audience, "subagent")
-        self.assertNotIn("skill_template_view", skill.tool_names)
+        self.assertNotIn("skill_resource_view", skill.tool_names)
         self.assertTrue(skill.templates.filter(name="Research Findings Report").exists())
 
     def test_reseed_removes_stale_template_view_from_subagent_skills(self):
@@ -137,7 +137,7 @@ class SeedWebResearcherTests(TestCase):
             slug__in=["web-researcher", "patent-searcher"], level="system",
         )
         for skill in skills:
-            skill.tool_names = [*skill.tool_names, "skill_template_view"]
+            skill.tool_names = [*skill.tool_names, "skill_resource_view"]
             skill.save(update_fields=["tool_names"])
 
         seed_system_skills()
@@ -145,7 +145,7 @@ class SeedWebResearcherTests(TestCase):
         for skill in AgentSkill.objects.filter(
             slug__in=["web-researcher", "patent-searcher"], level="system",
         ):
-            self.assertNotIn("skill_template_view", skill.tool_names)
+            self.assertNotIn("skill_resource_view", skill.tool_names)
 
 
 class PreferenceAudienceTests(TestCase):
@@ -166,7 +166,7 @@ class PreferenceAudienceTests(TestCase):
         AgentSkill.objects.create(
             slug="my-spec", name="My Spec", level="user", created_by=self.user,
             audience="subagent",
-            tool_names=["skill_template_view", "web_fetch", "skill_create"],
+            tool_names=["skill_resource_view", "web_fetch", "skill_create"],
         )
         prefs = get_preferences(self.user)
         specs = {s["slug"]: s for s in prefs.allowed_specializations}
