@@ -66,6 +66,15 @@ class ChannelLayerSettingsTest(SimpleTestCase):
         self.assertGreaterEqual(host.get("health_check_interval", 0), 1)
         self.assertIs(host.get("socket_keepalive"), True)
 
+    def test_channel_layer_connection_retries(self):
+        """health_check_interval only detects a dead pub/sub socket; a retry is what
+        lets it reconnect instead of failing the WS-connect SUBSCRIBE (WILFRED-7B)."""
+        host = settings.CHANNEL_LAYERS["default"]["CONFIG"]["hosts"][0]
+        retry = host.get("retry")
+        self.assertIsNotNone(retry, "channel layer connection must configure a retry")
+        # redis Retry keeps its attempt budget in _retries; >=1 means it reconnects.
+        self.assertGreaterEqual(getattr(retry, "_retries", 0), 1)
+
     def test_cache_connection_is_health_checked(self):
         """The cache shares the instance and the same stale-connection risk."""
         options = settings.CACHES["default"].get("OPTIONS", {})

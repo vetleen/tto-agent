@@ -861,11 +861,24 @@ _CACHE_POOL_MAX = int(os.environ.get("CACHE_REDIS_MAX_CONNECTIONS", "6"))
 # and don't change the RESP2 behaviour the redis pin relies on.
 _REDIS_HEALTH_CHECK_INTERVAL = int(os.environ.get("REDIS_HEALTH_CHECK_INTERVAL", "30"))
 
+# health_check_interval only DETECTS a dead pub/sub connection; without a retry
+# the failed health-check PING (and the SUBSCRIBE behind it) still surfaces at
+# WebSocket-connect (WILFRED-7B). A redis async Retry lets redis-py drop the dead
+# socket and reconnect: pub/sub's _execute wraps the command in
+# conn.retry.call_with_retry(do, disconnect-and-reconnect). Retry's default
+# supported_errors is already (redis ConnectionError, TimeoutError) — exactly what
+# the SUBSCRIBE path raises — so no retry_on_error is needed. Must be the ASYNC
+# Retry (the channel layer is redis.asyncio); passed through create_pool ->
+# ConnectionPool.from_url like the other host kwargs.
+from redis.asyncio.retry import Retry as _AsyncRedisRetry
+from redis.backoff import ExponentialBackoff as _RedisExponentialBackoff
+
 _channel_host: dict = {
     "address": _redis_url,
     "max_connections": _CHANNEL_POOL_MAX,
     "health_check_interval": _REDIS_HEALTH_CHECK_INTERVAL,
     "socket_keepalive": True,
+    "retry": _AsyncRedisRetry(_RedisExponentialBackoff(cap=0.5, base=0.05), 2),
 }
 if _redis_is_tls:
     _channel_host["ssl_cert_reqs"] = ssl.CERT_NONE

@@ -1137,6 +1137,38 @@ class RunSubagentServiceTests(TestCase):
 
     @patch("llm.get_llm_service")
     @patch("core.preferences.get_preferences")
+    def test_empty_result_from_cancel_logs_info_not_warning(self, mock_prefs, mock_svc):
+        """An empty finish caused by a user cancel logs INFO, not the Sentry-bound
+        'no content' WARNING (WILFRED-8E)."""
+        mock_prefs.return_value = _prefs()
+        mock_response = MagicMock()
+        mock_response.message.content = ""
+        mock_response.message.tool_calls = []
+        mock_response.usage.total_tokens = 0
+        mock_response.usage.cost_usd = 0.0
+
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="research task",
+        )
+
+        # Simulate a concurrent stop: the run is marked FAILED mid-flight (as
+        # _cancel_active_subagents does) and the stream returns empty.
+        def _cancel_then_empty(*args, **kwargs):
+            SubAgentRun.objects.filter(pk=run.id).update(status=SubAgentRun.Status.FAILED)
+            return mock_response
+        mock_svc.return_value.run_via_stream.side_effect = _cancel_then_empty
+
+        from chat.subagent_service import run_subagent
+        with self.assertLogs("chat.subagent_service", level="INFO") as cm:
+            run_subagent(run.id)
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, SubAgentRun.Status.FAILED)
+        self.assertTrue(any("cancelled before producing output" in m for m in cm.output))
+        self.assertFalse(any("no content" in m for m in cm.output))
+
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
     def test_failure_sets_failed(self, mock_prefs, mock_svc):
         """run_subagent should set FAILED on failure."""
         mock_prefs.return_value = _prefs()

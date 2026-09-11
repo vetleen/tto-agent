@@ -94,7 +94,7 @@ class CancelActiveSubagentsPendingTests(TestCase):
 
         # Celery task revoked for run1 (which had a celery_task_id)
         mock_async_result.assert_called_once_with("celery-1")
-        mock_async_result.return_value.revoke.assert_called_once_with(terminate=True)
+        mock_async_result.return_value.revoke.assert_called_once_with()
 
 
 class CancelActiveSubagentsRunningTests(TestCase):
@@ -124,7 +124,7 @@ class CancelActiveSubagentsRunningTests(TestCase):
         self.assertIsNotNone(run.completed_at)
 
         mock_async_result.assert_called_once_with("celery-running-1")
-        mock_async_result.return_value.revoke.assert_called_once_with(terminate=True)
+        mock_async_result.return_value.revoke.assert_called_once_with()
 
 
 class CancelActiveSubagentsIgnoresTerminalTests(TestCase):

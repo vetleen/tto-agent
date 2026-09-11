@@ -360,6 +360,12 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
         delivered = bool(run.result) or bool(run.canvas)
         if delivered:
             run.status = SubAgentRun.Status.COMPLETED
+        elif _is_cancelled():
+            # An empty finish because the user stopped the run early (often 0
+            # tokens) is expected, not a failure to report to Sentry (WILFRED-8E).
+            run.status = SubAgentRun.Status.FAILED
+            run.error = "Cancelled by user."
+            logger.info("Sub-agent run %s cancelled before producing output", run_id)
         else:
             run.status = SubAgentRun.Status.FAILED
             run.error = "Sub-agent produced no text output and no canvas despite using tools."

@@ -1719,7 +1719,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
             try:
                 from celery.result import AsyncResult
 
-                AsyncResult(run.celery_task_id).revoke(terminate=True)
+                # Plain revoke() (no terminate=True): it discards a not-yet-started
+                # run from the queue. A running run is stopped cooperatively by the
+                # status=FAILED update below (run_subagent polls _is_cancelled).
+                # terminate=True raises NotImplementedError on the --pool=threads
+                # worker (it can't kill a thread), i.e. a no-op-that-errors (WILFRED-8D).
+                AsyncResult(run.celery_task_id).revoke()
             except Exception:
                 logger.warning(
                     "Failed to revoke Celery task %s for SubAgentRun %s",
