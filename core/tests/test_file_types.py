@@ -31,6 +31,32 @@ class FileTypeTableTests(SimpleTestCase):
         self.assertEqual(ft.canonical_mime_for_extension("jpg"), "image/jpeg")
         self.assertIsNone(ft.canonical_mime_for_extension("zip"))
 
+    def test_dotx_is_a_docx_kind(self):
+        # A Word template (.dotx) parses like a .docx, so it lives under KIND_DOCX
+        # with its own unique template MIME.
+        self.assertEqual(ft.kind_for_extension("dotx"), ft.KIND_DOCX)
+        self.assertEqual(
+            ft.kind_for_mime("application/vnd.openxmlformats-officedocument.wordprocessingml.template"),
+            ft.KIND_DOCX,
+        )
+        self.assertEqual(
+            ft.canonical_mime_for_extension("dotx"),
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
+        )
+        # Accepted on every docx surface (data rooms + chat).
+        self.assertIn("dotx", ft.allowed_extensions(ft.DATA_ROOM_KINDS))
+        self.assertIn("dotx", ft.allowed_extensions(ft.CHAT_KINDS))
+        self.assertIn(".dotx", ft.accept_attr(ft.CHAT_KINDS).split(","))
+
+    def test_canonical_extension_aliases_dotx_to_docx(self):
+        self.assertEqual(ft.canonical_extension("dotx"), "docx")
+        self.assertEqual(ft.canonical_extension(".DOTX"), "docx")
+        # Unknown / base extensions pass through unchanged.
+        self.assertEqual(ft.canonical_extension("docx"), "docx")
+        self.assertEqual(ft.canonical_extension(".PDF"), "pdf")
+        self.assertEqual(ft.canonical_extension("zip"), "zip")
+        self.assertEqual(ft.canonical_extension(""), "")
+
     def test_is_image_extension(self):
         self.assertTrue(ft.is_image_extension("webp"))
         self.assertFalse(ft.is_image_extension("pdf"))

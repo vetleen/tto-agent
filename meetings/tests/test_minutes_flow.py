@@ -18,6 +18,7 @@ from meetings.services.minutes import (
 )
 
 _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+_DOTX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.template"
 
 User = get_user_model()
 
@@ -466,6 +467,15 @@ class CreateMinutesThreadAttachmentTests(TestCase):
         atts = list(ChatAttachment.objects.filter(thread=thread))
         self.assertEqual(len(atts), 1)
         self.assertEqual(atts[0].content_type, _DOCX_MIME)
+
+    def test_supported_dotx_with_octet_stream_normalized(self):
+        # A .dotx template reported as octet-stream is accepted and assigned the
+        # template MIME (not an arbitrary docx MIME).
+        self._add_attachment("notes.dotx", b"PK fake dotx bytes", "application/octet-stream")
+        thread, _ = create_minutes_thread(self.user, self.meeting)
+        atts = list(ChatAttachment.objects.filter(thread=thread))
+        self.assertEqual(len(atts), 1)
+        self.assertEqual(atts[0].content_type, _DOTX_MIME)
 
     def test_unsupported_type_skipped_in_disclaimer(self):
         self._add_attachment("archive.zip", b"PK zip bytes", "application/zip")

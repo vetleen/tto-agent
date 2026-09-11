@@ -890,6 +890,25 @@ class CanvasImportTitleIntegrationTests(TestCase):
         self.assertNotIn("thread_title", data)
         self.assertEqual(data["title"], "contract")
 
+    @patch("chat.services.generate_canvas_title", return_value="Generated Title")
+    @patch("chat.services.import_docx_to_canvas")
+    def test_dotx_template_is_accepted(self, mock_import, mock_gen):
+        """A .dotx (Word template) is accepted for canvas import, not rejected as an
+        unsupported type."""
+        mock_import.return_value = ("boilerplate", "# Content", False)
+        thread = ChatThread.objects.create(created_by=self.user)
+
+        url = f"/chat/threads/{thread.id}/canvas/import/"
+        fake_file = io.BytesIO(b"PK fake dotx")
+        fake_file.name = "boilerplate.dotx"
+        response = self.client.post(url, {"file": fake_file}, format="multipart")
+
+        # 200 (not a 400 "Only .docx files are supported") proves the template is
+        # accepted; the title derives from the filename.
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["title"], "boilerplate")
+        mock_import.assert_called_once()
+
 
 def _minimal_docx_bytes() -> bytes:
     """A valid (tiny) .docx zip — enough to pass docx_to_markdown's zip-bomb

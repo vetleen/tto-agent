@@ -647,7 +647,7 @@
         <svg id="canvas-import-spinner" class="canvas-btn-spinner w-4 h-4 animate-spin hidden" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
         <svg class="canvas-btn-check w-4 h-4 hidden text-fg-success" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
         <svg class="canvas-btn-error w-4 h-4 hidden text-fg-danger" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
-        <input id="canvas-import-input" type="file" accept=".docx" class="hidden" />
+        <input id="canvas-import-input" type="file" accept=".docx,.dotx" class="hidden" />
       </label>
       {# 7. Delete canvas (trash) #}
       <button id="canvas-delete-btn" title="Delete canvas" class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
@@ -2131,7 +2131,7 @@
   var SUPPORTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
   var SUPPORTED_PDF_TYPES = ['application/pdf'];
   var SUPPORTED_TEXT_TYPES = ['text/plain', 'text/markdown', 'text/csv', 'text/html', 'application/json', 'text/xml', 'application/xml', 'text/x-rst', 'application/x-tex', 'application/x-yaml', 'text/yaml'];
-  var SUPPORTED_DOCX_TYPES = ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
+  var SUPPORTED_DOCX_TYPES = ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.openxmlformats-officedocument.wordprocessingml.template'];
   var ALL_SUPPORTED_TYPES = SUPPORTED_IMAGE_TYPES.concat(SUPPORTED_PDF_TYPES, SUPPORTED_TEXT_TYPES, SUPPORTED_DOCX_TYPES);
   var MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024;
   var MAX_PDF_SIZE = 30 * 1024 * 1024;
@@ -2213,9 +2213,9 @@
     var hasImages = false;
     for (var i = 0; i < files.length; i++) {
       var ft = files[i].type;
-      // Browsers sometimes report .docx as application/octet-stream
+      // Browsers sometimes report .docx/.dotx as application/octet-stream
       if (ALL_SUPPORTED_TYPES.indexOf(ft) === -1) {
-        if (files[i].name && files[i].name.toLowerCase().endsWith('.docx')) {
+        if (files[i].name && (files[i].name.toLowerCase().endsWith('.docx') || files[i].name.toLowerCase().endsWith('.dotx'))) {
           ft = SUPPORTED_DOCX_TYPES[0];
         } else {
           showToast("{{ assistant_name|escapejs }} can't read that file type yet: " + files[i].name);

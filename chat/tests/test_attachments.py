@@ -60,6 +60,41 @@ def _tiny_docx():
     return buf.getvalue()
 
 
+def _tiny_dotx():
+    """Return a minimal valid .dotx (Word template) byte string.
+
+    Identical package to _tiny_docx() except the main-part content type declares a
+    template — the only thing that distinguishes a .dotx from a .docx.
+    """
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/word/document.xml" '
+            'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml"/>'
+            '</Types>'
+        ))
+        zf.writestr("_rels/.rels", (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+            'Target="word/document.xml"/>'
+            '</Relationships>'
+        ))
+        zf.writestr("word/document.xml", (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            '<w:body><w:p><w:r><w:t>Hello Template</w:t></w:r></w:p></w:body>'
+            '</w:document>'
+        ))
+    return buf.getvalue()
+
+
 def _docx_with_image():
     """Return a valid .docx byte string containing an embedded PNG image."""
     import zipfile
@@ -214,6 +249,29 @@ class UploadAttachmentTests(TestCase):
         self.assertEqual(
             resp.json()["attachments"][0]["content_type"],
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+
+    def test_upload_valid_dotx(self):
+        f = SimpleUploadedFile(
+            "template.dotx", _tiny_dotx(),
+            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.template",
+        )
+        resp = self.client.post(self.url, {"files": f})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(
+            resp.json()["attachments"][0]["content_type"],
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
+        )
+
+    def test_upload_dotx_octet_stream_fallback(self):
+        """A .dotx reported as application/octet-stream is accepted by extension and
+        assigned the template MIME (not an arbitrary docx MIME)."""
+        f = SimpleUploadedFile("report.dotx", _tiny_dotx(), content_type="application/octet-stream")
+        resp = self.client.post(self.url, {"files": f})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(
+            resp.json()["attachments"][0]["content_type"],
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
         )
 
     def test_upload_exe_rejected(self):
@@ -428,6 +486,12 @@ class ExtractDocxTextTests(TestCase):
     def test_extract_from_minimal_docx(self):
         text = extract_docx_text(_tiny_docx())
         self.assertIn("Hello World", text)
+
+    def test_extract_from_minimal_dotx(self):
+        """A .dotx (Word template) extracts identically — mammoth reads the body via
+        the officeDocument relationship, ignoring the template content type."""
+        text = extract_docx_text(_tiny_dotx())
+        self.assertIn("Hello Template", text)
 
     def test_images_replaced_with_placeholder_no_user(self):
         """Without a user, images become [Image N] placeholders (no base64)."""

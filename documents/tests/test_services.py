@@ -97,6 +97,23 @@ class ChunkingTests(TestCase):
             path.unlink(missing_ok=True)
 
     @unittest.skipIf(not LANGCHAIN_AVAILABLE, "langchain not installed")
+    def test_load_documents_dotx_dispatches_as_docx(self):
+        # A .dotx (Word template) must extract via the docx path: canonical_extension
+        # aliases dotx -> docx inside load_documents.
+        from chat.tests.test_attachments import _tiny_dotx
+
+        with tempfile.NamedTemporaryFile(suffix=".dotx", delete=False) as f:
+            f.write(_tiny_dotx())
+            f.flush()
+            path = Path(f.name)
+        try:
+            docs = load_documents(path, "dotx")
+            self.assertEqual(len(docs), 1)
+            self.assertIn("Hello Template", docs[0].page_content)
+        finally:
+            path.unlink(missing_ok=True)
+
+    @unittest.skipIf(not LANGCHAIN_AVAILABLE, "langchain not installed")
     def test_load_documents_pptx(self):
         from pptx import Presentation
         from pptx.util import Inches
@@ -2319,6 +2336,27 @@ class FileMetadataDateTests(TestCase):
         try:
             result = extract_file_metadata_date(path, "docx")
             self.assertEqual(result, datetime.date(2019, 5, 1))
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_dotx_metadata_date_dispatches_as_docx(self):
+        # .dotx carries dates in docProps/core.xml like any OOXML zip; the ext is
+        # normalized to docx so the OOXML branch runs.
+        import datetime
+        from documents.services.chunking import extract_file_metadata_date
+        core_xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<cp:coreProperties'
+            ' xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties"'
+            ' xmlns:dcterms="http://purl.org/dc/terms/"'
+            ' xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
+            '<dcterms:modified xsi:type="dcterms:W3CDTF">2026-06-17T12:24:00Z</dcterms:modified>'
+            '</cp:coreProperties>'
+        )
+        path = self._write_docx_with_core(core_xml)
+        try:
+            result = extract_file_metadata_date(path, "dotx")
+            self.assertEqual(result, datetime.date(2026, 6, 17))
         finally:
             path.unlink(missing_ok=True)
 

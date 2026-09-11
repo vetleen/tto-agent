@@ -186,7 +186,11 @@ def _extract_native(version, doc):
         raise FileNotFoundError("No native source file for this version.")
 
     filename = version.native_filename or doc.original_filename or ""
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "txt"
+    from core.file_types import canonical_extension
+
+    # Normalize template/variant extensions (e.g. .dotx -> docx) so downstream
+    # dispatch treats them as the base format; the stored filename is untouched.
+    ext = canonical_extension(filename.rsplit(".", 1)[-1] if "." in filename else "txt")
 
     prechunked = None
     with local_copy(source_file) as file_path:

@@ -1276,7 +1276,9 @@ def canvas_import(request, thread_id, canvas_id=None):
 
     # Validate file type
     ct = uploaded.content_type or ""
-    is_docx = ct in SUPPORTED_DOCX_TYPES or (uploaded.name and uploaded.name.lower().endswith(".docx"))
+    is_docx = ct in SUPPORTED_DOCX_TYPES or (
+        uploaded.name and uploaded.name.lower().endswith((".docx", ".dotx"))
+    )
     if not is_docx:
         return JsonResponse({"error": "Only .docx files are supported for import."}, status=400)
 
@@ -1554,10 +1556,12 @@ def upload_attachments(request, thread_id):
     results = []
     for f in files:
         ct = f.content_type
-        # Browsers sometimes report .docx as application/octet-stream
+        # Browsers sometimes report .docx/.dotx as application/octet-stream
         if ct not in SUPPORTED_ATTACHMENT_TYPES:
-            if f.name and f.name.lower().endswith(".docx"):
-                ct = next(iter(SUPPORTED_DOCX_TYPES))
+            if f.name and f.name.lower().endswith((".docx", ".dotx")):
+                from core.file_types import canonical_mime_for_extension
+
+                ct = canonical_mime_for_extension(f.name.rsplit(".", 1)[-1]) or next(iter(SUPPORTED_DOCX_TYPES))
                 f.content_type = ct
             else:
                 return JsonResponse(

@@ -171,9 +171,11 @@ def _copy_meeting_attachments_to_thread(meeting, thread, user):
     for ma in meeting.attachments.all().order_by("uploaded_at"):
         ct = ma.content_type or ""
         # Meeting-side upload accepts any type with no content_type validation;
-        # browsers also sometimes report .docx as application/octet-stream.
-        if ct not in SUPPORTED_ATTACHMENT_TYPES and (ma.original_filename or "").lower().endswith(".docx"):
-            ct = next(iter(SUPPORTED_DOCX_TYPES))
+        # browsers also sometimes report .docx/.dotx as application/octet-stream.
+        if ct not in SUPPORTED_ATTACHMENT_TYPES and (ma.original_filename or "").lower().endswith((".docx", ".dotx")):
+            from core.file_types import canonical_mime_for_extension
+
+            ct = canonical_mime_for_extension((ma.original_filename or "").rsplit(".", 1)[-1]) or next(iter(SUPPORTED_DOCX_TYPES))
         if ct not in SUPPORTED_ATTACHMENT_TYPES:
             skipped.append((ma.original_filename, "unsupported file type"))
             continue

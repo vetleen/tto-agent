@@ -583,7 +583,11 @@ def load_documents(file_path: str | Path, file_extension: str, *, image_sink=Non
     path = Path(file_path)
     if not path.exists():
         raise FileNotFoundError(f"File not found: {path}")
-    ext = file_extension.lower().lstrip(".")
+    from core.file_types import canonical_extension
+
+    # Normalize template/variant extensions (e.g. .dotx -> docx) so a direct
+    # upload and an email-nested attachment both dispatch to the base format.
+    ext = canonical_extension(file_extension)
     TextLoader = _get_loaders()
     # NOTE: never log document content here (even at DEBUG) — these are
     # confidential uploads; counts and sizes only.
@@ -633,7 +637,9 @@ def extract_file_metadata_date(file_path: str | Path, file_extension: str) -> "d
     """Extract the creation/authored date from file metadata. Returns None on failure."""
     import datetime
 
-    ext = file_extension.lower().lstrip(".")
+    from core.file_types import canonical_extension
+
+    ext = canonical_extension(file_extension)
     path = Path(file_path)
 
     try:

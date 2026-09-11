@@ -68,6 +68,15 @@ FILE_TYPES: tuple[FileType, ...] = (
         KIND_DOCX,
         {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
     ),
+    # A .dotx (Word template) is the same OOXML package as a .docx, differing only
+    # in the main-part content type. mammoth locates the body via the officeDocument
+    # relationship (ignoring content type), so it extracts identically — see
+    # canonical_extension() for the dispatch aliasing that treats dotx as docx.
+    _ft(
+        "dotx",
+        KIND_DOCX,
+        {"application/vnd.openxmlformats-officedocument.wordprocessingml.template"},
+    ),
     # --- PPTX ---
     _ft(
         "pptx",
@@ -187,6 +196,22 @@ def global_allowed_mimes(kinds) -> frozenset:
 
 # Reverse lookups -------------------------------------------------------
 _BY_EXT = {ft.ext: ft for ft in FILE_TYPES}
+
+# Extraction-dispatch aliases: a template/variant extension parses identically to
+# its base format, so the pipeline routes it through the base's code path. This is
+# a *dispatch-only* mapping — stored original_filename / file_extension keep the
+# real extension for display and download.
+_EXT_ALIASES = {"dotx": "docx"}
+
+
+def canonical_extension(ext: str) -> str:
+    """Map a template/variant extension to its base for extraction dispatch.
+
+    ``dotx`` -> ``docx``; unknown extensions pass through unchanged. Accepts an
+    extension with or without a leading dot and any casing.
+    """
+    ext = (ext or "").lower().lstrip(".")
+    return _EXT_ALIASES.get(ext, ext)
 
 
 def kind_for_extension(ext: str) -> str | None:
