@@ -33,12 +33,22 @@
   }
 
   function post(url, formData) {
+    // Include the token in the body too — this also guarantees a non-empty
+    // multipart payload (an empty FormData body trips Django's parser -> 400).
+    formData.append("csrfmiddlewaretoken", csrf());
     return fetch(url, {
       method: "POST",
       headers: { "X-CSRFToken": csrf(), "X-Requested-With": "XMLHttpRequest" },
       body: formData,
     }).then(function (r) {
-      return r.json().then(function (data) {
+      // Parse defensively: an error response may be empty or non-JSON.
+      return r.text().then(function (t) {
+        var data = {};
+        try {
+          data = t ? JSON.parse(t) : {};
+        } catch (e) {
+          data = {};
+        }
         return { ok: r.ok, status: r.status, data: data };
       });
     });
