@@ -109,6 +109,24 @@ def _cap_tool_arguments(arguments):
     return f"[tool args truncated: {len(serialized):,} chars] {serialized[:cap]}"
 
 
+def _strip_nul(value):
+    r"""Remove NUL (\x00) from every string in a JSON-serializable value.
+
+    Postgres text/jsonb columns reject \u0000 ("unsupported Unicode escape
+    sequence; \u0000 cannot be converted to text"), so untrusted content read as
+    text — e.g. a binary file (a ZIP starts ``PK\x03\x04``) the web/guardrail
+    path fetched as a string — would fail the LLMCallLog insert (WILFRED-8F).
+    Call logging is best-effort: drop the NULs so the row still lands.
+    """
+    if isinstance(value, str):
+        return value.replace("\x00", "") if "\x00" in value else value
+    if isinstance(value, list):
+        return [_strip_nul(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _strip_nul(v) for k, v in value.items()}
+    return value
+
+
 def _serialize_messages(request: "ChatRequest") -> list:
     """Convert request messages to a plain list of dicts (content capped)."""
     result = []
@@ -122,7 +140,9 @@ def _serialize_messages(request: "ChatRequest") -> list:
                 for tc in m.tool_calls
             ]
         result.append(d)
-    return result
+    # Untrusted content (fetched web pages, uploaded documents) can carry NUL
+    # bytes that Postgres rejects on insert — strip them so the log row lands.
+    return _strip_nul(result)
 
 
 def _serialize_tool_schemas(tool_schemas: list | None, tool_names: list | None = None) -> list | None:
@@ -197,7 +217,7 @@ def log_call(request: "ChatRequest", response: "ChatResponse", duration_ms: int)
             is_stream=False,
             prompt=_serialize_messages(request),
             tools=_serialize_tool_schemas(request.tool_schemas, request.tools),
-            raw_output=slim_response_raw_output(response),
+            raw_output=_strip_nul(slim_response_raw_output(response)),
             input_tokens=usage.prompt_tokens if usage else None,
             output_tokens=usage.completion_tokens if usage else None,
             total_tokens=usage.total_tokens if usage else None,
@@ -236,7 +256,7 @@ def log_stream(
     try:
         from llm.models import LLMCallLog
 
-        raw_output = acc.build_raw_output()
+        raw_output = _strip_nul(acc.build_raw_output())
 
         # Usage comes from the message_end data (populated by provider)
         end_data = acc.end_data

@@ -41,6 +41,34 @@ def _get_log(request):
 class LogCallTests(TestCase):
     """Tests for log_call (non-streaming success)."""
 
+    def test_strip_nul_helper(self):
+        from llm.service.logger import _strip_nul
+
+        self.assertEqual(_strip_nul("a\x00b"), "ab")
+        self.assertEqual(_strip_nul(["x\x00", {"k": "y\x00z"}]), ["x", {"k": "yz"}])
+        self.assertEqual(_strip_nul("clean"), "clean")  # unchanged, no realloc
+
+    def test_strips_nul_from_prompt(self):
+        """A NUL byte in untrusted content (a binary file read as text) is stripped
+        so the LLMCallLog insert doesn't fail on Postgres (WILFRED-8F)."""
+        request = ChatRequest(
+            messages=[Message(role="user", content="Norcrin PK\x03\x04\x14\x00rest")],
+            stream=False, model="gpt-4o-mini",
+            context=RunContext.create(user_id=None),
+        )
+        response = ChatResponse(
+            message=Message(role="assistant", content="ok"),
+            model="gpt-4o-mini",
+            usage=Usage(prompt_tokens=5, completion_tokens=1, total_tokens=6, cost_usd=0.0),
+            metadata={},
+        )
+        log_call(request, response, duration_ms=10)
+
+        log = _get_log(request)
+        self.assertEqual(log.status, "success")
+        self.assertNotIn("\x00", json.dumps(log.prompt))
+        self.assertIn("Norcrin PK", json.dumps(log.prompt))  # content kept, minus NUL
+
     def test_creates_success_entry(self):
         request = _make_request()
         response = ChatResponse(
