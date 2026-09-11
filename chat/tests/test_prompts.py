@@ -241,6 +241,58 @@ class BuildSystemPromptTests(TestCase):
         self.assertIn("### B head", prompt)
 
     # ------------------------------------------------------------------ #
+    # Skill resources (templates)                                          #
+    # ------------------------------------------------------------------ #
+
+    def _resource(self, name, *, kind="template", file_type="text", quarantined=False):
+        r = SimpleNamespace()
+        r.name = name
+        r.kind = kind
+        r.file_type = file_type
+        r.is_quarantined = quarantined
+        return r
+
+    def test_skill_resources_listed_and_sorted(self):
+        skill = self._make_skill("IRL Assessor", "Assess IRL.")
+        # Deliberately out of order; renderer must sort by name in Python.
+        skill.templates.all.return_value = [
+            self._resource("Zeta template"),
+            self._resource("Alpha reference", kind="reference", file_type="pdf"),
+        ]
+        prompt = build_system_prompt(skills=[skill])
+        self.assertIn("## Skill resources", prompt)
+        self.assertIn("**Alpha reference** — reference, pdf", prompt)
+        self.assertIn("**Zeta template** — template, text", prompt)
+        self.assertLess(
+            prompt.index("Alpha reference"), prompt.index("Zeta template")
+        )
+
+    def test_quarantined_resource_excluded(self):
+        skill = self._make_skill("IRL Assessor", "Assess IRL.")
+        skill.templates.all.return_value = [
+            self._resource("Good template"),
+            self._resource("Blocked template", quarantined=True),
+        ]
+        prompt = build_system_prompt(skills=[skill])
+        self.assertIn("**Good template**", prompt)
+        self.assertNotIn("Blocked template", prompt)
+
+    def test_no_resources_no_resource_section(self):
+        skill = self._make_skill("IRL Assessor", "Assess IRL.")
+        prompt = build_system_prompt(skills=[skill])
+        self.assertNotIn("## Skill resources", prompt)
+
+    def test_renderer_does_not_call_order_by(self):
+        # Regression (staging crash 2026-09-11): _render_one_skill used
+        # skill.templates.order_by(), which bypasses the prefetch cache and
+        # issues a fresh synchronous query — fatal in the async consumer path
+        # (SynchronousOnlyOperation). It must read the prefetched .all() cache.
+        skill = self._make_skill("IRL Assessor", "Assess IRL.")
+        skill.templates.all.return_value = [self._resource("A template")]
+        build_system_prompt(skills=[skill])
+        skill.templates.order_by.assert_not_called()
+
+    # ------------------------------------------------------------------ #
     # Task planning prompt                                                 #
     # ------------------------------------------------------------------ #
 
@@ -1217,3 +1269,82 @@ class CustomizationPolicyInStaticPromptTests(TestCase):
         self.assertIn("opinionated about the best next step", DEFAULT_SOUL)
         # Markdown output is a frontend-facing system feature — keep it static.
         self.assertIn("Markdown", prompt)
+
+
+class SkillResourceAsyncRenderTests(TestCase):
+    """Regression for the staging crash on 2026-09-11.
+
+    A skill with resources was attached and the turn died with
+    ``An error occurred processing your message``. The cause was
+    ``_render_one_skill`` calling ``skill.templates.order_by("name")``: that
+    modifier bypasses the ``templates`` prefetch cache and issues a fresh
+    synchronous DB query, which is fatal on the consumer's event loop
+    (``SynchronousOnlyOperation``). These tests build the prompt from real DB
+    objects inside an async context, exactly as the consumer does.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from django.contrib.auth import get_user_model
+
+        from agent_skills.models import AgentSkill, SkillResource
+
+        User = get_user_model()
+        cls.user = User.objects.create_user(
+            email="irl@example.com", password="pass"
+        )
+        cls.skill = AgentSkill.objects.create(
+            slug="irl-assessor",
+            name="IRL Project Assessor",
+            instructions="Assess the IRL of a project.",
+            description="Assesses Innovation Readiness Level.",
+            level="user",
+            created_by=cls.user,
+        )
+        # Out-of-order names + one quarantined row to exercise the sort/filter.
+        SkillResource.objects.create(
+            skill=cls.skill, name="Zeta scoring template",
+            kind=SkillResource.Kind.TEMPLATE, file_type=SkillResource.FileType.TEXT,
+            status=SkillResource.Status.READY,
+        )
+        SkillResource.objects.create(
+            skill=cls.skill, name="Alpha rubric",
+            kind=SkillResource.Kind.REFERENCE, file_type=SkillResource.FileType.PDF,
+            status=SkillResource.Status.READY,
+        )
+        SkillResource.objects.create(
+            skill=cls.skill, name="Blocked doc",
+            kind=SkillResource.Kind.REFERENCE, file_type=SkillResource.FileType.TEXT,
+            status=SkillResource.Status.QUARANTINED, is_quarantined=True,
+        )
+
+    def _prefetched_skill(self):
+        from agent_skills.models import AgentSkill
+
+        return AgentSkill.objects.prefetch_related("templates").get(pk=self.skill.pk)
+
+    def test_renders_in_async_context_without_synchronous_error(self):
+        from asgiref.sync import async_to_sync
+
+        skill = self._prefetched_skill()
+
+        async def _build():
+            # No sync_to_async: mirrors the consumer, which calls
+            # build_semi_static_prompt directly on the event loop.
+            return build_system_prompt(skills=[skill])
+
+        # Would raise SynchronousOnlyOperation before the fix.
+        prompt = async_to_sync(_build)()
+        self.assertIn("## Skill resources", prompt)
+        self.assertIn("**Alpha rubric** — reference, pdf", prompt)
+        self.assertIn("**Zeta scoring template** — template, text", prompt)
+        # Sorted by name, and the quarantined row is excluded.
+        self.assertLess(
+            prompt.index("Alpha rubric"), prompt.index("Zeta scoring template")
+        )
+        self.assertNotIn("Blocked doc", prompt)
+
+    def test_render_uses_no_query_when_prefetched(self):
+        skill = self._prefetched_skill()  # one query, templates prefetched
+        with self.assertNumQueries(0):
+            build_system_prompt(skills=[skill])

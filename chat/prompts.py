@@ -281,7 +281,14 @@ def _render_one_skill(skill: Any) -> str:
         block += f"## Skill description:\n{skill.description}\n"
     block += f"## Skill instructions:\n{deepened}\n"
 
-    resources = [r for r in skill.templates.order_by("name") if not r.is_quarantined]
+    # Use ``.all()`` (not ``.order_by()``) so the ``templates`` prefetch cache is
+    # reused: this runs inside the async consumer path, and any fresh query here
+    # (which ``.order_by()`` would force, bypassing the prefetch) raises
+    # SynchronousOnlyOperation. Sort in Python instead.
+    resources = sorted(
+        (r for r in skill.templates.all() if not r.is_quarantined),
+        key=lambda r: r.name,
+    )
     if resources:
         block += (
             "\n## Skill resources\n\n"
