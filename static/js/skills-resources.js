@@ -145,7 +145,25 @@
     if (!r.editable_content) editItem.textContent = "Rename";
     menuBtn.addEventListener("click", function (e) {
       e.stopPropagation();
+      var willOpen = menu.classList.contains("hidden");
       closeAllMenus(menu);
+      if (willOpen) {
+        // Flip upward when there isn't room below (last rows sit near the
+        // action bar / viewport bottom). Inline styles so no extra CSS classes
+        // are needed in the build.
+        var rect = menuBtn.getBoundingClientRect();
+        if (window.innerHeight - rect.bottom < 160) {
+          menu.style.top = "auto";
+          menu.style.bottom = "100%";
+          menu.style.marginTop = "0";
+          menu.style.marginBottom = "4px";
+        } else {
+          menu.style.bottom = "auto";
+          menu.style.top = "100%";
+          menu.style.marginBottom = "0";
+          menu.style.marginTop = "4px";
+        }
+      }
       menu.classList.toggle("hidden");
     });
     menu.querySelectorAll("[data-action]").forEach(function (item) {
