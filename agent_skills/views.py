@@ -904,8 +904,9 @@ def skills_resource_upload(request, skill_id):
     from agent_skills.resources import (
         RESOURCE_COUNT_CAP,
         UnsupportedResourceType,
-        ingest_file,
+        create_pending_upload,
     )
+    from agent_skills.tasks import process_skill_resource_upload_task
 
     files = request.FILES.getlist("file")
     if not files:
@@ -922,9 +923,13 @@ def skills_resource_upload(request, skill_id):
             errors.append(f"{f.name}: file is too large")
             continue
         try:
-            resource = ingest_file(
+            # Store fast + return PROCESSING; extraction + scan run on the worker
+            # (heavy PDF/Office work must not block or OOM the web dyno). The
+            # client polls skills_resource_status for the outcome.
+            resource = create_pending_upload(
                 skill, data=f.read(), filename=f.name, user=request.user
             )
+            process_skill_resource_upload_task.delay(str(resource.id), request.user.id)
             created.append(_resource_json(resource))
             count += 1
         except UnsupportedResourceType:
@@ -933,6 +938,17 @@ def skills_resource_upload(request, skill_id):
             logger.exception("skills_resource_upload: failed for %s", f.name)
             errors.append(f"{f.name}: could not be processed")
     return JsonResponse({"ok": True, "resources": created, "errors": errors})
+
+
+@login_required
+@require_http_methods(["GET"])
+def skills_resource_status(request, skill_id):
+    """Poll endpoint: current status of every resource on a skill."""
+    skill = get_skill_for_user(request.user, str(skill_id))
+    if skill is None:
+        return JsonResponse({"ok": False, "error": "not_found"}, status=404)
+    resources = [_resource_json(r) for r in skill.templates.order_by("name")]
+    return JsonResponse({"ok": True, "resources": resources})
 
 
 @login_required

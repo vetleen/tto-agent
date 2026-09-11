@@ -797,10 +797,22 @@ class SkillResourceEndpointTests(TestCase):
         self.assertEqual(resp.status_code, 404)
         self.assertEqual(self.skill.templates.count(), 0)
 
-    def test_upload_text_file_scanned(self):
+    def test_upload_text_file_processes_async(self):
+        from unittest.mock import patch
+
         from django.core.files.uploadedfile import SimpleUploadedFile
 
-        with self._clean:
+        from agent_skills import resources as svc
+        from agent_skills.models import SkillResource
+
+        # Simulate the worker running the enqueued task inline, with a clean scan.
+        def run_inline(rid, uid):
+            svc.process_upload(SkillResource.objects.get(pk=rid), None)
+
+        with self._clean, patch(
+            "agent_skills.tasks.process_skill_resource_upload_task.delay",
+            side_effect=run_inline,
+        ) as delayed:
             resp = self.client.post(
                 self._url("agent_skills_resource_upload"),
                 {"file": SimpleUploadedFile("notes.txt", b"reference body", content_type="text/plain")},
@@ -809,7 +821,24 @@ class SkillResourceEndpointTests(TestCase):
         data = resp.json()
         self.assertEqual(len(data["resources"]), 1)
         self.assertEqual(data["resources"][0]["file_type"], "text")
-        self.assertEqual(data["resources"][0]["status"], "ready")
+        delayed.assert_called_once()
+        # The (simulated) worker run extracted + scanned it clean.
+        rid = data["resources"][0]["id"]
+        res = SkillResource.objects.get(pk=rid)
+        self.assertEqual(res.status, "ready")
+        self.assertIn("reference body", res.content)
+
+    def test_resource_status_endpoint(self):
+        from agent_skills.models import SkillResource
+
+        r = self.client.post(
+            self._url("agent_skills_resource_create"), {"name": "N", "content": "c"}
+        ).json()["resource"]
+        SkillResource.objects.filter(pk=r["id"]).update(status="processing")
+        resp = self.client.get(self._url("agent_skills_resource_status"))
+        self.assertEqual(resp.status_code, 200)
+        statuses = {x["id"]: x["status"] for x in resp.json()["resources"]}
+        self.assertEqual(statuses[r["id"]], "processing")
 
     def test_upload_unsupported_type_reported(self):
         from django.core.files.uploadedfile import SimpleUploadedFile

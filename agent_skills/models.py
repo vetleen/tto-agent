@@ -191,7 +191,7 @@ class SkillResource(models.Model):
     content = models.TextField(blank=True, default="")
     # Native bytes for PDF/image resources (null for typed text).
     original_file = models.FileField(
-        upload_to=skill_resource_upload_path, null=True, blank=True
+        upload_to=skill_resource_upload_path, max_length=255, null=True, blank=True
     )
     original_filename = models.CharField(max_length=255, blank=True, default="")
     media_type = models.CharField(max_length=100, blank=True, default="")

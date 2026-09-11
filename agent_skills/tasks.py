@@ -25,17 +25,17 @@ def _get_user(user_id):
 
 
 @shared_task
-def scan_skill_resource_task(resource_id, user_id=None):
-    """Guardrail/PII scan one resource off the request (used for uploads)."""
+def process_skill_resource_upload_task(resource_id, user_id=None):
+    """Extract + guardrail/PII scan an uploaded resource off the request."""
     from . import resources as svc
 
     resource = (
         SkillResource.objects.select_related("skill").filter(pk=resource_id).first()
     )
     if resource is None:
-        logger.warning("scan_skill_resource_task: resource %s gone", resource_id)
+        logger.warning("process_skill_resource_upload_task: resource %s gone", resource_id)
         return
-    svc.scan_resource(resource, _get_user(user_id))
+    svc.process_upload(resource, _get_user(user_id))
 
 
 @shared_task

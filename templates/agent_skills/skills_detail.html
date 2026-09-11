@@ -114,8 +114,7 @@
       </div>
     </section>
 
-    {# Resources (formerly "templates") are managed below, outside this form,
-       via their own upload/create/edit/delete endpoints. #}
+    {# Resources are managed below, outside this form, via dedicated endpoints. #}
   </form>
 
   {# ----- Templates & other resources ----- #}
@@ -126,6 +125,7 @@
            data-cap="{{ resource_count_cap }}"
            data-upload-url="{% url 'agent_skills_resource_upload' skill_id=skill.id %}"
            data-create-url="{% url 'agent_skills_resource_create' skill_id=skill.id %}"
+           data-status-url="{% url 'agent_skills_resource_status' skill_id=skill.id %}"
            data-update-url-tpl="{% url 'agent_skills_resource_update' skill_id=skill.id resource_id='00000000-0000-0000-0000-000000000000' %}"
            data-delete-url-tpl="{% url 'agent_skills_resource_delete' skill_id=skill.id resource_id='00000000-0000-0000-0000-000000000000' %}">
     <div class="flex items-center justify-between gap-3 mb-3">

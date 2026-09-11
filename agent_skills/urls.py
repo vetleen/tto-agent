@@ -27,6 +27,11 @@ urlpatterns = [
         name="agent_skills_resource_create",
     ),
     path(
+        "<uuid:skill_id>/resources/status/",
+        views.skills_resource_status,
+        name="agent_skills_resource_status",
+    ),
+    path(
         "<uuid:skill_id>/resources/<uuid:resource_id>/update/",
         views.skills_resource_update,
         name="agent_skills_resource_update",

@@ -395,10 +395,12 @@ def scan_resource(resource: SkillResource, user) -> None:
 
 # --- creation --------------------------------------------------------------
 
-def ingest_file(skill: AgentSkill, *, data: bytes, filename: str, user,
-                kind: str = SkillResource.Kind.REFERENCE) -> SkillResource:
-    """Create a resource from an uploaded file and scan it on the spot."""
-    file_type = detect_file_type(filename)
+def create_pending_upload(skill: AgentSkill, *, data: bytes, filename: str, user,
+                          kind: str = SkillResource.Kind.REFERENCE) -> SkillResource:
+    """Store an uploaded file and return a PROCESSING resource — fast, no
+    extraction or scanning (those run off the request in ``process_upload``, so
+    heavy PDF/Office extraction never ties up or OOMs the web dyno)."""
+    file_type = detect_file_type(filename)  # raises UnsupportedResourceType
     ext = _ext_of(filename)
     resource = SkillResource(
         skill=skill,
@@ -406,38 +408,52 @@ def ingest_file(skill: AgentSkill, *, data: bytes, filename: str, user,
         kind=kind,
         file_type=file_type,
         original_filename=filename,
+        media_type=ft.canonical_mime_for_extension(ext) or "",
         status=SkillResource.Status.PROCESSING,
     )
+    resource.original_file.save(filename, ContentFile(data), save=False)
+    resource.save()
+    recompute_standing_tokens(skill)
+    return resource
 
+
+def process_upload(resource: SkillResource, user) -> None:
+    """Extract text from a stored upload then guardrail/PII scan it. Runs on the
+    worker (see tasks.py). Fails closed (SCAN_FAILED) on any extraction error."""
     try:
-        if file_type == SkillResource.FileType.IMAGE:
-            resource.original_file.save(filename, ContentFile(data), save=False)
-            resource.media_type = ft.canonical_mime_for_extension(ext) or ""
+        with resource.original_file.open("rb") as fh:
+            data = fh.read()
+        if resource.file_type == SkillResource.FileType.IMAGE:
             resource.content = ""
             resource.content_sha256 = hashlib.sha256(data).hexdigest()
-        elif file_type == SkillResource.FileType.PDF:
-            resource.original_file.save(filename, ContentFile(data), save=False)
-            resource.media_type = "application/pdf"
+        elif resource.file_type == SkillResource.FileType.PDF:
             resource.content = extract_text(data, "pdf")[:MAX_RESOURCE_CHARS]
             resource.content_sha256 = hashlib.sha256(data).hexdigest()
         else:  # text-extractable
-            resource.original_file.save(filename, ContentFile(data), save=False)
-            resource.media_type = ft.canonical_mime_for_extension(ext) or "text/plain"
+            ext = _ext_of(resource.original_filename)
             resource.content = extract_text(data, ext)[:MAX_RESOURCE_CHARS]
             resource.content_sha256 = resource_content_hash(resource.content)
-    except UnsupportedResourceType:
-        raise
+        resource.token_count = count_tokens(resource.content) if resource.content else 0
+        resource.save(update_fields=["content", "content_sha256", "token_count"])
     except Exception:
-        logger.exception("ingest_file: extraction failed for %s", filename)
+        logger.exception(
+            "process_upload: extraction failed for %s", resource.original_filename
+        )
         resource.status = SkillResource.Status.SCAN_FAILED
         resource.error = "Could not read this file."
-        resource.save()
-        return resource
+        resource.save(update_fields=["status", "error"])
+        return
 
-    resource.token_count = count_tokens(resource.content) if resource.content else 0
-    resource.save()
-    recompute_standing_tokens(skill)
     scan_resource(resource, user)
+
+
+def ingest_file(skill: AgentSkill, *, data: bytes, filename: str, user,
+                kind: str = SkillResource.Kind.REFERENCE) -> SkillResource:
+    """Synchronous store + extract + scan (used by tests and any sync caller)."""
+    resource = create_pending_upload(
+        skill, data=data, filename=filename, user=user, kind=kind
+    )
+    process_upload(resource, user)
     return resource
 
 
