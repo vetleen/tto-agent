@@ -852,6 +852,27 @@ class SkillResourceEndpointTests(TestCase):
         self.assertEqual(data["resources"], [])
         self.assertTrue(any("unsupported" in e for e in data["errors"]))
 
+    @override_settings(SKILL_RESOURCE_MAX_SIZE_BYTES=1_000_000)
+    def test_upload_oversize_rejected_with_limit_in_message(self):
+        from unittest.mock import patch
+
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        with patch(
+            "agent_skills.tasks.process_skill_resource_upload_task.delay"
+        ) as delayed:
+            resp = self.client.post(
+                self._url("agent_skills_resource_upload"),
+                {"file": SimpleUploadedFile("big.txt", b"x" * 1_100_000,
+                                            content_type="text/plain")},
+            )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["resources"], [])
+        # The limit IS surfaced to the user (they aren't left guessing).
+        self.assertTrue(any("max 1 MB" in e for e in data["errors"]))
+        delayed.assert_not_called()
+
     def test_update_renames_and_edits_content(self):
         r = self.client.post(
             self._url("agent_skills_resource_create"), {"name": "A", "content": "x"}

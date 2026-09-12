@@ -912,7 +912,8 @@ def skills_resource_upload(request, skill_id):
     if not files:
         return JsonResponse({"ok": False, "error": "no_file"}, status=400)
 
-    max_size = getattr(settings, "DOCUMENT_UPLOAD_MAX_SIZE_BYTES", 50_000_000)
+    max_size = getattr(settings, "SKILL_RESOURCE_MAX_SIZE_BYTES", 15_000_000)
+    max_mb = max_size // 1_000_000
     count = skill.templates.count()
     created, errors = [], []
     for f in files:
@@ -920,7 +921,7 @@ def skills_resource_upload(request, skill_id):
             errors.append(f"{f.name}: resource limit ({RESOURCE_COUNT_CAP}) reached")
             continue
         if f.size and f.size > max_size:
-            errors.append(f"{f.name}: file is too large")
+            errors.append(f"{f.name}: file is too large (max {max_mb} MB)")
             continue
         try:
             # Store fast + return PROCESSING; extraction + scan run on the worker

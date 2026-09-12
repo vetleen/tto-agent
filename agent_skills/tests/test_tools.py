@@ -648,6 +648,35 @@ class ViewTemplateToolTests(TestCase):
         self.assertEqual(len(self.tool.context.pending_native_assets), 1)
         self.assertEqual(self.tool.context.pending_native_assets[0]["kind"], "image")
 
+    def test_oversized_asset_not_read_when_budget_exhausted(self):
+        """When the run's native-asset budget can't fit the file, the tool bails
+        on S3 metadata alone — the bytes are never opened/read into memory."""
+        from unittest.mock import patch
+
+        from django.core.files.base import ContentFile
+
+        from agent_skills.models import SkillResource
+
+        res = SkillResource(
+            skill=self.skill, name="BigPic", kind="reference",
+            file_type="image", original_filename="big.png",
+            media_type="image/png", status="ready",
+        )
+        res.original_file.save("big.png", ContentFile(b"x" * 100), save=False)
+        res.save()
+
+        with patch.object(
+            RunContext, "native_asset_budget_remaining", return_value=1
+        ), patch(
+            "django.db.models.fields.files.FieldFile.open"
+        ) as m_open:
+            result = json.loads(self.tool._run(template_name="BigPic"))
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("budget", result["message"])
+        self.assertEqual(self.tool.context.pending_native_assets, [])
+        m_open.assert_not_called()  # never pulled the bytes into memory
+
     def test_quarantined_resource_not_viewable(self):
         from agent_skills.models import SkillResource
 

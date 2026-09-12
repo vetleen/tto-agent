@@ -598,6 +598,10 @@ DOCUMENT_EXTRACT_SLOT_BYPASS_MAX_BYTES = _env_int("DOCUMENT_EXTRACT_SLOT_BYPASS_
 # Document upload and chunking (MVP)
 DATA_UPLOAD_MAX_NUMBER_FILES = 100
 DOCUMENT_UPLOAD_MAX_SIZE_BYTES = _env_int("DOCUMENT_UPLOAD_MAX_SIZE_BYTES", "50_000_000")  # 50 MB
+# Skill resources are held whole in memory on BOTH the web dyno (read on upload)
+# and the worker (re-read for extraction), so their cap is much tighter than a
+# data-room document's — several concurrent uploads must not threaten R14.
+SKILL_RESOURCE_MAX_SIZE_BYTES = _env_int("SKILL_RESOURCE_MAX_SIZE_BYTES", "15_000_000")  # 15 MB
 # Upload file-type allow-lists are derived from the single capability table in
 # core/file_types.py — data rooms accept every kind, including images and audio.
 # Edit that table (not these constants) to change supported types; chat and

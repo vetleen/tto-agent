@@ -788,6 +788,19 @@ class ViewTemplateTool(ContextAwareTool):
 
         if not resource.original_file:
             return False
+        # Bail BEFORE reading any bytes if the file can't fit the run's
+        # remaining native-asset budget. ``original_file.size`` is storage
+        # metadata (an S3 HEAD, no download), so an over-budget resource never
+        # gets pulled into web-dyno memory or base64-encoded — the atomic
+        # reservation in try_add_native_asset stays the source of truth.
+        try:
+            raw_size = resource.original_file.size or 0
+        except Exception:
+            raw_size = 0
+        if raw_size:
+            est_b64_chars = ((raw_size + 2) // 3) * 4
+            if est_b64_chars > self.context.native_asset_budget_remaining():
+                return False
         try:
             with resource.original_file.open("rb") as fh:
                 data = fh.read()
