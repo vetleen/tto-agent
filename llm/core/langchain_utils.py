@@ -55,6 +55,23 @@ def _apply_anthropic_cache_control(lc_messages: list, system_content: str | None
     return result
 
 
+def _sanitize_content(content):
+    """Drop internal ``_wf_*`` markers from multimodal content blocks so they
+    never reach a provider. Defensive backstop — the send-time native-limit
+    enforcer normally strips them before conversion."""
+    if not isinstance(content, list):
+        return content
+    cleaned = []
+    changed = False
+    for blk in content:
+        if isinstance(blk, dict) and any(k.startswith("_wf") for k in blk):
+            cleaned.append({k: v for k, v in blk.items() if not k.startswith("_wf")})
+            changed = True
+        else:
+            cleaned.append(blk)
+    return cleaned if changed else content
+
+
 def to_langchain_messages(messages: List[Message], *, provider: str | None = None):
     """Convert internal Message objects to LangChain message types.
 
@@ -102,7 +119,7 @@ def to_langchain_messages(messages: List[Message], *, provider: str | None = Non
             lc_messages.append(ToolMessage(content=m.content, tool_call_id=m.tool_call_id))
         else:
             # user, or tool without tool_call_id (backward compat)
-            lc_messages.append(HumanMessage(content=m.content))
+            lc_messages.append(HumanMessage(content=_sanitize_content(m.content)))
 
     if provider == "anthropic":
         lc_messages = _apply_anthropic_cache_control(lc_messages, system_content)

@@ -27,6 +27,30 @@ PDF_RENDER_JPEG_QUALITY = 70
 PDF_RENDER_MAX_DIMENSION = 1568  # longest side; matches vision-model sweet spot
 
 
+def pdf_page_count(pdf_bytes: bytes) -> int:
+    """Return the number of pages in a PDF, or 0 if it can't be opened.
+
+    Cheap (opens the document, reads the page count, closes it — no rendering),
+    so it's safe to call once per PDF at ingest to enforce a page cap before a
+    native attach. Any failure returns 0, which callers treat as "unknown /
+    don't block".
+    """
+    try:
+        import pypdfium2 as pdfium
+    except ImportError:
+        logger.warning("pypdfium2 unavailable; cannot count PDF pages")
+        return 0
+    try:
+        doc = pdfium.PdfDocument(pdf_bytes)
+    except Exception:
+        logger.info("Could not open PDF to count pages", exc_info=True)
+        return 0
+    try:
+        return len(doc)
+    finally:
+        doc.close()
+
+
 def compress_pdf_lossless(pdf_bytes: bytes) -> bytes:
     """Losslessly recompress a PDF; returns the smaller of input/output.
 
@@ -106,6 +130,7 @@ def render_pdf_pages_to_jpegs(
 
 
 __all__ = [
+    "pdf_page_count",
     "compress_pdf_lossless",
     "render_pdf_pages_to_jpegs",
     "PDF_ATTACH_MAX_RENDER_PAGES",

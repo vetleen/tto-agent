@@ -206,12 +206,12 @@ class PdfAttachChainTests(TestCase):
         doc.save(update_fields=["current_version"])
 
     def _tool(self, remaining_budget):
-        from llm.types.context import NATIVE_ASSET_BUDGET_B64_CHARS
+        from llm.types.context import native_asset_pool_bytes
         from chat.tools import DocumentViewNativeTool
 
         tool = DocumentViewNativeTool()
         ctx = RunContext.create(user_id=self.user.pk, data_room_ids=[self.room.pk])
-        ctx._native_asset_b64_used = NATIVE_ASSET_BUDGET_B64_CHARS - remaining_budget
+        ctx._b64_used_by_pathway["dataroom"] = native_asset_pool_bytes() - remaining_budget
         tool.set_context(ctx)
         return tool
 
@@ -255,7 +255,7 @@ class PdfAttachChainTests(TestCase):
         self.assertEqual(tool.context.pending_native_assets, [])
 
     def test_doc_image_rejected_when_budget_exhausted(self):
-        from llm.types.context import NATIVE_ASSET_BUDGET_B64_CHARS
+        from llm.types.context import native_asset_pool_bytes
         from chat.tools import DocumentViewNativeTool
 
         img_doc = DataRoomDocument.objects.create(
@@ -272,7 +272,7 @@ class PdfAttachChainTests(TestCase):
 
         tool = DocumentViewNativeTool()
         ctx = RunContext.create(user_id=self.user.pk, data_room_ids=[self.room.pk])
-        ctx._native_asset_b64_used = NATIVE_ASSET_BUDGET_B64_CHARS
+        ctx._b64_used_by_pathway["dataroom"] = native_asset_pool_bytes()
         tool.set_context(ctx)
         result = tool._run([2])
         self.assertIn("attached 0 of 1", result)

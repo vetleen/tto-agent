@@ -74,9 +74,9 @@ class WebImageViewToolTests(TestCase):
         self.assertEqual(self.ctx.pending_native_assets[0]["media_type"], "image/png")
 
     def test_budget_exhausted_stores_but_does_not_attach(self):
-        from llm.types.context import NATIVE_ASSET_BUDGET_B64_CHARS
+        from llm.types.context import native_asset_pool_bytes
 
-        self.ctx._native_asset_b64_used = NATIVE_ASSET_BUDGET_B64_CHARS
+        self.ctx._b64_used_by_pathway["dataroom"] = native_asset_pool_bytes()
         result = self._invoke({"handles": ["img-1"]}, return_value=_resp(_png()))
 
         self.assertIn("not attached for viewing", result)

@@ -601,7 +601,25 @@ DOCUMENT_UPLOAD_MAX_SIZE_BYTES = _env_int("DOCUMENT_UPLOAD_MAX_SIZE_BYTES", "50_
 # Skill resources are held whole in memory on BOTH the web dyno (read on upload)
 # and the worker (re-read for extraction), so their cap is much tighter than a
 # data-room document's — several concurrent uploads must not threaten R14.
+# Split by type: images (typically screenshots/diagrams) get a tighter cap than
+# reference PDFs. SKILL_RESOURCE_MAX_SIZE_BYTES is the fallback for text/other.
 SKILL_RESOURCE_MAX_SIZE_BYTES = _env_int("SKILL_RESOURCE_MAX_SIZE_BYTES", "15_000_000")  # 15 MB
+SKILL_RESOURCE_IMAGE_MAX_SIZE_BYTES = _env_int("SKILL_RESOURCE_IMAGE_MAX_SIZE_BYTES", "10_000_000")  # 10 MB
+SKILL_RESOURCE_PDF_MAX_SIZE_BYTES = _env_int("SKILL_RESOURCE_PDF_MAX_SIZE_BYTES", "15_000_000")  # 15 MB
+
+# Native-asset (PDF/image) context budget, measured on base64 length — the shared
+# ceiling on how much file data any one LLM request carries across all three
+# pathways (chat attachments, data-room documents, skill resources). See
+# llm/types/context.py and the send-time enforcer in llm/core/providers/base.py.
+NATIVE_ASSET_BUDGET_B64_BYTES = _env_int("NATIVE_ASSET_BUDGET_B64_BYTES", "52_428_800")  # 50 MB
+# Fraction of the pool a single skill-pathway asset may occupy (hard cap).
+NATIVE_ASSET_SKILL_FRACTION = float(os.environ.get("NATIVE_ASSET_SKILL_FRACTION", "0.5"))
+# Anthropic caps a single request payload (base64 body) at 32 MB; the send-time
+# enforcer prunes native assets to min(pool, this) for the anthropic provider.
+NATIVE_REQUEST_MAX_B64_BYTES_ANTHROPIC = _env_int("NATIVE_REQUEST_MAX_B64_BYTES_ANTHROPIC", "33_554_432")  # 32 MB
+# Per-PDF page cap (enforced at ingest). Anthropic allows 600 pages on 1M-context
+# models (100 under 1M); this conservative floor is safe across providers.
+NATIVE_REQUEST_MAX_PDF_PAGES = _env_int("NATIVE_REQUEST_MAX_PDF_PAGES", "100")
 # Upload file-type allow-lists are derived from the single capability table in
 # core/file_types.py — data rooms accept every kind, including images and audio.
 # Edit that table (not these constants) to change supported types; chat and

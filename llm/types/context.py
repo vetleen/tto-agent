@@ -8,11 +8,50 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, PrivateAttr
 
-# Per-run cap on native-asset bytes, measured on base64 length (that is what
-# actually occupies memory in the message history and the provider payload).
-# Cumulative for the whole run — it deliberately does NOT reset when the
-# pipeline drains pending_native_assets each tool-loop iteration.
-NATIVE_ASSET_BUDGET_B64_CHARS = 20 * 1024 * 1024
+# Native-asset budget, measured on base64 length (that is what actually occupies
+# memory in the message history and the provider payload). Three pathways surface
+# PDF/image assets to the model — user chat attachments, data-room documents, and
+# skill resources — and they share one pool. The pool is the ceiling on total
+# native base64 in a single outgoing request; the send-time enforcer
+# (llm/core/providers/base.py) prunes to min(pool, provider_ceiling) with skill
+# priority. This add-time budget is a fair-share + memory-bail guard only.
+#
+# Fallbacks used when Django settings can't be read; the live values come from
+# settings so ops can tune them without a deploy.
+_DEFAULT_NATIVE_ASSET_BUDGET_B64_BYTES = 50 * 1024 * 1024
+_DEFAULT_NATIVE_ASSET_SKILL_FRACTION = 0.5
+
+# Pathway tags. Skill assets are prioritized (evicted last); everything else is
+# non-skill and evicted oldest-first when a request overflows.
+PATHWAY_SKILL = "skill"
+PATHWAY_DATAROOM = "dataroom"
+PATHWAY_ATTACHMENT = "attachment"
+
+
+def native_asset_pool_bytes() -> int:
+    """Ceiling (base64 chars) on total native-asset bytes in one request."""
+    try:
+        from django.conf import settings
+
+        return int(getattr(
+            settings, "NATIVE_ASSET_BUDGET_B64_BYTES",
+            _DEFAULT_NATIVE_ASSET_BUDGET_B64_BYTES,
+        ))
+    except Exception:
+        return _DEFAULT_NATIVE_ASSET_BUDGET_B64_BYTES
+
+
+def native_asset_skill_fraction() -> float:
+    """Fraction of the pool a skill-pathway asset may occupy (hard cap)."""
+    try:
+        from django.conf import settings
+
+        return float(getattr(
+            settings, "NATIVE_ASSET_SKILL_FRACTION",
+            _DEFAULT_NATIVE_ASSET_SKILL_FRACTION,
+        ))
+    except Exception:
+        return _DEFAULT_NATIVE_ASSET_SKILL_FRACTION
 
 
 class RunContext(BaseModel):
@@ -59,8 +98,11 @@ class RunContext(BaseModel):
     _web_image_lock: Any = PrivateAttr(default_factory=threading.Lock)
     _web_image_next: int = PrivateAttr(default=1)
     # Native-asset budget bookkeeping — locked for the same reason as above.
+    # _native_asset_b64_used is the running total; _b64_used_by_pathway breaks it
+    # down per pathway (skill/dataroom/attachment) to enforce the skill sub-cap.
     _native_asset_lock: Any = PrivateAttr(default_factory=threading.Lock)
     _native_asset_b64_used: int = PrivateAttr(default=0)
+    _b64_used_by_pathway: dict = PrivateAttr(default_factory=dict)
     # The acting User instance, resolved once and reused for the whole run so the
     # per-instance memoization on accounts.models.get_membership /
     # get_user_preferences_dict holds across every tool call (otherwise each tool
@@ -69,27 +111,69 @@ class RunContext(BaseModel):
     # the main pipeline (which does not seed it) so its behaviour is unchanged.
     _cached_user: Any = PrivateAttr(default=None)
 
-    def try_add_native_asset(self, item: dict) -> bool:
-        """Queue a native asset if the run's byte budget allows it.
+    def reserve_native_asset(
+        self, size_b64: int, pathway: str = PATHWAY_DATAROOM
+    ) -> bool:
+        """Atomically reserve ``size_b64`` base64 chars for ``pathway``.
 
-        Atomically reserves ``len(item["b64"])`` against the per-run budget and
-        appends to ``pending_native_assets``; returns False (and appends
-        nothing) once the budget is exhausted. Every tool that surfaces
-        images/PDFs to the model MUST go through this instead of appending
-        directly, so one run can never hold unbounded base64 in history.
+        Skill-pathway assets are hard-capped at ``skill_fraction * pool``; every
+        other (non-skill) pathway is collectively bounded by the pool. This is a
+        fair-share + memory-bail guard — the true per-request ceiling (and skill
+        priority) is enforced at send time by pruning. Returns False without
+        reserving when the pathway's allowance is exhausted.
         """
-        size = len(item.get("b64") or "")
+        pool = native_asset_pool_bytes()
         with self._native_asset_lock:
-            if self._native_asset_b64_used + size > NATIVE_ASSET_BUDGET_B64_CHARS:
-                return False
-            self._native_asset_b64_used += size
-            self.pending_native_assets.append(item)
+            used = self._b64_used_by_pathway.get(pathway, 0)
+            if pathway == PATHWAY_SKILL:
+                cap = int(pool * native_asset_skill_fraction())
+                if used + size_b64 > cap:
+                    return False
+            else:
+                nonskill_used = sum(
+                    v for k, v in self._b64_used_by_pathway.items()
+                    if k != PATHWAY_SKILL
+                )
+                if nonskill_used + size_b64 > pool:
+                    return False
+            self._b64_used_by_pathway[pathway] = used + size_b64
+            self._native_asset_b64_used += size_b64
             return True
 
-    def native_asset_budget_remaining(self) -> int:
-        """Base64 chars still available in this run's native-asset budget."""
+    def try_add_native_asset(
+        self, item: dict, pathway: str = PATHWAY_DATAROOM
+    ) -> bool:
+        """Queue a native asset if the pathway's byte budget allows it.
+
+        Reserves ``len(item["b64"])`` via :meth:`reserve_native_asset`, tags the
+        item with its ``pathway`` (so the drain can classify the emitted content
+        block for send-time priority pruning), and appends to
+        ``pending_native_assets``. Every tool that surfaces images/PDFs to the
+        model MUST go through this instead of appending directly.
+        """
+        size = len(item.get("b64") or "")
+        if not self.reserve_native_asset(size, pathway):
+            return False
+        item["_pathway"] = pathway
+        self.pending_native_assets.append(item)
+        return True
+
+    def native_asset_budget_remaining(self, pathway: str = PATHWAY_DATAROOM) -> int:
+        """Base64 chars still available to ``pathway`` in this run.
+
+        Skill → its 50% reserve; any non-skill pathway → the pool minus what
+        non-skill pathways have already taken.
+        """
+        pool = native_asset_pool_bytes()
         with self._native_asset_lock:
-            return NATIVE_ASSET_BUDGET_B64_CHARS - self._native_asset_b64_used
+            if pathway == PATHWAY_SKILL:
+                cap = int(pool * native_asset_skill_fraction())
+                return max(0, cap - self._b64_used_by_pathway.get(PATHWAY_SKILL, 0))
+            nonskill_used = sum(
+                v for k, v in self._b64_used_by_pathway.items()
+                if k != PATHWAY_SKILL
+            )
+            return max(0, pool - nonskill_used)
 
     def allocate_web_image_handle(self, entry: dict) -> str:
         """Register a web image candidate under a fresh monotonic handle and
@@ -127,4 +211,11 @@ class RunContext(BaseModel):
         )
 
 
-__all__ = ["RunContext"]
+__all__ = [
+    "RunContext",
+    "PATHWAY_SKILL",
+    "PATHWAY_DATAROOM",
+    "PATHWAY_ATTACHMENT",
+    "native_asset_pool_bytes",
+    "native_asset_skill_fraction",
+]

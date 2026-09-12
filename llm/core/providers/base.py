@@ -707,8 +707,16 @@ class BaseLangChainChatModel(ChatModel):
             Message(role="user", content="[Continue from where you left off.]")
         ]
 
+    def _enforce_native_request_limits(self, messages):
+        """Prune native (PDF/image) blocks to the provider's per-request ceiling
+        with skill priority. No-op (returns the same list) when within budget."""
+        from llm.core.native_limits import enforce_native_request_limits
+
+        return enforce_native_request_limits(messages, self._provider_id)
+
     def generate(self, request: ChatRequest) -> ChatResponse:
         messages = self._messages_with_trailing_role_repair(request)
+        messages = self._enforce_native_request_limits(messages)
         lc_messages = to_langchain_messages(messages, provider=self._provider_id)
         client = self._get_streaming_client(request)
         callbacks = self._get_callbacks(request)
@@ -773,6 +781,7 @@ class BaseLangChainChatModel(ChatModel):
 
     def stream(self, request: ChatRequest) -> Iterator[StreamEvent]:
         messages = self._messages_with_trailing_role_repair(request)
+        messages = self._enforce_native_request_limits(messages)
         lc_messages = to_langchain_messages(messages, provider=self._provider_id)
         client = self._get_streaming_client(request)
         run_id = request.context.run_id if request.context else ""

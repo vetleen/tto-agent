@@ -873,6 +873,65 @@ class SkillResourceEndpointTests(TestCase):
         self.assertTrue(any("max 1 MB" in e for e in data["errors"]))
         delayed.assert_not_called()
 
+    @override_settings(
+        SKILL_RESOURCE_IMAGE_MAX_SIZE_BYTES=1_000_000,
+        SKILL_RESOURCE_PDF_MAX_SIZE_BYTES=2_000_000,
+    )
+    def test_image_upload_over_image_cap_rejected(self):
+        from unittest.mock import patch
+
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        with patch("agent_skills.tasks.process_skill_resource_upload_task.delay") as delayed:
+            resp = self.client.post(
+                self._url("agent_skills_resource_upload"),
+                {"file": SimpleUploadedFile("pic.png", b"x" * 1_100_000, content_type="image/png")},
+            )
+        data = resp.json()
+        self.assertEqual(data["resources"], [])
+        self.assertTrue(any("max 1 MB" in e for e in data["errors"]))
+        delayed.assert_not_called()
+
+    @override_settings(
+        SKILL_RESOURCE_IMAGE_MAX_SIZE_BYTES=1_000_000,
+        SKILL_RESOURCE_PDF_MAX_SIZE_BYTES=2_000_000,
+    )
+    def test_pdf_upload_between_image_and_pdf_cap_accepted(self):
+        """A 1.5 MB PDF is over the image cap but under the PDF cap — the split
+        cap lets it through (an image of the same size would be rejected)."""
+        from unittest.mock import patch
+
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        with patch("agent_skills.tasks.process_skill_resource_upload_task.delay") as delayed:
+            resp = self.client.post(
+                self._url("agent_skills_resource_upload"),
+                {"file": SimpleUploadedFile(
+                    "doc.pdf", b"%PDF-1.4\n" + b"x" * 1_500_000,
+                    content_type="application/pdf",
+                )},
+            )
+        data = resp.json()
+        self.assertEqual(len(data["resources"]), 1)
+        self.assertEqual(data["resources"][0]["file_type"], "pdf")
+        delayed.assert_called_once()
+
+    @override_settings(SKILL_RESOURCE_IMAGE_MAX_SIZE_BYTES=1_000_000)
+    def test_image_upload_under_image_cap_accepted(self):
+        from unittest.mock import patch
+
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        with patch("agent_skills.tasks.process_skill_resource_upload_task.delay") as delayed:
+            resp = self.client.post(
+                self._url("agent_skills_resource_upload"),
+                {"file": SimpleUploadedFile("pic.png", b"x" * 500_000, content_type="image/png")},
+            )
+        data = resp.json()
+        self.assertEqual(len(data["resources"]), 1)
+        self.assertEqual(data["resources"][0]["file_type"], "image")
+        delayed.assert_called_once()
+
     def test_update_renames_and_edits_content(self):
         r = self.client.post(
             self._url("agent_skills_resource_create"), {"name": "A", "content": "x"}

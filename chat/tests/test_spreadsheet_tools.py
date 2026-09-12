@@ -257,10 +257,10 @@ class ViewSheetToolTests(SpreadsheetToolTestCase):
         self.assertEqual(tool.context.pending_native_assets, [])
 
     def test_budget_exhausted_reports_and_skips_attach(self):
-        from llm.types.context import NATIVE_ASSET_BUDGET_B64_CHARS
+        from llm.types.context import native_asset_pool_bytes
 
         tool = self._view_tool()
-        tool.context._native_asset_b64_used = NATIVE_ASSET_BUDGET_B64_CHARS
+        tool.context._b64_used_by_pathway["dataroom"] = native_asset_pool_bytes()
         with patch("documents.services.spreadsheets.tiles.render_band", side_effect=_fake_render_band):
             result = tool._run(1)
         self.assertIn("attachment budget", result)

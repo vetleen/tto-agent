@@ -901,10 +901,12 @@ def skills_resource_upload(request, skill_id):
 
     from django.conf import settings
 
+    from agent_skills.models import SkillResource
     from agent_skills.resources import (
         RESOURCE_COUNT_CAP,
         UnsupportedResourceType,
         create_pending_upload,
+        detect_file_type,
     )
     from agent_skills.tasks import process_skill_resource_upload_task
 
@@ -912,16 +914,33 @@ def skills_resource_upload(request, skill_id):
     if not files:
         return JsonResponse({"ok": False, "error": "no_file"}, status=400)
 
-    max_size = getattr(settings, "SKILL_RESOURCE_MAX_SIZE_BYTES", 15_000_000)
-    max_mb = max_size // 1_000_000
+    # Per-type upload caps (raw bytes). Type is derived from the filename
+    # extension; unknown/audio (which create_pending_upload rejects anyway) falls
+    # back to the general cap.
+    general_max = getattr(settings, "SKILL_RESOURCE_MAX_SIZE_BYTES", 15_000_000)
+    image_max = getattr(settings, "SKILL_RESOURCE_IMAGE_MAX_SIZE_BYTES", 10_000_000)
+    pdf_max = getattr(settings, "SKILL_RESOURCE_PDF_MAX_SIZE_BYTES", 15_000_000)
+
+    def _cap_for(filename):
+        try:
+            file_type = detect_file_type(filename)
+        except UnsupportedResourceType:
+            return general_max
+        if file_type == SkillResource.FileType.IMAGE:
+            return image_max
+        if file_type == SkillResource.FileType.PDF:
+            return pdf_max
+        return general_max
+
     count = skill.templates.count()
     created, errors = [], []
     for f in files:
         if count >= RESOURCE_COUNT_CAP:
             errors.append(f"{f.name}: resource limit ({RESOURCE_COUNT_CAP}) reached")
             continue
+        max_size = _cap_for(f.name)
         if f.size and f.size > max_size:
-            errors.append(f"{f.name}: file is too large (max {max_mb} MB)")
+            errors.append(f"{f.name}: file is too large (max {max_size // 1_000_000} MB)")
             continue
         try:
             # Store fast + return PROCESSING; extraction + scan run on the worker

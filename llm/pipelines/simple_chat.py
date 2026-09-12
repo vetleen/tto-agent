@@ -284,6 +284,13 @@ class SimpleChatPipeline(BasePipeline):
                 _provider_cache.append(detect_provider(model))
             return _provider_cache[0]
 
+        def _tag_native_block(block: dict, item: dict) -> None:
+            # Private markers the send-time enforcer reads to classify a native
+            # block's pathway (skill/dataroom/attachment) and size for priority
+            # pruning. Stripped before the provider sees the block.
+            block["_wf_pathway"] = item.get("_pathway", "dataroom")
+            block["_wf_b64len"] = len(item.get("b64") or "")
+
         blocks: list = [{"type": "text", "text": "Here are the file(s) you requested to view:"}]
         for item in pending:
             kind = item.get("kind", "image")
@@ -292,7 +299,9 @@ class SimpleChatPipeline(BasePipeline):
                 if model and supports_modality(model, "pdf"):
                     from chat.services import build_pdf_content_block
 
-                    blocks.append(build_pdf_content_block(item["b64"], filename, _provider()))
+                    block = build_pdf_content_block(item["b64"], filename, _provider())
+                    _tag_native_block(block, item)
+                    blocks.append(block)
                     desc = item.get("description")
                     if desc:
                         blocks.append({"type": "text", "text": f"(above: {filename} — {desc})"})
@@ -306,7 +315,9 @@ class SimpleChatPipeline(BasePipeline):
             if model and supports_modality(model, "image"):
                 from chat.services import build_image_content_block
 
-                blocks.append(build_image_content_block(item["b64"], item["media_type"], _provider()))
+                block = build_image_content_block(item["b64"], item["media_type"], _provider())
+                _tag_native_block(block, item)
+                blocks.append(block)
                 desc = item.get("description")
                 if desc:
                     blocks.append({"type": "text", "text": f"(above: {desc})"})

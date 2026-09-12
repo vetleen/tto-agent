@@ -799,7 +799,7 @@ class ViewTemplateTool(ContextAwareTool):
             raw_size = 0
         if raw_size:
             est_b64_chars = ((raw_size + 2) // 3) * 4
-            if est_b64_chars > self.context.native_asset_budget_remaining():
+            if est_b64_chars > self.context.native_asset_budget_remaining("skill"):
                 return False
         try:
             with resource.original_file.open("rb") as fh:
@@ -812,6 +812,15 @@ class ViewTemplateTool(ContextAwareTool):
 
         b64 = base64.b64encode(data).decode("ascii")
         if resource.file_type == SkillResource.FileType.PDF:
+            # Over the per-PDF page cap the native attach would blow the request;
+            # returning False makes the caller fall back to the extracted text.
+            from chat.pdf_attach import pdf_page_count
+            from django.conf import settings as dj_settings
+
+            page_cap = getattr(dj_settings, "NATIVE_REQUEST_MAX_PDF_PAGES", 100)
+            n_pages = pdf_page_count(data)
+            if 0 < page_cap < n_pages:
+                return False
             item = {
                 "kind": "pdf", "b64": b64,
                 "filename": resource.original_filename or resource.name,
@@ -830,7 +839,7 @@ class ViewTemplateTool(ContextAwareTool):
                     f"'{resource.skill.name}'"
                 ),
             }
-        return bool(self.context.try_add_native_asset(item))
+        return bool(self.context.try_add_native_asset(item, pathway="skill"))
 
 
 class LoadTemplateToCanvasTool(ContextAwareTool):

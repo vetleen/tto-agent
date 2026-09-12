@@ -88,9 +88,9 @@ class ChatGenerateImageToolTests(TestCase):
         self.assertEqual(self.ctx.pending_native_assets[0]["media_type"], "image/png")
 
     def test_budget_exhausted_skips_preview_but_stays_ok(self):
-        from llm.types.context import NATIVE_ASSET_BUDGET_B64_CHARS
+        from llm.types.context import native_asset_pool_bytes
 
-        self.ctx._native_asset_b64_used = NATIVE_ASSET_BUDGET_B64_CHARS
+        self.ctx._b64_used_by_pathway["dataroom"] = native_asset_pool_bytes()
         fake = _FakeService()
         with _patch_prefs(), _patch_service(fake):
             result = self._invoke({"prompt": "a friendly robot"})

@@ -2549,18 +2549,21 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 tool_calls=tool_calls,
             ))
 
-        # Enrich user messages that have image attachments with multimodal content blocks
-        await self._enrich_with_attachments(messages, history, resolved_model)
-
-        # Deduplicate tool results from prior turns to reduce token waste
-        from chat.dedup import deduplicate_tool_results
-        messages = deduplicate_tool_results(messages, dynamic_context=dynamic_context)
-
+        # Budget object must exist before attachment enrichment so attachments
+        # are metered against the same native-asset budget as the tools.
         context = RunContext.create(
             user_id=self.user.pk,
             conversation_id=str(thread.id),
             data_room_ids=self.data_room_ids,
         )
+
+        # Enrich user messages that have image/PDF attachments with multimodal
+        # content blocks, metering each against the run's native-asset budget.
+        await self._enrich_with_attachments(messages, history, resolved_model, context)
+
+        # Deduplicate tool results from prior turns to reduce token waste
+        from chat.dedup import deduplicate_tool_results
+        messages = deduplicate_tool_results(messages, dynamic_context=dynamic_context)
 
         prefs = self.resolved_prefs
 
@@ -4129,10 +4132,21 @@ class ChatConsumer(AsyncWebsocketConsumer):
             message__isnull=True,
         ).update(message=message)
 
-    async def _enrich_with_attachments(self, messages, history, model):
-        """Replace plain-text content with multimodal content blocks for messages with attachments."""
+    async def _enrich_with_attachments(self, messages, history, model, context=None):
+        """Replace plain-text content with multimodal content blocks for messages
+        with attachments.
+
+        When ``context`` is provided, each native (image/PDF) block is metered
+        against the run's native-asset budget (pathway ``"attachment"``) and
+        tagged for send-time priority pruning; an image that can't fit degrades
+        to a text note and an oversized/too-many-pages PDF degrades to its
+        extracted text (which also keeps requests under Anthropic's 32 MB limit).
+        """
         import base64
 
+        from django.conf import settings
+
+        from chat.pdf_attach import pdf_page_count
         from chat.services import (
             SUPPORTED_DOCX_TYPES,
             SUPPORTED_IMAGE_TYPES,
@@ -4143,7 +4157,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
             build_text_content_block,
             detect_provider,
         )
+        from llm.core.native_limits import provider_native_b64_ceiling
         from llm.display import supports_modality
+
+        def _tag(block, b64len, label):
+            # Markers the send-time enforcer reads for priority pruning; stripped
+            # before the provider sees the block.
+            block["_wf_pathway"] = "attachment"
+            block["_wf_b64len"] = b64len
+            block["_wf_label"] = label or "attachment"
+            return block
 
         # Collect all attachment IDs from history
         all_ids = []
@@ -4188,7 +4211,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
                         # the chat model can't see images.
                         if supports_modality(model or "", "image"):
                             b64 = base64.b64encode(file_bytes).decode("ascii")
-                            block = build_image_content_block(b64, ct, provider)
+                            if context is not None and not context.reserve_native_asset(
+                                len(b64), "attachment"
+                            ):
+                                block = build_text_content_block(
+                                    "(Image attachment omitted — the native-asset budget "
+                                    "for this request is exhausted.)",
+                                    att.original_filename,
+                                )
+                            else:
+                                block = _tag(
+                                    build_image_content_block(b64, ct, provider),
+                                    len(b64), att.original_filename,
+                                )
                         else:
                             block = build_text_content_block(
                                 "(The current model cannot view images; this attachment was not shown.)",
@@ -4202,8 +4237,27 @@ class ChatConsumer(AsyncWebsocketConsumer):
                         # text (which now carries the image descriptions).
                         extracted = await self._attachment_text(att, file_bytes)
                         if supports_modality(model or "", "pdf"):
-                            b64 = base64.b64encode(file_bytes).decode("ascii")
-                            block = build_pdf_content_block(b64, att.original_filename, provider)
+                            # Degrade to extracted text (never base64 the file) when
+                            # the PDF has too many pages or, on its own, exceeds the
+                            # provider request ceiling — the latter is the fix for
+                            # oversized native PDFs 400ing at the provider.
+                            page_cap = getattr(settings, "NATIVE_REQUEST_MAX_PDF_PAGES", 100)
+                            n_pages = pdf_page_count(file_bytes)
+                            ceiling = provider_native_b64_ceiling(provider)
+                            est_b64 = (len(file_bytes) + 2) // 3 * 4
+                            if (0 < page_cap < n_pages) or est_b64 > ceiling:
+                                block = build_text_content_block(extracted, att.original_filename)
+                            else:
+                                b64 = base64.b64encode(file_bytes).decode("ascii")
+                                if context is not None and not context.reserve_native_asset(
+                                    len(b64), "attachment"
+                                ):
+                                    block = build_text_content_block(extracted, att.original_filename)
+                                else:
+                                    block = _tag(
+                                        build_pdf_content_block(b64, att.original_filename, provider),
+                                        len(b64), att.original_filename,
+                                    )
                         else:
                             block = build_text_content_block(extracted, att.original_filename)
                     elif ct in SUPPORTED_DOCX_TYPES:

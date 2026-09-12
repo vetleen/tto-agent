@@ -449,7 +449,13 @@ See `.env.example` for the full list with comments. Key production variables:
 | `PGBOUNCER_POOL_MODE` | Heroku | In-dyno PgBouncer mode; keep `transaction` (see Database) |
 | `PGBOUNCER_DEFAULT_POOL_SIZE` | Heroku | Real PG conns per dyno (5 = essential-0, 10 = essential-2) |
 | `PGBOUNCER_MAX_CLIENT_CONN` | Heroku | Max app→local-pgbouncer conns (default 100) |
-| `DOCUMENT_UPLOAD_MAX_SIZE_BYTES` | No | Max upload size (default: 50 MB) |
+| `DOCUMENT_UPLOAD_MAX_SIZE_BYTES` | No | Max data-room upload size (default: 50 MB) |
+| `SKILL_RESOURCE_IMAGE_MAX_SIZE_BYTES` | No | Max skill-resource image upload (default: 10 MB) |
+| `SKILL_RESOURCE_PDF_MAX_SIZE_BYTES` | No | Max skill-resource PDF upload (default: 15 MB) |
+| `NATIVE_ASSET_BUDGET_B64_BYTES` | No | Native-asset (PDF/image) budget per request, base64 bytes across all pathways (default: 50 MB) |
+| `NATIVE_ASSET_SKILL_FRACTION` | No | Fraction of that budget a skill asset may occupy (default: `0.5`) |
+| `NATIVE_REQUEST_MAX_B64_BYTES_ANTHROPIC` | No | Per-request native ceiling for Anthropic, base64 bytes (default: 32 MB) |
+| `NATIVE_REQUEST_MAX_PDF_PAGES` | No | Per-PDF page cap for native attach (default: 100; Anthropic allows 600 @1M ctx) |
 
 ### Production security (automatic when `DEBUG=False`)
 

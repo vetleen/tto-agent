@@ -1464,6 +1464,13 @@ class DocumentViewNativeTool(ContextAwareTool):
                     results.append(f"Document #{idx} ('{doc.original_filename}'): the original PDF is unavailable.")
                     continue
 
+                from chat.pdf_attach import (
+                    compress_pdf_lossless,
+                    pdf_page_count,
+                    render_pdf_pages_to_jpegs,
+                )
+                from django.conf import settings as dj_settings
+
                 def _try_attach_pdf(pdf_bytes: bytes) -> bool:
                     return context.try_add_native_asset({
                         "kind": "pdf",
@@ -1471,23 +1478,29 @@ class DocumentViewNativeTool(ContextAwareTool):
                         "filename": doc.original_filename or "document.pdf",
                         "description": doc.description or "",
                         "extracted_text": _version_text(version, self._TEXT_CAP),
-                    })
+                    }, pathway="dataroom")
+
+                # A native PDF sends every page to the provider; over the page cap
+                # it would blow the request/context, so skip straight to the
+                # first-N-pages render degrade (itself capped at ~20 pages).
+                page_cap = getattr(dj_settings, "NATIVE_REQUEST_MAX_PDF_PAGES", 100)
+                n_pages = pdf_page_count(data)
+                over_page_cap = 0 < page_cap < n_pages
 
                 msg = None
-                if _try_attach_pdf(data):
-                    msg = f"Document #{idx} ('{doc.original_filename}'): attached the PDF for you to view."
-                else:
-                    from chat.pdf_attach import compress_pdf_lossless, render_pdf_pages_to_jpegs
-
-                    compressed = compress_pdf_lossless(data)
-                    if len(compressed) < len(data) and _try_attach_pdf(compressed):
-                        msg = (
-                            f"Document #{idx} ('{doc.original_filename}'): attached the PDF "
-                            "for you to view (losslessly compressed to fit)."
-                        )
+                if not over_page_cap:
+                    if _try_attach_pdf(data):
+                        msg = f"Document #{idx} ('{doc.original_filename}'): attached the PDF for you to view."
+                    else:
+                        compressed = compress_pdf_lossless(data)
+                        if len(compressed) < len(data) and _try_attach_pdf(compressed):
+                            msg = (
+                                f"Document #{idx} ('{doc.original_filename}'): attached the PDF "
+                                "for you to view (losslessly compressed to fit)."
+                            )
                 if msg is None:
                     pages, total_pages = render_pdf_pages_to_jpegs(
-                        data, b64_budget=context.native_asset_budget_remaining(),
+                        data, b64_budget=context.native_asset_budget_remaining("dataroom"),
                     )
                     pages_attached = 0
                     for p, jpeg in enumerate(pages, start=1):
@@ -1500,16 +1513,19 @@ class DocumentViewNativeTool(ContextAwareTool):
                                 f"'{doc.original_filename}' page {p} of {total_pages} "
                                 "(truncated view)"
                             ),
-                        }):
+                        }, pathway="dataroom"):
                             break
                         pages_attached += 1
                     if pages_attached:
+                        reason = (
+                            f"has too many pages ({total_pages}) to attach in full"
+                            if over_page_cap else "too large to attach in full"
+                        )
                         msg = (
-                            f"Document #{idx} ('{doc.original_filename}'): PDF too large to "
-                            f"attach in full — attached the first {pages_attached} of "
-                            f"{total_pages} pages as images. NOTE: you are seeing a "
-                            "TRUNCATED view; the extracted text follows:\n\n"
-                            f"{_version_text(version, self._TEXT_CAP)}"
+                            f"Document #{idx} ('{doc.original_filename}'): PDF {reason} — "
+                            f"attached the first {pages_attached} of {total_pages} pages as "
+                            "images. NOTE: you are seeing a TRUNCATED view; the extracted "
+                            f"text follows:\n\n{_version_text(version, self._TEXT_CAP)}"
                         )
                 if msg is None:
                     # Floor: no attachment fits — inline the extracted text.
@@ -1546,7 +1562,7 @@ class DocumentViewNativeTool(ContextAwareTool):
                         "b64": base64.b64encode(img_bytes).decode("ascii"),
                         "media_type": media_type,
                         "description": description or "",
-                    }):
+                    }, pathway="dataroom"):
                         budget_exhausted = True
                         break
                     attached += 1
