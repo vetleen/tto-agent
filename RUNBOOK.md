@@ -450,8 +450,13 @@ See `.env.example` for the full list with comments. Key production variables:
 | `PGBOUNCER_DEFAULT_POOL_SIZE` | Heroku | Real PG conns per dyno (5 = essential-0, 10 = essential-2) |
 | `PGBOUNCER_MAX_CLIENT_CONN` | Heroku | Max app→local-pgbouncer conns (default 100) |
 | `DOCUMENT_UPLOAD_MAX_SIZE_BYTES` | No | Max data-room upload size (default: 50 MB) |
-| `SKILL_RESOURCE_IMAGE_MAX_SIZE_BYTES` | No | Max skill-resource image upload (default: 10 MB) |
+| `SKILL_RESOURCE_IMAGE_MAX_SIZE_BYTES` | No | Max skill-resource image upload (default: 25 MB; downscaled at ingest) |
 | `SKILL_RESOURCE_PDF_MAX_SIZE_BYTES` | No | Max skill-resource PDF upload (default: 15 MB) |
+| `CHAT_ATTACHMENT_IMAGE_MAX_SIZE_BYTES` | No | Max chat-attachment image upload (default: 25 MB; downscaled at ingest) |
+| `CHAT_ATTACHMENT_PDF_MAX_SIZE_BYTES` | No | Max chat-attachment PDF upload (default: 30 MB) |
+| `VISION_IMAGE_MAX_EDGE` | No | Ingest image downscale: max long edge in px (default: 1568) |
+| `VISION_IMAGE_MAX_PIXELS` | No | Ingest image downscale: max pixel area (default: 1_150_000) |
+| `VISION_IMAGE_JPEG_QUALITY` | No | Ingest image re-encode JPEG quality (default: 82) |
 | `NATIVE_ASSET_BUDGET_B64_BYTES` | No | Native-asset (PDF/image) budget per request, base64 bytes across all pathways (default: 50 MB) |
 | `NATIVE_ASSET_SKILL_FRACTION` | No | Fraction of that budget a skill asset may occupy (default: `0.5`) |
 | `NATIVE_REQUEST_MAX_B64_BYTES_ANTHROPIC` | No | Per-request native ceiling for Anthropic, base64 bytes (default: 32 MB) |

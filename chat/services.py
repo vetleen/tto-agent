@@ -636,8 +636,10 @@ SUPPORTED_TEXT_TYPES = frozenset(canonical_mimes_for_kinds({KIND_TEXT}))
 SUPPORTED_DOCX_TYPES = frozenset(canonical_mimes_for_kinds({KIND_DOCX}))
 SUPPORTED_ATTACHMENT_TYPES = frozenset(canonical_mimes_for_kinds(CHAT_KINDS))
 
+# Text/docx cap (these are NOT downscaled, so their bytes reach the model as-is).
+# Images and PDFs get their own, larger caps via max_size_for_content_type.
 MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024  # 10 MB
-MAX_PDF_ATTACHMENT_SIZE = 30 * 1024 * 1024  # 30 MB
+MAX_PDF_ATTACHMENT_SIZE = 30 * 1024 * 1024  # 30 MB (default; settings-overridable)
 # Ceiling on the combined size of all attachments on a single thread. Guards
 # against unbounded storage growth from repeated uploads / re-attaches. Branching
 # is exempt — it copies a subset of an already-compliant thread.
@@ -645,9 +647,19 @@ MAX_THREAD_ATTACHMENT_BYTES = 200 * 1024 * 1024  # 200 MB
 
 
 def max_size_for_content_type(content_type: str) -> int:
-    """Return the maximum upload size in bytes for a given content type."""
+    """Return the maximum upload size in bytes for a given content type.
+
+    Images are downscaled to the vision cap at ingest, so they get a generous
+    cap (settings ``CHAT_ATTACHMENT_IMAGE_MAX_SIZE_BYTES``); PDFs get their own
+    (``CHAT_ATTACHMENT_PDF_MAX_SIZE_BYTES``); text/docx stay at the tighter
+    ``MAX_ATTACHMENT_SIZE`` since their bytes are not downscaled.
+    """
+    from django.conf import settings
+
     if content_type in SUPPORTED_PDF_TYPES:
-        return MAX_PDF_ATTACHMENT_SIZE
+        return getattr(settings, "CHAT_ATTACHMENT_PDF_MAX_SIZE_BYTES", MAX_PDF_ATTACHMENT_SIZE)
+    if content_type in SUPPORTED_IMAGE_TYPES:
+        return getattr(settings, "CHAT_ATTACHMENT_IMAGE_MAX_SIZE_BYTES", 26_214_400)
     return MAX_ATTACHMENT_SIZE
 
 

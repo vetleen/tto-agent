@@ -297,8 +297,9 @@ class UploadAttachmentTests(TestCase):
         self.assertIn("too large", resp.json()["error"])
 
     def test_upload_image_oversized_rejected(self):
-        # 11 MB image
-        big = b"\x00" * (11 * 1024 * 1024)
+        # Over the 25 MB image cap (images are downscaled at ingest, so the cap
+        # is generous). The size gate rejects before any decode.
+        big = b"\x00" * (26 * 1024 * 1024)
         f = SimpleUploadedFile("big.png", big, content_type="image/png")
         resp = self.client.post(self.url, {"files": f})
         self.assertEqual(resp.status_code, 400)

@@ -2133,11 +2133,14 @@
   var SUPPORTED_TEXT_TYPES = ['text/plain', 'text/markdown', 'text/csv', 'text/html', 'application/json', 'text/xml', 'application/xml', 'text/x-rst', 'application/x-tex', 'application/x-yaml', 'text/yaml'];
   var SUPPORTED_DOCX_TYPES = ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.openxmlformats-officedocument.wordprocessingml.template'];
   var ALL_SUPPORTED_TYPES = SUPPORTED_IMAGE_TYPES.concat(SUPPORTED_PDF_TYPES, SUPPORTED_TEXT_TYPES, SUPPORTED_DOCX_TYPES);
-  var MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024;
-  var MAX_PDF_SIZE = 30 * 1024 * 1024;
+  var MAX_IMAGE_SIZE = {{ attachment_image_max_bytes }};
+  var MAX_PDF_SIZE = {{ attachment_pdf_max_bytes }};
+  var MAX_OTHER_SIZE = {{ attachment_other_max_bytes }};
 
   function getMaxSizeForType(contentType) {
-    return SUPPORTED_PDF_TYPES.indexOf(contentType) !== -1 ? MAX_PDF_SIZE : MAX_ATTACHMENT_SIZE;
+    if (SUPPORTED_PDF_TYPES.indexOf(contentType) !== -1) return MAX_PDF_SIZE;
+    if (SUPPORTED_IMAGE_TYPES.indexOf(contentType) !== -1) return MAX_IMAGE_SIZE;
+    return MAX_OTHER_SIZE;
   }
 
   function getAttachmentIcon(contentType) {
@@ -2224,7 +2227,7 @@
       }
       if (SUPPORTED_IMAGE_TYPES.indexOf(ft) !== -1) hasImages = true;
       var maxSize = getMaxSizeForType(ft);
-      var maxLabel = maxSize === MAX_PDF_SIZE ? '30 MB' : '10 MB';
+      var maxLabel = Math.round(maxSize / (1024 * 1024)) + ' MB';
       if (files[i].size > maxSize) {
         showToast('File too large (max ' + maxLabel + '): ' + files[i].name);
         return;

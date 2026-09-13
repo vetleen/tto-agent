@@ -604,8 +604,14 @@ DOCUMENT_UPLOAD_MAX_SIZE_BYTES = _env_int("DOCUMENT_UPLOAD_MAX_SIZE_BYTES", "50_
 # Split by type: images (typically screenshots/diagrams) get a tighter cap than
 # reference PDFs. SKILL_RESOURCE_MAX_SIZE_BYTES is the fallback for text/other.
 SKILL_RESOURCE_MAX_SIZE_BYTES = _env_int("SKILL_RESOURCE_MAX_SIZE_BYTES", "15_000_000")  # 15 MB
-SKILL_RESOURCE_IMAGE_MAX_SIZE_BYTES = _env_int("SKILL_RESOURCE_IMAGE_MAX_SIZE_BYTES", "10_000_000")  # 10 MB
+# Images are downscaled to the vision cap at ingest (see core.images), so a
+# generous upload cap costs nothing downstream — accept high-res phone photos.
+SKILL_RESOURCE_IMAGE_MAX_SIZE_BYTES = _env_int("SKILL_RESOURCE_IMAGE_MAX_SIZE_BYTES", "26_214_400")  # 25 MB
 SKILL_RESOURCE_PDF_MAX_SIZE_BYTES = _env_int("SKILL_RESOURCE_PDF_MAX_SIZE_BYTES", "15_000_000")  # 15 MB
+# Chat attachment upload caps. Images (downscaled at ingest) get a generous cap;
+# text/docx keep the tighter chat.services.MAX_ATTACHMENT_SIZE (10 MB, not downscaled).
+CHAT_ATTACHMENT_IMAGE_MAX_SIZE_BYTES = _env_int("CHAT_ATTACHMENT_IMAGE_MAX_SIZE_BYTES", "26_214_400")  # 25 MB
+CHAT_ATTACHMENT_PDF_MAX_SIZE_BYTES = _env_int("CHAT_ATTACHMENT_PDF_MAX_SIZE_BYTES", "31_457_280")  # 30 MB
 
 # Native-asset (PDF/image) context budget, measured on base64 length — the shared
 # ceiling on how much file data any one LLM request carries across all three

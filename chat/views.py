@@ -746,11 +746,18 @@ def chat_home(request):
         resolve_thread_model(thread.model, prefs) if thread else preferred_chat_model
     )
 
+    from chat.services import MAX_ATTACHMENT_SIZE, max_size_for_content_type
+
     return render(
         request,
         "chat/chat.html",
         {
             "thread": thread,
+            # Attachment upload caps (bytes) — the frontend derives its limit and
+            # label from these so client + server agree (images downscaled → larger).
+            "attachment_image_max_bytes": max_size_for_content_type("image/png"),
+            "attachment_pdf_max_bytes": max_size_for_content_type("application/pdf"),
+            "attachment_other_max_bytes": MAX_ATTACHMENT_SIZE,
             "thread_loop_id": thread_loop_id,
             "threads": threads,
             "thread_groups": thread_groups,

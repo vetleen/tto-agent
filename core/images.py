@@ -110,7 +110,14 @@ def optimize_for_vision(
             fmt = img.format
             if fmt not in _ALLOWED_FORMATS:
                 return None
-            # Header dims — reject bombs before the decode allocates RAM.
+            if fmt == "JPEG":
+                # Downscale-on-decode: the JPEG decoder returns a reduced (≤1/8)
+                # image, bounding decode RAM/time — so a very large photo gets
+                # SHRUNK here instead of rejected by the pixel guard below.
+                img.draft("RGB", (max_edge, max_edge))
+            # Header (or post-draft) dims — reject genuine decode bombs before the
+            # decode allocates RAM. Non-JPEG formats can't downscale on decode, so
+            # this still guards them; a pathological JPEG stays over even post-draft.
             if img.width * img.height > _MAX_IMAGE_PIXELS:
                 return None
             ImageOps.exif_transpose(img, in_place=True)

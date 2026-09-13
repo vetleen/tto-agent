@@ -74,17 +74,10 @@ class SanitizeRasterImageTests(TestCase):
 
 def _noisy(fmt="PNG", size=(200, 120), mode="RGB"):
     """An image with varied pixels so re-encoding actually changes size."""
-    import random
+    import os
 
-    random.seed(1)
-    img = Image.new(mode, size)
-    px = img.load()
-    for x in range(size[0]):
-        for y in range(size[1]):
-            if mode == "RGBA":
-                px[x, y] = (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255), 200)
-            else:
-                px[x, y] = (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
+    bpp = 4 if mode == "RGBA" else 3
+    img = Image.frombytes(mode, size, os.urandom(size[0] * size[1] * bpp))
     buf = io.BytesIO()
     img.save(buf, format=fmt)
     return buf.getvalue()
@@ -154,6 +147,22 @@ class OptimizeForVisionTests(TestCase):
         png = _img_bytes("PNG", size=(50, 50))
         with patch("core.images._MAX_IMAGE_PIXELS", 100):
             self.assertIsNone(optimize_for_vision(png))
+
+    def test_large_jpeg_downscaled_not_rejected(self):
+        # A large JPEG over the pixel guard is downscaled-on-decode (draft), not
+        # rejected — so huge photos are shrunk instead of bypassing optimization.
+        raw = _noisy("JPEG", size=(1000, 1000))  # 1M px
+        with patch("core.images._MAX_IMAGE_PIXELS", 20_000):
+            out = optimize_for_vision(raw)
+        self.assertIsNotNone(out)  # draft got it under the guard
+        w, h = self._dims(out[0])
+        self.assertLessEqual(max(w, h), 50)
+
+    def test_large_nonjpeg_still_rejected(self):
+        # PNG/WEBP/GIF can't downscale on decode → the bomb guard still rejects.
+        raw = _noisy("PNG", size=(1000, 1000))
+        with patch("core.images._MAX_IMAGE_PIXELS", 20_000):
+            self.assertIsNone(optimize_for_vision(raw))
 
     def test_garbage_rejected(self):
         self.assertIsNone(optimize_for_vision(b"not an image"))
