@@ -189,8 +189,15 @@ class SkillResource(models.Model):
     # Extracted markdown (text kinds) or a PDF's extracted-text fallback; empty
     # for images.
     content = models.TextField(blank=True, default="")
-    # Native bytes for PDF/image resources (null for typed text).
+    # Native bytes for PDF/image resources (null for typed text). The pristine
+    # upload — kept for download/export.
     original_file = models.FileField(
+        upload_to=skill_resource_upload_path, max_length=255, null=True, blank=True
+    )
+    # Vision-optimized derivative the model actually reads (image downscaled to
+    # the provider cap). Falls back to original_file when unset. Keeps the
+    # original downloadable while the model gets the smaller copy.
+    optimized_file = models.FileField(
         upload_to=skill_resource_upload_path, max_length=255, null=True, blank=True
     )
     original_filename = models.CharField(max_length=255, blank=True, default="")

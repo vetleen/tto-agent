@@ -946,6 +946,58 @@ class ProcessDocumentServiceTests(TestCase):
                 self.assertEqual(kwargs.get("model"), "anthropic/claude-opus-4-8")
 
     @override_settings(PGVECTOR_CONNECTION="")
+    def test_process_document_image_stores_optimized_native_blob(self):
+        """A real, oversized image is downscaled into native_blob (what the model
+        reads); original_file stays pristine and describe_image sees the smaller
+        bytes."""
+        import io as _io
+        import os
+
+        from django.core.files.base import ContentFile
+        from PIL import Image
+
+        from documents.services.process_document import process_document
+
+        # Pure-noise 1600x1200 RGB — larger than the 1568px / 1.15 MP vision cap.
+        big = Image.frombytes("RGB", (1600, 1200), os.urandom(1600 * 1200 * 3))
+        raw = _io.BytesIO()
+        big.save(raw, format="PNG")
+        raw_bytes = raw.getvalue()
+
+        sample_chunks = [
+            {"text": "desc", "heading": None, "token_count": 2, "chunk_index": 0,
+             "source_page_start": None, "source_page_end": None,
+             "source_offset_start": 0, "source_offset_end": 4},
+        ]
+        captured = {}
+
+        def _fake_describe(img_bytes, media_type, user, model=None):
+            captured["len"] = len(img_bytes)
+            return "A noisy test image."
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = DataRoomDocument(
+                    data_room=self.data_room, uploaded_by=self.user,
+                    original_filename="big.png", mime_type="image/png",
+                    status=DataRoomDocument.Status.UPLOADED,
+                )
+                doc.original_file.save("big.png", ContentFile(raw_bytes), save=True)
+                with patch("chat.services.describe_image", side_effect=_fake_describe), \
+                     patch("core.preferences.resolve_org_feature_model", return_value="anthropic/claude-opus-4-8"), \
+                     patch("documents.services.process_document.structure_aware_chunk", return_value=sample_chunks), \
+                     patch("guardrails.tasks.scan_document_version.delay"):
+                    process_document(doc.id)
+
+                doc.refresh_from_db()
+                version = doc.current_version
+                self.assertEqual(version.parser_type, "image")
+                self.assertTrue(version.native_blob)  # optimized copy stored
+                self.assertLess(version.native_blob.size, doc.original_file.size)
+                # describe_image ran on the optimized (smaller) bytes.
+                self.assertLess(captured["len"], len(raw_bytes))
+
+    @override_settings(PGVECTOR_CONNECTION="")
     def test_process_document_image_fails_without_vision_model(self):
         """With no vision-capable describer resolved, the image doc fails with a
         clear error instead of producing empty content."""

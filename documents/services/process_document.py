@@ -239,6 +239,25 @@ def _extract_native(version, doc):
             with open(file_path, "rb") as fh:
                 img_bytes = fh.read()
             media_type = canonical_mime_for_extension(ext) or doc.mime_type or "image/png"
+            # Downscale to the vision cap (format preserved, so the stored
+            # media_type stays valid) BEFORE describing and viewing. The optimized
+            # copy becomes the model-facing native_blob; doc.original_file stays
+            # pristine for download. _read_native_bytes / _collect_doc_images
+            # already prefer native_blob.
+            from core.images import optimize_for_vision
+
+            opt = optimize_for_vision(img_bytes, allow_transcode=False)
+            if opt is not None:
+                opt_bytes, _opt_media = opt
+                if len(opt_bytes) < len(img_bytes):
+                    from django.core.files.base import ContentFile
+
+                    version.native_blob.save(
+                        version.native_filename or doc.original_filename or f"image.{ext}",
+                        ContentFile(opt_bytes), save=False,
+                    )
+                    version.save(update_fields=["native_blob"])
+                    img_bytes = opt_bytes
             logger.info(
                 "process_document_version: version_id=%s stage=describing_image model=%s",
                 version.id, model,

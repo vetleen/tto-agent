@@ -488,7 +488,10 @@ def get_merged_context_windows(
                 version__document__is_archived=False,
             )
             .order_by("chunk_index")
-            .values("id", "chunk_index", "text", "token_count")
+            .values(
+                "id", "chunk_index", "text", "token_count",
+                "source_page_start", "source_page_end",
+            )
         )
         if not all_chunks:
             continue
@@ -529,12 +532,16 @@ def get_merged_context_windows(
             window_chunks = all_chunks[start_pos:end_pos + 1]
             context_text = "\n\n".join(c["text"] for c in window_chunks)
             total_tokens = sum(c["token_count"] for c in window_chunks)
+            p_starts = [c["source_page_start"] for c in window_chunks if c.get("source_page_start")]
+            p_ends = [c["source_page_end"] for c in window_chunks if c.get("source_page_end")]
             merged_windows.append({
                 "chunk_ids": hit_cids,
                 "document_id": doc_id,
                 "context_text": context_text,
                 "context_token_count": total_tokens,
                 "chunks_included": [c["chunk_index"] for c in window_chunks],
+                "page_start": min(p_starts) if p_starts else None,
+                "page_end": max(p_ends) if p_ends else None,
             })
 
     return merged_windows

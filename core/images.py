@@ -18,7 +18,7 @@ from __future__ import annotations
 import io
 import logging
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 logger = logging.getLogger(__name__)
 
@@ -68,3 +68,86 @@ def sanitize_raster_image(raw_bytes: bytes) -> tuple[bytes, str] | None:
         # Garbage bytes, truncated images, decompression bombs, unsupported
         # modes, spoofed MIME (HTML/SVG served as image/*) — all unusable.
         return None
+
+
+def _has_alpha(img: "Image.Image") -> bool:
+    return img.mode in ("RGBA", "LA", "PA") or (
+        img.mode == "P" and "transparency" in img.info
+    )
+
+
+def optimize_for_vision(
+    raw_bytes: bytes, *, allow_transcode: bool = True
+) -> tuple[bytes, str] | None:
+    """Downscale + re-encode an image to the size a vision model actually uses.
+
+    Caps the long edge and total pixel area (settings ``VISION_IMAGE_MAX_EDGE`` /
+    ``VISION_IMAGE_MAX_PIXELS``) — every provider downsamples beyond ~1568px /
+    ~1.15 MP, so anything larger is wasted bytes. Honors EXIF orientation and
+    strips metadata / polyglot content, like :func:`sanitize_raster_image`.
+
+    With ``allow_transcode=True`` (default) it re-encodes opaque images to JPEG
+    (``VISION_IMAGE_JPEG_QUALITY``) and images with transparency to optimized PNG
+    — the smaller "save for web" output. With ``allow_transcode=False`` it keeps
+    the original format (so a caller relying on a stable stored ``media_type``,
+    e.g. data-room images read back for viewing, isn't broken by a format change).
+
+    Returns ``(optimized_bytes, media_type)``, or the original bytes + their
+    content type when re-encoding wouldn't shrink them (never inflates), or
+    ``None`` when the input is not a usable raster in an allowed format.
+    """
+    try:
+        from django.conf import settings
+
+        max_edge = int(getattr(settings, "VISION_IMAGE_MAX_EDGE", 1568))
+        max_pixels = int(getattr(settings, "VISION_IMAGE_MAX_PIXELS", 1_150_000))
+        quality = int(getattr(settings, "VISION_IMAGE_JPEG_QUALITY", 82))
+    except Exception:
+        max_edge, max_pixels, quality = 1568, 1_150_000, 82
+
+    try:
+        with Image.open(io.BytesIO(raw_bytes)) as img:
+            fmt = img.format
+            if fmt not in _ALLOWED_FORMATS:
+                return None
+            # Header dims — reject bombs before the decode allocates RAM.
+            if img.width * img.height > _MAX_IMAGE_PIXELS:
+                return None
+            ImageOps.exif_transpose(img, in_place=True)
+            w, h = img.width, img.height
+            # Shrink to satisfy BOTH the long-edge and the pixel-area caps; never
+            # upscale (a small image stays its size).
+            scale = min(1.0, max_edge / max(w, h), (max_pixels / (w * h)) ** 0.5)
+            if scale < 1.0:
+                img.thumbnail(
+                    (max(1, round(w * scale)), max(1, round(h * scale))),
+                    Image.Resampling.LANCZOS,
+                )
+            buffer = io.BytesIO()
+            if not allow_transcode:
+                # Preserve the original format — keeps a stored media_type stable.
+                media_type = _FORMAT_CONTENT_TYPE.get(fmt, "image/png")
+                if fmt == "JPEG":
+                    rgb = img if img.mode in ("RGB", "L") else img.convert("RGB")
+                    rgb.save(buffer, format="JPEG", quality=quality, optimize=True)
+                elif fmt == "WEBP":
+                    img.save(buffer, format="WEBP", quality=quality, method=6)
+                elif fmt == "GIF":
+                    img.save(buffer, format="GIF")
+                else:  # PNG
+                    img.save(buffer, format="PNG", optimize=True)
+            elif _has_alpha(img):
+                media_type = "image/png"
+                img.save(buffer, format="PNG", optimize=True)
+            else:
+                media_type = "image/jpeg"
+                rgb = img if img.mode in ("RGB", "L") else img.convert("RGB")
+                rgb.save(buffer, format="JPEG", quality=quality, optimize=True)
+            optimized = buffer.getvalue()
+    except Exception:
+        return None
+
+    if optimized and len(optimized) < len(raw_bytes):
+        return optimized, media_type
+    # Re-encoding didn't help (already small/efficient) — keep the original bytes.
+    return raw_bytes, _FORMAT_CONTENT_TYPE.get(fmt, media_type)

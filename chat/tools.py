@@ -524,6 +524,17 @@ class SearchDocumentsTool(ContextAwareTool):
             else:
                 chunk_label = ""
 
+            # Cite source page numbers so the model can pass pages=… to
+            # document_view_native to view just the relevant pages of a PDF.
+            page_start = window.get("page_start")
+            page_end = window.get("page_end")
+            if page_start:
+                pages_txt = (
+                    f"page {page_start}" if (not page_end or page_end == page_start)
+                    else f"pages {page_start}–{page_end}"
+                )
+                chunk_label = f"{chunk_label} · {pages_txt}" if chunk_label else pages_txt.capitalize()
+
             # Heading from first chunk
             heading = ""
             if chunks_included:
@@ -710,7 +721,10 @@ class ReadDocumentTool(ContextAwareTool):
                     chunk_index__lte=chunk_end,
                 )
 
-            chunk_list = list(chunks_qs.values_list("id", "chunk_index", "heading", "text"))
+            chunk_list = list(chunks_qs.values_list(
+                "id", "chunk_index", "heading", "text",
+                "source_page_start", "source_page_end",
+            ))
 
             remaining = self._MAX_TOTAL_CHARS - total_chars
             if remaining <= 0:
@@ -731,7 +745,9 @@ class ReadDocumentTool(ContextAwareTool):
             first_returned = None
             last_returned = None
             truncated_at = None
-            for chunk_pk, ci, heading, text in chunk_list:
+            page_lo = None
+            page_hi = None
+            for chunk_pk, ci, heading, text, ps, pe in chunk_list:
                 add = len(text) + (2 if content_parts else 0)  # 2 = "\n\n" separator
                 if content_parts and used + add > remaining:
                     truncated_at = ci
@@ -742,6 +758,10 @@ class ReadDocumentTool(ContextAwareTool):
                 if first_returned is None:
                     first_returned = ci
                 last_returned = ci
+                if ps:
+                    page_lo = ps if page_lo is None else min(page_lo, ps)
+                if pe:
+                    page_hi = pe if page_hi is None else max(page_hi, pe)
                 if heading:
                     headings.append(heading)
             content = "\n\n".join(content_parts)
@@ -777,6 +797,13 @@ class ReadDocumentTool(ContextAwareTool):
             if use_chunk_range:
                 doc_entry["chunk_range"] = f"{chunk_start}-{chunk_end}"
                 doc_entry["chunks_returned"] = len(chunk_list)
+            # Source page range, so the model can view just these pages of a PDF
+            # via document_view_native(pages=…).
+            if page_lo:
+                doc_entry["pages"] = (
+                    str(page_lo) if (not page_hi or page_hi == page_lo)
+                    else f"{page_lo}-{page_hi}"
+                )
             if headings:
                 doc_entry["headings"] = headings
             # Image-as-document: the chunks are the vision description; also hand
@@ -1320,6 +1347,16 @@ class DocumentViewNativeInput(ReasonBaseModel):
     data_room_id: Optional[int] = Field(
         default=None, description="Optional data room id to disambiguate the document indices."
     )
+    pages: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional 1-based page selection for PDF documents, e.g. '3-5,12'. "
+            "Only those pages are attached (as a smaller PDF), saving context — "
+            "search results cite the page numbers of relevant chunks. Applies to "
+            "every doc_index in this call, so paginate one document at a time. "
+            "Omit to view the whole PDF."
+        ),
+    )
 
 
 def _collect_doc_images(doc, max_images: int = 4):
@@ -1414,7 +1451,8 @@ class DocumentViewNativeTool(ContextAwareTool):
     _MAX_ATTACHMENTS: int = 4
     _TEXT_CAP: int = 24_000
 
-    def _run(self, doc_indices: list[int], data_room_id: int | None = None, **kwargs) -> str:
+    def _run(self, doc_indices: list[int], data_room_id: int | None = None,
+             pages: str | None = None, **kwargs) -> str:
         import base64
         from pathlib import Path
 
@@ -1466,10 +1504,22 @@ class DocumentViewNativeTool(ContextAwareTool):
 
                 from chat.pdf_attach import (
                     compress_pdf_lossless,
+                    extract_pdf_pages,
+                    parse_page_ranges,
                     pdf_page_count,
                     render_pdf_pages_to_jpegs,
                 )
                 from django.conf import settings as dj_settings
+
+                # Page selection: slice to a smaller native sub-PDF up front, so
+                # both the native attach and the rasterize fallback operate on
+                # just the requested pages (text preserved, context saved).
+                page_note = ""
+                if pages:
+                    indices = parse_page_ranges(pages, pdf_page_count(data))
+                    if indices:
+                        data = extract_pdf_pages(data, indices)
+                        page_note = f" (pages {pages})"
 
                 def _try_attach_pdf(pdf_bytes: bytes) -> bool:
                     return context.try_add_native_asset({
@@ -1490,27 +1540,27 @@ class DocumentViewNativeTool(ContextAwareTool):
                 msg = None
                 if not over_page_cap:
                     if _try_attach_pdf(data):
-                        msg = f"Document #{idx} ('{doc.original_filename}'): attached the PDF for you to view."
+                        msg = f"Document #{idx} ('{doc.original_filename}'): attached the PDF{page_note} for you to view."
                     else:
                         compressed = compress_pdf_lossless(data)
                         if len(compressed) < len(data) and _try_attach_pdf(compressed):
                             msg = (
-                                f"Document #{idx} ('{doc.original_filename}'): attached the PDF "
+                                f"Document #{idx} ('{doc.original_filename}'): attached the PDF{page_note} "
                                 "for you to view (losslessly compressed to fit)."
                             )
                 if msg is None:
-                    pages, total_pages = render_pdf_pages_to_jpegs(
+                    jpeg_pages, total_pages = render_pdf_pages_to_jpegs(
                         data, b64_budget=context.native_asset_budget_remaining("dataroom"),
                     )
                     pages_attached = 0
-                    for p, jpeg in enumerate(pages, start=1):
+                    for p, jpeg in enumerate(jpeg_pages, start=1):
                         if not context.try_add_native_asset({
                             "kind": "image",
                             "asset_id": "",
                             "b64": base64.b64encode(jpeg).decode("ascii"),
                             "media_type": "image/jpeg",
                             "description": (
-                                f"'{doc.original_filename}' page {p} of {total_pages} "
+                                f"'{doc.original_filename}'{page_note} page {p} of {total_pages} "
                                 "(truncated view)"
                             ),
                         }, pathway="dataroom"):

@@ -221,6 +221,14 @@ class DeleteSkillInput(ReasonBaseModel):
 
 class ViewTemplateInput(ReasonBaseModel):
     template_name: str = Field(description="Name of the template to view.")
+    pages: str | None = Field(
+        default=None,
+        description=(
+            "Optional 1-based page selection for PDF resources, e.g. '3-5,12'. "
+            "Only those pages are attached (as a smaller PDF), saving context. "
+            "Omit to view the whole PDF."
+        ),
+    )
 
 
 class LoadTemplateToCanvasInput(ReasonBaseModel):
@@ -710,7 +718,7 @@ class ViewTemplateTool(ContextAwareTool):
     args_schema: type[BaseModel] = ViewTemplateInput
     section: str = "skills"
 
-    def _run(self, template_name: str, **kwargs) -> str:
+    def _run(self, template_name: str, pages: str | None = None, **kwargs) -> str:
         from agent_skills.models import MAX_RESOURCE_CHARS, SkillResource
 
         thread_id = self.context.conversation_id if self.context else None
@@ -732,7 +740,7 @@ class ViewTemplateTool(ContextAwareTool):
         if resource.file_type in (
             SkillResource.FileType.PDF, SkillResource.FileType.IMAGE
         ) and self.context is not None:
-            if self._add_native_asset(resource):
+            if self._add_native_asset(resource, pages):
                 stub = (
                     f"{begin}\nThe {resource.file_type} file is attached below "
                     f"for you to view directly.\n{end}"
@@ -777,10 +785,13 @@ class ViewTemplateTool(ContextAwareTool):
             result["note"] = " ".join(notes)
         return json.dumps(result)
 
-    def _add_native_asset(self, resource) -> bool:
+    def _add_native_asset(self, resource, pages: str | None = None) -> bool:
         """Queue a PDF/image resource's bytes for inline injection by the
-        pipeline. Returns False when there are no bytes or the per-turn native
-        asset budget is exhausted."""
+        pipeline. Reads the vision-optimized derivative (``optimized_file``) when
+        present, else the pristine ``original_file``. For PDFs, an optional
+        ``pages`` selection is sliced into a smaller native sub-PDF and the whole
+        thing is losslessly compressed. Returns False when there are no bytes or
+        the per-turn native-asset budget is exhausted."""
         import base64
         import logging
 
@@ -788,21 +799,24 @@ class ViewTemplateTool(ContextAwareTool):
 
         if not resource.original_file:
             return False
-        # Bail BEFORE reading any bytes if the file can't fit the run's
-        # remaining native-asset budget. ``original_file.size`` is storage
-        # metadata (an S3 HEAD, no download), so an over-budget resource never
-        # gets pulled into web-dyno memory or base64-encoded — the atomic
-        # reservation in try_add_native_asset stays the source of truth.
+        # Model reads the optimized copy; original_file stays pristine for download.
+        src = resource.optimized_file if resource.optimized_file else resource.original_file
+        is_pdf = resource.file_type == SkillResource.FileType.PDF
+        # Bail BEFORE reading any bytes if the file can't fit the run's remaining
+        # native-asset budget (``.size`` is storage metadata — an S3 HEAD, no
+        # download). Skipped when a page subset is requested: slicing changes the
+        # real size, so we must read to know it.
+        if not (is_pdf and pages):
+            try:
+                raw_size = src.size or 0
+            except Exception:
+                raw_size = 0
+            if raw_size:
+                est_b64_chars = ((raw_size + 2) // 3) * 4
+                if est_b64_chars > self.context.native_asset_budget_remaining("skill"):
+                    return False
         try:
-            raw_size = resource.original_file.size or 0
-        except Exception:
-            raw_size = 0
-        if raw_size:
-            est_b64_chars = ((raw_size + 2) // 3) * 4
-            if est_b64_chars > self.context.native_asset_budget_remaining("skill"):
-                return False
-        try:
-            with resource.original_file.open("rb") as fh:
+            with src.open("rb") as fh:
                 data = fh.read()
         except Exception:
             logging.getLogger(__name__).exception(
@@ -810,27 +824,37 @@ class ViewTemplateTool(ContextAwareTool):
             )
             return False
 
-        b64 = base64.b64encode(data).decode("ascii")
-        if resource.file_type == SkillResource.FileType.PDF:
-            # Over the per-PDF page cap the native attach would blow the request;
-            # returning False makes the caller fall back to the extracted text.
-            from chat.pdf_attach import pdf_page_count
+        if is_pdf:
+            from chat.pdf_attach import (
+                compress_pdf_lossless,
+                extract_pdf_pages,
+                parse_page_ranges,
+                pdf_page_count,
+            )
             from django.conf import settings as dj_settings
 
+            if pages:
+                data = extract_pdf_pages(data, parse_page_ranges(pages, pdf_page_count(data)))
+            data = compress_pdf_lossless(data)
+            # Over the per-PDF page cap the native attach would blow the request;
+            # returning False makes the caller fall back to the extracted text.
             page_cap = getattr(dj_settings, "NATIVE_REQUEST_MAX_PDF_PAGES", 100)
             n_pages = pdf_page_count(data)
             if 0 < page_cap < n_pages:
                 return False
+            b64 = base64.b64encode(data).decode("ascii")
             item = {
                 "kind": "pdf", "b64": b64,
                 "filename": resource.original_filename or resource.name,
                 "description": (
                     f"PDF resource '{resource.name}' from skill "
                     f"'{resource.skill.name}'"
+                    + (f" (pages {pages})" if pages else "")
                 ),
                 "extracted_text": resource.content or "",
             }
         else:
+            b64 = base64.b64encode(data).decode("ascii")
             item = {
                 "kind": "image", "b64": b64,
                 "media_type": resource.media_type or "image/png",

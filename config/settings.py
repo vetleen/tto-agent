@@ -620,6 +620,13 @@ NATIVE_REQUEST_MAX_B64_BYTES_ANTHROPIC = _env_int("NATIVE_REQUEST_MAX_B64_BYTES_
 # Per-PDF page cap (enforced at ingest). Anthropic allows 600 pages on 1M-context
 # models (100 under 1M); this conservative floor is safe across providers.
 NATIVE_REQUEST_MAX_PDF_PAGES = _env_int("NATIVE_REQUEST_MAX_PDF_PAGES", "100")
+# Vision-image optimization at ingest: uploaded images are downscaled to at most
+# this long edge AND this pixel area, then re-encoded, before storage/sending —
+# so we never ship resolution the models discard (Anthropic ≤1568px/~1.15MP;
+# OpenAI/Gemini downscale further). See core/images.optimize_for_vision.
+VISION_IMAGE_MAX_EDGE = _env_int("VISION_IMAGE_MAX_EDGE", "1568")
+VISION_IMAGE_MAX_PIXELS = _env_int("VISION_IMAGE_MAX_PIXELS", "1_150_000")
+VISION_IMAGE_JPEG_QUALITY = _env_int("VISION_IMAGE_JPEG_QUALITY", "82")
 # Upload file-type allow-lists are derived from the single capability table in
 # core/file_types.py — data rooms accept every kind, including images and audio.
 # Edit that table (not these constants) to change supported types; chat and

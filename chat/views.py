@@ -1540,12 +1540,16 @@ def upload_attachments(request, thread_id):
     attachment`` + ``X-Content-Type-Options: nosniff`` and must NOT reflect this
     stored value as the response ``Content-Type`` (it could be a mislabeled file).
     """
+    from django.core.files.base import ContentFile
+
     from chat.services import (
         MAX_THREAD_ATTACHMENT_BYTES,
         SUPPORTED_ATTACHMENT_TYPES,
         SUPPORTED_DOCX_TYPES,
+        SUPPORTED_IMAGE_TYPES,
         max_size_for_content_type,
     )
+    from core.images import optimize_for_vision
 
     thread = get_object_or_404(ChatThread, id=thread_id, created_by=request.user)
 
@@ -1582,6 +1586,42 @@ def upload_attachments(request, thread_id):
         )
 
     for f in files:
+        # Images are downscaled/transcoded to the vision cap before storage —
+        # a phone photo is otherwise sent at a resolution the model discards.
+        # Chat attachments are ephemeral, so we replace in place (no original kept).
+        if f.content_type in SUPPORTED_IMAGE_TYPES:
+            raw = f.read()
+            opt = optimize_for_vision(raw)
+            if opt is not None:
+                data, media = opt
+                ext = {"image/jpeg": "jpg", "image/png": "png"}.get(media)
+                base = f.name.rsplit(".", 1)[0] if "." in f.name else f.name
+                stored_name = (f"{base}.{ext}" if ext else f.name)[:255]
+                att = ChatAttachment.objects.create(
+                    thread=thread,
+                    uploaded_by=request.user,
+                    file=ContentFile(data, name=stored_name),
+                    original_filename=stored_name,
+                    content_type=media,
+                    size_bytes=len(data),
+                )
+            else:
+                # Not a decodable image despite the MIME — store the raw bytes as-is.
+                att = ChatAttachment.objects.create(
+                    thread=thread,
+                    uploaded_by=request.user,
+                    file=ContentFile(raw, name=f.name[:255]),
+                    original_filename=f.name[:255],
+                    content_type=f.content_type,
+                    size_bytes=len(raw),
+                )
+            results.append({
+                "id": str(att.id),
+                "filename": att.original_filename,
+                "content_type": att.content_type,
+                "size_bytes": att.size_bytes,
+            })
+            continue
         att = ChatAttachment.objects.create(
             thread=thread,
             uploaded_by=request.user,

@@ -81,12 +81,15 @@ def render_pdf_pages_to_jpegs(
     scale: float = PDF_RENDER_SCALE,
     quality: int = PDF_RENDER_JPEG_QUALITY,
     b64_budget: int | None = None,
+    page_indices: list[int] | None = None,
 ) -> tuple[list[bytes], int]:
-    """Render the first pages of a PDF to JPEG bytes.
+    """Render pages of a PDF to JPEG bytes.
 
-    Stops at ``max_pages`` or when the cumulative base64 size of the rendered
-    pages would exceed ``b64_budget``. Returns ``(jpeg_pages, total_pages)``;
-    on any failure returns ``([], 0)`` so the caller degrades to text.
+    Renders the first ``max_pages`` pages by default, or the specific 0-based
+    ``page_indices`` when given (still capped at ``max_pages``). Stops when the
+    cumulative base64 size would exceed ``b64_budget``. Returns
+    ``(jpeg_pages, total_pages)``; on any failure returns ``([], 0)`` so the
+    caller degrades to text.
     """
     try:
         import pypdfium2 as pdfium
@@ -105,7 +108,11 @@ def render_pdf_pages_to_jpegs(
         return [], 0
     try:
         total = len(doc)
-        for i in range(min(total, max_pages)):
+        if page_indices is None:
+            targets = list(range(min(total, max_pages)))
+        else:
+            targets = [i for i in page_indices if 0 <= i < total][:max_pages]
+        for i in targets:
             page = doc[i]
             bitmap = page.render(scale=scale)
             pil = bitmap.to_pil().convert("RGB")
@@ -129,10 +136,73 @@ def render_pdf_pages_to_jpegs(
     return pages, total
 
 
+def parse_page_ranges(spec: str, total: int) -> list[int]:
+    """Parse a 1-based human page spec like ``"3-5,12"`` into 0-based indices.
+
+    Clamps to ``[1, total]``, dedupes preserving first-seen order, and silently
+    drops malformed tokens. Returns ``[]`` when nothing valid is found (callers
+    then fall back to the default first-N behavior).
+    """
+    if not spec or total <= 0:
+        return []
+    seen: set[int] = set()
+    out: list[int] = []
+    for token in str(spec).replace(" ", "").split(","):
+        if not token:
+            continue
+        try:
+            if "-" in token:
+                a, b = token.split("-", 1)
+                start, end = int(a), int(b)
+            else:
+                start = end = int(token)
+        except ValueError:
+            continue
+        if start > end:
+            start, end = end, start
+        for human in range(max(1, start), min(total, end) + 1):
+            idx = human - 1
+            if idx not in seen:
+                seen.add(idx)
+                out.append(idx)
+    return out
+
+
+def extract_pdf_pages(pdf_bytes: bytes, indices: list[int]) -> bytes:
+    """Return a new PDF containing only ``indices`` (0-based), text preserved.
+
+    Uses pypdf to clone the selected pages into a fresh document — far smaller
+    than the original and, unlike rasterizing, keeps selectable text and layout.
+    Any failure (or empty/failed selection) returns the input unchanged.
+    """
+    if not indices:
+        return pdf_bytes
+    try:
+        from pypdf import PdfReader, PdfWriter
+
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        n = len(reader.pages)
+        writer = PdfWriter()
+        for i in indices:
+            if 0 <= i < n:
+                writer.add_page(reader.pages[i])
+        if len(writer.pages) == 0:
+            return pdf_bytes
+        buf = io.BytesIO()
+        writer.write(buf)
+        out = buf.getvalue()
+        return out or pdf_bytes
+    except Exception:
+        logger.info("PDF page extraction failed; using full document", exc_info=True)
+        return pdf_bytes
+
+
 __all__ = [
     "pdf_page_count",
     "compress_pdf_lossless",
     "render_pdf_pages_to_jpegs",
+    "parse_page_ranges",
+    "extract_pdf_pages",
     "PDF_ATTACH_MAX_RENDER_PAGES",
     "PDF_RENDER_SCALE",
     "PDF_RENDER_JPEG_QUALITY",

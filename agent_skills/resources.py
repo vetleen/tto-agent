@@ -417,15 +417,49 @@ def create_pending_upload(skill: AgentSkill, *, data: bytes, filename: str, user
     return resource
 
 
+def _store_optimized_image(resource: SkillResource, data: bytes) -> bool:
+    """Save a downscaled/transcoded copy to ``resource.optimized_file`` (unsaved).
+
+    Returns True when a genuinely smaller derivative was produced and set on the
+    field (caller then persists ``optimized_file``/``media_type``); False when
+    the image can't be decoded or optimizing wouldn't shrink it (the view then
+    falls back to ``original_file``).
+    """
+    try:
+        from django.core.files.base import ContentFile
+
+        from core.images import optimize_for_vision
+
+        opt = optimize_for_vision(data)
+        if opt is None:
+            return False
+        opt_bytes, media = opt
+        if len(opt_bytes) >= len(data):
+            return False
+        ext = {"image/jpeg": "jpg", "image/png": "png"}.get(media, "img")
+        base = (resource.original_filename or resource.name or "resource").rsplit(".", 1)[0]
+        resource.optimized_file.save(f"{base}.{ext}"[:255], ContentFile(opt_bytes), save=False)
+        resource.media_type = media
+        return True
+    except Exception:
+        logger.info("skill resource image optimize failed", exc_info=True)
+        return False
+
+
 def process_upload(resource: SkillResource, user) -> None:
     """Extract text from a stored upload then guardrail/PII scan it. Runs on the
     worker (see tasks.py). Fails closed (SCAN_FAILED) on any extraction error."""
     try:
         with resource.original_file.open("rb") as fh:
             data = fh.read()
+        extra_fields: list[str] = []
         if resource.file_type == SkillResource.FileType.IMAGE:
             resource.content = ""
             resource.content_sha256 = hashlib.sha256(data).hexdigest()
+            # Downscale/transcode to the vision cap for the model to read; keep
+            # original_file pristine (downloadable) — see optimized_file.
+            if _store_optimized_image(resource, data):
+                extra_fields += ["optimized_file", "media_type"]
         elif resource.file_type == SkillResource.FileType.PDF:
             resource.content = extract_text(data, "pdf")[:MAX_RESOURCE_CHARS]
             resource.content_sha256 = hashlib.sha256(data).hexdigest()
@@ -434,7 +468,7 @@ def process_upload(resource: SkillResource, user) -> None:
             resource.content = extract_text(data, ext)[:MAX_RESOURCE_CHARS]
             resource.content_sha256 = resource_content_hash(resource.content)
         resource.token_count = count_tokens(resource.content) if resource.content else 0
-        resource.save(update_fields=["content", "content_sha256", "token_count"])
+        resource.save(update_fields=["content", "content_sha256", "token_count", *extra_fields])
     except Exception:
         logger.exception(
             "process_upload: extraction failed for %s", resource.original_filename

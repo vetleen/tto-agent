@@ -4,7 +4,12 @@ import io
 
 from django.test import SimpleTestCase
 
-from chat.pdf_attach import compress_pdf_lossless, render_pdf_pages_to_jpegs
+from chat.pdf_attach import (
+    compress_pdf_lossless,
+    extract_pdf_pages,
+    parse_page_ranges,
+    render_pdf_pages_to_jpegs,
+)
 
 
 def _make_pdf(pages: int = 3) -> bytes:
@@ -42,6 +47,52 @@ class RenderPdfPagesTests(SimpleTestCase):
         self.assertEqual(len(pages), 3)
         img = Image.open(io.BytesIO(pages[0]))
         self.assertEqual(img.format, "JPEG")
+
+    def test_page_indices_renders_only_those(self):
+        pages, total = render_pdf_pages_to_jpegs(_make_pdf(pages=5), page_indices=[3, 0])
+        self.assertEqual(total, 5)
+        self.assertEqual(len(pages), 2)
+
+    def test_page_indices_clamped_and_capped(self):
+        # Out-of-range indices dropped; result never exceeds max_pages.
+        pages, total = render_pdf_pages_to_jpegs(
+            _make_pdf(pages=3), page_indices=[0, 1, 99], max_pages=1
+        )
+        self.assertEqual(len(pages), 1)
+
+
+class ParsePageRangesTests(SimpleTestCase):
+    def test_range_and_singletons(self):
+        self.assertEqual(parse_page_ranges("3-5,12", 20), [2, 3, 4, 11])
+
+    def test_dedupe_preserves_order(self):
+        self.assertEqual(parse_page_ranges("2,2,1", 5), [1, 0])
+
+    def test_clamps_to_total(self):
+        self.assertEqual(parse_page_ranges("4-100", 5), [3, 4])
+
+    def test_out_of_range_and_garbage_yield_empty(self):
+        self.assertEqual(parse_page_ranges("100", 5), [])
+        self.assertEqual(parse_page_ranges("abc", 5), [])
+        self.assertEqual(parse_page_ranges("", 5), [])
+
+    def test_reversed_range_normalized(self):
+        self.assertEqual(parse_page_ranges("5-3", 10), [2, 3, 4])
+
+
+class ExtractPdfPagesTests(SimpleTestCase):
+    def test_extracts_subset(self):
+        from pypdf import PdfReader
+
+        out = extract_pdf_pages(_make_pdf(pages=5), [0, 2, 4])
+        self.assertEqual(len(PdfReader(io.BytesIO(out)).pages), 3)
+
+    def test_empty_indices_returns_input(self):
+        original = _make_pdf(pages=3)
+        self.assertEqual(extract_pdf_pages(original, []), original)
+
+    def test_garbage_returns_input(self):
+        self.assertEqual(extract_pdf_pages(b"not a pdf", [0]), b"not a pdf")
 
     def test_honors_max_pages_and_reports_total(self):
         pages, total = render_pdf_pages_to_jpegs(_make_pdf(pages=5), max_pages=2)
