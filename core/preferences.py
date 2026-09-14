@@ -11,7 +11,10 @@ from django.conf import settings as django_settings
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_CONTEXT_TOKENS = 200_000
-MIN_CONTEXT_TOKENS = 10_000
+# Floor: below this a single tool result (document_read ~6k tok, a search window,
+# a native asset) can consume the whole budget → constant summarization thrash and
+# a context-starved assistant. 50k leaves room for a few tool results + real history.
+MIN_CONTEXT_TOKENS = 50_000
 # Upper bound for org/user max_context_tokens settings — generous headroom
 # above today's largest real context windows, low enough that a typo'd value
 # can't poison downstream token math.
