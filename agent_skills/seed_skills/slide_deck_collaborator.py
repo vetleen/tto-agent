@@ -92,6 +92,9 @@ strip y=486–508 is reserved for the source line (see *Sources & the takeaway b
 the footer band is stamped under that.
 
 ### Element types (one example each)
+To see every built-in shape and themed box rendered in the default Forest theme, view the
+`builtin-elements.jpg` resource. It's a visual catalogue of the
+built-in elements you can place on a slide (all 15 `shape` values and all 6 themed `box`es).
 1. **text** — `{"type":"text","x":48,"y":40,"w":864,"h":60,"class":"headline","paragraphs":[{"align":"left","runs":[{"t":"Pipeline overview"}]}]}`
    - `class` selects a text style: `headline`, `subhead`, `body`, `data`, `quote`, `caption`.
    - `paragraphs` → `runs`. A run: `{"t":"text","b":true,"i":false,"size":18,"color":"accent1","font":"body"}`.
@@ -311,8 +314,8 @@ your own. Each sits under the usual headline (x=48 y=44 w=864 h=60).
   list of `slides_create_deck`, or `slides_add_slide`) whenever you add a slide, and build
   diagrams from the recipes above; reach for the `blank` layout or a bespoke
   `slide_canvas_write` rewrite only when no premade layout or recipe fits. To see how each
-  premade layout looks in the default Forest theme, view the `builtin-slide-layouts.jpg`
-  resource with `skill_resource_view` before you pick layouts — it's one numbered tile per
+  premade layout looks in the default Green Forest theme, view the `builtin-slide-layouts.jpg`
+  resource before you pick layouts — it's one numbered tile per
   layout, and the numbers map to the layout ids as:
 
 __LAYOUT_CATALOGUE__
