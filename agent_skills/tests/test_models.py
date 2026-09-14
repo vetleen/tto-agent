@@ -342,8 +342,10 @@ class SeedFileResourceTests(TestCase):
         stored_name, sha = res.original_file.name, res.content_sha256
 
         seed_system_skills()
+        # The slide-deck skill seeds two images (builtin-slide-layouts.jpg and
+        # builtin-elements.jpg); re-seeding must not duplicate either.
         self.assertEqual(
-            skill.templates.filter(file_type=SkillResource.FileType.IMAGE).count(), 1
+            skill.templates.filter(file_type=SkillResource.FileType.IMAGE).count(), 2
         )
         res.refresh_from_db()
         # Unchanged bytes => no re-write (same stored path, same hash).
