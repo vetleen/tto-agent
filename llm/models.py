@@ -67,6 +67,10 @@ class LLMCallLog(models.Model):
     # Total tokens of tool RESULTS returned to the model across the turn (before
     # any pruning) — the raw tool-output volume the loop had to absorb.
     tool_result_tokens = models.PositiveIntegerField(null=True, blank=True)
+    # Our pre-send ESTIMATE of the input tokens for this turn (summed per tool-loop
+    # round, same rounds as input_tokens). Compare against input_tokens (the
+    # provider's actual) to calibrate the estimator that drives pruning decisions.
+    estimated_input_tokens = models.PositiveIntegerField(null=True, blank=True)
 
     # Status / errors
     status = models.CharField(

@@ -1559,3 +1559,20 @@ class MidturnPruningTests(TestCase):
     def test_record_tool_round_stats_no_context_is_safe(self):
         # Must not raise when there's no context.
         SimpleChatPipeline._record_tool_round_stats(None, [])
+
+    def test_record_outbound_estimate_accumulates(self):
+        ctx = RunContext.create()
+        req = self._req([
+            Message(role="user", content="word " * 200),
+            self._asst("c1", "web_search", {"query": "x"}),
+            self._tool("c1", "word " * 200),
+        ])
+        SimpleChatPipeline._record_outbound_estimate(ctx, req)
+        first = ctx.observability["estimated_input_tokens"]
+        self.assertGreater(first, 0)
+        SimpleChatPipeline._record_outbound_estimate(ctx, req)  # second round sums
+        self.assertEqual(ctx.observability["estimated_input_tokens"], first * 2)
+
+    def test_record_outbound_estimate_no_context_is_safe(self):
+        req = self._req([Message(role="user", content="hi")])
+        SimpleChatPipeline._record_outbound_estimate(None, req)

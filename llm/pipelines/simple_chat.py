@@ -471,6 +471,24 @@ class SimpleChatPipeline(BasePipeline):
         except Exception:  # pragma: no cover - metrics must never break a turn
             logger.debug("Failed to record tool-round stats", exc_info=True)
 
+    @staticmethod
+    def _record_outbound_estimate(context, req: ChatRequest) -> None:
+        """Accumulate our pre-send estimate of this request's input tokens onto
+        the RunContext (summed per round), so the logger can record estimate-vs-
+        actual drift for the turn. Cheap: pruning keeps req.messages bounded
+        (old tool results are already stubs). Best-effort."""
+        if context is None:
+            return
+        try:
+            from core.tokens import estimate_chat_request_tokens
+
+            context.bump_stat(
+                "estimated_input_tokens",
+                estimate_chat_request_tokens(req.messages, req.tool_schemas),
+            )
+        except Exception:  # pragma: no cover - metrics must never break a turn
+            logger.debug("Failed to record outbound estimate", exc_info=True)
+
     def _midturn_ceiling(self, req: ChatRequest) -> int:
         """The per-request input-token ceiling for this model + org aim + effort
         (``min(aim, window) - output_reservation - margin``)."""
@@ -612,6 +630,7 @@ class SimpleChatPipeline(BasePipeline):
                 )
                 break
 
+            self._record_outbound_estimate(req.context, req)
             response = chat_model.generate(req)
             _accumulate(response.usage)
             msg = response.message
@@ -666,6 +685,7 @@ class SimpleChatPipeline(BasePipeline):
             "tool_schemas": None,
             "messages": final_messages,
         })
+        self._record_outbound_estimate(final_req.context, final_req)
         response = chat_model.generate(final_req)
         _accumulate(response.usage)
         return _with_aggregate(response)
@@ -780,6 +800,7 @@ class SimpleChatPipeline(BasePipeline):
             # Stream from the model, forwarding all events except message_end
             end_data = {}
             saw_error = False
+            self._record_outbound_estimate(req.context, req)
             for item in _do_stream_iteration(req, sequence):
                 if isinstance(item, StreamEvent):
                     yield item
@@ -954,6 +975,7 @@ class SimpleChatPipeline(BasePipeline):
             "tool_schemas": None,
             "messages": final_messages,
         })
+        self._record_outbound_estimate(final_req.context, final_req)
         saw_error = False
         for item in _do_stream_iteration(final_req, sequence):
             if isinstance(item, StreamEvent):

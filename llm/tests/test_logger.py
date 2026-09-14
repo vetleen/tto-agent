@@ -1069,12 +1069,16 @@ class ObservabilityFieldTests(TestCase):
         request.context.bump_stat("tool_calls", 8)
         request.context.bump_stat("tool_result_tokens", 90000)
         request.context.bump_stat("prunes", 3)
+        request.context.bump_stat("estimated_input_tokens", 120000)
         run_id = request.context.run_id
         events = [
-            StreamEvent(event_type="message_end", data={}, sequence=1, run_id=run_id),
+            StreamEvent(event_type="message_end", data={"input_tokens": 130000}, sequence=1, run_id=run_id),
         ]
         log_stream(request, _acc(events), duration_ms=100)
         log = _get_log(request)
         self.assertEqual(log.tool_call_count, 8)
         self.assertEqual(log.tool_result_tokens, 90000)
         self.assertEqual(log.prune_count, 3)
+        # Our estimate is logged alongside the provider's actual for drift analysis.
+        self.assertEqual(log.estimated_input_tokens, 120000)
+        self.assertEqual(log.input_tokens, 130000)

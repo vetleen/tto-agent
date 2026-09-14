@@ -187,6 +187,13 @@ and the same async reactivation path as described above kicks in.
 Your organization requires sub-agents to run one at a time. Do NOT create multiple sub-agents in a single response. Wait for each sub-agent to complete before starting the next one.
 """
 
+    prompt += """
+# Your scratchpad
+As a conversation grows, older tool results (web pages you read, documents you opened, search results) are automatically cleared from your context to stay within limits — so something you looked at early in a long task may no longer be visible to you later. Your scratchpad is the one exception: it is always shown back to you and is never cleared.
+
+So on any long or multi-step task — especially research where you read several sources — use `scratchpad_append` to record the specific facts, figures, quotes, and source URLs you will need for your final answer *as you find them*, not all at once at the end. Treat it as your durable notes: if a detail matters to the outcome and you would be unable to reconstruct it from memory, write it down when you see it. Short tasks that finish in a step or two don't need it.
+"""
+
     return prompt
 
 

@@ -194,6 +194,7 @@ def _observability_fields(context) -> dict:
         "tool_call_count": obs.get("tool_calls"),
         "tool_result_tokens": obs.get("tool_result_tokens"),
         "prune_count": obs.get("prunes", 0) if had_tools else None,
+        "estimated_input_tokens": obs.get("estimated_input_tokens"),
     }
 
 

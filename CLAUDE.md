@@ -147,9 +147,12 @@ findings that would otherwise be lost when tool results are stubbed — the near
 Runtime nudge tells the model to use it.
 
 **Observability**: each turn's `LLMCallLog` row carries `tool_call_count`, `prune_count`
-(mid-turn compactions), and `tool_result_tokens` (raw tool-output volume), accumulated on
-`RunContext.observability` (via `bump_stat`) and written by `llm/service/logger.py`. Use
-these to reason about tool-loop cost and pruning pressure (e.g. a future tool-result budget).
+(mid-turn compactions), `tool_result_tokens` (raw tool-output volume), and
+`estimated_input_tokens` (our pre-send estimate, summed per round — compare against the
+provider's actual `input_tokens` to calibrate the estimator that drives pruning). All are
+accumulated on `RunContext.observability` (via `bump_stat`) and written by
+`llm/service/logger.py`. Use these to reason about tool-loop cost and pruning pressure
+(e.g. a future tool-result budget).
 
 ## Logging
 
