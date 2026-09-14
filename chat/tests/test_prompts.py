@@ -647,6 +647,23 @@ class BuildDynamicContextTests(TestCase):
         self.assertIn("Raw history truncated: yes", result)
         self.assertIn("Initial assembled input footprint: ~96,000 tokens", result)
 
+    def test_runtime_context_nudge_when_near_budget(self):
+        result = build_dynamic_context(runtime_stats={
+            "model_id": "openai/gpt-5.6-terra",
+            "configured_context_tokens": 200_000,
+            "estimated_input_tokens": 150_000,  # 75% of the 200k budget
+        })
+        self.assertIn("scratchpad_append", result)
+        self.assertIn("75%", result)
+
+    def test_runtime_no_nudge_when_well_under_budget(self):
+        result = build_dynamic_context(runtime_stats={
+            "model_id": "openai/gpt-5.6-terra",
+            "configured_context_tokens": 200_000,
+            "estimated_input_tokens": 40_000,  # 20% — no nudge
+        })
+        self.assertNotIn("scratchpad_append", result)
+
     def test_runtime_uses_assumed_label_and_omits_unavailable_fields(self):
         result = build_dynamic_context(runtime_stats={
             "model_id": "custom/model",

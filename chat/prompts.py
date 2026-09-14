@@ -604,6 +604,19 @@ def build_dynamic_context(
                 f"- Initial assembled input footprint: ~{estimated_input:,} tokens "
                 "(estimate; later tool results may increase it)"
             )
+            # Context-usage nudge: when the footprint is already a large fraction
+            # of the target, warn that continued tool use may trigger mid-turn
+            # pruning (old tool results collapse to re-read stubs) and point the
+            # model at the durable scratchpad.
+            target = configured_context or context_window
+            if target and estimated_input >= 0.7 * target:
+                lines.append(
+                    f"- ⚠️ Context is ~{estimated_input * 100 // target}% of your "
+                    f"{target:,}-token budget. As you read more, the oldest tool "
+                    "results will be cleared to re-read stubs to stay under the "
+                    "limit. Save anything you must keep with `scratchpad_append` "
+                    "(the scratchpad is never cleared)."
+                )
         parts.append("\n".join(lines))
 
     # -- Document context / RAG results --
