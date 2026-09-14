@@ -20,7 +20,9 @@ from agent_skills.services import (
     get_skill_for_user,
     migrate_skill_slug_prefs,
     promote_skill_to_org,
+    restore_skill,
     set_user_skill_selection,
+    soft_delete_skill,
 )
 
 User = get_user_model()
@@ -900,3 +902,61 @@ class MigrateSkillSlugPrefsTests(TestCase):
         migrate_skill_slug_prefs(self.skill, "old-slug", "new-slug")
         us.refresh_from_db()
         self.assertEqual(us.preferences.get("theme_overrides"), {"foo": "bar"})
+
+
+class SoftDeleteSkillTests(TestCase):
+    """soft_delete_skill hides + retains; restore_skill brings back + re-dedupes."""
+
+    def setUp(self):
+        AgentSkill.objects.all().delete()
+        self.user = User.objects.create_user(email="sd@example.com", password="pass")
+        self.org = Organization.objects.create(name="SD Org", slug="sd-org")
+        Membership.objects.create(
+            user=self.user, org=self.org, role=Membership.Role.ADMIN
+        )
+        self.skill = AgentSkill.objects.create(
+            slug="doomed", name="Doomed", instructions="i",
+            level="user", created_by=self.user,
+        )
+
+    def test_soft_delete_hides_but_retains_row(self):
+        soft_delete_skill(self.skill)
+        self.skill.refresh_from_db()
+        self.assertIsNotNone(self.skill.deleted_at)
+        self.assertFalse(self.skill.is_active)
+        # Row survives...
+        self.assertTrue(AgentSkill.objects.filter(pk=self.skill.pk).exists())
+        # ...but is invisible to every read gate.
+        self.assertNotIn(
+            self.skill.pk, [s.pk for s in get_accessible_skills(self.user)]
+        )
+        self.assertIsNone(get_skill_for_user(self.user, str(self.skill.pk)))
+        self.assertIsNone(get_editable_skill_for_user(self.user, "doomed"))
+
+    def test_restore_brings_it_back(self):
+        soft_delete_skill(self.skill)
+        restore_skill(self.skill)
+        self.skill.refresh_from_db()
+        self.assertIsNone(self.skill.deleted_at)
+        self.assertTrue(self.skill.is_active)
+        self.assertEqual(self.skill.slug, "doomed")
+        self.assertIn(
+            self.skill.pk, [s.pk for s in get_accessible_skills(self.user)]
+        )
+
+    def test_restore_rededupes_slug_when_taken_by_live_skill(self):
+        soft_delete_skill(self.skill)
+        # A live skill takes the freed slug while the original is deleted.
+        live = AgentSkill.objects.create(
+            slug="doomed", name="New Doomed", instructions="i",
+            level="user", created_by=self.user,
+        )
+        restore_skill(self.skill)
+        self.skill.refresh_from_db()
+        self.assertIsNone(self.skill.deleted_at)
+        self.assertNotEqual(self.skill.slug, "doomed")
+        self.assertEqual(live.slug, "doomed")
+        # Both are now live and visible, with distinct slugs.
+        slugs = {s.slug for s in get_accessible_skills(self.user)}
+        self.assertIn("doomed", slugs)
+        self.assertIn(self.skill.slug, slugs)

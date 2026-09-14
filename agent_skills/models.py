@@ -90,6 +90,13 @@ class AgentSkill(models.Model):
         related_name="children",
     )
     is_active = models.BooleanField(default=True)
+    # Soft-delete marker. A non-null value hides the skill from every read /
+    # resolve path (see agent_skills.services.soft_delete_skill) while retaining
+    # the row so it can be restored from the Django admin. Soft-delete also sets
+    # ``is_active = False`` so the existing ``is_active=True`` filters exclude it
+    # too. The model's own ``.delete()`` stays a hard delete (admin purge).
+    # Mirrors the ChatCanvas / SlideSet soft-delete pattern in the chat app.
+    deleted_at = models.DateTimeField(null=True, blank=True, db_index=True)
 
     # --- scan / approval gate ---
     scan_state = models.CharField(
@@ -107,19 +114,22 @@ class AgentSkill(models.Model):
     class Meta:
         ordering = ["name"]
         constraints = [
+            # Slug uniqueness is enforced only among *live* (non-soft-deleted)
+            # skills, so a soft-deleted slug can be reused and a skill restored
+            # even if another has since taken its slug (restore re-dedupes).
             models.UniqueConstraint(
                 fields=["slug"],
-                condition=models.Q(level="system"),
+                condition=models.Q(level="system") & models.Q(deleted_at__isnull=True),
                 name="unique_system_skill_slug",
             ),
             models.UniqueConstraint(
                 fields=["slug", "organization"],
-                condition=models.Q(level="org"),
+                condition=models.Q(level="org") & models.Q(deleted_at__isnull=True),
                 name="unique_org_skill_slug",
             ),
             models.UniqueConstraint(
                 fields=["slug", "created_by"],
-                condition=models.Q(level="user"),
+                condition=models.Q(level="user") & models.Q(deleted_at__isnull=True),
                 name="unique_user_skill_slug",
             ),
             models.CheckConstraint(

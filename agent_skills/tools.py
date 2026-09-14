@@ -649,7 +649,11 @@ class DeleteSkillTool(ContextAwareTool):
                 "message": f"Skill '{skill_slug}' not found or not editable.",
             })
 
-        skill.delete()
+        # Soft-delete: retain the row (restorable from the Django admin) and hide
+        # it from every list/resolve path. See services.soft_delete_skill.
+        from agent_skills.services import soft_delete_skill
+
+        soft_delete_skill(skill)
         return json.dumps({"status": "ok", "deleted": skill_slug})
 
 
@@ -667,10 +671,12 @@ def _resolve_thread_template(thread_id, template_name):
     from agent_skills.models import SkillResource
     from chat.models import ChatThreadSkill
 
+    # Exclude soft-deleted (or deactivated) skills: their attachment rows survive
+    # a soft-delete, but their resources must not stay resolvable in a live thread.
     skill_ids = list(
-        ChatThreadSkill.objects.filter(thread_id=thread_id).values_list(
-            "skill_id", flat=True
-        )
+        ChatThreadSkill.objects.filter(
+            thread_id=thread_id, skill__deleted_at__isnull=True, skill__is_active=True
+        ).values_list("skill_id", flat=True)
     )
     if not skill_ids:
         return None, "No skills attached to this thread."

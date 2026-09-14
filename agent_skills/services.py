@@ -130,7 +130,9 @@ def _org_disabled_info(user) -> tuple[set[str], set[str]]:
     }
 
     system_slugs = set(
-        AgentSkill.objects.filter(level="system", is_active=True)
+        AgentSkill.objects.filter(
+            level="system", is_active=True, deleted_at__isnull=True
+        )
         .values_list("slug", flat=True)
     )
     system_tier_disabled = set()
@@ -165,7 +167,7 @@ def get_accessible_skills(user) -> list[AgentSkill]:
 
     all_disabled, system_disabled = _org_disabled_info(user)
     return [
-        s for s in AgentSkill.objects.filter(q, is_active=True)
+        s for s in AgentSkill.objects.filter(q, is_active=True, deleted_at__isnull=True)
         if not _is_org_hidden(s, all_disabled, system_disabled)
     ]
 
@@ -263,7 +265,9 @@ def get_skill_for_user(user, skill_id: str) -> AgentSkill | None:
     from accounts.models import Membership
 
     try:
-        skill = AgentSkill.objects.get(pk=skill_id, is_active=True)
+        skill = AgentSkill.objects.get(
+            pk=skill_id, is_active=True, deleted_at__isnull=True
+        )
     except (AgentSkill.DoesNotExist, ValidationError, ValueError):
         # pk is a UUIDField: a non-UUID skill_id (e.g. a tampered POST value)
         # raises ValidationError, not DoesNotExist — treat it as "no such skill".
@@ -330,8 +334,58 @@ def get_editable_skill_for_user(user, slug: str) -> AgentSkill | None:
                 return skill
             break  # visible tier not editable -> fall back to owned
     return AgentSkill.objects.filter(
-        slug=slug, level="user", created_by=user, is_active=True
+        slug=slug, level="user", created_by=user, is_active=True,
+        deleted_at__isnull=True,
     ).first()
+
+
+def soft_delete_skill(skill: AgentSkill) -> AgentSkill:
+    """Soft-delete a skill: hide it everywhere but keep the row for restore.
+
+    Sets ``deleted_at`` (the source of truth, filtered at every read gate) and
+    ``is_active = False`` so the pre-existing ``is_active=True`` filters exclude
+    it too. The row — and its resources and thread attachments — survive, so an
+    admin can restore it (see :func:`restore_skill`). Mirrors
+    ``chat.services.soft_delete_canvas``.
+    """
+    from django.utils import timezone
+
+    skill.deleted_at = timezone.now()
+    skill.is_active = False
+    skill.save(update_fields=["deleted_at", "is_active", "updated_at"])
+    return skill
+
+
+def _live_slug_taken(skill: AgentSkill) -> Callable[[str], bool]:
+    """Predicate: is ``slug`` already used by another *live* skill of this tier?
+
+    Scoped exactly like the create-time dedup checks (system → level; org →
+    organization; user → creator), restricted to non-deleted rows and excluding
+    the skill itself.
+    """
+    scope = AgentSkill.objects.filter(deleted_at__isnull=True).exclude(pk=skill.pk)
+    if skill.level == "system":
+        scope = scope.filter(level="system")
+    elif skill.level == "org":
+        scope = scope.filter(level="org", organization_id=skill.organization_id)
+    else:
+        scope = scope.filter(level="user", created_by_id=skill.created_by_id)
+    return lambda s: scope.filter(slug=s).exists()
+
+
+def restore_skill(skill: AgentSkill) -> AgentSkill:
+    """Restore a soft-deleted skill, re-deduping its slug against live skills.
+
+    A live skill may have taken the slug while this one was deleted, so the slug
+    is de-duplicated *before* clearing ``deleted_at`` to satisfy the partial
+    unique constraint. Also re-activates the skill. Mirrors
+    ``chat.services.restore_canvas``.
+    """
+    skill.slug = _next_free_slug(skill.slug, _live_slug_taken(skill))
+    skill.deleted_at = None
+    skill.is_active = True
+    skill.save(update_fields=["slug", "deleted_at", "is_active", "updated_at"])
+    return skill
 
 
 def create_user_skill(

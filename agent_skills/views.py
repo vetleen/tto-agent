@@ -38,6 +38,7 @@ from agent_skills.services import (
     parse_skill_export,
     promote_skill_to_org,
     set_user_skill_selection,
+    soft_delete_skill,
     SkillImportError,
 )
 
@@ -743,7 +744,9 @@ def skills_delete(request, skill_id):
     if not can_edit_skill(request.user, skill):
         return HttpResponseForbidden("Cannot delete this skill.")
     name = skill.name
-    skill.delete()
+    # Soft-delete: the row is retained (restorable from the Django admin) but
+    # hidden from every list/resolve path. See services.soft_delete_skill.
+    soft_delete_skill(skill)
     messages.success(request, f"Deleted '{name}'.")
     return redirect("agent_skills_list")
 

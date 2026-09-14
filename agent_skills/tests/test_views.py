@@ -590,12 +590,21 @@ class SkillsCopyDeleteToggleTests(TestCase):
         self.assertEqual(copies.first().parent, self.sys_skill)
 
     def test_delete_user_skill(self):
+        from agent_skills.services import get_accessible_skills
+
         self.client.force_login(self.user)
         response = self.client.post(
             reverse("agent_skills_delete", kwargs={"skill_id": self.user_skill.id})
         )
         self.assertEqual(response.status_code, 302)
-        self.assertFalse(AgentSkill.objects.filter(pk=self.user_skill.pk).exists())
+        # Soft-delete: the row survives (restorable from admin) but is hidden.
+        self.user_skill.refresh_from_db()
+        self.assertIsNotNone(self.user_skill.deleted_at)
+        self.assertFalse(self.user_skill.is_active)
+        self.assertNotIn(
+            self.user_skill.pk,
+            [s.pk for s in get_accessible_skills(self.user)],
+        )
 
     def test_delete_system_skill_forbidden(self):
         self.client.force_login(self.user)

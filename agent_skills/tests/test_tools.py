@@ -305,7 +305,13 @@ class DeleteSkillToolTests(TestCase):
         result = json.loads(self.tool._run(skill_slug="doomed"))
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["deleted"], "doomed")
-        self.assertFalse(AgentSkill.objects.filter(slug="doomed").exists())
+        # Soft-delete: the row is retained (restorable from admin) but hidden.
+        self.skill.refresh_from_db()
+        self.assertIsNotNone(self.skill.deleted_at)
+        self.assertFalse(self.skill.is_active)
+        # ...and no longer resolvable for editing/deleting via the tool gate.
+        from agent_skills.services import get_editable_skill_for_user
+        self.assertIsNone(get_editable_skill_for_user(self.user, "doomed"))
 
     def test_delete_system_skill_denied(self):
         AgentSkill.objects.create(
@@ -602,6 +608,15 @@ class ViewTemplateToolTests(TestCase):
 
         bare_thread = ChatThread.objects.create(created_by=self.user)
         self.tool.context = _make_context(self.user, thread_id=str(bare_thread.id))
+        result = json.loads(self.tool._run(template_name="Report Format"))
+        self.assertEqual(result["status"], "error")
+
+    def test_soft_deleted_skill_template_not_resolvable(self):
+        """A soft-deleted skill still linked to the thread must not serve its
+        resources — its ChatThreadSkill row survives the soft-delete."""
+        from agent_skills.services import soft_delete_skill
+
+        soft_delete_skill(self.skill)
         result = json.loads(self.tool._run(template_name="Report Format"))
         self.assertEqual(result["status"], "error")
 

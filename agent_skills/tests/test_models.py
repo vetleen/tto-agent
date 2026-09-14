@@ -100,6 +100,27 @@ class AgentSkillModelTests(TestCase):
                 level="system",
             )
 
+    def test_soft_deleted_slug_can_be_reused(self):
+        """A soft-deleted (deleted_at set) slug no longer blocks a new live skill,
+        but two live skills with the same slug still collide."""
+        from django.utils import timezone
+
+        first = AgentSkill.objects.create(
+            slug="reuse-me", name="First", instructions="i", level="system",
+        )
+        first.deleted_at = timezone.now()
+        first.save(update_fields=["deleted_at"])
+        # A new live skill with the same slug is now allowed.
+        second = AgentSkill.objects.create(
+            slug="reuse-me", name="Second", instructions="i", level="system",
+        )
+        self.assertNotEqual(first.pk, second.pk)
+        # ...but a second *live* skill with that slug still fails (last stmt).
+        with self.assertRaises(IntegrityError):
+            AgentSkill.objects.create(
+                slug="reuse-me", name="Third", instructions="i", level="system",
+            )
+
     def test_same_slug_different_levels(self):
         """Same slug can exist at different levels."""
         AgentSkill.objects.create(
