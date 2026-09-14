@@ -1,11 +1,17 @@
 """Tests for AgentSkill and SkillTemplate models."""
 
+import io
+import os
+import shutil
+import tempfile
+
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError
-from django.test import TestCase
+from django.test import TestCase, override_settings
+from PIL import Image
 
 from accounts.models import Organization
-from agent_skills.models import AgentSkill, SkillTemplate
+from agent_skills.models import AgentSkill, SkillResource, SkillTemplate
 
 User = get_user_model()
 
@@ -259,3 +265,105 @@ class SeedSystemSkillsTests(TestCase):
         seed_system_skills()
         skill.refresh_from_db()
         self.assertEqual(skill.updated_at, ts_before)
+
+
+_SEED_MEDIA = tempfile.mkdtemp(prefix="seed-resource-test-")
+
+
+def tearDownModule():  # noqa: N802 — unittest module hook name
+    shutil.rmtree(_SEED_MEDIA, ignore_errors=True)
+
+
+def _solid_image_bytes(fmt="PNG", size=(16, 16), color=(10, 80, 40)):
+    """A tiny solid image — small enough that optimizing wouldn't shrink it."""
+    buf = io.BytesIO()
+    Image.new("RGB", size, color).save(buf, format=fmt)
+    return buf.getvalue()
+
+
+def _noise_image_bytes(size=(1600, 1600)):
+    """A large random-noise image (> the vision caps, and incompressible) so a
+    downscaled/transcoded derivative is reliably smaller."""
+    w, h = size
+    buf = io.BytesIO()
+    Image.frombytes("RGB", size, os.urandom(w * h * 3)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+@override_settings(MEDIA_ROOT=_SEED_MEDIA)
+class SeedFileResourceTests(TestCase):
+    """The convention-based folder scan seeds files under
+    ``seed_skills/resources/<slug>/`` as ``SkillResource`` rows. Seeding is
+    invoked explicitly under a temp ``MEDIA_ROOT`` so any written file is
+    isolated and cleaned up by ``tearDownModule``."""
+
+    def _slide_skill(self):
+        return AgentSkill.objects.get(slug="slide_deck_collaborator", level="system")
+
+    def test_slide_layouts_image_seeded(self):
+        from agent_skills.seed_skills import seed_system_skills
+
+        seed_system_skills()
+        res = self._slide_skill().templates.get(name="builtin-slide-layouts.jpg")
+        self.assertEqual(res.file_type, SkillResource.FileType.IMAGE)
+        self.assertEqual(res.status, SkillResource.Status.READY)
+        self.assertFalse(res.is_quarantined)
+        self.assertTrue(res.original_file)
+        self.assertTrue(res.content_sha256)
+        self.assertEqual(res.content, "")
+
+    def test_seed_file_resource_idempotent(self):
+        from agent_skills.seed_skills import seed_system_skills
+
+        seed_system_skills()
+        skill = self._slide_skill()
+        res = skill.templates.get(name="builtin-slide-layouts.jpg")
+        stored_name, sha = res.original_file.name, res.content_sha256
+
+        seed_system_skills()
+        self.assertEqual(
+            skill.templates.filter(file_type=SkillResource.FileType.IMAGE).count(), 1
+        )
+        res.refresh_from_db()
+        # Unchanged bytes => no re-write (same stored path, same hash).
+        self.assertEqual(res.original_file.name, stored_name)
+        self.assertEqual(res.content_sha256, sha)
+
+    def test_seed_file_resource_optimizes_large_image(self):
+        from agent_skills.resources import seed_file_resource
+
+        skill = AgentSkill.objects.create(
+            slug="tmp-seed-opt", name="Tmp", instructions="x", level="system",
+        )
+        res = seed_file_resource(skill, data=_noise_image_bytes(), filename="big.png")
+        self.assertEqual(res.file_type, SkillResource.FileType.IMAGE)
+        self.assertEqual(res.status, SkillResource.Status.READY)
+        self.assertTrue(res.original_file)
+        self.assertTrue(res.optimized_file)  # a smaller derivative was produced
+        self.assertTrue(res.media_type)
+
+    def test_seed_file_resource_small_image_falls_back(self):
+        from agent_skills.resources import seed_file_resource
+
+        skill = AgentSkill.objects.create(
+            slug="tmp-seed-small", name="Tmp2", instructions="x", level="system",
+        )
+        res = seed_file_resource(skill, data=_solid_image_bytes(), filename="tiny.png")
+        self.assertFalse(res.optimized_file)  # nothing smaller to store
+        self.assertEqual(res.media_type, "image/png")  # fallback from extension
+
+    def test_stale_file_resource_pruned(self):
+        from agent_skills.seed_skills import seed_system_skills
+
+        seed_system_skills()
+        skill = self._slide_skill()
+        # A file-backed row whose source file is not in the folder.
+        stray = SkillResource.objects.create(
+            skill=skill, name="gone.png", file_type=SkillResource.FileType.IMAGE,
+            original_filename="gone.png", status=SkillResource.Status.READY,
+        )
+        seed_system_skills()
+        self.assertFalse(skill.templates.filter(pk=stray.pk).exists())
+        self.assertTrue(
+            skill.templates.filter(name="builtin-slide-layouts.jpg").exists()
+        )

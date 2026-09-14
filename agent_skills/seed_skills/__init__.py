@@ -1,5 +1,8 @@
 """System skill definitions seeded on every migrate."""
 
+import logging
+from pathlib import Path
+
 from agent_skills.seed_skills.assistant_loop_tools import ASSISTANT_LOOP_TOOLS
 from agent_skills.seed_skills.canvas_collaborator import CANVAS_COLLABORATOR
 from agent_skills.seed_skills.data_room_tools import DATA_ROOM_TOOLS
@@ -21,6 +24,60 @@ try:
     SYSTEM_SKILLS.append(MEETING_SUMMARIZER)
 except ImportError:  # pragma: no cover
     pass
+
+
+logger = logging.getLogger(__name__)
+
+# Root of the convention-based seed-resource tree: any file under
+# ``resources/<skill-slug>/`` is seeded as a SkillResource on that skill.
+_RESOURCES_DIR = Path(__file__).resolve().parent / "resources"
+
+
+def _resource_dir_for_slug(slug: str):
+    """Locate a skill's seed-resource folder, tolerating ``_``/``-`` spelling
+    (slugs vary across seed skills; the folder may use either)."""
+    for candidate in (slug, slug.replace("_", "-"), slug.replace("-", "_")):
+        directory = _RESOURCES_DIR / candidate
+        if directory.is_dir():
+            return directory
+    return None
+
+
+def _seed_file_resources(skill, slug: str) -> None:
+    """Seed every file in ``resources/<slug>/`` as a file-backed SkillResource.
+
+    Convention-based: drop a file in the folder and it becomes a bundled resource
+    named by its filename. Idempotent (byte-hash guarded in ``seed_file_resource``).
+    The folder is authoritative for file-backed rows: a resource whose source file
+    was removed is pruned. No-op when the folder is absent, so skills without one
+    are never touched.
+    """
+    from agent_skills.resources import UnsupportedResourceType, seed_file_resource
+
+    directory = _resource_dir_for_slug(slug)
+    if directory is None:
+        return
+
+    files = [
+        p for p in sorted(directory.iterdir())
+        if p.is_file() and not p.name.startswith(".")
+    ]
+    for path in files:
+        try:
+            seed_file_resource(skill, data=path.read_bytes(), filename=path.name)
+        except UnsupportedResourceType:
+            logger.warning("seed: unsupported resource file skipped: %s", path.name)
+        except Exception:
+            logger.exception("seed: failed to seed resource file %s", path.name)
+
+    # Prune file-backed rows whose source file is gone. Keyed on the folder's
+    # actual contents (not seed success) so a transient failure never deletes a
+    # still-present file's row; scoped to original_filename!="" so seeded text
+    # templates are never touched.
+    folder_names = [p.name for p in files]
+    skill.templates.exclude(original_filename="").exclude(
+        name__in=folder_names
+    ).delete()
 
 
 def seed_system_skills():
@@ -59,6 +116,14 @@ def seed_system_skills():
                 skill.templates.create(name=tmpl_name, content=tmpl_content)
         # Remove stale seeded templates no longer in seed data.
         # Only clean up when a "templates" key is explicitly present —
-        # existing skills without it should not have templates deleted.
+        # existing skills without it should not have templates deleted. Scoped to
+        # text rows (original_filename="") so file resources seeded from the
+        # resources/<slug>/ folder below are never pruned by the text cleanup.
         if templates:
-            skill.templates.exclude(name__in=templates.keys()).delete()
+            skill.templates.filter(original_filename="").exclude(
+                name__in=templates.keys()
+            ).delete()
+
+        # Seed file resources (image/PDF/text) from an optional
+        # resources/<slug>/ folder — convention-based, idempotent.
+        _seed_file_resources(skill, skill_data["slug"])

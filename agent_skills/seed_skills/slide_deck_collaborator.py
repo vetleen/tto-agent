@@ -33,6 +33,7 @@ Design decisions (2026-08):
 """
 
 from chat.slides.icons import ICON_NAMES
+from chat.slides.layouts import layout_catalog
 from chat.slides.schema import CHART_KINDS, SHAPE_NAMES
 from chat.slides.theme import WILFRED_BASE_THEME
 
@@ -309,7 +310,12 @@ your own. Each sits under the usual headline (x=48 y=44 w=864 h=60).
 - **Prefer the premade layouts.** Create slides from the pre-designed layouts (the `layouts`
   list of `slides_create_deck`, or `slides_add_slide`) whenever you add a slide, and build
   diagrams from the recipes above; reach for the `blank` layout or a bespoke
-  `slide_canvas_write` rewrite only when no premade layout or recipe fits.
+  `slide_canvas_write` rewrite only when no premade layout or recipe fits. To see how each
+  premade layout looks in the default Forest theme, view the `builtin-slide-layouts.jpg`
+  resource with `skill_resource_view` before you pick layouts — it's one numbered tile per
+  layout, and the numbers map to the layout ids as:
+
+__LAYOUT_CATALOGUE__
 - **Colours & fonts: prefer the theme, but literals are allowed.** Lean on the theme colour
   names (`dk1, lt1, dk2, lt2, accent1..accent6, success, warning, danger`) and text classes so a
   slide re-themes cleanly — but you *may* set a raw `#RRGGBB` colour on any run/shape, or a
@@ -396,6 +402,16 @@ your own. Each sits under the usual headline (x=48 y=44 w=864 h=60).
 """
 
 
+def _render_layout_catalogue() -> str:
+    """Numbered layout list matching the tiles of the ``builtin-slide-layouts.jpg``
+    resource. Generated from ``layout_catalog()`` (same order as the catalogue
+    image's tiles) so the numbering stays in sync as layouts change."""
+    return "\n".join(
+        f"  {i}. `{c['id']}` — {c['name']}"
+        for i, c in enumerate(layout_catalog(), start=1)
+    )
+
+
 def _render_instructions() -> str:
     """Fill the generated vocabularies into the hand-written instructions."""
     return (
@@ -404,6 +420,7 @@ def _render_instructions() -> str:
         .replace("__BOX_NAMES__", ", ".join(WILFRED_BASE_THEME["boxes"]))
         .replace("__CHART_KINDS__", ", ".join(CHART_KINDS))
         .replace("__ICON_NAMES__", ", ".join(ICON_NAMES))
+        .replace("__LAYOUT_CATALOGUE__", _render_layout_catalogue())
     )
 
 

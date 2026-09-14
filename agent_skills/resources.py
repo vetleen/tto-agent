@@ -510,6 +510,78 @@ def create_text_resource(skill: AgentSkill, *, name: str, content: str, user,
     return resource
 
 
+def seed_file_resource(
+    skill: AgentSkill,
+    *,
+    data: bytes,
+    filename: str,
+    kind: str = SkillResource.Kind.REFERENCE,
+) -> SkillResource:
+    """Create/refresh a file-backed resource from seed bytes — synchronous,
+    UNSCANNED, ``status=READY``.
+
+    Used by ``seed_system_skills`` to bundle first-party files (image/PDF/text)
+    with a *system* skill. System-skill content is trusted (``skill_is_approved``
+    short-circuits for ``level=system``) and no user exists at ``post_migrate``,
+    so the guardrail/PII scan that ``process_upload`` runs is deliberately
+    skipped here.
+
+    Idempotent on the content hash: a same-named resource whose bytes are
+    unchanged (and whose file is present) is returned untouched, so re-seeding on
+    every migrate does NOT re-write storage or orphan the previous blob (each
+    ``FileField.save`` mints a fresh UUID path).
+    """
+    name = os.path.basename(filename) or "resource"
+    file_type = detect_file_type(filename)  # raises UnsupportedResourceType
+    ext = _ext_of(filename)
+    is_native = file_type in (SkillResource.FileType.IMAGE, SkillResource.FileType.PDF)
+
+    if file_type == SkillResource.FileType.IMAGE:
+        text = ""
+        new_hash = hashlib.sha256(data).hexdigest()
+    elif file_type == SkillResource.FileType.PDF:
+        text = extract_text(data, "pdf")[:MAX_RESOURCE_CHARS]
+        new_hash = hashlib.sha256(data).hexdigest()
+    else:  # text-extractable
+        text = extract_text(data, ext)[:MAX_RESOURCE_CHARS]
+        new_hash = resource_content_hash(text)
+
+    existing = skill.templates.filter(name=name).first()
+    if (
+        existing is not None
+        and existing.content_sha256 == new_hash
+        and (existing.original_file if is_native else True)
+    ):
+        return existing  # unchanged — skip the storage write
+
+    resource = existing or SkillResource(skill=skill, name=name)
+    resource.kind = kind
+    resource.file_type = file_type
+    resource.original_filename = name
+    resource.content = text
+    resource.content_sha256 = new_hash
+    resource.token_count = count_tokens(text) if text else 0
+    resource.status = SkillResource.Status.READY
+    resource.is_quarantined = False
+    resource.quarantine_reason = ""
+    resource.quarantine_detail = ""
+    resource.error = ""
+
+    if is_native:
+        resource.original_file.save(name, ContentFile(data), save=False)
+        # Fallback media type from the extension; overridden below if we produce
+        # a vision-optimized derivative.
+        resource.media_type = ft.canonical_mime_for_extension(ext) or ""
+        if file_type == SkillResource.FileType.IMAGE:
+            # Sets optimized_file + media_type when a smaller derivative exists;
+            # otherwise the read path falls back to original_file.
+            _store_optimized_image(resource, data)
+
+    resource.save()
+    recompute_standing_tokens(skill)
+    return resource
+
+
 def update_resource(resource: SkillResource, *, name=None, content=None) -> None:
     """Rename a resource and/or edit a typed text resource's content.
 
