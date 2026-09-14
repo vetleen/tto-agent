@@ -26,6 +26,53 @@ if TYPE_CHECKING:
 _LEVEL_ORDER = {"system": 0, "org": 1, "user": 2}
 
 
+_SYSTEM_SLUGS_CACHE_ATTR = "_cached_active_system_skill_slugs"
+
+
+def _active_system_skill_slugs(user) -> set[str]:
+    """Return the slugs of every active system-level skill, memoized on ``user``.
+
+    This set is *global* — it depends only on the ``AgentSkill`` table, never on
+    the user or their org — but system skills are seed-only (there is no runtime
+    UI to create or edit them), so it is invariant for the life of any request
+    or conversation. Memoizing it on the user instance collapses the repeated
+    lookup a sub-agent run makes — ``get_preferences`` resolves both the main
+    and sub-agent skill lists, then ``get_run_specialization_skill`` resolves
+    the sub-agent list again — from three identical queries into one. That
+    repetition is the N+1 Sentry flagged as WILFRED-8M in ``run_subagent_task``.
+
+    ``request.user`` is a fresh instance per request, so the cache is naturally
+    request-scoped; a long-lived holder (a WebSocket consumer) would only see a
+    stale set after a mid-connection reseed of system skills, which self-heals
+    on reconnect or via :func:`invalidate_system_skill_slugs_cache`.
+    """
+    cached = getattr(user, _SYSTEM_SLUGS_CACHE_ATTR, None)
+    if cached is not None:
+        return cached
+    slugs = set(
+        AgentSkill.objects.filter(
+            level="system", is_active=True, deleted_at__isnull=True
+        ).values_list("slug", flat=True)
+    )
+    try:
+        setattr(user, _SYSTEM_SLUGS_CACHE_ATTR, slugs)
+    except (AttributeError, TypeError):
+        # A user object that refuses attributes (not a real Django User) — just
+        # degrade to the uncached result rather than blow up skill resolution.
+        pass
+    return slugs
+
+
+def invalidate_system_skill_slugs_cache(user) -> None:
+    """Drop the memoized system-skill-slug set so the next read re-queries.
+
+    Only needed by code that changes the set of active system skills on a
+    long-lived user instance (seed/admin operations, tests).
+    """
+    if hasattr(user, _SYSTEM_SLUGS_CACHE_ATTR):
+        delattr(user, _SYSTEM_SLUGS_CACHE_ATTR)
+
+
 def _next_free_slug(base_slug: str, taken: Callable[[str], bool]) -> str:
     """Return ``base_slug`` or the first ``base-N`` variant not ``taken``.
 
@@ -129,12 +176,7 @@ def _org_disabled_info(user) -> tuple[set[str], set[str]]:
         if isinstance(pref, dict) and pref.get("enabled") is False
     }
 
-    system_slugs = set(
-        AgentSkill.objects.filter(
-            level="system", is_active=True, deleted_at__isnull=True
-        )
-        .values_list("slug", flat=True)
-    )
+    system_slugs = _active_system_skill_slugs(user)
     system_tier_disabled = set()
     for slug in system_slugs:
         pref = org_skills.get(slug)

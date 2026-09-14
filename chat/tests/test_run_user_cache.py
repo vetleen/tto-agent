@@ -82,3 +82,32 @@ class RunUserCacheTests(TestCase):
             q for q in cap.captured_queries if "accounts_membership" in q["sql"].lower()
         ]
         self.assertEqual(membership_selects, [], "membership must be served from the cache")
+
+    def test_system_slug_lookup_memoized_on_shared_instance(self):
+        """WILFRED-8M: the global active-system-slug query in _org_disabled_info
+        runs once per User instance, not once per get_accessible_skills call. A
+        sub-agent run resolves accessible skills three times on one shared User
+        (get_available_skills + get_subagent_skills in get_preferences, then
+        get_run_specialization_skill), which repeated the identical query."""
+        from accounts.models import Membership, Organization
+        from agent_skills.models import AgentSkill
+        from agent_skills.services import get_accessible_skills
+
+        org = Organization.objects.create(name="RCOrg2", slug="rc-org-2")
+        Membership.objects.create(user=self.user, org=org, role="admin")
+        AgentSkill.objects.create(slug="sys-a", name="Sys A", level="system")
+
+        def _system_slug_selects(cap):
+            # The values_list("slug") lookup is the only slug-only SELECT on the
+            # skills table; the main accessible-skills filter selects every column.
+            marker = '"slug" as "slug" from "agent_skills_agentskill"'
+            return [q for q in cap.captured_queries if marker in q["sql"].lower()]
+
+        with CaptureQueriesContext(connection) as cap:
+            get_accessible_skills(self.user)
+            get_accessible_skills(self.user)
+            get_accessible_skills(self.user)
+        self.assertEqual(
+            len(_system_slug_selects(cap)), 1,
+            "active-system-slug set must be memoized on the user instance",
+        )
