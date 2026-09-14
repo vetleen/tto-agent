@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 from django.test import TestCase
 from pydantic import BaseModel, Field
 
-from core.tokens import count_tokens, estimate_chat_request_tokens
+from core.tokens import count_tokens, estimate_chat_request_tokens, measure_request_overhead
 from llm.types import Message
 
 
@@ -199,3 +199,65 @@ class EstimateChatRequestTokensTests(TestCase):
         )
         with_tool = estimate_chat_request_tokens(messages, [tool])
         self.assertGreater(with_tool, without_tool)
+
+
+class MeasureRequestOverheadTests(TestCase):
+    """measure_request_overhead: the per-turn non-history footprint used to size
+    the history budget (system prompt + tool schemas + preamble)."""
+
+    class SearchArgs(BaseModel):
+        query: str = Field(description="Search query")
+
+    def _tool(self):
+        return SimpleNamespace(
+            name="search", description="Search for records", args_schema=self.SearchArgs,
+        )
+
+    def test_grows_with_tool_schemas(self):
+        base = measure_request_overhead(system_prompt="sys", preamble="pre", tool_schemas=None)
+        with_tools = measure_request_overhead(
+            system_prompt="sys", preamble="pre", tool_schemas=[self._tool(), self._tool()],
+        )
+        self.assertGreater(with_tools, base)
+
+    def test_grows_with_preamble(self):
+        small = measure_request_overhead(system_prompt="sys", preamble="short", tool_schemas=None)
+        large = measure_request_overhead(system_prompt="sys", preamble="word " * 2000, tool_schemas=None)
+        self.assertGreater(large, small)
+
+    def test_grows_with_system_prompt(self):
+        small = measure_request_overhead(system_prompt="hi", preamble="p", tool_schemas=None)
+        large = measure_request_overhead(system_prompt="word " * 2000, preamble="p", tool_schemas=None)
+        self.assertGreater(large, small)
+
+    def test_skill_heavy_preamble_exceeds_flat_24k(self):
+        """A big attached-skill preamble must measure well above the old flat
+        CONTEXT_INPUT_OVERHEAD_TOKENS (24000) — the whole point of the change."""
+        big_preamble = "word " * 60_000  # ~60k tokens of skill instructions
+        overhead = measure_request_overhead(
+            system_prompt="You are Wilfred.", preamble=big_preamble, tool_schemas=None,
+        )
+        self.assertGreater(overhead, 24_000)
+
+    def test_handles_none_inputs(self):
+        # None inputs must not raise; the only cost is the empty system-message
+        # envelope (a small constant), so it's a small non-negative int.
+        val = measure_request_overhead(system_prompt=None, preamble=None, tool_schemas=None)
+        self.assertIsInstance(val, int)
+        self.assertGreaterEqual(val, 0)
+        self.assertLess(val, 100)
+
+    def test_never_raises_on_tiktoken_failure(self):
+        import tiktoken
+
+        original = tiktoken.get_encoding
+        tiktoken.get_encoding = MagicMock(side_effect=Exception("no encoding"))
+        try:
+            val = measure_request_overhead(
+                system_prompt="You are Wilfred.", preamble="word " * 100,
+                tool_schemas=[self._tool()],
+            )
+        finally:
+            tiktoken.get_encoding = original
+        self.assertIsInstance(val, int)
+        self.assertGreater(val, 0)

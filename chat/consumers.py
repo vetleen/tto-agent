@@ -2162,11 +2162,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 # Deliberately here and not in the dispatch loop: the snapshot
                 # then reflects the moment the turn runs, which for a turn that
                 # queued behind another tab is not the moment it was accepted.
-                static_system, history, semi_static_system, dynamic_context_data, meta = (
+                (static_system, history, semi_static_system, dynamic_context_data, meta,
+                 tools, selected_tool_schemas) = (
                     await self._assemble_turn_inputs(
                         thread, content,
                         model=resolved_model, max_context_tokens=max_context_tokens,
-                        history_mode=history_mode,
+                        history_mode=history_mode, thinking_level=thinking_level,
                     )
                 )
                 turn.history_has_subagent_results = bool(meta.get("has_subagent_results"))
@@ -2179,6 +2180,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     resolved_model=resolved_model,
                     turn=turn,
                     seed_mode=seed_mode,
+                    tools=tools, selected_tool_schemas=selected_tool_schemas,
                 )
 
                 # Apply this turn's guardrail verdict: await the pipeline and redact
@@ -2211,6 +2213,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             if meta.get("needs_summary"):
                 await self._trigger_summarization(
                     thread, model=resolved_model, max_context_tokens=max_context_tokens,
+                    effort=meta.get("effort"),
+                    reserved_tokens=meta.get("reserved_overhead_tokens"),
                 )
 
         except turn_gate.TurnQueueTimeout:
@@ -2342,12 +2346,22 @@ class ChatConsumer(AsyncWebsocketConsumer):
         self, thread, content, *,
         model, max_context_tokens,
         history_mode="conversational",
+        is_loop_turn=False, thinking_level=None,
     ):
         """Gather history + context and build the layered system prompt.
 
         Shared by the interactive turn (``_handle_chat_message``) and the
-        headless loop turn (``run_turn_to_completion``). Returns
-        ``(static_system, history, semi_static_system, dynamic_context_data, meta)``.
+        headless loop turn (``run_turn_to_completion``). Returns the 7-tuple
+        ``(static_system, history, semi_static_system, dynamic_context_data,
+        meta, tools, selected_tool_schemas)``.
+
+        The overhead sources (system prompts, tool schemas, and the semi-static/
+        dynamic preamble) are built FIRST and measured with tiktoken, then history
+        is windowed with ``reserved_tokens=<measured overhead>`` so
+        ``max_context_tokens`` reflects the real per-turn footprint (skills with
+        large instructions can be tens of thousands of tokens) rather than a flat
+        guess. Tools are resolved once here and returned so ``_stream_response``
+        reuses the same schema objects.
 
         ``history_mode`` (turn-level; distinct from the persisted
         ``Loop.history_mode`` field which is only ``fresh``/``conversational``):
@@ -2363,41 +2377,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
         """
         prefs = self.resolved_prefs
 
-        if history_mode == "fresh":
-            from core.tokens import count_tokens
-            from llm.model_info import get_history_budget
-
-            history = [{"role": "user", "content": content, "tool_call_id": None}]
-            history_budget = (
-                get_history_budget(model, max_context_tokens=max_context_tokens)
-                if model else MAX_HISTORY_TOKENS
-            )
-            meta = {
-                "total_messages": 1, "included_messages": 1,
-                "has_summary": False, "needs_summary": False,
-                "history_budget_tokens": history_budget,
-                "included_history_tokens": count_tokens(content),
-                "summary_tokens": 0,
-                "history_truncated": False,
-            }
-        else:
-            history_result = await self._load_history(
-                thread, model=model, max_context_tokens=max_context_tokens,
-                scope_to_current_pass=(history_mode == "loop_pass"),
-            )
-            history = history_result["messages"]
-            meta = history_result["meta"]
-
-        # Gather document context for the system prompt
-        doc_context = None
-        if self.data_room_ids:
-            doc_context = await self._get_document_context(self.data_room_ids, content)
-
-        # Build system prompt (split into static/semi-static/dynamic for caching)
         from chat.prompts import (
+            build_dynamic_context,
+            build_last_message_preamble,
             build_semi_static_prompt,
             build_static_system_prompt,
         )
+
+        # -- 1. Build the history-INDEPENDENT overhead sources first. None of
+        #       these depend on the conversation history, so they can be built and
+        #       measured before history is windowed. --
+        doc_context = None
+        if self.data_room_ids:
+            doc_context = await self._get_document_context(self.data_room_ids, content)
         data_rooms = None
         if self.data_room_ids:
             data_rooms = await self._get_data_room_info(self.data_room_ids)
@@ -2449,6 +2441,108 @@ class ChatConsumer(AsyncWebsocketConsumer):
             available_skills=available_skills_for_prompt,
             specializations=specializations_for_prompt,
         )
+        scratchpad = getattr(thread, "scratchpad", "") or ""
+        tools, selected_tool_schemas = await self._resolve_selected_tools(
+            is_loop_turn=is_loop_turn
+        )
+
+        # Model display info for the Runtime block (history-independent).
+        model_runtime = {}
+        if model:
+            from llm.display import get_display_name
+            from llm.model_info import get_context_window
+            from llm.model_registry import get_model_info
+
+            model_runtime = {
+                "model_id": model,
+                "model_display": get_display_name(model),
+                "context_window_tokens": get_context_window(model),
+                "context_window_assumed": get_model_info(model) is None,
+            }
+
+        # -- 2. Measure the per-turn overhead (system + tools + preamble) with a
+        #       PROVISIONAL preamble. The runtime block needs history numbers we
+        #       don't have yet (circular), so seed its history-dependent lines with
+        #       worst-case placeholders — that makes build_dynamic_context emit both
+        #       the footprint line and the ⚠️ nudge, so the reservation covers the
+        #       final preamble's worst case (over-count = safe). --
+        provisional_target = max_context_tokens or model_runtime.get("context_window_tokens") or 0
+        provisional_runtime = {
+            "configured_context_tokens": max_context_tokens,
+            "history_budget_tokens": provisional_target,
+            "included_history_tokens": provisional_target,
+            "summary_tokens": 0,
+            "history_summarized": True,
+            "history_truncated": True,
+            "estimated_input_tokens": provisional_target,
+            **model_runtime,
+        }
+        provisional_dynamic_data = {
+            "doc_context": doc_context,
+            "active_canvases": canvases_info["active_canvases"] if canvases_info else None,
+            "active_slide_set": active_deck,
+            "slide_decks": slide_decks,
+            "tasks": tasks,
+            "subagent_runs": subagent_runs if subagent_runs else None,
+            "history_meta": None,
+            "data_rooms": data_rooms,
+            "runtime_stats": provisional_runtime,
+            "scratchpad": scratchpad,
+        }
+        try:
+            from core.tokens import measure_request_overhead
+
+            provisional_preamble = build_last_message_preamble(
+                semi_static_system=semi_static_system,
+                dynamic_context=build_dynamic_context(**provisional_dynamic_data),
+                is_loop_turn=is_loop_turn,
+            )
+            reserved_overhead = measure_request_overhead(
+                system_prompt=static_system,
+                preamble=provisional_preamble,
+                tool_schemas=selected_tool_schemas,
+            )
+        except Exception:
+            # Never let measurement break a turn — fall back to the flat
+            # reservation (history_budget uses CONTEXT_INPUT_OVERHEAD_TOKENS when
+            # reserved_tokens is None).
+            logger.warning("Turn-overhead measurement failed; using flat reservation", exc_info=True)
+            reserved_overhead = None
+
+        # -- 3. Window history with the measured reservation + effort. --
+        if history_mode == "fresh":
+            from core.tokens import count_tokens
+            from llm.model_info import get_history_budget
+
+            history = [{"role": "user", "content": content, "tool_call_id": None}]
+            history_budget = (
+                get_history_budget(
+                    model, max_context_tokens=max_context_tokens,
+                    effort=thinking_level, reserved_tokens=reserved_overhead,
+                )
+                if model else MAX_HISTORY_TOKENS
+            )
+            meta = {
+                "total_messages": 1, "included_messages": 1,
+                "has_summary": False, "needs_summary": False,
+                "history_budget_tokens": history_budget,
+                "included_history_tokens": count_tokens(content),
+                "summary_tokens": 0,
+                "history_truncated": False,
+                "reserved_overhead_tokens": reserved_overhead,
+                "effort": thinking_level,
+            }
+        else:
+            history_result = await self._load_history(
+                thread, model=model, max_context_tokens=max_context_tokens,
+                scope_to_current_pass=(history_mode == "loop_pass"),
+                effort=thinking_level, reserved_tokens=reserved_overhead,
+            )
+            history = history_result["messages"]
+            meta = history_result["meta"]
+
+        # -- 4. Build the FINAL runtime_stats + dynamic_context_data with the real
+        #       history numbers. --
         runtime_stats = {
             "configured_context_tokens": max_context_tokens,
             "history_budget_tokens": meta.get("history_budget_tokens"),
@@ -2456,19 +2550,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "summary_tokens": meta.get("summary_tokens", 0),
             "history_summarized": bool(meta.get("has_summary")),
             "history_truncated": bool(meta.get("history_truncated")),
+            **model_runtime,
         }
-        if model:
-            from llm.display import get_display_name
-            from llm.model_info import get_context_window
-            from llm.model_registry import get_model_info
-
-            runtime_stats.update({
-                "model_id": model,
-                "model_display": get_display_name(model),
-                "context_window_tokens": get_context_window(model),
-                "context_window_assumed": get_model_info(model) is None,
-            })
-
         dynamic_context_data = {
             "doc_context": doc_context,
             "active_canvases": (
@@ -2481,9 +2564,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "history_meta": meta,
             "data_rooms": data_rooms,
             "runtime_stats": runtime_stats,
-            "scratchpad": getattr(thread, "scratchpad", "") or "",
+            "scratchpad": scratchpad,
         }
-        return static_system, history, semi_static_system, dynamic_context_data, meta
+        return (
+            static_system, history, semi_static_system, dynamic_context_data, meta,
+            tools, selected_tool_schemas,
+        )
 
     async def run_turn_to_completion(
         self, thread, content, *,
@@ -2508,11 +2594,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
         thinking_level = _resolve_reasoning_level(model, thinking_level)
         max_context_tokens = prefs.max_context_tokens if prefs else None
 
-        static_system, history, semi_static_system, dynamic_context_data, meta = (
+        (static_system, history, semi_static_system, dynamic_context_data, meta,
+         tools, selected_tool_schemas) = (
             await self._assemble_turn_inputs(
                 thread, content,
                 model=model, max_context_tokens=max_context_tokens,
                 history_mode=history_mode,
+                is_loop_turn=is_loop_turn, thinking_level=thinking_level,
             )
         )
 
@@ -2530,12 +2618,80 @@ class ChatConsumer(AsyncWebsocketConsumer):
             requested_model=requested_model, thinking_level=thinking_level,
             resolved_model=model, turn=turn, seed_mode=False,
             is_loop_turn=is_loop_turn,
+            tools=tools, selected_tool_schemas=selected_tool_schemas,
         )
 
         if history_mode == "conversational" and meta.get("needs_summary"):
             await self._trigger_summarization(
                 thread, model=model, max_context_tokens=max_context_tokens,
+                effort=meta.get("effort"),
+                reserved_tokens=meta.get("reserved_overhead_tokens"),
             )
+
+    async def _resolve_selected_tools(self, *, is_loop_turn: bool):
+        """Resolve ``(tool_names, tool_schema_objects)`` for this turn.
+
+        History- and model-independent (inputs: resolved prefs, data-room state,
+        active skills, ``is_loop_turn``). Extracted from ``_stream_response`` so
+        tools resolve ONCE per turn — the same ``ContextAwareTool`` objects feed
+        both the turn-start overhead measurement (``_assemble_turn_inputs``) and
+        the outgoing request. Returns the name list (for ``ChatRequest(tools=…)``)
+        and the schema objects (for measurement + ``_messages_with_turn_context``).
+        """
+        from chat.tool_groups import DATA_ROOM_TOOL_NAMES
+        from llm.tools.registry import get_tool_registry
+
+        prefs = self.resolved_prefs
+        tool_registry = get_tool_registry()
+        # Web tools always available; document tools only with data rooms; canvas tools always
+        all_tools = prefs.allowed_tools if prefs else list(tool_registry.list_tools().keys())
+        if self.data_room_ids:
+            tools = list(all_tools)
+        else:
+            tools = [t for t in all_tools if t not in DATA_ROOM_TOOL_NAMES]
+
+        # Extend with skill-specific tools, unioned across every attached skill
+        # (filtered through prefs.allowed_skills). Whenever prefs exist, trust
+        # the org-filtered allowed_skills list — even when it's empty. The raw
+        # tool_names fallback is reserved for the case where there are genuinely
+        # no prefs (no org/membership), so it can never bypass org per-skill
+        # tool toggles.
+        if self.active_skill_ids and prefs is not None:
+            allowed_by_id = {s["id"]: s for s in prefs.allowed_skills}
+            for sid in self.active_skill_ids:
+                s = allowed_by_id.get(sid)
+                # A skill missing from allowed_skills was disabled by the org —
+                # do NOT fall back to raw tool_names as that would bypass
+                # org-level filtering.
+                if s is None:
+                    continue
+                for t in s["tool_names"]:
+                    if t not in tools:
+                        tools.append(t)
+        elif self.active_skill_ids:
+            # No prefs available (e.g. no org) — fall back to raw tool_names.
+            for sid in self.active_skill_ids:
+                skill_tool_names = await self._get_skill_tool_names(sid)
+                for t in skill_tool_names:
+                    if t not in tools:
+                        tools.append(t)
+
+        # Strip chat_skill_attach when the user has disabled agent-driven skill
+        # attachment (the catalogue is also omitted from the prompt above).
+        if prefs and not prefs.allow_agent_attach_skills:
+            tools = [t for t in tools if t != "chat_skill_attach"]
+
+        # A loop's own headless turn must not spawn or reschedule loops, or a
+        # loop whose prompt mentions automations could fork itself indefinitely.
+        # Listing/stopping stay available (read-only / only pause).
+        if is_loop_turn:
+            tools = [t for t in tools if t not in ("chat_loop_create", "chat_loop_edit")]
+
+        selected_tool_schemas = [
+            tool for name in tools
+            if (tool := tool_registry.get_tool(name)) is not None
+        ]
+        return tools, selected_tool_schemas
 
     async def _stream_response(
         self, thread, system_prompt, history,
@@ -2543,6 +2699,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         dynamic_context_data=None,
         requested_model=None, thinking_level=None, resolved_model=None,
         turn=None, seed_mode=False, is_loop_turn=False,
+        tools=None, selected_tool_schemas=None,
     ):
         from llm import get_llm_service
         from llm.service.errors import LLMConfigurationError, LLMPolicyDenied, LLMProviderError
@@ -2619,57 +2776,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 model = resolve_thread_model(thread.model, prefs) if prefs else None
         thinking_level = _resolve_reasoning_level(model, thinking_level)
 
-        # Web tools always available; document tools only with data rooms; canvas tools always
-        from chat.tool_groups import DATA_ROOM_TOOL_NAMES
-        from llm.tools.registry import get_tool_registry
-        tool_registry = get_tool_registry()
-        all_tools = prefs.allowed_tools if prefs else list(tool_registry.list_tools().keys())
-        if self.data_room_ids:
-            tools = list(all_tools)
-        else:
-            tools = [t for t in all_tools if t not in DATA_ROOM_TOOL_NAMES]
-
-        # Extend with skill-specific tools, unioned across every attached skill
-        # (filtered through prefs.allowed_skills). Whenever prefs exist, trust
-        # the org-filtered allowed_skills list — even when it's empty. The raw
-        # tool_names fallback is reserved for the case where there are genuinely
-        # no prefs (no org/membership), so it can never bypass org per-skill
-        # tool toggles.
-        if self.active_skill_ids and prefs is not None:
-            allowed_by_id = {s["id"]: s for s in prefs.allowed_skills}
-            for sid in self.active_skill_ids:
-                s = allowed_by_id.get(sid)
-                # A skill missing from allowed_skills was disabled by the org —
-                # do NOT fall back to raw tool_names as that would bypass
-                # org-level filtering.
-                if s is None:
-                    continue
-                for t in s["tool_names"]:
-                    if t not in tools:
-                        tools.append(t)
-        elif self.active_skill_ids:
-            # No prefs available (e.g. no org) — fall back to raw tool_names.
-            for sid in self.active_skill_ids:
-                skill_tool_names = await self._get_skill_tool_names(sid)
-                for t in skill_tool_names:
-                    if t not in tools:
-                        tools.append(t)
-
-        # Strip chat_skill_attach when the user has disabled agent-driven skill
-        # attachment (the catalogue is also omitted from the prompt above).
-        if prefs and not prefs.allow_agent_attach_skills:
-            tools = [t for t in tools if t != "chat_skill_attach"]
-
-        # A loop's own headless turn must not spawn or reschedule loops, or a
-        # loop whose prompt mentions automations could fork itself indefinitely.
-        # Listing/stopping stay available (read-only / only pause).
-        if is_loop_turn:
-            tools = [t for t in tools if t not in ("chat_loop_create", "chat_loop_edit")]
-
-        selected_tool_schemas = [
-            tool for name in tools
-            if (tool := tool_registry.get_tool(name)) is not None
-        ]
+        # Tools are normally resolved once at turn assembly (_assemble_turn_inputs)
+        # and passed in, so the same schema objects drive both the overhead
+        # measurement and this request. Fall back to resolving here for defensive
+        # direct callers (e.g. tests) that don't pre-resolve.
+        if tools is None or selected_tool_schemas is None:
+            tools, selected_tool_schemas = await self._resolve_selected_tools(
+                is_loop_turn=is_loop_turn
+            )
         messages = _messages_with_turn_context(
             messages,
             semi_static_system=semi_static_system,
@@ -3083,13 +3197,17 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     # -- Summarization helpers --
 
-    async def _trigger_summarization(self, thread, model=None, max_context_tokens=None):
+    async def _trigger_summarization(self, thread, model=None, max_context_tokens=None,
+                                     effort=None, reserved_tokens=None):
         """Summarise messages outside the token window and save to thread."""
         try:
             from chat.services import generate_summary
 
             thread_data = await self._get_thread_summary_data(thread)
-            messages_to_summarise = await self._get_messages_to_summarise(thread, model=model, max_context_tokens=max_context_tokens)
+            messages_to_summarise = await self._get_messages_to_summarise(
+                thread, model=model, max_context_tokens=max_context_tokens,
+                effort=effort, reserved_tokens=reserved_tokens,
+            )
 
             if not messages_to_summarise:
                 return
@@ -3132,15 +3250,25 @@ class ChatConsumer(AsyncWebsocketConsumer):
         }
 
     @database_sync_to_async
-    def _get_messages_to_summarise(self, thread, model=None, max_context_tokens=None):
+    def _get_messages_to_summarise(self, thread, model=None, max_context_tokens=None,
+                                   effort=None, reserved_tokens=None):
         """Return unsummarised messages that fall outside the token budget window.
 
         The overlap window is always preserved as raw context and is never summarised.
+        ``effort``/``reserved_tokens`` must match what ``_load_history`` used for
+        this turn so the summarise boundary aligns with the live-window boundary
+        (else messages in the gap are neither summarised nor kept).
         """
         from chat.models import ChatMessage
         from llm.model_info import get_history_budget
 
-        max_history_tokens = get_history_budget(model, max_context_tokens=max_context_tokens) if model else MAX_HISTORY_TOKENS
+        max_history_tokens = (
+            get_history_budget(
+                model, max_context_tokens=max_context_tokens,
+                effort=effort, reserved_tokens=reserved_tokens,
+            )
+            if model else MAX_HISTORY_TOKENS
+        )
         overlap_tokens = min(4_000, max_history_tokens // 10)
 
         thread.refresh_from_db(fields=["summary_up_to_message_id", "summary_token_count"])
@@ -4452,7 +4580,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
         ChatThread.objects.filter(pk=thread.pk).update(title=title)
 
     @database_sync_to_async
-    def _load_history(self, thread, model=None, max_context_tokens=None, scope_to_current_pass=False):
+    def _load_history(self, thread, model=None, max_context_tokens=None, scope_to_current_pass=False,
+                      effort=None, reserved_tokens=None):
         """Load token-aware conversation history with a recency overlap window.
 
         The most recent *overlap_tokens* worth of messages are always included as
@@ -4482,7 +4611,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
         from chat.models import ChatMessage
         from llm.model_info import get_history_budget
 
-        max_history_tokens = get_history_budget(model, max_context_tokens=max_context_tokens) if model else MAX_HISTORY_TOKENS
+        max_history_tokens = (
+            get_history_budget(
+                model, max_context_tokens=max_context_tokens,
+                effort=effort, reserved_tokens=reserved_tokens,
+            )
+            if model else MAX_HISTORY_TOKENS
+        )
         overlap_tokens = min(4_000, max_history_tokens // 10)
 
         # Refresh summary fields which may have been updated by a background task
@@ -4529,6 +4664,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     "summary_tokens": 0,
                     "history_truncated": False,
                     "has_subagent_results": False,
+                    "reserved_overhead_tokens": reserved_tokens,
+                    "effort": effort,
                 },
             }
 
@@ -4676,6 +4813,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     m.metadata and m.metadata.get("source") == "subagent"
                     for m in included
                 ),
+                # Stashed so _trigger_summarization can reserve the SAME measured
+                # overhead as this turn's live window (keeps the summarise boundary
+                # aligned with the live-window boundary).
+                "reserved_overhead_tokens": reserved_tokens,
+                "effort": effort,
             },
         }
 

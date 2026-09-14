@@ -122,6 +122,37 @@ def estimate_chat_request_tokens(
     return total
 
 
+def measure_request_overhead(
+    *,
+    system_prompt: str | None,
+    preamble: str | None,
+    tool_schemas: Iterable[Any] | None,
+    encoding_name: str = "cl100k_base",
+) -> int:
+    """Measured per-turn INPUT overhead — everything in an outgoing request that
+    is NOT windowed conversation history: the static system message, the tool
+    schemas, and the last-message preamble (semi-static + dynamic context +
+    delimiter).
+
+    The current user message is deliberately excluded — it, like the rest of the
+    conversation, is counted against the history budget by
+    ``chat.consumers._load_history``. This mirrors what
+    ``chat.consumers._messages_with_turn_context`` actually assembles, so feeding
+    the result as ``history_budget(reserved_tokens=…)`` reserves the real
+    per-turn footprint instead of a flat guess (which under-reserves badly when
+    skills with large instructions are attached). The preamble is prepended into
+    an existing user message, so it carries no extra envelope — counting its raw
+    text (as ``_messages_with_turn_context`` does) is correct.
+    """
+    from llm.types.messages import Message
+
+    system_msg = Message(role="system", content=system_prompt or "")
+    return (
+        estimate_chat_request_tokens([system_msg], tool_schemas, encoding_name)
+        + count_tokens(preamble or "", encoding_name)
+    )
+
+
 def _count_text_tokens(text: str, encoding_name: str = "cl100k_base") -> int:
     """Count tokens in a plain text string."""
     text = text or ""
