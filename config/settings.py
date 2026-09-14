@@ -650,6 +650,11 @@ PDF_PAGE_TOKENS = _env_int("PDF_PAGE_TOKENS", "2_300")
 # Agent-only scratchpad cap (chars). Injected every turn + immune to pruning, so
 # it costs its size in tokens each turn — keep it modest.
 SCRATCHPAD_MAX_CHARS = _env_int("SCRATCHPAD_MAX_CHARS", "20_000")
+# Tool results are reproducible, so once they fall outside the most recent N user
+# turns we collapse them to a short "call the tool again" stub (chat/tool_stub.py)
+# — both between turns (_load_history) and mid-turn (the pipeline pruner). The
+# window keeps recent tool output raw so ongoing reasoning isn't disrupted.
+CONTEXT_RAW_TOOL_TURNS = _env_int("CONTEXT_RAW_TOOL_TURNS", "2")
 # Upload file-type allow-lists are derived from the single capability table in
 # core/file_types.py — data rooms accept every kind, including images and audio.
 # Edit that table (not these constants) to change supported types; chat and

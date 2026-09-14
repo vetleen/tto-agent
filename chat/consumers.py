@@ -60,6 +60,37 @@ def _valid_uuids(values):
     return out
 
 
+def _tool_call_meta_map(messages):
+    """Map ``tool_call_id -> (tool_name, arguments)`` from assistant messages'
+    stored ``tool_calls`` metadata, so an evicted tool result can be stubbed with
+    the exact call that produced it. ``messages`` is a list of ChatMessage."""
+    out: dict[str, tuple[str, dict]] = {}
+    for m in messages:
+        meta = getattr(m, "metadata", None) or {}
+        for tc in meta.get("tool_calls") or []:
+            cid = tc.get("id")
+            if cid:
+                out[cid] = (tc.get("name", ""), tc.get("arguments") or {})
+    return out
+
+
+def _tool_stub_boundary(messages, raw_tool_turns):
+    """Index into ``messages`` (chronological ChatMessage list) before which
+    ``tool``-role results should be stubbed. Everything from the start of the
+    most recent ``raw_tool_turns`` user turns onward stays raw; older tool
+    results collapse to a re-read stub. Returns 0 (stub nothing) when stubbing is
+    disabled (``raw_tool_turns`` < 0) or the window holds too few user turns."""
+    if raw_tool_turns is None or raw_tool_turns < 0:
+        return 0
+    user_indices = [i for i, m in enumerate(messages) if m.role == "user"]
+    if len(user_indices) <= raw_tool_turns:
+        return 0
+    if raw_tool_turns == 0:
+        # Keep raw only what follows the last user message (the newest tool tail).
+        return user_indices[-1] + 1
+    return user_indices[-raw_tool_turns]
+
+
 # Tool results whose ``status:ok`` + ``canvas_id`` payload should be broadcast to the
 # frontend as a ``canvas.updated`` event (creating/refreshing the canvas tab). Any tool
 # that creates or mutates a canvas MUST be listed here, or its canvas never appears in
@@ -3140,7 +3171,22 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         to_summarise = non_overlap[keep_count:]
         to_summarise.reverse()  # chronological order
-        return to_summarise
+
+        # Tool results and the hidden assistant messages that request them are
+        # reproducible noise — they're stubbed in the live window, not summarised.
+        # The rolling summary covers the user/assistant narrative only, which is
+        # cheaper to generate and far less lossy.
+        def _is_tool_noise(msg):
+            if msg.role == "tool":
+                return True
+            meta = msg.metadata or {}
+            return (
+                msg.role == "assistant"
+                and getattr(msg, "is_hidden_from_user", False)
+                and bool(meta.get("tool_calls"))
+            )
+
+        return [m for m in to_summarise if not _is_tool_noise(m)]
 
     @database_sync_to_async
     def _save_summary(self, thread, text, last_msg_id, count, expected_cutoff_id=None):
@@ -4422,6 +4468,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
         - ``meta``: dict with total_messages, included_messages, has_summary,
           needs_summary
         """
+        from django.conf import settings
+
         from chat.models import ChatMessage
         from llm.model_info import get_history_budget
 
@@ -4522,6 +4570,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
             msg.token_count for msg in included
         )
 
+        # 3b. Stub old tool results. Tool output is reproducible, so once it falls
+        #     outside the most recent N user turns we collapse it to a short "call
+        #     the tool again" placeholder (preserving tool_call_id + the matching
+        #     assistant tool_calls entry) — the between-turn half of context
+        #     pruning. Recent tool output stays raw so ongoing reasoning isn't cut.
+        raw_tool_turns = getattr(settings, "CONTEXT_RAW_TOOL_TURNS", 2)
+        stub_before_idx = _tool_stub_boundary(included, raw_tool_turns)
+        call_meta = _tool_call_meta_map(included)
+
         # 4. Build message list
         messages: list[dict] = []
         if thread.summary and not scoped:
@@ -4529,13 +4586,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "role": "system",
                 "content": f"Summary of earlier conversation:\n{thread.summary}",
             })
-        for m in included:
+        for idx, m in enumerate(included):
+            content = m.content or ""
+            if m.role == "tool" and idx < stub_before_idx:
+                from chat.tool_stub import build_tool_result_stub
+
+                name, args = call_meta.get(m.tool_call_id, ("", None))
+                content = build_tool_result_stub(name, args)
             msg_dict = {
                 "role": m.role,
                 # Coerce NULL content (e.g. an assistant message with only
                 # tool_calls) to "" so the merge loop's .startswith()/concat below
                 # can't raise AttributeError and abort the whole turn.
-                "content": m.content or "",
+                "content": content,
                 "tool_call_id": m.tool_call_id,
             }
             if m.metadata and m.metadata.get("tool_calls"):
