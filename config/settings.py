@@ -608,6 +608,13 @@ SKILL_RESOURCE_MAX_SIZE_BYTES = _env_int("SKILL_RESOURCE_MAX_SIZE_BYTES", "15_00
 # generous upload cap costs nothing downstream — accept high-res phone photos.
 SKILL_RESOURCE_IMAGE_MAX_SIZE_BYTES = _env_int("SKILL_RESOURCE_IMAGE_MAX_SIZE_BYTES", "26_214_400")  # 25 MB
 SKILL_RESOURCE_PDF_MAX_SIZE_BYTES = _env_int("SKILL_RESOURCE_PDF_MAX_SIZE_BYTES", "15_000_000")  # 15 MB
+# Skill export/import carries PDF/image resource bytes base64-inline in the JSON.
+# The export budget bounds total embedded raw bytes (per-file caps above still
+# apply on import); the import cap allows for base64's ~4/3 inflation plus JSON
+# overhead. Both the download and the upload are materialized whole in memory on
+# the web dyno, so keep these moderate to protect against R14.
+SKILL_EXPORT_MAX_EMBEDDED_BYTES = _env_int("SKILL_EXPORT_MAX_EMBEDDED_BYTES", "40_000_000")  # 40 MB
+SKILL_IMPORT_MAX_SIZE_BYTES = _env_int("SKILL_IMPORT_MAX_SIZE_BYTES", "55_000_000")  # 55 MB
 # Chat attachment upload caps. Images (downscaled at ingest) get a generous cap;
 # text/docx keep the tighter chat.services.MAX_ATTACHMENT_SIZE (10 MB, not downscaled).
 CHAT_ATTACHMENT_IMAGE_MAX_SIZE_BYTES = _env_int("CHAT_ATTACHMENT_IMAGE_MAX_SIZE_BYTES", "26_214_400")  # 25 MB

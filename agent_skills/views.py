@@ -693,8 +693,15 @@ def skills_import(request):
         messages.error(request, "No file was selected.")
         return redirect("agent_skills_list")
 
-    if upload.size > 2_000_000:
-        messages.error(request, "That file is too large (max 2 MB).")
+    # A v3 export can embed base64 PDF/image resources, so the cap is generous
+    # (still held whole in memory here — see SKILL_EXPORT_MAX_EMBEDDED_BYTES).
+    from django.conf import settings
+
+    import_max = getattr(settings, "SKILL_IMPORT_MAX_SIZE_BYTES", 55_000_000)
+    if upload.size and upload.size > import_max:
+        messages.error(
+            request, f"That file is too large (max {import_max // 1_000_000} MB)."
+        )
         return redirect("agent_skills_list")
 
     try:

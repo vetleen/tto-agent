@@ -1,17 +1,22 @@
 """Tests for skill export / import (download + upload)."""
 
+import base64
 import json
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from accounts.models import Membership, Organization
+from agent_skills import resources as res_svc
 from agent_skills.models import (
     MAX_INSTRUCTIONS_CHARS,
     MAX_TEMPLATE_CHARS,
     AgentSkill,
+    SkillResource,
     SkillTemplate,
 )
 from agent_skills.services import (
@@ -25,6 +30,15 @@ from agent_skills.services import (
 )
 
 User = get_user_model()
+
+# A real 1x1 transparent PNG — small enough to embed in a test, valid enough for
+# the vision optimizer not to choke.
+PNG_1x1 = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
+
+# Path patched in tests so no real Celery dispatch fires on file-resource import.
+_DELAY = "agent_skills.tasks.process_skill_resource_upload_task.delay"
 
 
 def _make_skill(**overrides):
@@ -265,6 +279,132 @@ class ParseImportServiceTests(TestCase):
             parse_skill_export(json.dumps({"skills": []}).encode())
 
 
+class FileResourceExportImportTests(TestCase):
+    """v3 embeds PDF/image resource bytes; import re-ingests + re-scans them."""
+
+    def setUp(self):
+        AgentSkill.objects.all().delete()
+        self.user = User.objects.create_user(email="fr@example.com", password="pw")
+        self.src = AgentSkill.objects.create(
+            slug="withfiles", name="With Files", instructions="i", level="system",
+        )
+
+    def _add_file_resource(self, *, name, file_type, data, content="", media_type=""):
+        res = SkillResource.objects.create(
+            skill=self.src, name=name, kind=SkillResource.Kind.REFERENCE,
+            file_type=file_type, content=content, media_type=media_type,
+            status=SkillResource.Status.READY,
+        )
+        res.original_file.save(name, ContentFile(data), save=True)
+        return res
+
+    def test_export_embeds_image_bytes(self):
+        self._add_file_resource(
+            name="pic.png", file_type=SkillResource.FileType.IMAGE,
+            data=PNG_1x1, media_type="image/png",
+        )
+        r = next(x for x in export_skill(self.src)["resources"] if x["name"] == "pic.png")
+        self.assertEqual(r["file_type"], "image")
+        self.assertEqual(r["original_filename"], "pic.png")
+        self.assertEqual(r["media_type"], "image/png")
+        self.assertEqual(base64.b64decode(r["file_b64"]), PNG_1x1)
+        self.assertNotIn("content", r)  # bytes only — content is re-derived
+
+    def test_export_version_is_3(self):
+        self.assertEqual(EXPORT_VERSION, 3)
+        self.assertEqual(json.loads(dump_skills_json([self.src]))["wilfred_skill_export"], 3)
+
+    def test_round_trip_image_reingests_via_upload_path(self):
+        self._add_file_resource(
+            name="pic.png", file_type=SkillResource.FileType.IMAGE,
+            data=PNG_1x1, media_type="image/png",
+        )
+        payloads = parse_skill_export(dump_skills_json([self.src]).encode("utf-8"))
+        with patch(_DELAY) as delayed:
+            imported = import_skill(self.user, payloads[0])
+        res = imported.templates.get(name="pic.png")
+        self.assertEqual(res.file_type, SkillResource.FileType.IMAGE)
+        # Untrusted bytes: lands PROCESSING for the worker to scan, never READY.
+        self.assertEqual(res.status, SkillResource.Status.PROCESSING)
+        with res.original_file.open("rb") as fh:
+            self.assertEqual(fh.read(), PNG_1x1)
+        delayed.assert_called_once_with(str(res.id), self.user.id)
+
+    def test_import_then_process_upload_reaches_ready(self):
+        # End-to-end: the deferred worker step actually runs (empty image text ->
+        # clean scan -> READY), proving imported bytes flow through the real path.
+        self._add_file_resource(
+            name="pic.png", file_type=SkillResource.FileType.IMAGE, data=PNG_1x1,
+        )
+        payloads = parse_skill_export(dump_skills_json([self.src]).encode("utf-8"))
+        with patch(_DELAY):
+            imported = import_skill(self.user, payloads[0])
+        res = imported.templates.get(name="pic.png")
+        res_svc.process_upload(res, self.user)
+        res.refresh_from_db()
+        self.assertEqual(res.status, SkillResource.Status.READY)
+        self.assertFalse(res.is_quarantined)
+
+    @override_settings(SKILL_EXPORT_MAX_EMBEDDED_BYTES=1)
+    def test_export_over_budget_pdf_falls_back_to_text(self):
+        self._add_file_resource(
+            name="doc.pdf", file_type=SkillResource.FileType.PDF,
+            data=b"%PDF-1.4 fake bytes", content="extracted body",
+        )
+        r = next(x for x in export_skill(self.src)["resources"] if x["name"] == "doc.pdf")
+        self.assertNotIn("file_b64", r)
+        self.assertEqual(r["content"], ["extracted body"])
+
+    @override_settings(SKILL_EXPORT_MAX_EMBEDDED_BYTES=1)
+    def test_export_over_budget_image_without_text_is_skipped(self):
+        self._add_file_resource(
+            name="pic.png", file_type=SkillResource.FileType.IMAGE, data=PNG_1x1,
+        )
+        names = [x["name"] for x in export_skill(self.src)["resources"]]
+        self.assertNotIn("pic.png", names)
+
+    @override_settings(SKILL_RESOURCE_IMAGE_MAX_SIZE_BYTES=1)
+    def test_import_over_cap_file_skipped_others_kept(self):
+        payload = {
+            "name": "Mixed", "instructions": ["i"],
+            "resources": [
+                {"name": "pic.png", "kind": "reference", "file_type": "image",
+                 "original_filename": "pic.png", "media_type": "image/png",
+                 "file_b64": base64.b64encode(PNG_1x1).decode("ascii")},
+                # import_skill receives normalized payloads: content is a string.
+                {"name": "Notes", "kind": "reference", "content": "hi"},
+            ],
+        }
+        with patch(_DELAY) as delayed:
+            skill = import_skill(self.user, payload)
+        self.assertEqual(set(skill.templates.values_list("name", flat=True)), {"Notes"})
+        delayed.assert_not_called()
+
+    def test_import_bad_base64_skipped(self):
+        payload = {
+            "name": "Bad64", "instructions": ["i"],
+            "resources": [
+                {"name": "pic.png", "kind": "reference", "file_type": "image",
+                 "original_filename": "pic.png", "file_b64": "!!!not base64!!!"},
+            ],
+        }
+        with patch(_DELAY) as delayed:
+            skill = import_skill(self.user, payload)
+        self.assertEqual(skill.templates.count(), 0)
+        delayed.assert_not_called()
+
+    def test_normalize_drops_file_resource_missing_filename(self):
+        # No original_filename -> no extension to detect the type -> dropped.
+        payloads = parse_skill_export(json.dumps({"skills": [{
+            "name": "NoName", "instructions": ["i"],
+            "resources": [
+                {"name": "x", "kind": "reference", "file_type": "image",
+                 "file_b64": base64.b64encode(PNG_1x1).decode("ascii")},
+            ],
+        }]}).encode())
+        self.assertEqual(payloads[0]["resources"], [])
+
+
 @override_settings(ALLOWED_HOSTS=["testserver"])
 class DownloadViewTests(TestCase):
     def setUp(self):
@@ -377,4 +517,12 @@ class ImportViewTests(TestCase):
         self.client.force_login(self.user)
         resp = self.client.post(reverse("agent_skills_import"), {})
         self.assertEqual(resp.status_code, 302)
+        self.assertEqual(AgentSkill.objects.filter(level="user").count(), 0)
+
+    @override_settings(SKILL_IMPORT_MAX_SIZE_BYTES=100)
+    def test_oversize_upload_rejected(self):
+        self.client.force_login(self.user)
+        resp = self._upload({"skills": [{"name": "X" * 500, "instructions": ["i"]}]})
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp["Location"], reverse("agent_skills_list"))
         self.assertEqual(AgentSkill.objects.filter(level="user").count(), 0)

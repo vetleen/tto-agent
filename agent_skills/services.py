@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import TYPE_CHECKING, Callable
 
@@ -15,6 +16,8 @@ from agent_skills.models import (
     AgentSkill,
     SkillResource,
 )
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from django.contrib.auth import get_user_model
@@ -845,7 +848,11 @@ def move_skill_to_personal(user, skill: AgentSkill) -> AgentSkill:
 # Bump when the export format changes incompatibly. Importers reject files
 # carrying a higher version than they understand. v2 renamed ``templates`` ->
 # ``resources`` (with a ``kind``); importers still accept a v1 ``templates`` key.
-EXPORT_VERSION = 2
+# v3 adds base64-embedded PDF/image resources (``file_b64``); v2 was text-only
+# resources; v1 used a ``templates`` key. Import stays backward-compatible with
+# all three, but the bump makes an older instance cleanly reject a v3 file
+# (its "newer version" guard) rather than silently dropping the file resources.
+EXPORT_VERSION = 3
 
 # Upper bound on skills per import file. The per-user slug dedup does one
 # EXISTS query per collision, so an unbounded list of same-slug entries would
@@ -892,7 +899,50 @@ def export_skill(skill: AgentSkill) -> dict:
     Environment-specific columns (id, level, organization, created_by, parent,
     is_active, timestamps) are intentionally omitted — an export describes the
     skill, not where it lived.
+
+    Text resources ride along as line-arrays. PDF/image resources embed their
+    pristine ``original_file`` bytes as base64 (``file_b64``) up to a total
+    budget (``SKILL_EXPORT_MAX_EMBEDDED_BYTES``). A file over budget or whose
+    bytes can't be read falls back to its extracted text, and is skipped only
+    when it has none (e.g. an image). The vision-optimized derivative and scan
+    state are never exported — both are re-derived on import.
     """
+    import base64
+
+    from django.conf import settings
+
+    budget = int(getattr(settings, "SKILL_EXPORT_MAX_EMBEDDED_BYTES", 40_000_000))
+    resources: list[dict] = []
+    for r in skill.templates.order_by("name"):
+        if r.file_type == SkillResource.FileType.TEXT:
+            resources.append({"name": r.name, "kind": r.kind, "content": _lines(r.content)})
+            continue
+
+        data = None
+        if r.original_file:
+            try:
+                with r.original_file.open("rb") as fh:
+                    data = fh.read()
+            except Exception:
+                logger.info("export_skill: could not read bytes for resource %s", r.pk)
+
+        if data is not None and len(data) <= budget:
+            budget -= len(data)
+            resources.append({
+                "name": r.name,
+                "kind": r.kind,
+                "file_type": r.file_type,
+                "original_filename": r.original_filename or r.name,
+                "media_type": r.media_type,
+                "file_b64": base64.b64encode(data).decode("ascii"),
+            })
+        elif (r.content or "").strip():
+            # Over budget or unreadable — preserve the extracted text so nothing
+            # readable is silently lost.
+            resources.append({"name": r.name, "kind": r.kind, "content": _lines(r.content)})
+        else:
+            logger.info("export_skill: skipping unembeddable resource %s", r.pk)
+
     return {
         "slug": skill.slug,
         "name": skill.name,
@@ -901,13 +951,7 @@ def export_skill(skill: AgentSkill) -> dict:
         "description": _lines(skill.description),
         "instructions": _lines(skill.instructions),
         "tool_names": list(skill.tool_names or []),
-        # Only text resources are portable; PDF/image files can't ride along in
-        # JSON and are omitted from the export.
-        "resources": [
-            {"name": r.name, "kind": r.kind, "content": _lines(r.content)}
-            for r in skill.templates.order_by("name")
-            if r.file_type == SkillResource.FileType.TEXT
-        ],
+        "resources": resources,
     }
 
 
@@ -967,16 +1011,38 @@ def _normalize_skill_payload(entry: dict) -> dict:
 
     resources: list[dict] = []
     seen_names: set[str] = set()
+    native_types = {SkillResource.FileType.PDF, SkillResource.FileType.IMAGE}
     for r in raw_resources:
         if not isinstance(r, dict):
             continue
         rname = str(r.get("name") or "").strip()[:255]
         if not rname or rname in seen_names:
             continue
-        seen_names.add(rname)
         kind = str(r.get("kind") or "").strip().lower()
         if kind not in SkillResource.Kind.values:
             kind = SkillResource.Kind.REFERENCE
+
+        # A v3 file-backed resource carries base64 bytes instead of text content.
+        # Keep it encoded here (decode + ingest happens in import_skill); it needs
+        # a native file_type and a filename whose extension drives detect_file_type.
+        file_b64 = r.get("file_b64")
+        if isinstance(file_b64, str) and file_b64:
+            file_type = str(r.get("file_type") or "").strip().lower()
+            original_filename = str(r.get("original_filename") or "").strip()[:255]
+            if file_type not in native_types or not original_filename:
+                continue
+            seen_names.add(rname)
+            resources.append({
+                "name": rname,
+                "kind": kind,
+                "file_type": file_type,
+                "original_filename": original_filename,
+                "media_type": str(r.get("media_type") or "")[:100],
+                "file_b64": file_b64,
+            })
+            continue
+
+        seen_names.add(rname)
         resources.append({
             "name": rname,
             "kind": kind,
@@ -1096,10 +1162,18 @@ def import_skill(user, payload: dict) -> AgentSkill:
     from core.tokens import count_tokens
 
     for res in payload.get("resources", []):
-        content = (res.get("content", "") or "")[:MAX_RESOURCE_CHARS]
         kind = res.get("kind") or SkillResource.Kind.REFERENCE
         if kind not in SkillResource.Kind.values:
             kind = SkillResource.Kind.REFERENCE
+
+        # File-backed resource: decode + ingest via the normal upload path so the
+        # worker re-extracts and re-scans it (see _import_file_resource).
+        file_b64 = res.get("file_b64")
+        if isinstance(file_b64, str) and file_b64:
+            _import_file_resource(skill, res, kind, user)
+            continue
+
+        content = (res.get("content", "") or "")[:MAX_RESOURCE_CHARS]
         SkillResource.objects.create(
             skill=skill,
             name=res["name"],
@@ -1113,3 +1187,61 @@ def import_skill(user, payload: dict) -> AgentSkill:
     recompute_standing_tokens(skill)
 
     return skill
+
+
+def _import_file_resource(skill: AgentSkill, res: dict, kind: str, user) -> None:
+    """Decode an embedded (base64) file resource and ingest it as a fresh upload.
+
+    The bytes crossed a trust boundary, so they are NOT trusted: the resource
+    lands ``PROCESSING`` and ``process_skill_resource_upload_task`` re-extracts
+    and re-scans it on the worker, exactly like a real upload — an exported
+    status is never honored. Oversized or undecodable payloads are skipped
+    (logged), never persisted.
+    """
+    import base64
+    import binascii
+
+    from django.conf import settings
+
+    from agent_skills.resources import create_pending_upload
+    from agent_skills.tasks import process_skill_resource_upload_task
+
+    try:
+        data = base64.b64decode(res["file_b64"], validate=True)
+    except (binascii.Error, ValueError):
+        logger.info("import_skill: undecodable file resource %r; skipping", res.get("name"))
+        return
+
+    file_type = res.get("file_type")
+    if file_type == SkillResource.FileType.IMAGE:
+        cap = int(getattr(settings, "SKILL_RESOURCE_IMAGE_MAX_SIZE_BYTES", 26_214_400))
+    elif file_type == SkillResource.FileType.PDF:
+        cap = int(getattr(settings, "SKILL_RESOURCE_PDF_MAX_SIZE_BYTES", 15_000_000))
+    else:
+        cap = int(getattr(settings, "SKILL_RESOURCE_MAX_SIZE_BYTES", 15_000_000))
+    if len(data) > cap:
+        logger.info(
+            "import_skill: file resource %r over cap (%d > %d); skipping",
+            res.get("name"), len(data), cap,
+        )
+        return
+
+    filename = res.get("original_filename") or res.get("name") or "resource"
+    try:
+        resource = create_pending_upload(
+            skill, data=data, filename=filename, user=user, kind=kind
+        )
+    except Exception:
+        logger.exception("import_skill: failed to store imported file resource")
+        return
+
+    # create_pending_upload names the row from the filename; restore the exported
+    # resource name when it differs and is still free (a renamed upload).
+    desired = (res.get("name") or "").strip()[:255]
+    if desired and desired != resource.name and not (
+        skill.templates.filter(name=desired).exclude(pk=resource.pk).exists()
+    ):
+        resource.name = desired
+        resource.save(update_fields=["name"])
+
+    process_skill_resource_upload_task.delay(str(resource.id), getattr(user, "id", None))
