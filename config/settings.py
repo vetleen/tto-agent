@@ -647,6 +647,9 @@ MIN_HISTORY_BUDGET_TOKENS = _env_int("MIN_HISTORY_BUDGET_TOKENS", "4_000")
 # native PDF page is image+text ≈ 2300 tokens. See core/tokens.count_tokens.
 VISION_IMAGE_TOKENS = _env_int("VISION_IMAGE_TOKENS", "1_600")
 PDF_PAGE_TOKENS = _env_int("PDF_PAGE_TOKENS", "2_300")
+# Agent-only scratchpad cap (chars). Injected every turn + immune to pruning, so
+# it costs its size in tokens each turn — keep it modest.
+SCRATCHPAD_MAX_CHARS = _env_int("SCRATCHPAD_MAX_CHARS", "20_000")
 # Upload file-type allow-lists are derived from the single capability table in
 # core/file_types.py — data rooms accept every kind, including images and audio.
 # Edit that table (not these constants) to change supported types; chat and

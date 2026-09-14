@@ -535,6 +535,7 @@ def build_dynamic_context(
     history_meta: dict[str, Any] | None = None,
     data_rooms: list[dict[str, Any]] | None = None,
     runtime_stats: RuntimeStats | None = None,
+    scratchpad: str | None = None,
 ) -> str:
     """Build per-turn dynamic context to inject into the last user message.
 
@@ -668,6 +669,15 @@ def build_dynamic_context(
                 f'# Active Canvas Content: "{ac.title}"\n'
                 f"```markdown\n{ac.content}\n```"
             )
+
+    # -- Scratchpad (agent-only private notes; survives pruning; user never sees it) --
+    if scratchpad and scratchpad.strip():
+        parts.append(
+            "# Scratchpad (your private notes)\n"
+            "Your own notes from earlier this conversation — retained even when "
+            "tool results are cleared. Use `scratchpad_append` to add to it.\n"
+            f"```\n{scratchpad}\n```"
+        )
 
     # -- Active slide deck (the deck the user sees rendered in the side panel) --
     if active_slide_set:

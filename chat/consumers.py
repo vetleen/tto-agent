@@ -2450,6 +2450,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "history_meta": meta,
             "data_rooms": data_rooms,
             "runtime_stats": runtime_stats,
+            "scratchpad": getattr(thread, "scratchpad", "") or "",
         }
         return static_system, history, semi_static_system, dynamic_context_data, meta
 

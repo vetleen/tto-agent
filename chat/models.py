@@ -60,6 +60,11 @@ class ChatThread(models.Model):
     summary_up_to_message_id = models.UUIDField(null=True, blank=True)
     summary_message_count = models.PositiveIntegerField(default=0)
 
+    # Agent-only append-only scratchpad: the assistant's private working notes,
+    # injected into every turn and immune to history windowing/summarization so
+    # findings survive aggressive tool-result pruning. Never shown to the user.
+    scratchpad = models.TextField(blank=True, default="")
+
     retain_until = models.DateTimeField(null=True, blank=True, db_index=True)
 
     def save(self, *args, **kwargs):
