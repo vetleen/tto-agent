@@ -453,6 +453,24 @@ class SimpleChatPipeline(BasePipeline):
         tool_by_name.update({t.name: t for t in new_tools})
         return tools + new_tools
 
+    @staticmethod
+    def _record_tool_round_stats(context, results) -> None:
+        """Accumulate per-turn observability counters (tool-call count + total
+        tokens of tool results) onto the RunContext; the logger surfaces them on
+        LLMCallLog. Best-effort — never let accounting break a turn."""
+        if context is None:
+            return
+        try:
+            from core.tokens import count_tokens
+
+            context.bump_stat("tool_calls", len(results))
+            context.bump_stat(
+                "tool_result_tokens",
+                sum(count_tokens(r) for _, r in results),
+            )
+        except Exception:  # pragma: no cover - metrics must never break a turn
+            logger.debug("Failed to record tool-round stats", exc_info=True)
+
     def _midturn_ceiling(self, req: ChatRequest) -> int:
         """The per-request input-token ceiling for this model + org aim + effort
         (``min(aim, window) - output_reservation - margin``)."""
@@ -494,6 +512,8 @@ class SimpleChatPipeline(BasePipeline):
                 "(projected input ~%d > ceiling %d, model %s)",
                 n, projected, ceiling, req.model,
             )
+            if req.context is not None:
+                req.context.bump_stat("prunes", 1)
         return pruned
 
     def _prune_final_messages(self, final_messages: List[Message], req: ChatRequest) -> List[Message]:
@@ -518,6 +538,8 @@ class SimpleChatPipeline(BasePipeline):
                 "(estimate over ceiling %d, model %s)",
                 n, ceiling, req.model,
             )
+            if req.context is not None:
+                req.context.bump_stat("prunes", 1)
         return pruned
 
     def _run_tool_loop(
@@ -602,6 +624,7 @@ class SimpleChatPipeline(BasePipeline):
                 new_messages.append(
                     Message(role="tool", content=result_str, tool_call_id=tc.id)
                 )
+            self._record_tool_round_stats(req.context, results)
 
             from chat.dedup import deduplicate_tool_results
             new_messages = deduplicate_tool_results(new_messages)
@@ -865,6 +888,7 @@ class SimpleChatPipeline(BasePipeline):
 
             # Execute tools (in parallel when multiple)
             results = self._execute_tool_calls(parsed_tool_calls, tool_by_name)
+            self._record_tool_round_stats(req.context, results)
 
             # Emit tool_end for all results and append to history
             for tc, result_str in results:

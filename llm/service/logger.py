@@ -183,6 +183,20 @@ def _user_fk_id(user_id: str | None) -> int | None:
         return None
 
 
+def _observability_fields(context) -> dict:
+    """Per-turn tool-loop counters from RunContext.observability, mapped to the
+    LLMCallLog columns. NULL when no tool loop ran; prune_count is 0 (not NULL)
+    when tools ran but never triggered a prune, so "ran, no prune" is
+    distinguishable from "no tools"."""
+    obs = getattr(context, "observability", None) or {}
+    had_tools = "tool_calls" in obs
+    return {
+        "tool_call_count": obs.get("tool_calls"),
+        "tool_result_tokens": obs.get("tool_result_tokens"),
+        "prune_count": obs.get("prunes", 0) if had_tools else None,
+    }
+
+
 def log_call(request: "ChatRequest", response: "ChatResponse", duration_ms: int) -> None:
     """Write a SUCCESS log entry for a non-streaming call. raw_output = slim summary JSON."""
     try:
@@ -230,6 +244,7 @@ def log_call(request: "ChatRequest", response: "ChatResponse", duration_ms: int)
             response_metadata=metadata.get("response_metadata"),
             stop_reason=metadata.get("stop_reason", ""),
             provider_model_id=metadata.get("provider_model_id", ""),
+            **_observability_fields(context),
         )
     except Exception:
         logger.exception("Failed to write LLM call log (non-streaming)")
@@ -342,6 +357,7 @@ def log_stream(
                 response_metadata=resp_metadata,
                 stop_reason=stop_reason,
                 provider_model_id=provider_model_id,
+                **_observability_fields(context),
             )
             return
 
@@ -370,6 +386,7 @@ def log_stream(
             response_metadata=resp_metadata,
             stop_reason=stop_reason,
             provider_model_id=provider_model_id,
+            **_observability_fields(context),
         )
     except Exception:
         logger.exception("Failed to write LLM call log (streaming)")

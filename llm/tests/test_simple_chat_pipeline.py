@@ -1525,3 +1525,37 @@ class MidturnPruningTests(TestCase):
             out = pipe._prune_final_messages(list(msgs), req)
         bodies = {m.tool_call_id: m.content for m in out if m.role == "tool"}
         self.assertTrue(bodies["c1"].startswith("[Earlier result of"))
+
+    # -- observability counters --
+
+    def test_prune_increments_observability_counter(self):
+        pipe = SimpleChatPipeline()
+        base = [
+            Message(role="user", content="q"),
+            self._asst("c1", "web_search", {"query": "x"}),
+            self._tool("c1", "OLD_ONE"),
+            self._asst("c2", "web_search", {"query": "y"}),
+            self._tool("c2", "OLD_TWO"),
+        ]
+        req = self._req(base)
+        new_messages = base + [self._asst("c3", "web_search", {"query": "z"}), self._tool("c3", "CURRENT")]
+        with self.settings(CONTEXT_MIDTURN_KEEP_TOOL_RESULTS=1):
+            pipe._prune_growing_loop(
+                new_messages, req, real_input_tokens=30_000, protect_call_ids={"c3"},
+            )
+        self.assertEqual(req.context.observability.get("prunes"), 1)
+
+    def test_record_tool_round_stats_counts_calls_and_tokens(self):
+        ctx = RunContext.create()
+        results = [
+            (ToolCall(id="c1", name="web_search", arguments={}), "hello world foo"),
+            (ToolCall(id="c2", name="web_fetch", arguments={}), "a b c d e"),
+        ]
+        SimpleChatPipeline._record_tool_round_stats(ctx, results)
+        SimpleChatPipeline._record_tool_round_stats(ctx, results)  # a second round
+        self.assertEqual(ctx.observability["tool_calls"], 4)
+        self.assertGreater(ctx.observability["tool_result_tokens"], 0)
+
+    def test_record_tool_round_stats_no_context_is_safe(self):
+        # Must not raise when there's no context.
+        SimpleChatPipeline._record_tool_round_stats(None, [])

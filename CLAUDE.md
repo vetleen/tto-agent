@@ -110,6 +110,47 @@ Resolution lives in `core/preferences.py` (`allowed_tools` / `allowed_subagent_t
 (`resolve_subagent_tools`). `RunContext.agent_kind` (`"main"`/`"subagent"`) lets the
 pipeline defensively drop wrong-audience tools.
 
+## Context Management
+
+`max_context_tokens` (org/user pref, default 200k, floor `MIN_CONTEXT_TOKENS`=50k) is the
+**aim**; the model's registry window is the **hard** cap. All budgeting is measured, not a
+blind fraction — see `llm/context_budget.py`:
+
+- `output_reservation(model, effort)` — tokens reserved for the response (output counts
+  against the window on every provider). `request_input_ceiling = min(aim, window) − output
+  − CONTEXT_SAFETY_MARGIN_TOKENS`. `history_budget = ceiling − system/tool/message overhead`.
+- Native assets (image/PDF) are counted at their real provider cost in `core/tokens.py`
+  (`_wf_est_tokens` markers), never by stringifying base64.
+
+**Pruning is by priority, and tool results are reproducible** so they're the first thing
+dropped (the model can always call the tool again):
+
+- **Between turns** (`chat/consumers.py:_load_history`): tool results older than
+  `CONTEXT_RAW_TOOL_TURNS` (2) user turns collapse to a re-read stub
+  (`chat/tool_stub.py:build_tool_result_stub`) that names the tool + args; `tool_call_id` is
+  preserved so provider pairing holds. User/assistant narrative is instead rolled into the
+  summary (`_get_messages_to_summarise` excludes tool noise).
+- **Mid-turn** (`llm/pipelines/simple_chat.py`): when a tool-loop round would push the next
+  request past `request_input_ceiling`, `_prune_growing_loop` stubs the oldest tool results
+  (keeping `CONTEXT_MIDTURN_KEEP_TOOL_RESULTS`=6 recent + the current round, protected by
+  `tool_call_id`). In-memory only; the full result stays in the DB and in the `tool_end`
+  event the user sees. The consumer wires `max_context_tokens` into `req.params` so the
+  pipeline can size the ceiling (**sub-agents don't get this yet — they fall back to the
+  model window**).
+
+**Scratchpad** (`chat/scratchpad_tools.py`, `ChatThread.scratchpad`): an agent-only,
+append-only note store (`scratchpad_append` tool, `SCRATCHPAD_MAX_CHARS`=20k). It is injected
+into every turn's dynamic context (`build_dynamic_context`), is **never pruned or
+summarized**, and is **never shown to the user** (deliberately absent from
+`CANVAS_UPDATED_TOOLS`; emits no content event). It is the model's durable memory for
+findings that would otherwise be lost when tool results are stubbed — the near-threshold
+Runtime nudge tells the model to use it.
+
+**Observability**: each turn's `LLMCallLog` row carries `tool_call_count`, `prune_count`
+(mid-turn compactions), and `tool_result_tokens` (raw tool-output volume), accumulated on
+`RunContext.observability` (via `bump_stat`) and written by `llm/service/logger.py`. Use
+these to reason about tool-loop cost and pruning pressure (e.g. a future tool-result budget).
+
 ## Logging
 
 - Use `logger = logging.getLogger(__name__)` in every module.

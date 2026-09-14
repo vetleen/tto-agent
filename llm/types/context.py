@@ -110,6 +110,18 @@ class RunContext(BaseModel):
     # setup on a single thread before tools spawn; tools only read it. Left None on
     # the main pipeline (which does not seed it) so its behaviour is unchanged.
     _cached_user: Any = PrivateAttr(default=None)
+    # Per-turn observability counters the pipeline accumulates across the tool
+    # loop; the logger surfaces them onto LLMCallLog (tool_call_count,
+    # prune_count, tool_result_tokens) so we can reason about tool-loop cost and
+    # how often mid-turn pruning fires over time — the data behind a future
+    # tool-result budget. Locked because tools execute concurrently.
+    _stats_lock: Any = PrivateAttr(default_factory=threading.Lock)
+    observability: dict = Field(default_factory=dict)
+
+    def bump_stat(self, key: str, amount: int = 1) -> None:
+        """Add ``amount`` to a per-turn observability counter (thread-safe)."""
+        with self._stats_lock:
+            self.observability[key] = self.observability.get(key, 0) + amount
 
     def reserve_native_asset(
         self, size_b64: int, pathway: str = PATHWAY_DATAROOM

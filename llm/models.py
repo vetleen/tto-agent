@@ -57,6 +57,17 @@ class LLMCallLog(models.Model):
     cache_write_tokens = models.PositiveIntegerField(null=True, blank=True)
     reasoning_tokens = models.PositiveIntegerField(null=True, blank=True)
 
+    # Tool-loop observability — populated per turn from RunContext counters so we
+    # can reason about tool-loop cost and how aggressively context pruning fires
+    # (the data behind a future tool-result budget). NULL for calls made outside a
+    # tool loop (no context / older rows).
+    tool_call_count = models.PositiveIntegerField(null=True, blank=True)
+    # Number of mid-turn context prunes ("compactions") in this turn.
+    prune_count = models.PositiveIntegerField(null=True, blank=True)
+    # Total tokens of tool RESULTS returned to the model across the turn (before
+    # any pruning) — the raw tool-output volume the loop had to absorb.
+    tool_result_tokens = models.PositiveIntegerField(null=True, blank=True)
+
     # Status / errors
     status = models.CharField(
         max_length=32,

@@ -1033,3 +1033,48 @@ class LogCallIntegrationTests(TestCase):
         log = _get_log(request)
         self.assertEqual(log.status, "error")
         self.assertTrue(log.is_stream)
+
+
+class ObservabilityFieldTests(TestCase):
+    """tool_call_count / prune_count / tool_result_tokens on LLMCallLog."""
+
+    def test_fields_none_without_tool_loop(self):
+        request = _make_request()
+        response = ChatResponse(
+            message=Message(role="assistant", content="Hi"),
+            model="gpt-4o-mini", usage=None, metadata={},
+        )
+        log_call(request, response, duration_ms=10)
+        log = _get_log(request)
+        self.assertIsNone(log.tool_call_count)
+        self.assertIsNone(log.prune_count)
+        self.assertIsNone(log.tool_result_tokens)
+
+    def test_prune_count_zero_when_tools_ran_without_pruning(self):
+        request = _make_request()
+        request.context.bump_stat("tool_calls", 3)
+        request.context.bump_stat("tool_result_tokens", 1200)
+        response = ChatResponse(
+            message=Message(role="assistant", content="done"),
+            model="gpt-4o-mini", usage=None, metadata={},
+        )
+        log_call(request, response, duration_ms=10)
+        log = _get_log(request)
+        self.assertEqual(log.tool_call_count, 3)
+        self.assertEqual(log.tool_result_tokens, 1200)
+        self.assertEqual(log.prune_count, 0)  # tools ran, never pruned -> 0 not NULL
+
+    def test_stream_persists_counts_including_prunes(self):
+        request = _make_request(stream=True)
+        request.context.bump_stat("tool_calls", 8)
+        request.context.bump_stat("tool_result_tokens", 90000)
+        request.context.bump_stat("prunes", 3)
+        run_id = request.context.run_id
+        events = [
+            StreamEvent(event_type="message_end", data={}, sequence=1, run_id=run_id),
+        ]
+        log_stream(request, _acc(events), duration_ms=100)
+        log = _get_log(request)
+        self.assertEqual(log.tool_call_count, 8)
+        self.assertEqual(log.tool_result_tokens, 90000)
+        self.assertEqual(log.prune_count, 3)
