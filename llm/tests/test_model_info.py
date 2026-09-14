@@ -1,6 +1,6 @@
 """Tests for llm.model_info — context window registry and history budget."""
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from llm.model_info import get_context_window, get_history_budget
 
@@ -30,38 +30,62 @@ class GetContextWindowTests(TestCase):
         self.assertEqual(get_context_window("gemini-3.1-pro-preview"), 1_048_576)
 
 
+# Measured budget = min(aim, window) − output_reservation − margin − overhead.
+# Defaults pinned here: margin 8k, overhead 24k, floor 4k; the default output
+# reservation is 32k (capped by each model's max_output_tokens, all ≥64k here).
+_OUT = 32_000  # default output reservation (no effort given)
+
+
+@override_settings(
+    CONTEXT_SAFETY_MARGIN_TOKENS=8_000,
+    CONTEXT_INPUT_OVERHEAD_TOKENS=24_000,
+    MIN_HISTORY_BUDGET_TOKENS=4_000,
+)
 class GetHistoryBudgetTests(TestCase):
 
-    def test_budget_is_75_percent_of_context(self):
-        # claude-sonnet-4-6: 1M * 0.75 = 750k, capped to 150k
-        self.assertEqual(get_history_budget("claude-sonnet-4-6"), 150_000)
-
-    def test_budget_capped_at_150k(self):
-        # gpt-5.4: 1M * 0.75 = 750k, capped to 150k
-        self.assertEqual(get_history_budget("gpt-5.4"), 150_000)
-
-    def test_small_context_not_capped(self):
-        # Every registered model now exceeds the 150k cap; shrink the window
-        # via max_context_tokens to exercise the uncapped branch: 120k * 0.75.
+    def test_reserves_output_and_overhead_no_cap(self):
+        # No max_context_tokens → aim is the full window (1M): 1M − 32k − 8k − 24k.
         self.assertEqual(
-            get_history_budget("gpt-5.4-nano", max_context_tokens=120_000), 90_000
+            get_history_budget("claude-sonnet-4-6"), 1_000_000 - _OUT - 8_000 - 24_000
         )
 
-    def test_none_model(self):
-        # Default: 128k * 0.75 = 96k
-        self.assertEqual(get_history_budget(None), 96_000)
+    def test_setting_is_the_aim(self):
+        # The 200k default aim: 200k − 32k − 8k − 24k = 136k.
+        self.assertEqual(
+            get_history_budget("gpt-5.4", max_context_tokens=200_000), 136_000
+        )
 
-    def test_unknown_model(self):
-        self.assertEqual(get_history_budget("unknown"), 96_000)
+    def test_no_150k_cap_anymore(self):
+        # A 300k aim now yields 236k history (old code capped this at 150k).
+        self.assertEqual(
+            get_history_budget("claude-sonnet-4-6", max_context_tokens=300_000), 236_000
+        )
 
-    def test_max_context_caps_budget(self):
-        # gpt-5.4 has 1M context; with max_context=100k: 100k * 0.75 = 75k
-        self.assertEqual(get_history_budget("gpt-5.4", max_context_tokens=100_000), 75_000)
+    def test_small_setting(self):
+        self.assertEqual(
+            get_history_budget("gpt-5.4-nano", max_context_tokens=120_000), 56_000
+        )
 
-    def test_max_context_none_no_effect(self):
-        # None behaves like before
-        self.assertEqual(get_history_budget("gpt-5.4", max_context_tokens=None), 150_000)
+    def test_unknown_model_uses_default_window(self):
+        # 128k default window − 32k − 8k − 24k = 64k.
+        self.assertEqual(get_history_budget("unknown"), 64_000)
 
-    def test_max_context_larger_than_model_no_effect(self):
-        # max_context=500k on a 1M model: 500k * 0.75 = 375k, still capped to 150k
-        self.assertEqual(get_history_budget("claude-sonnet-4-6", max_context_tokens=500_000), 150_000)
+    def test_higher_effort_reserves_more_output(self):
+        # high effort → 40k output reservation → less history.
+        self.assertEqual(
+            get_history_budget("gpt-5.4", max_context_tokens=200_000, effort="high"),
+            200_000 - 40_000 - 8_000 - 24_000,
+        )
+
+    def test_measured_reserved_tokens_override(self):
+        # When the caller measures system+tools+current, it replaces the flat overhead.
+        self.assertEqual(
+            get_history_budget("gpt-5.4", max_context_tokens=200_000, reserved_tokens=50_000),
+            200_000 - _OUT - 8_000 - 50_000,
+        )
+
+    def test_floor_when_reservations_exceed_aim(self):
+        # A 50k aim is smaller than the reservations (~64k) → history floors at 4k.
+        self.assertEqual(
+            get_history_budget("gpt-5.4", max_context_tokens=50_000), 4_000
+        )

@@ -17,12 +17,27 @@ def get_context_window(model: str | None) -> int:
     return _DEFAULT_CONTEXT_WINDOW
 
 
-def get_history_budget(model: str | None, max_context_tokens: int | None = None) -> int:
-    """75% of context window, capped at 150k, further capped by max_context_tokens."""
-    context = get_context_window(model)
-    if max_context_tokens is not None:
-        context = min(context, max_context_tokens)
-    return min(int(context * 0.75), 150_000)
+def get_history_budget(
+    model: str | None,
+    max_context_tokens: int | None = None,
+    *,
+    effort: str | None = None,
+    reserved_tokens: int | None = None,
+) -> int:
+    """Tokens available for conversation history.
+
+    Delegates to the measured budget in :mod:`llm.context_budget`: the request
+    input ceiling (``min(setting, model window) − output reservation − margin``)
+    minus the system-prompt + tool-schema + current-message overhead. Replaces
+    the former blind ``context * 0.75`` capped at 150k — that fraction both
+    over-reserved on large windows and, crucially, failed to reserve output on
+    small ones. ``max_context_tokens`` is the aim; the model window is the hard cap.
+    """
+    from llm.context_budget import history_budget
+
+    return history_budget(
+        model, max_context_tokens, effort=effort, reserved_tokens=reserved_tokens
+    )
 
 
 __all__ = ["get_context_window", "get_history_budget"]

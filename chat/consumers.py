@@ -4160,12 +4160,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
         from llm.core.native_limits import provider_native_b64_ceiling
         from llm.display import supports_modality
 
-        def _tag(block, b64len, label):
+        def _tag(block, b64len, label, est_tokens=None):
             # Markers the send-time enforcer reads for priority pruning; stripped
-            # before the provider sees the block.
+            # before the provider sees the block. _wf_est_tokens lets count_tokens
+            # charge the provider's real token cost for this native block.
             block["_wf_pathway"] = "attachment"
             block["_wf_b64len"] = b64len
             block["_wf_label"] = label or "attachment"
+            if est_tokens:
+                block["_wf_est_tokens"] = int(est_tokens)
             return block
 
         # Collect all attachment IDs from history
@@ -4223,6 +4226,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                                 block = _tag(
                                     build_image_content_block(b64, ct, provider),
                                     len(b64), att.original_filename,
+                                    est_tokens=getattr(settings, "VISION_IMAGE_TOKENS", 1_600),
                                 )
                         else:
                             block = build_text_content_block(
@@ -4257,6 +4261,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                                     block = _tag(
                                         build_pdf_content_block(b64, att.original_filename, provider),
                                         len(b64), att.original_filename,
+                                        est_tokens=max(1, n_pages) * getattr(settings, "PDF_PAGE_TOKENS", 2_300),
                                     )
                         else:
                             block = build_text_content_block(extracted, att.original_filename)

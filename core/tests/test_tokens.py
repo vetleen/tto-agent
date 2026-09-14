@@ -113,14 +113,33 @@ class CountTokensListContentTests(TestCase):
         self.assertGreater(result, 0)
 
     def test_image_block_returns_estimate(self):
+        # Vision-model image cost (~1600 after our ingest downscale), not 170.
         content = [{"type": "image", "base64": "abc123"}]
         result = count_tokens(content)
-        self.assertEqual(result, 170)
+        self.assertEqual(result, 1_600)
 
     def test_image_url_block_returns_estimate(self):
         content = [{"type": "image_url", "image_url": {"url": "https://example.com/img.png"}}]
         result = count_tokens(content)
-        self.assertEqual(result, 170)
+        self.assertEqual(result, 1_600)
+
+    def test_native_block_uses_est_tokens_marker(self):
+        # A native block stamped with _wf_est_tokens is charged that, not the
+        # base64 payload as text (which would massively over-count a PDF).
+        content = [{
+            "type": "document",
+            "source": {"type": "base64", "media_type": "application/pdf", "data": "A" * 5000},
+            "_wf_est_tokens": 6_900,  # e.g. 3 pages * 2300
+        }]
+        self.assertEqual(count_tokens(content), 6_900)
+
+    def test_document_block_without_marker_not_counted_as_base64(self):
+        # No marker → a conservative per-type default, NOT len(base64) as tokens.
+        content = [{
+            "type": "document",
+            "source": {"type": "base64", "media_type": "application/pdf", "data": "A" * 5000},
+        }]
+        self.assertLess(count_tokens(content), 10_000)
 
     def test_mixed_blocks(self):
         content = [
@@ -129,7 +148,7 @@ class CountTokensListContentTests(TestCase):
         ]
         result = count_tokens(content)
         text_tokens = count_tokens("Describe this image:")
-        self.assertEqual(result, text_tokens + 170)
+        self.assertEqual(result, text_tokens + 1_600)
 
     def test_empty_list(self):
         self.assertEqual(count_tokens([]), 0)

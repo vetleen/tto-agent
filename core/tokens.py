@@ -26,16 +26,43 @@ def count_tokens(content, encoding_name: str = "cl100k_base") -> int:
         total = 0
         for block in content:
             if isinstance(block, dict):
-                if block.get("type") == "text":
+                btype = block.get("type")
+                if btype == "text":
                     total += _count_text_tokens(block.get("text", ""), encoding_name)
-                elif block.get("type") in ("image", "image_url"):
-                    total += 170  # conservative estimate per image
+                elif btype in ("image", "image_url", "document", "file"):
+                    # Native image/PDF block — estimate what the provider actually
+                    # charges. NEVER stringify (the base64 payload would be counted
+                    # as text → massive over-count for PDFs).
+                    total += _native_block_tokens(block)
                 else:
                     total += _count_text_tokens(str(block), encoding_name)
             else:
                 total += _count_text_tokens(str(block), encoding_name)
         return total
     return _count_text_tokens(content, encoding_name)
+
+
+def _native_block_tokens(block: dict) -> int:
+    """Provider-charged token estimate for a native image/PDF content block.
+
+    Prefers the ``_wf_est_tokens`` marker stamped when the block was built (which
+    knows the real page count); else a conservative per-type default. An image is
+    ~(w*h)/750 capped ~1600 after our ingest downscale; a native PDF page is
+    image+text ≈ 2300 tokens.
+    """
+    est = block.get("_wf_est_tokens")
+    if isinstance(est, int) and est > 0:
+        return est
+    try:
+        from django.conf import settings
+
+        img = int(getattr(settings, "VISION_IMAGE_TOKENS", 1_600))
+        pdf_page = int(getattr(settings, "PDF_PAGE_TOKENS", 2_300))
+    except Exception:
+        img, pdf_page = 1_600, 2_300
+    if block.get("type") in ("document", "file"):
+        return pdf_page * 2  # unknown page count → assume a small doc
+    return img
 
 
 def estimate_chat_request_tokens(

@@ -287,9 +287,20 @@ class SimpleChatPipeline(BasePipeline):
         def _tag_native_block(block: dict, item: dict) -> None:
             # Private markers the send-time enforcer reads to classify a native
             # block's pathway (skill/dataroom/attachment) and size for priority
-            # pruning. Stripped before the provider sees the block.
+            # pruning. Stripped before the provider sees the block. _wf_est_tokens
+            # lets count_tokens charge the provider's real token cost.
             block["_wf_pathway"] = item.get("_pathway", "dataroom")
             block["_wf_b64len"] = len(item.get("b64") or "")
+            try:
+                from django.conf import settings as _s
+
+                if item.get("kind") == "pdf":
+                    pages = item.get("pages") or 1
+                    block["_wf_est_tokens"] = int(pages) * int(getattr(_s, "PDF_PAGE_TOKENS", 2_300))
+                else:
+                    block["_wf_est_tokens"] = int(getattr(_s, "VISION_IMAGE_TOKENS", 1_600))
+            except Exception:
+                pass
 
         blocks: list = [{"type": "text", "text": "Here are the file(s) you requested to view:"}]
         for item in pending:

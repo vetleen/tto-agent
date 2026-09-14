@@ -633,6 +633,20 @@ NATIVE_REQUEST_MAX_PDF_PAGES = _env_int("NATIVE_REQUEST_MAX_PDF_PAGES", "100")
 VISION_IMAGE_MAX_EDGE = _env_int("VISION_IMAGE_MAX_EDGE", "1568")
 VISION_IMAGE_MAX_PIXELS = _env_int("VISION_IMAGE_MAX_PIXELS", "1_150_000")
 VISION_IMAGE_JPEG_QUALITY = _env_int("VISION_IMAGE_JPEG_QUALITY", "82")
+
+# Context token budget (llm/context_budget.py). max_context_tokens is the aim;
+# these carve the model window into output reservation + input overhead + history.
+CONTEXT_SAFETY_MARGIN_TOKENS = _env_int("CONTEXT_SAFETY_MARGIN_TOKENS", "8_000")
+# Conservative reservation for the system prompt + tool schemas + current message
+# when the caller can't measure them before history is windowed (the per-round
+# pruner is the exact in-turn backstop).
+CONTEXT_INPUT_OVERHEAD_TOKENS = _env_int("CONTEXT_INPUT_OVERHEAD_TOKENS", "24_000")
+MIN_HISTORY_BUDGET_TOKENS = _env_int("MIN_HISTORY_BUDGET_TOKENS", "4_000")
+# Per-native-asset token estimates for the context budget (what the provider
+# actually charges): an image is ~(w*h)/750 capped ~1600 after our downscale; a
+# native PDF page is image+text ≈ 2300 tokens. See core/tokens.count_tokens.
+VISION_IMAGE_TOKENS = _env_int("VISION_IMAGE_TOKENS", "1_600")
+PDF_PAGE_TOKENS = _env_int("PDF_PAGE_TOKENS", "2_300")
 # Upload file-type allow-lists are derived from the single capability table in
 # core/file_types.py — data rooms accept every kind, including images and audio.
 # Edit that table (not these constants) to change supported types; chat and
