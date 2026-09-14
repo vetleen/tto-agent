@@ -96,6 +96,65 @@ def _safe_result_dict(result_str: str) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
+def _pipeline_call_meta(messages: List[Message]) -> dict:
+    """Map ``tool_call_id -> (tool_name, arguments)`` from assistant messages'
+    ``tool_calls`` so an evicted tool result can be stubbed with the call that
+    produced it. Handles both ToolCall objects and dicts."""
+    out: dict[str, tuple[str, dict]] = {}
+    for m in messages:
+        for tc in getattr(m, "tool_calls", None) or []:
+            if isinstance(tc, dict):
+                cid, name, args = tc.get("id"), tc.get("name", ""), tc.get("arguments") or {}
+            else:
+                cid = getattr(tc, "id", None)
+                name = getattr(tc, "name", "")
+                args = getattr(tc, "arguments", None) or {}
+            if cid:
+                out[cid] = (name, args)
+    return out
+
+
+def _prune_tool_messages_midturn(
+    messages: List[Message], *, keep_recent: int, protect_call_ids: set
+) -> Tuple[List[Message], int]:
+    """Collapse old ``tool``-role messages to a re-read stub so a growing tool
+    loop stops replaying full results every round (the mid-turn half of context
+    pruning). Protects the ``keep_recent`` most recent tool results and every
+    result whose ``tool_call_id`` is in ``protect_call_ids`` (the current round —
+    identified by id so dedup/reordering can't shift the boundary).
+    ``tool_call_id`` is preserved so provider tool-call/result pairing stays
+    intact.
+
+    Returns ``(messages, pruned_count)`` — a fresh list only when something was
+    pruned, else the original list unchanged.
+    """
+    from chat.tool_stub import build_tool_result_stub
+
+    tool_indices = [i for i, m in enumerate(messages) if getattr(m, "role", "") == "tool"]
+    if not tool_indices:
+        return messages, 0
+    protected = set(tool_indices[-keep_recent:]) if keep_recent > 0 else set()
+    protected |= {
+        i for i in tool_indices
+        if getattr(messages[i], "tool_call_id", None) in protect_call_ids
+    }
+    eligible = [
+        i for i in tool_indices
+        if i not in protected
+        # Already stubbed on a prior round — skip (its body no longer costs much).
+        and not (messages[i].content or "").startswith("[Earlier result of ")
+    ]
+    if not eligible:
+        return messages, 0
+
+    call_meta = _pipeline_call_meta(messages)
+    out = list(messages)
+    for i in eligible:
+        name, args = call_meta.get(getattr(out[i], "tool_call_id", None), ("", None))
+        out[i] = out[i].model_copy(update={"content": build_tool_result_stub(name, args)})
+    return out, len(eligible)
+
+
 class SimpleChatPipeline(BasePipeline):
     """Single pipeline: LLM-driven tool calling via bind_tools(), else delegate to ChatModel."""
 
@@ -394,6 +453,73 @@ class SimpleChatPipeline(BasePipeline):
         tool_by_name.update({t.name: t for t in new_tools})
         return tools + new_tools
 
+    def _midturn_ceiling(self, req: ChatRequest) -> int:
+        """The per-request input-token ceiling for this model + org aim + effort
+        (``min(aim, window) - output_reservation - margin``)."""
+        from llm.context_budget import request_input_ceiling
+
+        params = req.params or {}
+        return request_input_ceiling(
+            req.model,
+            params.get("max_context_tokens"),
+            params.get("thinking_level"),
+        )
+
+    def _prune_growing_loop(
+        self, new_messages: List[Message], req: ChatRequest,
+        *, real_input_tokens: int, protect_call_ids: set,
+    ) -> List[Message]:
+        """After a round appends its tool results, stub OLD tool results when the
+        next request would exceed the model's input ceiling. Anchored on the
+        provider's real prompt-token count for the request just sent (accurate)
+        plus a tiktoken estimate of what this round appended. The current round's
+        results (``protect_call_ids``) and a small recency window stay raw."""
+        from django.conf import settings
+
+        from core.tokens import estimate_chat_request_tokens
+
+        ceiling = self._midturn_ceiling(req)
+        prior = len(req.messages)
+        appended = new_messages[prior:] if len(new_messages) > prior else []
+        projected = (real_input_tokens or 0) + estimate_chat_request_tokens(appended)
+        if projected <= ceiling:
+            return new_messages
+        keep_recent = int(getattr(settings, "CONTEXT_MIDTURN_KEEP_TOOL_RESULTS", 6))
+        pruned, n = _prune_tool_messages_midturn(
+            new_messages, keep_recent=keep_recent, protect_call_ids=protect_call_ids,
+        )
+        if n:
+            logger.info(
+                "Mid-turn context prune: stubbed %d old tool result(s) "
+                "(projected input ~%d > ceiling %d, model %s)",
+                n, projected, ceiling, req.model,
+            )
+        return pruned
+
+    def _prune_final_messages(self, final_messages: List[Message], req: ChatRequest) -> List[Message]:
+        """Backstop prune before the final tool-stripped call: if the assembled
+        request still estimates over the ceiling, stub old tool results (keeping
+        the recency window). Estimated with tiktoken since no fresh provider
+        count is available here."""
+        from django.conf import settings
+
+        from core.tokens import estimate_chat_request_tokens
+
+        ceiling = self._midturn_ceiling(req)
+        if estimate_chat_request_tokens(final_messages) <= ceiling:
+            return final_messages
+        keep_recent = int(getattr(settings, "CONTEXT_MIDTURN_KEEP_TOOL_RESULTS", 6))
+        pruned, n = _prune_tool_messages_midturn(
+            final_messages, keep_recent=keep_recent, protect_call_ids=set(),
+        )
+        if n:
+            logger.info(
+                "Final-call context prune: stubbed %d old tool result(s) "
+                "(estimate over ceiling %d, model %s)",
+                n, ceiling, req.model,
+            )
+        return pruned
+
     def _run_tool_loop(
         self,
         chat_model: ChatModel,
@@ -489,6 +615,11 @@ class SimpleChatPipeline(BasePipeline):
 
             self._append_pending_native_assets(new_messages, req)
             self._append_pending_skill_instructions(new_messages, req)
+            new_messages = self._prune_growing_loop(
+                new_messages, req,
+                real_input_tokens=(response.usage.prompt_tokens if response.usage else 0),
+                protect_call_ids={tc.id for tc in msg.tool_calls},
+            )
             tools = self._expand_tools_from_context(tools, tool_by_name, req)
             req = req.model_copy(update={"messages": new_messages, "tool_schemas": tools})
         else:
@@ -507,6 +638,7 @@ class SimpleChatPipeline(BasePipeline):
                 ),
             )
         ]
+        final_messages = self._prune_final_messages(final_messages, req)
         final_req = req.model_copy(update={
             "tool_schemas": None,
             "messages": final_messages,
@@ -770,6 +902,11 @@ class SimpleChatPipeline(BasePipeline):
 
             self._append_pending_native_assets(new_messages, req)
             self._append_pending_skill_instructions(new_messages, req)
+            new_messages = self._prune_growing_loop(
+                new_messages, req,
+                real_input_tokens=(end_data.get("input_tokens") or 0),
+                protect_call_ids={tc.id for tc in parsed_tool_calls},
+            )
             tools = self._expand_tools_from_context(tools, tool_by_name, req)
             req = req.model_copy(update={"messages": new_messages, "tool_schemas": tools})
         else:
@@ -788,6 +925,7 @@ class SimpleChatPipeline(BasePipeline):
                 ),
             )
         ]
+        final_messages = self._prune_final_messages(final_messages, req)
         final_req = req.model_copy(update={
             "tool_schemas": None,
             "messages": final_messages,

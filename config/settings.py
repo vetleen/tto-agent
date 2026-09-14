@@ -655,6 +655,10 @@ SCRATCHPAD_MAX_CHARS = _env_int("SCRATCHPAD_MAX_CHARS", "20_000")
 # — both between turns (_load_history) and mid-turn (the pipeline pruner). The
 # window keeps recent tool output raw so ongoing reasoning isn't disrupted.
 CONTEXT_RAW_TOOL_TURNS = _env_int("CONTEXT_RAW_TOOL_TURNS", "2")
+# Mid-turn (in the tool loop), when the next request would exceed the model's
+# input ceiling, keep this many of the most recent tool results raw and stub the
+# rest — bounds the loop growth that drives the 500k–5.9M-token production turns.
+CONTEXT_MIDTURN_KEEP_TOOL_RESULTS = _env_int("CONTEXT_MIDTURN_KEEP_TOOL_RESULTS", "6")
 # Upload file-type allow-lists are derived from the single capability table in
 # core/file_types.py — data rooms accept every kind, including images and audio.
 # Edit that table (not these constants) to change supported types; chat and

@@ -2686,13 +2686,22 @@ class ChatConsumer(AsyncWebsocketConsumer):
             )
         self._cancel_event = turn.cancel_event
 
+        # The org/user context aim lets the pipeline's mid-turn pruner size the
+        # input ceiling to the same target as history windowing (else it falls
+        # back to the model's hard window).
+        max_context_tokens = prefs.max_context_tokens if prefs else None
+
         request = ChatRequest(
             messages=messages,
             model=model,
             stream=True,
             tools=tools,
             context=context,
-            params={"thinking_level": thinking_level, "_cancel_event": turn.cancel_event},
+            params={
+                "thinking_level": thinking_level,
+                "max_context_tokens": max_context_tokens,
+                "_cancel_event": turn.cancel_event,
+            },
         )
 
         service = get_llm_service()

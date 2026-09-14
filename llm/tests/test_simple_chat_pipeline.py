@@ -1387,3 +1387,141 @@ class IterationNoticeTests(TestCase):
             and ("[Progress:" in m.content or "IMPORTANT:" in m.content)
         ]
         self.assertEqual(progress, [])
+
+
+class MidturnPruningTests(TestCase):
+    """Phase 6: the pipeline stubs old tool results mid-loop when the next
+    request would exceed the model's input ceiling."""
+
+    def _asst(self, cid, name, args):
+        return Message(
+            role="assistant", content="",
+            tool_calls=[ToolCall(id=cid, name=name, arguments=args)],
+        )
+
+    def _tool(self, cid, body):
+        return Message(role="tool", content=body, tool_call_id=cid)
+
+    def _req(self, messages, *, max_context_tokens=50_000, effort="low"):
+        return ChatRequest(
+            messages=messages, model="gpt-5.4", stream=True,
+            context=RunContext.create(),
+            params={"max_context_tokens": max_context_tokens, "thinking_level": effort},
+        )
+
+    # -- _pipeline_call_meta / _prune_tool_messages_midturn --
+
+    def test_call_meta_maps_ids(self):
+        from llm.pipelines.simple_chat import _pipeline_call_meta
+
+        msgs = [self._asst("c1", "web_search", {"query": "x"}), self._tool("c1", "r")]
+        meta = _pipeline_call_meta(msgs)
+        self.assertEqual(meta["c1"], ("web_search", {"query": "x"}))
+
+    def test_prune_protects_recent_and_current(self):
+        from llm.pipelines.simple_chat import _prune_tool_messages_midturn
+
+        msgs = [
+            Message(role="user", content="q"),
+            self._asst("c1", "document_view_native", {"doc_indices": [1]}),
+            self._tool("c1", "OLD_ONE"),
+            self._asst("c2", "web_search", {"query": "y"}),
+            self._tool("c2", "OLD_TWO"),
+            self._asst("c3", "web_search", {"query": "z"}),
+            self._tool("c3", "CURRENT"),
+        ]
+        out, n = _prune_tool_messages_midturn(
+            msgs, keep_recent=1, protect_call_ids={"c3"},
+        )
+        self.assertEqual(n, 2)
+        bodies = {m.tool_call_id: m.content for m in out if m.role == "tool"}
+        self.assertTrue(bodies["c1"].startswith("[Earlier result of"))
+        self.assertIn("document_view_native", bodies["c1"])
+        self.assertTrue(bodies["c2"].startswith("[Earlier result of"))
+        self.assertEqual(bodies["c3"], "CURRENT")  # protected
+
+    def test_prune_preserves_tool_call_ids(self):
+        from llm.pipelines.simple_chat import _prune_tool_messages_midturn
+
+        msgs = [
+            self._asst("c1", "web_search", {"query": "x"}),
+            self._tool("c1", "OLD"),
+            self._asst("c2", "web_search", {"query": "y"}),
+            self._tool("c2", "NEW"),
+        ]
+        out, n = _prune_tool_messages_midturn(msgs, keep_recent=1, protect_call_ids=set())
+        self.assertEqual(n, 1)
+        self.assertEqual(out[1].tool_call_id, "c1")  # id kept for pairing
+
+    def test_prune_skips_already_stubbed(self):
+        from llm.pipelines.simple_chat import _prune_tool_messages_midturn
+
+        msgs = [
+            self._asst("c1", "web_search", {"query": "x"}),
+            self._tool("c1", "[Earlier result of web_search(query=x) was cleared to save context.]"),
+            self._asst("c2", "web_search", {"query": "y"}),
+            self._tool("c2", "REAL"),
+        ]
+        _, n = _prune_tool_messages_midturn(msgs, keep_recent=0, protect_call_ids={"c2"})
+        self.assertEqual(n, 0)  # c1 already a stub, c2 protected
+
+    # -- _midturn_ceiling --
+
+    def test_midturn_ceiling_uses_params(self):
+        # min(window, 50000) - output_reservation(low=16384) - margin(8000).
+        req = self._req([Message(role="user", content="q")])
+        ceiling = SimpleChatPipeline()._midturn_ceiling(req)
+        self.assertEqual(ceiling, 50_000 - 16_384 - 8_000)
+
+    # -- _prune_growing_loop --
+
+    def test_growing_loop_prunes_when_over_ceiling(self):
+        pipe = SimpleChatPipeline()
+        base = [
+            Message(role="user", content="q"),
+            self._asst("c1", "web_search", {"query": "x"}),
+            self._tool("c1", "OLD_ONE"),
+            self._asst("c2", "web_search", {"query": "y"}),
+            self._tool("c2", "OLD_TWO"),
+        ]
+        req = self._req(base)
+        new_messages = base + [self._asst("c3", "web_search", {"query": "z"}), self._tool("c3", "CURRENT")]
+        with self.settings(CONTEXT_MIDTURN_KEEP_TOOL_RESULTS=1):
+            out = pipe._prune_growing_loop(
+                new_messages, req, real_input_tokens=30_000, protect_call_ids={"c3"},
+            )
+        bodies = {m.tool_call_id: m.content for m in out if m.role == "tool"}
+        self.assertTrue(bodies["c1"].startswith("[Earlier result of"))
+        self.assertEqual(bodies["c3"], "CURRENT")
+
+    def test_growing_loop_noop_when_under_ceiling(self):
+        pipe = SimpleChatPipeline()
+        base = [
+            Message(role="user", content="q"),
+            self._asst("c1", "web_search", {"query": "x"}),
+            self._tool("c1", "OLD_ONE"),
+        ]
+        req = self._req(base)
+        new_messages = base + [self._asst("c2", "web_search", {"query": "z"}), self._tool("c2", "CURRENT")]
+        with self.settings(CONTEXT_MIDTURN_KEEP_TOOL_RESULTS=1):
+            out = pipe._prune_growing_loop(
+                new_messages, req, real_input_tokens=100, protect_call_ids={"c2"},
+            )
+        self.assertEqual(out[2].content, "OLD_ONE")  # untouched
+
+    def test_final_prune_backstops_over_ceiling(self):
+        pipe = SimpleChatPipeline()
+        big = "word " * 40_000  # a large tool body pushing the estimate over the ceiling
+        msgs = [
+            Message(role="user", content="q"),
+            self._asst("c1", "web_search", {"query": "x"}),
+            self._tool("c1", big),
+            self._asst("c2", "web_search", {"query": "y"}),
+            self._tool("c2", "small recent"),
+            Message(role="user", content="final answer please"),
+        ]
+        req = self._req(msgs, max_context_tokens=50_000)
+        with self.settings(CONTEXT_MIDTURN_KEEP_TOOL_RESULTS=1):
+            out = pipe._prune_final_messages(list(msgs), req)
+        bodies = {m.tool_call_id: m.content for m in out if m.role == "tool"}
+        self.assertTrue(bodies["c1"].startswith("[Earlier result of"))
