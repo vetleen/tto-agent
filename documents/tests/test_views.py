@@ -2236,9 +2236,9 @@ class DocumentFileServeAndEditTests(TestCase):
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(resp.json()["error"], "not_editable")
 
-    # --- inline-edit size ceiling (the save re-indexes synchronously on the web dyno) ---
-    @override_settings(DOCUMENT_INLINE_EDIT_MAX_CHARS=10)
-    def test_edit_source_too_large_opens_read_only(self):
+    # --- edit-source ceilings ---
+    @override_settings(DOCUMENT_BROWSER_EDIT_MAX_CHARS=10)
+    def test_edit_source_above_browser_cap_opens_read_only(self):
         doc = self._text_doc(content="x" * 20)
         resp = self.client.get(self._url("document_edit_source", doc))
         self.assertEqual(resp.status_code, 200)
@@ -2248,8 +2248,61 @@ class DocumentFileServeAndEditTests(TestCase):
         self.assertEqual(data["max_chars"], 10)
         self.assertNotIn("content", data)  # nothing to edit is shipped
 
+    @override_settings(DOCUMENT_INLINE_EDIT_MAX_CHARS=10, DOCUMENT_BROWSER_EDIT_MAX_CHARS=100)
+    def test_edit_source_between_caps_is_editable(self):
+        doc = self._text_doc(content="x" * 20)
+        data = self.client.get(self._url("document_edit_source", doc)).json()
+        self.assertTrue(data["editable"])
+        self.assertEqual(data["content"], "x" * 20)
+        self.assertEqual(data["inline_max_chars"], 10)  # modal warns that saves queue
+
+    # --- save modes: inline (≤ DOCUMENT_INLINE_EDIT_MAX_CHARS) vs queued (async) ---
     @override_settings(DOCUMENT_INLINE_EDIT_MAX_CHARS=10)
-    def test_save_rejects_too_large_without_scanning(self):
+    @patch("documents.tasks.process_document_version_task.delay")
+    def test_save_above_inline_cap_queues_async(self, mock_delay):
+        from documents.models import DataRoomDocumentVersion
+
+        doc = self._text_doc(content="old")
+        before = doc.versions.count()
+        with patch("documents.services.sync_scan.scan_version_synchronously") as scan:
+            resp = self.client.post(self._url("document_save", doc), {"content": "y" * 20})
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["verdict"], "queued")
+        self.assertTrue(data["ok"])
+        self.assertFalse(data["unchanged"])
+        scan.assert_not_called()  # nothing ran inline on the web dyno
+        self.assertEqual(doc.versions.count(), before + 1)
+        version = DataRoomDocumentVersion.objects.get(pk=data["version_id"])
+        self.assertEqual(version.document_id, doc.id)
+        self.assertEqual(version.origin, DataRoomDocumentVersion.Origin.USER_EDITED)
+        self.assertEqual(version.content, "y" * 20)
+        # Joined the dispatch gate like an upload (mark_version_queued + safe_dispatch).
+        self.assertIsNotNone(version.queued_at)
+        self.assertIsNotNone(version.dispatched_at)
+        mock_delay.assert_called_once_with(version.id)
+        self.assertEqual(data["verdict_url"], self._verdict_url(doc, version))
+
+    @patch("documents.tasks.process_document_version_task.delay")
+    def test_save_within_cap_never_joins_the_queue(self, mock_delay):
+        from documents.services.sync_scan import Verdict
+
+        doc = self._text_doc(content="old")
+        verdict = Verdict(
+            status="clean", is_quarantined=False, is_partially_quarantined=False,
+            reasons=[], reviewer_reasoning=None, version_index=1, became_active=True,
+        )
+        with patch(
+            "documents.services.sync_scan.scan_version_synchronously", return_value=verdict
+        ):
+            resp = self.client.post(self._url("document_save", doc), {"content": "small edit"})
+        self.assertEqual(resp.json()["verdict"], "clean")
+        version = doc.versions.order_by("-version_index").first()
+        self.assertIsNone(version.queued_at)
+        mock_delay.assert_not_called()
+
+    @override_settings(DOCUMENT_BROWSER_EDIT_MAX_CHARS=10)
+    def test_save_above_browser_cap_rejected(self):
         doc = self._text_doc(content="old")
         before = doc.versions.count()
         with patch("documents.services.sync_scan.scan_version_synchronously") as scan:
@@ -2258,3 +2311,174 @@ class DocumentFileServeAndEditTests(TestCase):
         self.assertEqual(resp.json()["error"], "too_large")
         scan.assert_not_called()
         self.assertEqual(doc.versions.count(), before)  # no version created
+
+    # --- inline scan failure → the same version is re-queued through the async gate ---
+    def _failing_scan(self, status, error="Scan failed", raise_after=False):
+        """Side effect for the mocked inline scan: leave the version in ``status``
+        (as the real sinks would) and return a scan_failed verdict — or raise."""
+        from documents.models import DataRoomDocumentVersion
+        from documents.services.sync_scan import Verdict
+
+        def _side_effect(version_id):
+            DataRoomDocumentVersion.objects.filter(pk=version_id).update(
+                status=status, processing_error=error,
+            )
+            if raise_after:
+                raise RuntimeError("boom")
+            return Verdict(
+                status="scan_failed", is_quarantined=False, is_partially_quarantined=False,
+                reasons=[error], reviewer_reasoning=None, version_index=1, became_active=False,
+            )
+
+        return _side_effect
+
+    @patch("documents.tasks.process_document_version_task.delay")
+    def test_save_sync_scan_failed_verdict_requeues(self, mock_delay):
+        from documents.models import DataRoomDocumentVersion
+
+        Status = DataRoomDocument.Status
+        doc = self._text_doc(content="old")
+        with patch(
+            "documents.services.sync_scan.scan_version_synchronously",
+            side_effect=self._failing_scan(Status.SCAN_FAILED),
+        ):
+            resp = self.client.post(self._url("document_save", doc), {"content": "new body"})
+        data = resp.json()
+        self.assertEqual(data["verdict"], "queued")
+        version = DataRoomDocumentVersion.objects.get(pk=data["version_id"])
+        # Reset so the dispatcher (which only claims UPLOADED/PROCESSING) takes it.
+        self.assertEqual(version.status, Status.UPLOADED)
+        self.assertIsNone(version.processing_error)
+        self.assertIsNotNone(version.queued_at)
+        self.assertIsNotNone(version.dispatched_at)
+        mock_delay.assert_called_once_with(version.id)
+        # The document keeps its live v0, so its own status is untouched.
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, Status.READY)
+
+    @patch("documents.tasks.process_document_version_task.delay")
+    def test_save_sync_raise_requeues(self, mock_delay):
+        from documents.models import DataRoomDocumentVersion
+
+        Status = DataRoomDocument.Status
+        doc = self._text_doc(content="old")
+        with patch(
+            "documents.services.sync_scan.scan_version_synchronously",
+            side_effect=self._failing_scan(Status.SCANNING, raise_after=True),
+        ):
+            resp = self.client.post(self._url("document_save", doc), {"content": "new body"})
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["verdict"], "queued")
+        version = DataRoomDocumentVersion.objects.get(pk=data["version_id"])
+        self.assertEqual(version.status, Status.UPLOADED)
+        self.assertIsNotNone(version.queued_at)
+        mock_delay.assert_called_once_with(version.id)
+
+    @patch("documents.tasks.process_document_version_task.delay")
+    def test_save_sync_failure_mirrors_uploaded_onto_doc_without_live_version(self, mock_delay):
+        Status = DataRoomDocument.Status
+        doc = self._text_doc(content="old")
+        # No live version: an eager scan_failed gets mirrored onto the document, so
+        # the re-queue must mirror UPLOADED back (row shows processing, not failed).
+        DataRoomDocument.objects.filter(pk=doc.pk).update(
+            active_searchable_version=None, status=Status.SCAN_FAILED,
+        )
+        with patch(
+            "documents.services.sync_scan.scan_version_synchronously",
+            side_effect=self._failing_scan(Status.SCAN_FAILED),
+        ):
+            resp = self.client.post(self._url("document_save", doc), {"content": "new body"})
+        self.assertEqual(resp.json()["verdict"], "queued")
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, Status.UPLOADED)
+        self.assertIsNone(doc.processing_error)
+
+    @patch("documents.tasks.process_document_version_task.delay")
+    def test_save_sync_failed_version_not_requeued(self, mock_delay):
+        Status = DataRoomDocument.Status
+        doc = self._text_doc(content="old")
+        with patch(
+            "documents.services.sync_scan.scan_version_synchronously",
+            side_effect=self._failing_scan(Status.FAILED, error="No text could be extracted"),
+        ):
+            resp = self.client.post(self._url("document_save", doc), {"content": "new body"})
+        data = resp.json()
+        self.assertEqual(data["verdict"], "scan_failed")  # deterministic: not retried
+        self.assertFalse(data["ok"])
+        version = doc.versions.order_by("-version_index").first()
+        self.assertEqual(version.status, Status.FAILED)
+        self.assertIsNone(version.queued_at)
+        mock_delay.assert_not_called()
+
+    # --- document_version_verdict (poll target for queued saves) ---
+    def _verdict_url(self, doc, version):
+        return reverse("document_version_verdict", kwargs={
+            "data_room_id": self.data_room.uuid, "document_id": doc.id, "version_id": version.id,
+        })
+
+    def _edit_version(self, doc, status, index, **updates):
+        from documents.models import DataRoomDocumentVersion
+        from documents.tests._helpers import make_version
+
+        v = make_version(doc, version_index=index, status=status, make_active=False, searchable=False)
+        if updates:
+            DataRoomDocumentVersion.objects.filter(pk=v.pk).update(**updates)
+            v.refresh_from_db()
+        return v
+
+    def test_verdict_pending_states(self):
+        from documents.services.pii_scan import SCAN_DISPATCH_RETRY_MESSAGE
+
+        Status = DataRoomDocument.Status
+        doc = self._text_doc()
+        now = timezone.now()
+        cases = [
+            (self._edit_version(doc, Status.UPLOADED, 1, queued_at=now), "queued"),
+            (self._edit_version(doc, Status.UPLOADED, 2, queued_at=now, dispatched_at=now), "uploaded"),
+            (self._edit_version(doc, Status.SCANNING, 3), "scanning"),
+            (self._edit_version(doc, Status.SCAN_FAILED, 4, processing_error=SCAN_DISPATCH_RETRY_MESSAGE), "scan_retrying"),
+        ]
+        for version, expected in cases:
+            with self.subTest(expected=expected):
+                data = self.client.get(self._verdict_url(doc, version)).json()
+                self.assertTrue(data["pending"])
+                self.assertEqual(data["status"], expected)
+
+    def test_verdict_final_states(self):
+        Status = DataRoomDocument.Status
+        doc = self._text_doc()
+
+        clean = self._edit_version(doc, Status.READY, 1)
+        data = self.client.get(self._verdict_url(doc, clean)).json()
+        self.assertFalse(data["pending"])
+        self.assertEqual(data["verdict"], "clean")
+        self.assertTrue(data["ok"])
+
+        blocked = self._edit_version(
+            doc, Status.READY, 2, is_quarantined=True, quarantine_reason="Health data",
+        )
+        data = self.client.get(self._verdict_url(doc, blocked)).json()
+        self.assertFalse(data["pending"])
+        self.assertEqual(data["verdict"], "blocked")
+        self.assertEqual(data["reason"], "Health data")
+
+        failed = self._edit_version(doc, Status.SCAN_FAILED, 3, processing_error="Scan failed")
+        data = self.client.get(self._verdict_url(doc, failed)).json()
+        self.assertFalse(data["pending"])
+        self.assertEqual(data["verdict"], "scan_failed")
+        self.assertEqual(data["reason"], "Scan failed")
+
+    def test_verdict_404_for_foreign_version_and_403_for_non_owner(self):
+        from documents.tests._helpers import make_document
+
+        doc = self._text_doc()
+        other_doc = make_document(
+            self.data_room, self.user, original_filename="other.txt", mime_type="text/plain",
+        )
+        foreign = other_doc.current_version
+        self.assertEqual(self.client.get(self._verdict_url(doc, foreign)).status_code, 404)
+        self.client.force_login(self.other)
+        self.assertEqual(
+            self.client.get(self._verdict_url(doc, doc.current_version)).status_code, 403
+        )

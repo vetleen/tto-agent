@@ -50,6 +50,11 @@ urlpatterns = [
         name="document_save",
     ),
     path(
+        "<uuid:data_room_id>/documents/<int:document_id>/versions/<int:version_id>/verdict/",
+        views.document_version_verdict,
+        name="document_version_verdict",
+    ),
+    path(
         "<uuid:data_room_id>/documents/<int:document_id>/rescan/",
         views.document_rescan,
         name="document_rescan",

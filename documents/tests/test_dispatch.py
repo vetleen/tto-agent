@@ -338,3 +338,65 @@ class CreateVersionQueueTests(_GateTestCase):
         version.refresh_from_db()
         self.assertIsNone(version.queued_at)
         self.assertIsNone(version.dispatched_at)
+
+
+class RequeueAfterSyncFailureTests(_GateTestCase):
+    """document_save's fallback: a version whose INLINE scan failed is reset to
+    UPLOADED and re-joins the gate (the dispatcher only claims UPLOADED/PROCESSING)."""
+
+    def _doc_with_failed_edit(self, status):
+        doc = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="base.md", status=Status.READY,
+        )
+        make_version(doc, status=Status.READY)
+        edit = make_version(
+            doc, version_index=1, status=status, make_active=False, searchable=False,
+        )
+        DataRoomDocumentVersion.objects.filter(pk=edit.pk).update(processing_error="Scan failed")
+        return doc, edit
+
+    @patch("documents.tasks.process_document_version_task")
+    def test_requeue_resets_and_dispatches(self, mock_task):
+        from documents.views import _requeue_after_sync_failure
+
+        mock_task.delay.return_value = MagicMock(id="celery-1")
+        doc, edit = self._doc_with_failed_edit(Status.SCAN_FAILED)
+
+        self.assertTrue(_requeue_after_sync_failure(doc, edit.id))
+
+        edit.refresh_from_db()
+        self.assertEqual(edit.status, Status.UPLOADED)
+        self.assertIsNone(edit.processing_error)
+        self.assertIsNotNone(edit.queued_at)
+        self.assertIsNotNone(edit.dispatched_at)
+        mock_task.delay.assert_called_once_with(edit.id)
+
+    @patch("documents.services.dispatch.DOCUMENT_WORKER_SLOTS", 1)
+    @patch("documents.tasks.process_document_version_task")
+    def test_requeue_waits_when_slots_full(self, mock_task):
+        from documents.views import _requeue_after_sync_failure
+
+        self._version(Status.PROCESSING, queued_minutes_ago=9, dispatched_minutes_ago=8)
+        doc, edit = self._doc_with_failed_edit(Status.SCANNING)
+
+        self.assertTrue(_requeue_after_sync_failure(doc, edit.id))
+
+        edit.refresh_from_db()
+        self.assertEqual(edit.status, Status.UPLOADED)
+        self.assertIsNotNone(edit.queued_at)
+        self.assertIsNone(edit.dispatched_at)
+        mock_task.delay.assert_not_called()
+
+    @patch("documents.tasks.process_document_version_task")
+    def test_failed_version_is_not_requeued(self, mock_task):
+        from documents.views import _requeue_after_sync_failure
+
+        doc, edit = self._doc_with_failed_edit(Status.FAILED)
+
+        self.assertFalse(_requeue_after_sync_failure(doc, edit.id))
+
+        edit.refresh_from_db()
+        self.assertEqual(edit.status, Status.FAILED)
+        self.assertIsNone(edit.queued_at)
+        mock_task.delay.assert_not_called()

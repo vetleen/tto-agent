@@ -106,8 +106,85 @@ def _content_sha(text: str) -> str:
 
 
 def _inline_edit_max_chars() -> int:
-    """Char ceiling for the in-browser edit/save path (synchronous re-index)."""
-    return getattr(settings, "DOCUMENT_INLINE_EDIT_MAX_CHARS", 75_000)
+    """Save-mode switch for the in-browser edit path: up to this many chars the
+    save re-indexes inline (instant verdict); above it the version is queued."""
+    return getattr(settings, "DOCUMENT_INLINE_EDIT_MAX_CHARS", 150_000)
+
+
+def _browser_edit_max_chars() -> int:
+    """What the editor + a multipart POST can carry; above it the modal is read-only."""
+    return getattr(settings, "DOCUMENT_BROWSER_EDIT_MAX_CHARS", 1_500_000)
+
+
+def _queued_payload(data_room, doc, version) -> dict:
+    """``document_save`` response for a version handed to the async pipeline. The
+    modal keeps polling ``verdict_url`` (``document_version_verdict``) until the
+    verdict is in, then shows it exactly like an inline save."""
+    from django.urls import reverse
+
+    return {
+        "ok": True,
+        "verdict": "queued",
+        "unchanged": False,
+        "version_id": version.id,
+        "verdict_url": reverse(
+            "document_version_verdict",
+            kwargs={
+                "data_room_id": data_room.uuid,
+                "document_id": doc.id,
+                "version_id": version.id,
+            },
+        ),
+        "is_quarantined": bool(doc.is_quarantined),
+    }
+
+
+def _requeue_after_sync_failure(doc, version_id: int) -> bool:
+    """Hand a version whose INLINE scan failed to the async pipeline instead.
+
+    The inline path (``scan_version_synchronously``) is eager: a transient
+    classifier / PII-LLM failure marks the version SCAN_FAILED and stops, where the
+    async pipeline would have retried (Celery retry ladders + the dispatch-retry
+    marker). So reset the row to UPLOADED and re-join the dispatch gate; the re-run
+    is idempotent (``process_document_version`` replaces the chunks and vectors).
+
+    UPLOADED specifically: the dispatcher only claims UPLOADED/PROCESSING, and
+    ``process_document_version`` skips a *fresh* PROCESSING row. A FAILED version
+    is NOT re-queued — extraction/empty-content errors are deterministic. Returns
+    True when the version was queued; False degrades to the ``scan_failed`` verdict.
+    """
+    from documents.models import DataRoomDocumentVersion
+    from documents.services.versioning import _enqueue_processing
+
+    Status = DataRoomDocument.Status
+    try:
+        reset = DataRoomDocumentVersion.objects.filter(
+            pk=version_id,
+            status__in=(
+                Status.UPLOADED, Status.PROCESSING, Status.SCANNING, Status.SCAN_FAILED,
+            ),
+        ).update(status=Status.UPLOADED, processing_error=None, dispatched_at=None)
+        if not reset:
+            return False
+        # An eager scan_failed is mirrored onto a document with no live version
+        # (same guard as process_document._mirror_doc_status) — mirror back so the
+        # row shows "processing" rather than "scan failed" while the worker runs.
+        if doc.active_searchable_version_id in (None, version_id):
+            DataRoomDocument.objects.filter(pk=doc.pk).update(
+                status=Status.UPLOADED, processing_error=None,
+            )
+        _enqueue_processing(version_id)
+    except Exception:
+        logger.exception(
+            "document_save: could not re-queue version %s after an inline scan failure",
+            version_id,
+        )
+        return False
+    logger.warning(
+        "document_save: inline scan failed for version %s; re-queued through the dispatch gate",
+        version_id,
+    )
+    return True
 
 
 @login_required
@@ -916,10 +993,10 @@ def document_edit_source(request, data_room_id, document_id):
     from documents.services.versioning import open_working_version
 
     content, _version, warning = open_working_version(doc)
-    max_chars = _inline_edit_max_chars()
+    max_chars = _browser_edit_max_chars()
     if len(content or "") > max_chars:
-        # Too big for the synchronous re-index a save would run (see
-        # DOCUMENT_INLINE_EDIT_MAX_CHARS). The modal falls back to read-only.
+        # Beyond what the editor + a form POST can carry (see
+        # DOCUMENT_BROWSER_EDIT_MAX_CHARS). The modal falls back to read-only.
         return JsonResponse({
             "ok": True,
             "editable": False,
@@ -934,19 +1011,31 @@ def document_edit_source(request, data_room_id, document_id):
         "sha256": _content_sha(content),
         "warning": warning,
         "is_quarantined": bool(doc.is_quarantined),
+        # Above this a save is queued for the worker instead of re-indexed inline;
+        # the modal tells the user to expect a wait.
+        "inline_max_chars": _inline_edit_max_chars(),
     })
 
 
 @login_required
 @require_POST
 def document_save(request, data_room_id, document_id):
-    """Save edited markdown for a TEXT document and re-index synchronously.
+    """Save edited markdown for a TEXT document and re-index it.
 
     If the submitted content is unchanged from the working version this is a
     no-op (no new version, no re-scan) — so re-opening and saving a quarantined
-    doc without edits does not re-run the scan. A changed save creates a new
-    version and runs the same chunk→embed→scan pipeline inline, returning the
-    verdict; a clean edit of a quarantined doc thereby clears the quarantine.
+    doc without edits does not re-run the scan.
+
+    A changed save creates a new version and then, by size:
+
+    - up to ``DOCUMENT_INLINE_EDIT_MAX_CHARS``: runs the chunk→embed→scan pipeline
+      INLINE and returns the verdict (a clean edit of a quarantined doc thereby
+      clears the quarantine). If that inline scan fails transiently (or raises)
+      the same version is re-queued through the async gate instead of failing
+      (``_requeue_after_sync_failure``);
+    - above it: the version joins the document dispatch gate like an upload and
+      the response is ``verdict: "queued"`` with a ``verdict_url`` the modal polls
+      (``document_version_verdict``).
     """
     data_room = get_object_or_404(DataRoom, uuid=data_room_id)
     if not _user_can_modify_data_room(request.user, data_room):
@@ -959,12 +1048,10 @@ def document_save(request, data_room_id, document_id):
     new_content = request.POST.get("content")
     if new_content is None:
         return JsonResponse({"ok": False, "error": "content_required"}, status=400)
-    max_chars = _inline_edit_max_chars()
-    if len(new_content) > max_chars:
-        # The re-index below runs inline on the web dyno; bound it so a huge paste
-        # can't push the request past the router timeout.
+    browser_max = _browser_edit_max_chars()
+    if len(new_content) > browser_max:
         return JsonResponse(
-            {"ok": False, "error": "too_large", "max_chars": max_chars}, status=400
+            {"ok": False, "error": "too_large", "max_chars": browser_max}, status=400
         )
 
     from documents.models import DataRoomDocumentVersion
@@ -980,6 +1067,18 @@ def document_save(request, data_room_id, document_id):
             "is_quarantined": bool(doc.is_quarantined),
         })
 
+    if len(new_content) > _inline_edit_max_chars():
+        # Too big to re-index inside the router timeout: queue it like an upload
+        # (mark_version_queued + safe_dispatch via _enqueue_processing).
+        version = create_version(
+            doc,
+            content=new_content,
+            origin=DataRoomDocumentVersion.Origin.USER_EDITED,
+            created_by=request.user,
+            enqueue=True,
+        )
+        return JsonResponse(_queued_payload(data_room, doc, version))
+
     version = create_version(
         doc,
         content=new_content,
@@ -987,9 +1086,67 @@ def document_save(request, data_room_id, document_id):
         created_by=request.user,
         enqueue=False,
     )
-    verdict = scan_version_synchronously(version.id)
+    try:
+        verdict = scan_version_synchronously(version.id)
+    except Exception:
+        logger.exception("document_save: inline scan raised for version %s", version.id)
+        verdict = None
+    if verdict is None or verdict.status == "scan_failed":
+        if _requeue_after_sync_failure(doc, version.id):
+            return JsonResponse(_queued_payload(data_room, doc, version))
+        if verdict is None:
+            doc.refresh_from_db()
+            return JsonResponse({
+                "ok": False,
+                "verdict": "scan_failed",
+                "reason": "The safety scan could not complete. Try saving again.",
+                "reviewer_finding": "",
+                "unchanged": False,
+                "is_quarantined": bool(doc.is_quarantined),
+            })
     doc.refresh_from_db()
     payload = verdict.to_http_json()
+    payload["unchanged"] = False
+    payload["is_quarantined"] = bool(doc.is_quarantined)
+    return JsonResponse(payload)
+
+
+@login_required
+@require_http_methods(["GET"])
+def document_version_verdict(request, data_room_id, document_id, version_id):
+    """Poll target for a queued edit (``document_save`` → ``verdict: "queued"``).
+
+    ``pending: true`` (with the row's presentation status) while the async pipeline
+    is still working — including a SCAN_FAILED that carries the dispatch-retry
+    marker, which the worker retries on its own. Otherwise the same verdict shape
+    an inline save returns, so the modal handles both identically.
+    """
+    data_room = get_object_or_404(DataRoom, uuid=data_room_id)
+    if not _user_can_modify_data_room(request.user, data_room):
+        return JsonResponse({"error": "Forbidden"}, status=403)
+    doc = get_object_or_404(DataRoomDocument, pk=document_id, data_room=data_room)
+    from documents.models import DataRoomDocumentVersion
+    from documents.services.pii_scan import SCAN_DISPATCH_RETRY_MESSAGE
+    from documents.services.sync_scan import verdict_for_version
+
+    version = get_object_or_404(DataRoomDocumentVersion, pk=version_id, document=doc)
+    Status = DataRoomDocument.Status
+    pending = version.status in (Status.UPLOADED, Status.PROCESSING, Status.SCANNING) or (
+        version.status == Status.SCAN_FAILED
+        and version.processing_error == SCAN_DISPATCH_RETRY_MESSAGE
+    )
+    if pending:
+        return JsonResponse({
+            "ok": True,
+            "pending": True,
+            "status": DataRoomDocument.presentation_status(
+                version.status,
+                version.processing_error,
+                waiting=bool(version.queued_at and not version.dispatched_at),
+            ),
+        })
+    payload = verdict_for_version(version.id).to_http_json()
+    payload["pending"] = False
     payload["unchanged"] = False
     payload["is_quarantined"] = bool(doc.is_quarantined)
     return JsonResponse(payload)

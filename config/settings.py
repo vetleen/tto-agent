@@ -710,12 +710,22 @@ SKILL_ATTACH_TOKEN_BUDGET = _env_int("SKILL_ATTACH_TOKEN_BUDGET", "60000")
 # Decompression-bomb guards for the processing pipeline (worker has ~512 MB).
 DOCX_MAX_UNCOMPRESSED_BYTES = _env_int("DOCX_MAX_UNCOMPRESSED_BYTES", "250000000")  # 250 MB
 DOCUMENT_MAX_EXTRACTED_CHARS = _env_int("DOCUMENT_MAX_EXTRACTED_CHARS", "20000000")  # 20M chars
-# Ceiling for the in-browser "Edit document" path (documents.views.document_save):
-# that save chunks, embeds and scans INLINE on the web dyno so the modal can show
-# the verdict, so it must stay well inside Heroku's 30 s router timeout. 75k chars
-# matches CANVAS_MAX_CHARS — the canvas save runs the same synchronous scan. Larger
-# text documents open read-only; re-upload them as a file instead.
-DOCUMENT_INLINE_EDIT_MAX_CHARS = _env_int("DOCUMENT_INLINE_EDIT_MAX_CHARS", "75000")
+# In-browser "Edit document" path (documents.views.document_save) — two ceilings:
+#
+# DOCUMENT_INLINE_EDIT_MAX_CHARS selects the save MODE. Up to this size the save
+# chunks, embeds and scans INLINE on the web dyno so the modal shows the verdict
+# immediately; that has to finish inside Heroku's 30 s router timeout. The scan's
+# cost is roughly linear in size (guardrails classifies sequential batches of
+# ≤40k chars / 12 chunks, then the PII pass); 150k ≈ 2x the canvas path's proven
+# 75k (CANVAS_MAX_CHARS runs the same synchronous scan). Above it the new version
+# is QUEUED through the document dispatch gate like an upload and the modal polls
+# for the verdict. Lower this (env var, no deploy) if H12s show up on saves.
+DOCUMENT_INLINE_EDIT_MAX_CHARS = _env_int("DOCUMENT_INLINE_EDIT_MAX_CHARS", "150000")
+# DOCUMENT_BROWSER_EDIT_MAX_CHARS is what the editor + a multipart POST can carry:
+# Django's DATA_UPLOAD_MAX_MEMORY_SIZE (default 2.5 MB) bounds the form body, and a
+# multi-MB CodeMirror buffer is impractical. Above it the modal opens read-only;
+# re-upload a revised file instead.
+DOCUMENT_BROWSER_EDIT_MAX_CHARS = _env_int("DOCUMENT_BROWSER_EDIT_MAX_CHARS", "1500000")
 DOCUMENT_ATTACHMENT_MAX_BYTES = _env_int("DOCUMENT_ATTACHMENT_MAX_BYTES", "20000000")  # 20 MB
 # Spreadsheet (.xlsx/.xlsm) processing. The cell budget is the memory AND cost
 # cap: every stored cell becomes chunk text that is embedded and guardrail-

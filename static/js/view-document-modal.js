@@ -1,7 +1,9 @@
 /**
  * View / edit document modal. One shell that adapts to the document's file kind:
  *   - text  : Edit/Read toggle. Editable text docs load their working markdown,
- *             edit in WilfredEditor, and Save re-indexes synchronously.
+ *             edit in WilfredEditor, and Save re-indexes synchronously (small
+ *             docs) or queues the worker and polls for the verdict (large docs,
+ *             and the fallback when an inline scan fails).
  *   - image : the picture leads; the assistant's description (the indexed text)
  *             sits beneath in a collapsible section.
  *   - pdf   : Pages (inline browser viewer) | Extracted text (indexed chunks).
@@ -81,6 +83,7 @@
   }
 
   function destroyEditor() {
+    stopVerdictPoll();
     if (editor) {
       try { editor.destroy(); } catch (e) {}
       editor = null;
@@ -199,6 +202,7 @@
   function openDoc(cfg) {
     cur = cfg;
     editor && destroyEditor();
+    stopVerdictPoll();
     chunksCache = null;
     roPreview = false;
     mode = "";
@@ -258,11 +262,11 @@
       })
       .then(function (data) {
         if (data.editable === false) {
-          // Over DOCUMENT_INLINE_EDIT_MAX_CHARS: a save would re-index inline on
-          // the web dyno, so the server refuses to offer the editor. Read-only.
+          // Over DOCUMENT_BROWSER_EDIT_MAX_CHARS: more than the editor and a form
+          // POST can carry. Read-only.
           segText.classList.add("hidden");
           setStatus(
-            "This document is too large to edit here (over " +
+            "This document is too large to edit in the browser (over " +
               Number(data.max_chars || 0).toLocaleString() +
               " characters). Showing it read-only — upload a revised file instead.",
             "warn"
@@ -271,7 +275,14 @@
           return;
         }
         cur.content = data.content || "";
-        if (data.warning) setStatus(data.warning, "warn");
+        cur.inlineMax = Number(data.inline_max_chars || 0);
+        if (data.warning) {
+          setStatus(data.warning, "warn");
+        } else if (cur.inlineMax && cur.content.length > cur.inlineMax) {
+          // Over DOCUMENT_INLINE_EDIT_MAX_CHARS: a save is queued for the worker
+          // instead of re-indexed inline (see handleVerdict "queued").
+          setStatus("Large document — saves are re-indexed in the background and can take a few minutes.");
+        }
         enterTextEdit();
       })
       .catch(showError);
@@ -286,10 +297,10 @@
   }
 
   // ---- Save (editable text) ----
-  function setSaving(on) {
+  function setSaving(on, label) {
     saveBtn.disabled = on;
     if (saveSpinner) saveSpinner.classList.toggle("hidden", !on);
-    if (saveLabel) saveLabel.textContent = on ? "Saving…" : "Save";
+    if (saveLabel) saveLabel.textContent = on ? label || "Saving…" : "Save";
   }
   function setStatus(msg, tone) {
     if (!saveStatus) return;
@@ -307,12 +318,84 @@
     saveStatus.classList.remove("hidden");
   }
 
+  // ---- Verdict handling + polling for queued saves ----
+  // A save over DOCUMENT_INLINE_EDIT_MAX_CHARS — or one whose inline scan failed
+  // transiently — is re-indexed by the worker. The modal stays open and polls the
+  // version's verdict URL until the pipeline is terminal, then shows the same
+  // clean / warn / blocked outcome an inline save does, so the edit-and-save-again
+  // remediation loop works for large documents too.
+  // Known hazard: document-list.js reloads the page when *other* in-flight rows
+  // all finish, which closes this modal mid-poll; the queued version still lands.
+  var POLL_MS = 3000;
+  var POLL_MAX_TICKS = 300; // ~15 min: covers the async retry ladders + a sweeper tick
+  var PENDING_LABEL = {
+    queued: "Queued — larger documents are re-indexed in the background. Keep this window open to see the result.",
+    uploaded: "Re-indexing in the background…",
+    processing: "Re-indexing in the background…",
+    scanning: "Running the safety scan…",
+    scan_retrying: "The scanner was unreachable — retrying automatically…",
+  };
+  var pollTimer = null;
+  var pollTicks = 0;
+
+  function stopVerdictPoll() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = null;
+    pollTicks = 0;
+  }
+
+  function startVerdictPoll(url) {
+    stopVerdictPoll();
+    if (!url) return;
+    setSaving(true, "Processing…");
+    pollTimer = setInterval(function () {
+      pollTicks += 1;
+      if (pollTicks > POLL_MAX_TICKS) {
+        stopVerdictPoll();
+        setSaving(false);
+        setStatus("Still processing — refresh the page later to see the result.", "warn");
+        return;
+      }
+      fetch(url, { credentials: "same-origin" })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (data) {
+          if (!data || !pollTimer) return; // transient error, or the modal was closed
+          if (data.pending) {
+            setStatus(PENDING_LABEL[data.status] || PENDING_LABEL.uploaded);
+            return;
+          }
+          stopVerdictPoll();
+          setSaving(false);
+          handleVerdict(data);
+        })
+        .catch(function () { /* transient — try again next tick */ });
+    }, POLL_MS);
+  }
+
+  function handleVerdict(data) {
+    if (data.verdict === "queued") {
+      setStatus(PENDING_LABEL.queued);
+      startVerdictPoll(data.verdict_url);
+    } else if (data.verdict === "clean") {
+      setStatus("Saved and re-indexed.", "success");
+      reloadSoon();
+    } else if (data.verdict === "warn") {
+      setStatus("Saved — some sections were excluded as sensitive.", "warn");
+      reloadSoon();
+    } else if (data.verdict === "blocked") {
+      setStatus((data.reason || "Content was rejected as sensitive.") + " Edit and save again.", "danger");
+    } else {
+      setStatus("The safety scan could not complete. Try saving again.", "danger");
+    }
+  }
+
   if (saveBtn) {
     saveBtn.addEventListener("click", function () {
       if (!editor) return;
       var fd = new FormData();
       fd.append("content", editor.getValue());
       fd.append("csrfmiddlewaretoken", csrf);
+      stopVerdictPoll();
       setSaving(true);
       setStatus("Saving and re-indexing…");
       fetch(cur.saveUrl, {
@@ -321,33 +404,33 @@
         body: fd,
         credentials: "same-origin",
       })
-        .then(function (r) { return r.json().catch(function () { return {}; }); })
+        .then(function (r) {
+          return r.json().catch(function () {
+            // Non-JSON body: Django's RequestDataTooBig (400, multipart body over
+            // DATA_UPLOAD_MAX_MEMORY_SIZE), a proxy 413, or an error page.
+            return { error: "http_" + r.status };
+          });
+        })
         .then(function (data) {
           setSaving(false);
-          if (data.error === "too_large") {
+          if (data.error === "too_large" || data.error === "http_400" || data.error === "http_413") {
             setStatus(
-              "Too large to save here (max " +
-                Number(data.max_chars || 0).toLocaleString() +
-                " characters). Trim the text or upload it as a file.",
+              "Too large to save from the editor" +
+                (data.max_chars ? " (max " + Number(data.max_chars).toLocaleString() + " characters)" : "") +
+                ". Upload the revised text as a file instead.",
               "danger"
             );
+            return;
+          }
+          if (data.error) {
+            setStatus("Couldn't save. Please try again.", "danger");
             return;
           }
           if (data.unchanged) {
             setStatus("No changes to save.");
             return;
           }
-          if (data.verdict === "clean") {
-            setStatus("Saved and re-indexed.", "success");
-            reloadSoon();
-          } else if (data.verdict === "warn") {
-            setStatus("Saved — some sections were excluded as sensitive.", "warn");
-            reloadSoon();
-          } else if (data.verdict === "blocked") {
-            setStatus((data.reason || "Content was rejected as sensitive.") + " Edit and save again.", "danger");
-          } else {
-            setStatus("The safety scan could not complete. Try saving again.", "danger");
-          }
+          handleVerdict(data);
         })
         .catch(function () {
           setSaving(false);

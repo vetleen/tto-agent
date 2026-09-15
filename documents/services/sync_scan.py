@@ -114,7 +114,7 @@ def scan_version_synchronously(version_id: int) -> Verdict:
         return _scan_failed_verdict(0)
     # Extraction/chunking failed (e.g. empty/too-large) — already terminal.
     if version.status in (Status.FAILED, Status.SCAN_FAILED):
-        return _build_verdict(version_id)
+        return verdict_for_version(version_id)
 
     # 2. Guardrail chunk scan — the SAME sink as the async task. Fail closed: a scan
     #    error marks the version SCAN_FAILED rather than releasing it unclassified.
@@ -125,17 +125,24 @@ def scan_version_synchronously(version_id: int) -> Verdict:
     except Exception:
         logger.exception("scan_version_synchronously: chunk scan failed version_id=%s", version_id)
         _mark_scan_failed(version_id)
-        return _build_verdict(version_id)
+        return verdict_for_version(version_id)
 
     # 3. PII scan + Article 9/10 quarantine + release — the SAME sink, eager (no Celery
     #    retry; a gated PII LLM failure is terminal SCAN_FAILED).
     finalize_version(version_id, eager=True)
 
     # 4. Read the resulting state back as the verdict.
-    return _build_verdict(version_id)
+    return verdict_for_version(version_id)
 
 
-def _build_verdict(version_id: int) -> Verdict:
+def verdict_for_version(version_id: int) -> Verdict:
+    """Read a version's current DB state back as a :class:`Verdict`.
+
+    Used at the end of the synchronous scan and by ``document_version_verdict``
+    once a queued (async) edit reaches a terminal state. READY+quarantined →
+    ``blocked``; READY+partially quarantined → ``warn``; FAILED/SCAN_FAILED →
+    ``scan_failed``. Callers must treat non-terminal statuses as pending first.
+    """
     from documents.models import DataRoomDocument, DataRoomDocumentVersion
 
     Status = DataRoomDocument.Status
