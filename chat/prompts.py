@@ -301,8 +301,10 @@ def _render_one_skill(skill: Any) -> str:
             "\n## Skill resources\n\n"
             "This skill bundles the resources below. Read one on demand with "
             "`skill_resource_view` (text is returned inline; PDFs and images are "
-            "attached for you to view directly). A template resource can also be "
-            "loaded into the canvas as a starting point with `skill_resource_load`."
+            "attached for you to view directly). Any text-bearing resource can be "
+            "loaded into the canvas as a starting point with `skill_resource_load` "
+            "— the *template* kind is a hint that it's meant to be filled in, but "
+            "you can load a *reference* resource too when it's a useful draft."
             "\n\n"
         )
         for r in resources:

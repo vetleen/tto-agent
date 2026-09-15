@@ -1,0 +1,18 @@
+{# Data-room document "View / edit" dropdown entry. Carries everything the       #}
+{# view-document modal needs to route by file kind and (for editable text)       #}
+{# load the working source + save. Params: view_label (optional override),        #}
+{# allow_edit ("0" to force read-only, e.g. archived rows).                        #}
+<button type="button"
+        class="view-document-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left"
+        data-doc-id="{{ doc.id }}"
+        data-file-kind="{{ doc.file_kind }}"
+        data-chunks-url="{% url 'document_chunks' data_room_id=data_room.uuid document_id=doc.id %}"
+        data-file-url="{% url 'document_file' data_room_id=data_room.uuid document_id=doc.id %}"
+        data-edit-source-url="{% url 'document_edit_source' data_room_id=data_room.uuid document_id=doc.id %}"
+        data-save-url="{% url 'document_save' data_room_id=data_room.uuid document_id=doc.id %}"
+        data-editable="{% if can_modify and doc.file_kind == 'text' and allow_edit != '0' %}1{% else %}0{% endif %}"
+        data-quarantined="{{ doc.is_quarantined|yesno:'1,0' }}"
+        data-status="{{ doc.status }}"
+        data-doc-name="{{ doc.original_filename }}">
+  {% if view_label %}{{ view_label }}{% elif can_modify and doc.file_kind == 'text' and allow_edit != '0' %}View / edit{% else %}View document{% endif %}
+</button>

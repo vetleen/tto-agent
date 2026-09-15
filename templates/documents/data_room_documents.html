@@ -146,12 +146,9 @@
           </button>
           <div id="dropdown-doc-{{ doc.id }}" class="z-50 hidden min-w-40 bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg py-1">
             {% if doc.status == "ready" %}
-            <button type="button"
-                    class="view-document-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left"
-                    data-chunks-url="{% url 'document_chunks' data_room_id=data_room.uuid document_id=doc.id %}"
-                    data-doc-name="{{ doc.original_filename }}">
-              View document
-            </button>
+              {% include "documents/_document_view_button.html" %}
+            {% elif doc.file_kind == "text" and can_modify and doc.is_quarantined %}
+              {% include "documents/_document_view_button.html" with view_label="Edit document" %}
             {% endif %}
             <button type="button" class="rename-document-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left"
                     data-rename-modal="rename-document-modal"
@@ -217,12 +214,7 @@
             </button>
             <div id="dropdown-archived-doc-{{ doc.id }}" class="z-50 hidden min-w-40 bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg py-1">
               {% if doc.status == "ready" %}
-              <button type="button"
-                      class="view-document-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left"
-                      data-chunks-url="{% url 'document_chunks' data_room_id=data_room.uuid document_id=doc.id %}"
-                      data-doc-name="{{ doc.original_filename }}">
-                View document
-              </button>
+                {% include "documents/_document_view_button.html" with allow_edit="0" %}
               {% endif %}
               <button type="button" class="rename-document-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left"
                       data-rename-modal="rename-document-modal"
@@ -333,13 +325,24 @@
   <div id="view-document-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed top-0 left-0 right-0 z-50 hidden w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] max-h-full">
     <div class="wf-docmodal" style="position:relative;width:724px;max-width:100%;margin:auto;background:var(--color-neutral-primary-medium);border:1px solid var(--color-default-subtle);border-radius:12px;box-shadow:var(--shadow-xl);overflow:hidden;">
       {# Header #}
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 20px;border-bottom:1px solid var(--color-default-subtle);">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 20px;border-bottom:1px solid var(--color-default-subtle);">
         <div style="display:flex;align-items:center;gap:11px;min-width:0;">
-          <span style="width:30px;height:30px;border-radius:5px;background:var(--color-accent-soft);border:1px solid var(--color-copper-200);display:inline-flex;align-items:center;justify-content:center;color:var(--color-copper-700);flex-shrink:0;"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg></span>
+          <span id="view-document-icon" style="width:30px;height:30px;border-radius:5px;background:var(--color-accent-soft);border:1px solid var(--color-accent-subtle);display:inline-flex;align-items:center;justify-content:center;color:var(--color-fg-accent);flex-shrink:0;"></span>
           <h2 id="view-document-title" style="margin:0;font-family:var(--font-mono);font-size:15px;font-weight:500;color:var(--color-heading);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:-0.01em;"></h2>
         </div>
-        <div style="display:flex;align-items:center;gap:4px;flex-shrink:0;">
-          <button type="button" id="view-document-preview-btn" class="wf-docicon" title="Reading view" aria-label="Toggle reading view" style="display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border:0;border-radius:5px;cursor:pointer;">
+        <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+          {# Edit / Read toggle (editable text) #}
+          <div id="view-document-seg-text" class="wf-seg hidden">
+            <button type="button" class="wf-seg-btn" data-mode="edit">Edit</button>
+            <button type="button" class="wf-seg-btn" data-mode="read">Read</button>
+          </div>
+          {# Pages / Extracted text toggle (PDF) #}
+          <div id="view-document-seg-pdf" class="wf-seg hidden">
+            <button type="button" class="wf-seg-btn" data-mode="pages">Pages</button>
+            <button type="button" class="wf-seg-btn" data-mode="extracted">Extracted text</button>
+          </div>
+          {# Reading-view eye (read-only text / office docs) #}
+          <button type="button" id="view-document-preview-btn" class="wf-docicon hidden" title="Reading view" aria-label="Toggle reading view" style="display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border:0;border-radius:5px;cursor:pointer;">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
           </button>
           <button type="button" data-modal-hide="view-document-modal" class="wf-docicon" aria-label="Close" style="display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border:0;background:transparent;color:var(--color-body-subtle);border-radius:5px;cursor:pointer;">
@@ -347,28 +350,56 @@
           </button>
         </div>
       </div>
-      {# Body #}
-      <div class="wf-doc" style="max-height:430px;overflow-y:auto;padding:24px 28px;">
-        <!-- Loading spinner -->
-        <div id="view-document-loading" class="flex items-center justify-center py-12">
-          <svg class="animate-spin h-8 w-8 text-body" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+      {# Body — one scroll region; panes are toggled by JS. #}
+      <div id="view-document-body" class="wf-doc" style="max-height:60vh;overflow-y:auto;">
+        <div id="view-document-textwrap" style="padding:24px 28px;">
+          <!-- Loading spinner -->
+          <div id="view-document-loading" class="flex items-center justify-center py-12">
+            <svg class="animate-spin h-8 w-8 text-body" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+          </div>
+          <!-- Error message -->
+          <div id="view-document-error" class="hidden text-center py-12">
+            <p class="text-body text-sm mb-3">{{ assistant_name }} couldn't load this document.</p>
+            <button type="button" id="view-document-retry" class="text-sm text-brand hover:text-brand-strong font-medium">Retry</button>
+          </div>
+          <!-- Plain text view (raw / extracted text) -->
+          <pre id="view-document-text" class="hidden" style="white-space:pre-wrap;word-break:break-word;max-width:64ch;margin:0;font-family:var(--font-mono);font-size:12.5px;line-height:1.55;color:var(--color-body);"></pre>
+          <!-- Markdown preview (reading view) -->
+          <div id="view-document-preview" class="hidden markdown-content" style="max-width:64ch;font-size:14.5px;line-height:1.7;color:var(--color-body);"></div>
+          <!-- Editable markdown (text docs) -->
+          <div id="view-document-editor" class="hidden cm-field wf-input rounded-base overflow-hidden"></div>
         </div>
-        <!-- Error message -->
-        <div id="view-document-error" class="hidden text-center py-12">
-          <p class="text-body text-sm mb-3">{{ assistant_name }} couldn't load this document.</p>
-          <button type="button" id="view-document-retry" class="text-sm text-brand hover:text-brand-strong font-medium">Retry</button>
+        <!-- Image preview + Wilfred's description (full-bleed) -->
+        <div id="view-document-image-pane" class="hidden">
+          <div class="wf-checker" style="padding:22px;display:flex;justify-content:center;border-bottom:1px solid var(--color-default-subtle);">
+            <img id="view-document-image" alt="" style="max-width:100%;max-height:44vh;object-fit:contain;border-radius:4px;">
+          </div>
+          <div style="padding:16px 28px 4px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+              <span class="wf-eyebrow">{{ assistant_name }}'s description</span>
+              <button type="button" id="view-document-desc-toggle" class="text-xs font-medium text-fg-accent hover:text-heading">Hide</button>
+            </div>
+            <div id="view-document-desc" class="markdown-content" style="max-width:64ch;font-size:13.5px;line-height:1.6;color:var(--color-body);"></div>
+          </div>
         </div>
-        <!-- Plain text view (raw) -->
-        <pre id="view-document-text" class="hidden" style="white-space:pre-wrap;word-break:break-word;max-width:64ch;margin:0;font-family:var(--font-mono);font-size:12.5px;line-height:1.55;color:var(--color-body);"></pre>
-        <!-- Markdown preview (reading view) -->
-        <div id="view-document-preview" class="hidden markdown-content" style="max-width:64ch;font-size:14.5px;line-height:1.7;color:var(--color-body);"></div>
+        <!-- PDF pages (inline browser viewer, full-bleed) -->
+        <div id="view-document-pdf-pane" class="hidden" style="padding:0;">
+          <embed id="view-document-pdf" type="application/pdf" style="display:block;width:100%;height:60vh;background:var(--color-neutral-secondary);">
+        </div>
       </div>
       {# Footer #}
       <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 20px;border-top:1px solid var(--color-default-subtle);background:var(--color-neutral-primary-soft);">
-        <div id="view-document-pii" style="display:flex;align-items:center;gap:6px;min-width:0;flex-wrap:wrap;"></div>
+        <div style="display:flex;align-items:center;gap:10px;min-width:0;flex-wrap:wrap;">
+          <div id="view-document-pii" style="display:flex;align-items:center;gap:6px;min-width:0;flex-wrap:wrap;"></div>
+          <span id="view-document-savestatus" class="hidden" style="display:inline-flex;align-items:center;gap:7px;font-size:12.5px;color:var(--color-body-subtle);"></span>
+        </div>
         <div style="display:flex;gap:10px;flex-shrink:0;">
           <button type="button" data-modal-hide="view-document-modal" class="wf-docbtn-ghost" style="height:40px;padding:0 14px;border:0;border-radius:8px;background:transparent;font-family:var(--font-sans);font-size:14px;font-weight:500;color:var(--color-body);cursor:pointer;">Close</button>
           <button type="button" id="view-document-download" class="wf-docbtn-secondary" style="display:inline-flex;align-items:center;gap:7px;height:40px;padding:0 14px;border:1px solid var(--color-default);border-radius:8px;background:var(--color-neutral-primary-soft);font-family:var(--font-sans);font-size:14px;font-weight:600;color:var(--color-heading);cursor:pointer;"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>Download</button>
+          <button type="button" id="view-document-save" class="hidden" style="display:inline-flex;align-items:center;gap:7px;height:40px;padding:0 16px;border:0;border-radius:8px;font-family:var(--font-sans);font-size:14px;font-weight:600;color:var(--color-on-brand);background:var(--color-brand);cursor:pointer;">
+            <span id="view-document-save-spinner" class="hidden"><svg class="animate-spin" viewBox="0 0 24 24" width="15" height="15" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg></span>
+            <span id="view-document-save-label">Save</span>
+          </button>
         </div>
       </div>
     </div>
@@ -377,6 +408,7 @@
   {% include "_markdown_styles.html" %}
   <script src="{% static 'js/vendor/marked.min.js' %}"></script>
   <script src="{% static 'js/vendor/purify.min.js' %}"></script>
+  <script src="{% static 'js/editor.bundle.js' %}"></script>
   <script src="{% static 'js/rename-modal.js' %}"></script>
   <script src="{% static 'js/view-document-modal.js' %}"></script>
   <script src="{% static 'js/document-list.js' %}"></script>

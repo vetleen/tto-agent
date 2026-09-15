@@ -613,12 +613,16 @@ def seed_file_resource(
     return resource
 
 
-def update_resource(resource: SkillResource, *, name=None, content=None) -> None:
-    """Rename a resource and/or edit a typed text resource's content.
+def update_resource(
+    resource: SkillResource, *, name=None, content=None, kind=None
+) -> None:
+    """Rename a resource, retype its kind, and/or edit a typed text resource's
+    content.
 
     Content is editable only for typed text resources (no original file);
-    uploaded files are rename-only. Typed text is (re)scanned at the enable gate,
-    not here, so this makes no LLM calls. Recomputes the skill standing count.
+    uploaded files are rename-only. ``kind`` (reference/template) is editable for
+    any resource. Typed text is (re)scanned at the enable gate, not here, so this
+    makes no LLM calls. Recomputes the skill standing count.
     """
     fields: list[str] = []
     if name is not None:
@@ -626,6 +630,12 @@ def update_resource(resource: SkillResource, *, name=None, content=None) -> None
         if new_name and new_name != resource.name:
             resource.name = new_name
             fields.append("name")
+
+    if kind is not None and kind in SkillResource.Kind.values and kind != resource.kind:
+        # ``kind`` is part of compute_skill_content_hash, so changing it
+        # un-approves the skill → re-scan at the next enable gate.
+        resource.kind = kind
+        fields.append("kind")
 
     content_editable = (
         resource.file_type == SkillResource.FileType.TEXT
@@ -642,6 +652,40 @@ def update_resource(resource: SkillResource, *, name=None, content=None) -> None
     if fields:
         resource.save(update_fields=fields + ["updated_at"])
         recompute_standing_tokens(resource.skill)
+
+
+def replace_resource_file(resource: SkillResource, *, data: bytes, filename: str) -> None:
+    """Swap the underlying file of an uploaded resource in place, keeping its
+    display ``name`` and ``kind``.
+
+    Resets the row to PROCESSING with cleared extraction/scan state; the caller
+    enqueues ``process_skill_resource_upload_task`` to re-extract + re-scan (so a
+    heavy PDF/Office file never ties up the web dyno). Raises
+    ``UnsupportedResourceType`` for a file type we can't ingest.
+    """
+    file_type = detect_file_type(filename)  # raises UnsupportedResourceType
+    ext = _ext_of(filename)
+    # Drop the previous blobs so we don't orphan storage (FileField.save mints a
+    # fresh UUID path each time).
+    if resource.original_file:
+        resource.original_file.delete(save=False)
+    if resource.optimized_file:
+        resource.optimized_file.delete(save=False)
+    resource.file_type = file_type
+    resource.original_filename = filename
+    resource.media_type = ft.canonical_mime_for_extension(ext) or ""
+    resource.content = ""
+    resource.content_sha256 = ""
+    resource.token_count = 0
+    resource.status = SkillResource.Status.PROCESSING
+    resource.is_quarantined = False
+    resource.quarantine_reason = ""
+    resource.quarantine_detail = ""
+    resource.pii_categories = {}
+    resource.error = ""
+    resource.original_file.save(filename, ContentFile(data), save=False)
+    resource.save()
+    recompute_standing_tokens(resource.skill)
 
 
 def copy_resource(src: SkillResource, dest_skill: AgentSkill) -> SkillResource:

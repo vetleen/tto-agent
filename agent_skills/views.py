@@ -873,9 +873,24 @@ def _resource_pii_summary(resource) -> dict:
 
 
 def _resource_json(resource) -> dict:
+    from django.urls import reverse
+
     editable = (
         resource.file_type == "text" and not resource.original_filename
     )
+    # Native (pdf/image) resources are streamed through skills_resource_file so the
+    # modal can preview them; text resources have no file. original_filename is set
+    # for any uploaded file (incl. text-extractable), which is downloadable too.
+    is_native = resource.file_type in ("pdf", "image")
+    has_file = bool(resource.original_filename)
+    file_url = download_url = ""
+    if has_file:
+        base = reverse(
+            "agent_skills_resource_file",
+            kwargs={"skill_id": resource.skill_id, "resource_id": resource.id},
+        )
+        file_url = base if is_native else ""
+        download_url = f"{base}?download=1"
     return {
         "id": str(resource.id),
         "name": resource.name,
@@ -886,6 +901,9 @@ def _resource_json(resource) -> dict:
         "quarantine_reason": resource.quarantine_reason,
         "editable_content": editable,
         "content": resource.content if editable else "",
+        "original_filename": resource.original_filename,
+        "file_url": file_url,
+        "download_url": download_url,
         "pii": _resource_pii_summary(resource),
         "error": resource.error,
         "updated_display": _relative_date(resource.updated_at),
@@ -900,6 +918,28 @@ def _editable_skill_or_error(request, skill_id):
     if not can_edit_skill(request.user, skill):
         return None, JsonResponse({"ok": False, "error": "forbidden"}, status=403)
     return skill, None
+
+
+def _kind_from_post(request):
+    """Resolve a resource ``kind`` from the request.
+
+    Accepts an explicit ``kind`` (reference/template) or the modal's
+    ``is_template`` checkbox. Returns ``None`` when neither is present (so an
+    update leaves the existing kind untouched).
+    """
+    from agent_skills.models import SkillResource
+
+    raw = request.POST.get("kind")
+    if raw:
+        raw = raw.strip().lower()
+        return raw if raw in SkillResource.Kind.values else SkillResource.Kind.REFERENCE
+    if "is_template" in request.POST:
+        return (
+            SkillResource.Kind.TEMPLATE
+            if request.POST.get("is_template") in ("1", "true", "on", "True")
+            else SkillResource.Kind.REFERENCE
+        )
+    return None
 
 
 @login_required
@@ -993,9 +1033,7 @@ def skills_resource_create(request, skill_id):
 
     name = (request.POST.get("name") or "").strip()
     content = request.POST.get("content") or ""
-    kind = (request.POST.get("kind") or SkillResource.Kind.REFERENCE).strip().lower()
-    if kind not in SkillResource.Kind.values:
-        kind = SkillResource.Kind.REFERENCE
+    kind = _kind_from_post(request) or SkillResource.Kind.REFERENCE
     if not name:
         return JsonResponse({"ok": False, "error": "name_required"}, status=400)
     if skill.templates.count() >= RESOURCE_COUNT_CAP:
@@ -1027,8 +1065,9 @@ def skills_resource_update(request, skill_id, resource_id):
 
     name = request.POST.get("name")
     content = request.POST.get("content")
+    kind = _kind_from_post(request)
     try:
-        update_resource(resource, name=name, content=content)
+        update_resource(resource, name=name, content=content, kind=kind)
     except IntegrityError:
         return JsonResponse({"ok": False, "error": "duplicate_name"}, status=400)
     resource.refresh_from_db()
@@ -1051,3 +1090,109 @@ def skills_resource_delete(request, skill_id, resource_id):
     resource.delete()
     recompute_standing_tokens(skill)
     return JsonResponse({"ok": True})
+
+
+@login_required
+@require_http_methods(["GET"])
+def skills_resource_file(request, skill_id, resource_id):
+    """Stream a resource's file bytes so the modal can preview/download it.
+
+    Gated by the READ primitive ``get_skill_for_user`` (not the edit gate) so a
+    resource on a skill the user can only view (system/org) is still viewable.
+    PDFs and known-safe images are served inline (for <img>/<embed>); everything
+    else — and ``?download=1`` — is forced to download. Bytes stream through this
+    view because storage is private S3 (a ``.url`` is a short-lived signed link).
+    """
+    from django.http import Http404
+
+    from core.file_types import (
+        KIND_IMAGE,
+        canonical_mime_for_extension,
+        extension_for_mime,
+        kind_for_mime,
+    )
+
+    skill = get_skill_for_user(request.user, str(skill_id))
+    if skill is None:
+        raise Http404
+    from agent_skills.models import SkillResource
+
+    resource = SkillResource.objects.filter(pk=resource_id, skill=skill).first()
+    if resource is None or not resource.original_file:
+        raise Http404
+
+    # Serve the pristine upload (the true file the user sees / downloads).
+    source = resource.original_file
+    ext = (resource.original_filename or "").rsplit(".", 1)[-1].lower()
+    ct = resource.media_type or canonical_mime_for_extension(ext) or "application/octet-stream"
+    is_pdf = resource.file_type == SkillResource.FileType.PDF
+    displayable = is_pdf or kind_for_mime(ct) == KIND_IMAGE
+    want_download = request.GET.get("download") == "1"
+    inline = displayable and not want_download
+
+    try:
+        resp = FileResponse(
+            source.open("rb"),
+            content_type=ct if inline else "application/octet-stream",
+        )
+    except Exception as exc:  # noqa: BLE001 — a row can outlive its blob
+        logger.warning(
+            "skill resource %s blob unreadable (%s)", resource.id, type(exc).__name__
+        )
+        raise Http404
+    fname = resource.original_filename or (
+        f"{resource.name}.{extension_for_mime(ct)}" if extension_for_mime(ct) else resource.name
+    )
+    disposition = "inline" if inline else "attachment"
+    resp["Content-Disposition"] = f'{disposition}; filename="{fname}"'
+    resp["X-Content-Type-Options"] = "nosniff"
+    return resp
+
+
+@login_required
+@require_POST
+def skills_resource_replace(request, skill_id, resource_id):
+    """Replace an uploaded resource's file in place (keeps name + kind), then
+    re-extract + re-scan on the worker."""
+    skill, err = _editable_skill_or_error(request, skill_id)
+    if err:
+        return err
+
+    from django.conf import settings
+
+    from agent_skills.models import SkillResource
+    from agent_skills.resources import (
+        UnsupportedResourceType,
+        detect_file_type,
+        replace_resource_file,
+    )
+    from agent_skills.tasks import process_skill_resource_upload_task
+
+    resource = SkillResource.objects.filter(pk=resource_id, skill=skill).first()
+    if resource is None:
+        return JsonResponse({"ok": False, "error": "not_found"}, status=404)
+    f = request.FILES.get("file")
+    if not f:
+        return JsonResponse({"ok": False, "error": "no_file"}, status=400)
+
+    general_max = getattr(settings, "SKILL_RESOURCE_MAX_SIZE_BYTES", 15_000_000)
+    image_max = getattr(settings, "SKILL_RESOURCE_IMAGE_MAX_SIZE_BYTES", 10_000_000)
+    pdf_max = getattr(settings, "SKILL_RESOURCE_PDF_MAX_SIZE_BYTES", 15_000_000)
+    try:
+        file_type = detect_file_type(f.name)
+    except UnsupportedResourceType:
+        return JsonResponse({"ok": False, "error": "unsupported_type"}, status=400)
+    max_size = {
+        SkillResource.FileType.IMAGE: image_max,
+        SkillResource.FileType.PDF: pdf_max,
+    }.get(file_type, general_max)
+    if f.size and f.size > max_size:
+        return JsonResponse({"ok": False, "error": "too_large"}, status=400)
+
+    try:
+        replace_resource_file(resource, data=f.read(), filename=f.name)
+    except UnsupportedResourceType:
+        return JsonResponse({"ok": False, "error": "unsupported_type"}, status=400)
+    process_skill_resource_upload_task.delay(str(resource.id), request.user.id)
+    resource.refresh_from_db()
+    return JsonResponse({"ok": True, "resource": _resource_json(resource)})

@@ -85,6 +85,23 @@ def _user_can_modify_data_room(user, data_room: DataRoom) -> bool:
     return data_room.created_by_id == user.id
 
 
+def _document_file_kind(doc):
+    """Classify a document by file kind (image / pdf / text / …) from its stored
+    mime type, falling back to the original filename's extension."""
+    from core.file_types import kind_for_extension, kind_for_mime
+
+    kind = kind_for_mime(doc.mime_type or "")
+    if kind is None and doc.original_filename and "." in doc.original_filename:
+        kind = kind_for_extension(doc.original_filename.rsplit(".", 1)[-1].lower())
+    return kind
+
+
+def _content_sha(text: str) -> str:
+    import hashlib
+
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
+
+
 @login_required
 @require_http_methods(["GET", "POST"])
 def data_room_list(request):
@@ -231,6 +248,8 @@ def data_room_documents(request, data_room_id):
     for doc in all_docs:
         vid = doc.active_searchable_version_id or doc.current_version_id
         doc.pii_summary = summarize_pii_keys(pii_by_version.get(vid, []))
+        # File kind drives which viewer/editor the modal opens (text = editable).
+        doc.file_kind = _document_file_kind(doc)
     documents = _annotate_relative_dates([d for d in all_docs if not d.is_archived])
     archived_documents = _annotate_relative_dates([d for d in all_docs if d.is_archived])
 
@@ -255,6 +274,7 @@ def data_room_documents(request, data_room_id):
             "data_room": data_room,
             "documents": documents,
             "archived_documents": archived_documents,
+            "can_modify": _user_can_modify_data_room(request.user, data_room),
             "pii_pill_label": PILL_LABEL,
             "pii_special_tooltip": SPECIAL_TOOLTIP,
             "pii_criminal_tooltip": CRIMINAL_TOOLTIP,
@@ -818,6 +838,127 @@ def document_bulk_archive(request, data_room_id):
         is_archived=is_archived, updated_at=timezone.now()
     )
     return JsonResponse({"updated": updated})
+
+
+@login_required
+@require_http_methods(["GET"])
+def document_file(request, data_room_id, document_id):
+    """Stream a document's native file so a modal can preview/download it.
+
+    Images and PDFs are served inline (for <img>/<embed>); everything else — and
+    ``?download=1`` — is forced to download. Bytes stream through this view (no
+    presigned URL). Resolves the document's newest native file, matching the
+    ``[[file:]]`` download the agent tools offer.
+    """
+    from django.http import FileResponse, Http404
+
+    from chat.assets import latest_native_file
+    from core.file_types import KIND_IMAGE, KIND_PDF, kind_for_mime
+
+    data_room = get_object_or_404(DataRoom, uuid=data_room_id)
+    if not _user_can_access_data_room(request.user, data_room):
+        raise Http404
+    doc = get_object_or_404(DataRoomDocument, pk=document_id, data_room=data_room)
+    source, filename, ct = latest_native_file(doc)
+    if source is None:
+        raise Http404
+    displayable = kind_for_mime(ct) in (KIND_IMAGE, KIND_PDF)
+    inline = displayable and request.GET.get("download") != "1"
+    try:
+        resp = FileResponse(
+            source.open("rb"),
+            content_type=ct if inline else "application/octet-stream",
+        )
+    except Exception as exc:  # noqa: BLE001 — a row can outlive its blob
+        logger.warning(
+            "document %s native blob unreadable (%s)", doc.pk, type(exc).__name__
+        )
+        raise Http404
+    disposition = "inline" if inline else "attachment"
+    resp["Content-Disposition"] = (
+        f'{disposition}; filename="{filename or f"document-{doc.pk}"}"'
+    )
+    resp["X-Content-Type-Options"] = "nosniff"
+    return resp
+
+
+@login_required
+@require_http_methods(["GET"])
+def document_edit_source(request, data_room_id, document_id):
+    """Return the editable working markdown for a TEXT document (Edit mode).
+
+    Reads the working version directly via ``open_working_version`` so it works
+    even for a quarantined doc the user is remediating. Text docs only.
+    """
+    data_room = get_object_or_404(DataRoom, uuid=data_room_id)
+    if not _user_can_modify_data_room(request.user, data_room):
+        return JsonResponse({"error": "Forbidden"}, status=403)
+    doc = get_object_or_404(DataRoomDocument, pk=document_id, data_room=data_room)
+    from core.file_types import KIND_TEXT
+
+    if _document_file_kind(doc) != KIND_TEXT:
+        return JsonResponse({"ok": False, "error": "not_editable"}, status=400)
+    from documents.services.versioning import open_working_version
+
+    content, _version, warning = open_working_version(doc)
+    return JsonResponse({
+        "ok": True,
+        "content": content,
+        "sha256": _content_sha(content),
+        "warning": warning,
+        "is_quarantined": bool(doc.is_quarantined),
+    })
+
+
+@login_required
+@require_POST
+def document_save(request, data_room_id, document_id):
+    """Save edited markdown for a TEXT document and re-index synchronously.
+
+    If the submitted content is unchanged from the working version this is a
+    no-op (no new version, no re-scan) — so re-opening and saving a quarantined
+    doc without edits does not re-run the scan. A changed save creates a new
+    version and runs the same chunk→embed→scan pipeline inline, returning the
+    verdict; a clean edit of a quarantined doc thereby clears the quarantine.
+    """
+    data_room = get_object_or_404(DataRoom, uuid=data_room_id)
+    if not _user_can_modify_data_room(request.user, data_room):
+        return JsonResponse({"error": "Forbidden"}, status=403)
+    doc = get_object_or_404(DataRoomDocument, pk=document_id, data_room=data_room)
+    from core.file_types import KIND_TEXT
+
+    if _document_file_kind(doc) != KIND_TEXT:
+        return JsonResponse({"ok": False, "error": "not_editable"}, status=400)
+    new_content = request.POST.get("content")
+    if new_content is None:
+        return JsonResponse({"ok": False, "error": "content_required"}, status=400)
+
+    from documents.models import DataRoomDocumentVersion
+    from documents.services.sync_scan import scan_version_synchronously
+    from documents.services.versioning import create_version, open_working_version
+
+    current, _version, _warning = open_working_version(doc)
+    if new_content.strip() == (current or "").strip():
+        return JsonResponse({
+            "ok": True,
+            "unchanged": True,
+            "verdict": "quarantined" if doc.is_quarantined else "clean",
+            "is_quarantined": bool(doc.is_quarantined),
+        })
+
+    version = create_version(
+        doc,
+        content=new_content,
+        origin=DataRoomDocumentVersion.Origin.USER_EDITED,
+        created_by=request.user,
+        enqueue=False,
+    )
+    verdict = scan_version_synchronously(version.id)
+    doc.refresh_from_db()
+    payload = verdict.to_http_json()
+    payload["unchanged"] = False
+    payload["is_quarantined"] = bool(doc.is_quarantined)
+    return JsonResponse(payload)
 
 
 @login_required

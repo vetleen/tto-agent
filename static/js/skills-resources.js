@@ -1,22 +1,31 @@
-/* Skill resources UI: drag-drop upload, list rows, create/edit modal, and
- * bulk delete. Talks to the /skills/<id>/resources/* endpoints. Resources are
- * managed independently of the main skill-detail form. */
+/* Skill resources UI: drag-drop upload, list rows, create/edit/view modal,
+ * replace-file, and bulk delete. Talks to the /skills/<id>/resources/* endpoints.
+ * Resources are managed independently of the main skill-detail form.
+ *
+ * The modal is one shared shell that adapts to the resource kind: a WilfredEditor
+ * (Write/Preview) for text, an <img> preview for images, an inline <embed> for
+ * PDFs. On a skill the user can't edit it opens read-only (View + Download only).
+ */
 (function () {
   "use strict";
 
   var section = document.getElementById("resources-section");
   if (!section) return;
 
-  var editable = section.getAttribute("data-editable") === "1";
+  var canEdit = section.getAttribute("data-editable") === "1";
   var cap = parseInt(section.getAttribute("data-cap") || "50", 10);
   var uploadUrl = section.getAttribute("data-upload-url");
   var createUrl = section.getAttribute("data-create-url");
   var statusUrl = section.getAttribute("data-status-url");
   var updateTpl = section.getAttribute("data-update-url-tpl");
+  var replaceTpl = section.getAttribute("data-replace-url-tpl");
   var deleteTpl = section.getAttribute("data-delete-url-tpl");
   var ID_PLACEHOLDER = "00000000-0000-0000-0000-000000000000";
 
   var listEl = document.getElementById("resource-list");
+  var listHead = document.getElementById("resource-list-head");
+  var countEl = document.getElementById("resource-count");
+  var selectAll = document.getElementById("resource-select-all");
   var rowTemplate = document.getElementById("resource-row-template");
 
   var resources = [];
@@ -41,7 +50,6 @@
       headers: { "X-CSRFToken": csrf(), "X-Requested-With": "XMLHttpRequest" },
       body: formData,
     }).then(function (r) {
-      // Parse defensively: an error response may be empty or non-JSON.
       return r.text().then(function (t) {
         var data = {};
         try {
@@ -58,10 +66,19 @@
     return tpl.replace(ID_PLACEHOLDER, id);
   }
 
+  function triggerDownload(url) {
+    if (!url) return;
+    var a = document.createElement("a");
+    a.href = url;
+    a.rel = "noopener";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
   // ----- Icons & markers -----
   var ICON_TEXT =
     '<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6" d="M9 12h6m-6 4h6m-7 5h8a2 2 0 002-2V7l-5-5H8a2 2 0 00-2 2v15a2 2 0 002 2z"/></svg>';
-  // Reused from the canvas export dropdown (chat.html) so the PDF glyph matches.
   var ICON_PDF =
     '<svg class="w-5 h-5 text-fg-danger" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.4" d="M8.5 14.5h.5a1 1 0 000-2h-.5v3m3-3v3h.6a1 1 0 001-1v-1a1 1 0 00-1-1H11.5m4 0H15v3m0-1.5h.8"/></svg>';
   var ICON_IMAGE =
@@ -71,6 +88,12 @@
     if (fileType === "pdf") return ICON_PDF;
     if (fileType === "image") return ICON_IMAGE;
     return ICON_TEXT;
+  }
+
+  function iconChipClass(fileType) {
+    // Copper chip for text/image; danger tint for PDF (matches the design).
+    if (fileType === "pdf") return "bg-danger-soft border border-danger-subtle text-fg-danger";
+    return "bg-accent-soft border border-accent-subtle text-fg-accent";
   }
 
   var SPINNER =
@@ -113,6 +136,38 @@
     return "";
   }
 
+  function isTemplate(r) {
+    return r.kind === "template";
+  }
+
+  // ----- Row menu (contents depend on can-edit) -----
+  var MENU_ITEM_CLS =
+    "resource-menu-item block w-full text-left px-3 py-1.5 text-sm text-body hover:bg-neutral-tertiary";
+
+  function buildMenu(r, menu) {
+    menu.innerHTML = "";
+    function item(action, label, danger) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.setAttribute("data-action", action);
+      b.className = danger
+        ? "resource-menu-item block w-full text-left px-3 py-1.5 text-sm text-fg-danger hover:bg-danger-soft"
+        : MENU_ITEM_CLS;
+      b.textContent = label;
+      menu.appendChild(b);
+    }
+    if (canEdit) {
+      item("edit", "View / edit");
+      item("rename", "Rename");
+      if (r.original_filename) item("replace", "Replace file");
+      if (r.download_url) item("download", "Download");
+      item("delete", "Delete", true);
+    } else {
+      item("edit", "View");
+      if (r.download_url) item("download", "Download");
+    }
+  }
+
   // ----- Rendering -----
   function renderRow(r) {
     var node = rowTemplate.content.firstElementChild.cloneNode(true);
@@ -123,36 +178,50 @@
     statusEl.title = mk.title;
     node.querySelector(".resource-icon").innerHTML = iconFor(r.file_type);
     node.querySelector(".resource-name").textContent = r.name;
+
+    var subEl = node.querySelector(".resource-subline");
+    if (r.original_filename && r.original_filename !== r.name) {
+      subEl.textContent = r.original_filename;
+      subEl.classList.remove("hidden");
+    } else {
+      subEl.remove();
+    }
+
     var errEl = node.querySelector(".resource-error");
     if (r.error) errEl.textContent = r.error;
     else errEl.remove();
+
+    var tpl = node.querySelector(".resource-template-pill");
+    if (isTemplate(r)) tpl.classList.remove("hidden");
+    else tpl.remove();
+
     node.querySelector(".resource-pii").innerHTML = piiPills(r);
     node.querySelector(".resource-time").textContent = r.updated_display || "";
 
     var checkbox = node.querySelector(".resource-checkbox");
-    var menuWrap = node.querySelector(".resource-menu-wrap");
-    if (!editable) {
-      checkbox.remove();
-      menuWrap.remove();
-      return node;
-    }
-    checkbox.addEventListener("change", refreshBulkBar);
+    if (!canEdit) checkbox.remove();
+    else checkbox.addEventListener("change", refreshBulkBar);
+
+    // Whole row opens the modal (view or edit); clicks on the checkbox/menu
+    // are handled separately and must not also open it.
+    node.addEventListener("click", function (e) {
+      if (e.target.closest(".resource-menu-wrap") || e.target.closest(".resource-checkbox"))
+        return;
+      openModal(r);
+    });
 
     var menuBtn = node.querySelector(".resource-menu-btn");
     var menu = node.querySelector(".resource-menu");
-    var editItem = menu.querySelector('[data-action="edit"]');
-    // Only typed text resources are content-editable; others get rename only.
-    if (!r.editable_content) editItem.textContent = "Rename";
+    buildMenu(r, menu);
     menuBtn.addEventListener("click", function (e) {
       e.stopPropagation();
       var willOpen = menu.classList.contains("hidden");
       closeAllMenus(menu);
       if (willOpen) {
         // Flip upward when there isn't room below (last rows sit near the
-        // action bar / viewport bottom). Inline styles so no extra CSS classes
-        // are needed in the build.
+        // action bar / viewport bottom).
         var rect = menuBtn.getBoundingClientRect();
-        if (window.innerHeight - rect.bottom < 160) {
+        if (window.innerHeight - rect.bottom < 200) {
           menu.style.top = "auto";
           menu.style.bottom = "100%";
           menu.style.marginTop = "0";
@@ -166,13 +235,16 @@
       }
       menu.classList.toggle("hidden");
     });
-    menu.querySelectorAll("[data-action]").forEach(function (item) {
-      item.addEventListener("click", function () {
-        menu.classList.add("hidden");
-        var action = item.getAttribute("data-action");
-        if (action === "delete") deleteResource(r);
-        else openModal(r); // edit or rename both open the modal
-      });
+    menu.addEventListener("click", function (e) {
+      var item = e.target.closest("[data-action]");
+      if (!item) return;
+      e.stopPropagation();
+      menu.classList.add("hidden");
+      var action = item.getAttribute("data-action");
+      if (action === "delete") deleteResource(r);
+      else if (action === "download") triggerDownload(r.download_url);
+      else if (action === "replace") startReplace(r);
+      else openModal(r); // edit / rename / view
     });
     return node;
   }
@@ -180,23 +252,34 @@
   function renderAll() {
     listEl.innerHTML = "";
     if (!resources.length) {
+      if (listHead) listHead.classList.add("hidden");
       var empty = document.createElement("p");
       empty.className = "px-4 py-6 text-sm text-body italic";
-      empty.textContent = editable
+      empty.textContent = canEdit
         ? "No resources yet. Upload a file or create one."
         : "No resources.";
       listEl.appendChild(empty);
       refreshBulkBar();
       return;
     }
-    resources
-      .slice()
-      .sort(function (a, b) {
-        return a.name.localeCompare(b.name);
-      })
-      .forEach(function (r) {
-        listEl.appendChild(renderRow(r));
-      });
+    var sorted = resources.slice().sort(function (a, b) {
+      return a.name.localeCompare(b.name);
+    });
+    sorted.forEach(function (r) {
+      listEl.appendChild(renderRow(r));
+    });
+    if (listHead) {
+      listHead.classList.remove("hidden");
+      listHead.classList.add("flex");
+    }
+    if (countEl) {
+      var n = resources.length;
+      var m = resources.filter(isTemplate).length;
+      var txt = n === 1 ? "1 resource" : n + " resources";
+      if (m > 0) txt += " · " + m + (m === 1 ? " template" : " templates");
+      countEl.textContent = txt;
+    }
+    if (selectAll) selectAll.checked = false;
     refreshBulkBar();
   }
 
@@ -216,7 +299,7 @@
     renderAll();
   }
 
-  // ----- Status polling (uploads process on the worker) -----
+  // ----- Status polling (uploads/replacements process on the worker) -----
   var TERMINAL = ["ready", "quarantined", "scan_failed"];
   var polling = false;
 
@@ -263,13 +346,12 @@
   var bulkDelete = document.getElementById("resource-bulk-delete");
 
   function selectedIds() {
-    return Array.prototype.map
-      .call(
-        document.querySelectorAll(".resource-checkbox:checked"),
-        function (cb) {
-          return cb.closest(".resource-row").getAttribute("data-resource-id");
-        }
-      );
+    return Array.prototype.map.call(
+      document.querySelectorAll(".resource-checkbox:checked"),
+      function (cb) {
+        return cb.closest(".resource-row").getAttribute("data-resource-id");
+      }
+    );
   }
 
   function refreshBulkBar() {
@@ -283,6 +365,15 @@
       bulkBar.classList.add("flex");
       bulkCount.textContent = n === 1 ? "1 selected" : n + " selected";
     }
+  }
+
+  if (selectAll) {
+    selectAll.addEventListener("change", function () {
+      document.querySelectorAll(".resource-checkbox").forEach(function (cb) {
+        cb.checked = selectAll.checked;
+      });
+      refreshBulkBar();
+    });
   }
 
   if (bulkDelete) {
@@ -363,21 +454,30 @@
     });
   }
 
-  // ----- Create / edit modal -----
+  // ----- Create / edit / view modal -----
   var modal = document.getElementById("resource-modal");
+  var modalIcon = document.getElementById("resource-modal-icon");
   var modalTitle = document.getElementById("resource-modal-title");
+  var modalNameRow = document.getElementById("resource-modal-name-row");
   var modalName = document.getElementById("resource-modal-name");
   var modalContentWrap = document.getElementById("resource-modal-content-wrap");
   var modalEditorMount = document.getElementById("resource-modal-editor");
-  var modalFileNote = document.getElementById("resource-modal-file-note");
-  var modalFileIcon = document.getElementById("resource-modal-file-icon");
-  var modalFileType = document.getElementById("resource-modal-file-type");
+  var modalImageWrap = document.getElementById("resource-modal-image-wrap");
+  var modalImage = document.getElementById("resource-modal-image");
+  var modalPdfWrap = document.getElementById("resource-modal-pdf-wrap");
+  var modalPdf = document.getElementById("resource-modal-pdf");
+  var modalTemplateRow = document.getElementById("resource-modal-template-row");
+  var modalTemplate = document.getElementById("resource-modal-template");
+  var modalDownload = document.getElementById("resource-modal-download");
+  var modalReplace = document.getElementById("resource-modal-replace");
+  var modalReplaceInput = document.getElementById("resource-modal-replace-input");
   var modalError = document.getElementById("resource-modal-error");
   var modalSave = document.getElementById("resource-modal-save");
   var modalSaveLabel = modal ? modal.querySelector(".resource-modal-save-label") : null;
   var modalSaveSpinner = modal ? modal.querySelector(".resource-modal-save-spinner") : null;
 
   var editingId = null; // null => create
+  var editingType = "text";
   var modalEditor = null;
 
   function showModal() {
@@ -393,6 +493,9 @@
       modalEditor.destroy();
       modalEditor = null;
     }
+    // Release any large preview source.
+    if (modalImage) modalImage.removeAttribute("src");
+    if (modalPdf) modalPdf.removeAttribute("src");
   }
 
   function setModalError(msg) {
@@ -405,44 +508,108 @@
     }
   }
 
+  function show(el, on) {
+    if (!el) return;
+    el.classList.toggle("hidden", !on);
+  }
+
   function openModal(r) {
     if (!modal) return;
     setModalError("");
     editingId = r ? r.id : null;
-    var showEditor = !r || r.editable_content;
-    modalTitle.textContent = r ? (showEditor ? "Edit resource" : "Rename resource") : "Create resource";
+    editingType = r ? r.file_type : "text";
+    var creating = !r;
+    var viewing = !!r && !canEdit;
+    var editing = !!r && canEdit;
+
+    // Header icon + title
+    modalIcon.className =
+      "inline-flex items-center justify-center w-8 h-8 rounded-base shrink-0 " +
+      iconChipClass(editingType);
+    modalIcon.innerHTML = iconFor(editingType);
+    modalTitle.textContent = creating
+      ? "Create resource"
+      : viewing
+      ? r.name
+      : "Edit resource";
+
+    // Reset body sections
+    show(modalNameRow, !viewing); // view mode: the title stands in for the name
+    show(modalContentWrap, false);
+    show(modalImageWrap, false);
+    show(modalPdfWrap, false);
+    if (modalEditor) {
+      modalEditor.destroy();
+      modalEditor = null;
+    }
     modalName.value = r ? r.name : "";
 
-    if (showEditor) {
-      modalContentWrap.classList.remove("hidden");
-      modalFileNote.classList.add("hidden");
-      modalFileNote.classList.remove("flex");
-      modalEditorMount.innerHTML = "";
-      if (window.WilfredEditor) {
-        modalEditor = window.WilfredEditor.create(modalEditorMount, {
-          value: r ? r.content || "" : "",
-          toolbar: true,
-          minHeight: "12rem",
-          maxHeight: "26rem",
-          placeholder: "Resource content (markdown supported)",
-        });
+    // Footer defaults
+    show(modalTemplateRow, !viewing);
+    if (modalTemplate) modalTemplate.checked = !!r && isTemplate(r);
+    show(modalSave, !viewing);
+    show(modalReplace, editing && !!r && !!r.original_filename);
+    if (modalDownload) {
+      if (r && r.download_url) {
+        modalDownload.href = r.download_url;
+        show(modalDownload, true);
       } else {
-        var ta = document.createElement("textarea");
-        ta.className = "wf-input text-heading text-sm rounded-base block w-full px-3 py-2.5 font-mono";
-        ta.rows = 10;
-        ta.value = r ? r.content || "" : "";
-        modalEditorMount.appendChild(ta);
-        modalEditor = { getValue: function () { return ta.value; }, destroy: function () {} };
+        show(modalDownload, false);
       }
-    } else {
-      modalContentWrap.classList.add("hidden");
-      modalFileNote.classList.remove("hidden");
-      modalFileNote.classList.add("flex");
-      modalFileIcon.innerHTML = iconFor(r.file_type);
-      modalFileType.textContent = r.file_type === "pdf" ? "PDF" : r.file_type;
     }
+
+    // Body per file type
+    if (editingType === "image") {
+      show(modalImageWrap, true);
+      if (r && r.file_url) modalImage.src = r.file_url;
+    } else if (editingType === "pdf") {
+      show(modalPdfWrap, true);
+      if (r && r.file_url) modalPdf.src = r.file_url;
+    } else {
+      // text — typed text is editable; an uploaded text file (has original_filename)
+      // has no inline content, so offer download instead of an empty editor.
+      var hasInlineText = creating || (r && r.editable_content);
+      if (hasInlineText) {
+        show(modalContentWrap, true);
+        mountEditor(r ? r.content || "" : "", viewing);
+      } else {
+        // Uploaded text file: nothing editable here.
+        show(modalContentWrap, false);
+        show(modalTemplateRow, editing);
+        setModalError("");
+      }
+    }
+
     showModal();
-    modalName.focus();
+    if (!viewing) modalName.focus();
+  }
+
+  function mountEditor(value, readOnly) {
+    modalEditorMount.innerHTML = "";
+    if (window.WilfredEditor) {
+      modalEditor = window.WilfredEditor.create(modalEditorMount, {
+        value: value,
+        toolbar: true,
+        preview: true,
+        readOnly: !!readOnly,
+        minHeight: "14rem",
+        maxHeight: "26rem",
+        placeholder: "Resource content (markdown supported)",
+      });
+    } else {
+      var ta = document.createElement("textarea");
+      ta.className = "wf-input text-heading text-sm rounded-base block w-full px-3 py-2.5 font-mono";
+      ta.rows = 10;
+      ta.value = value;
+      ta.readOnly = !!readOnly;
+      modalEditorMount.appendChild(ta);
+      modalEditor = {
+        getValue: function () {
+          return ta.value;
+        },
+        destroy: function () {},
+      };
+    }
   }
 
   var createBtn = document.getElementById("create-resource-btn");
@@ -481,7 +648,9 @@
       }
       var fd = new FormData();
       fd.append("name", name);
-      if (modalEditor && modalContentWrap && !modalContentWrap.classList.contains("hidden")) {
+      fd.append("is_template", modalTemplate && modalTemplate.checked ? "1" : "0");
+      // Only text resources carry editable content.
+      if (editingType === "text" && modalEditor && !modalContentWrap.classList.contains("hidden")) {
         fd.append("content", modalEditor.getValue());
       }
       setSaving(true);
@@ -507,6 +676,55 @@
         .catch(function () {
           setSaving(false);
           setModalError("Couldn't save the resource.");
+        });
+    });
+  }
+
+  // ----- Replace file -----
+  var replacingId = null;
+
+  function startReplace(r) {
+    if (!modalReplaceInput) return;
+    replacingId = r.id;
+    modalReplaceInput.value = "";
+    modalReplaceInput.click();
+  }
+
+  if (modalReplace) {
+    modalReplace.addEventListener("click", function () {
+      if (editingId) startReplace({ id: editingId });
+    });
+  }
+
+  if (modalReplaceInput) {
+    modalReplaceInput.addEventListener("change", function () {
+      var f = modalReplaceInput.files && modalReplaceInput.files[0];
+      if (!f || !replacingId) return;
+      var id = replacingId;
+      var fd = new FormData();
+      fd.append("file", f);
+      setSaving(true);
+      post(urlFor(replaceTpl, id), fd)
+        .then(function (res) {
+          setSaving(false);
+          if (res.data && res.data.ok) {
+            upsert(res.data.resource);
+            pollStatus();
+            hideModal();
+          } else {
+            var err = res.data && res.data.error;
+            setModalError(
+              err === "too_large"
+                ? "That file is too large."
+                : err === "unsupported_type"
+                ? "That file type isn't supported."
+                : "Couldn't replace the file."
+            );
+          }
+        })
+        .catch(function () {
+          setSaving(false);
+          setModalError("Couldn't replace the file.");
         });
     });
   }

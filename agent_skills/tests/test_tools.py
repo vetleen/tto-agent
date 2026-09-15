@@ -763,3 +763,19 @@ class LoadTemplateToCanvasToolTests(TestCase):
         self.assertEqual(result["title"], "My Tab")
         from chat.models import ChatCanvas
         self.assertTrue(ChatCanvas.objects.filter(thread=self.thread, title="My Tab").exists())
+
+    def test_loads_reference_kind_resource(self):
+        # Users mislabel kinds, so load must work for a reference resource too —
+        # gating is on having text content, not on kind == template.
+        from agent_skills.models import SkillResource
+
+        SkillResource.objects.create(
+            skill=self.skill, name="Ref Note",
+            kind=SkillResource.Kind.REFERENCE,
+            content="Reference body to load.",
+        )
+        result = json.loads(self.tool._run(template_name="Ref Note"))
+        self.assertEqual(result["status"], "ok")
+        from chat.models import ChatCanvas
+        canvas = ChatCanvas.objects.get(thread=self.thread, title="Ref Note")
+        self.assertIn("Reference body", canvas.content)

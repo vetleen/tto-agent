@@ -37,6 +37,16 @@ urlpatterns = [
         name="agent_skills_resource_update",
     ),
     path(
+        "<uuid:skill_id>/resources/<uuid:resource_id>/replace/",
+        views.skills_resource_replace,
+        name="agent_skills_resource_replace",
+    ),
+    path(
+        "<uuid:skill_id>/resources/<uuid:resource_id>/file/",
+        views.skills_resource_file,
+        name="agent_skills_resource_file",
+    ),
+    path(
         "<uuid:skill_id>/resources/<uuid:resource_id>/delete/",
         views.skills_resource_delete,
         name="agent_skills_resource_delete",

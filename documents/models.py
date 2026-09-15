@@ -235,6 +235,7 @@ class DataRoomDocumentVersion(models.Model):
         AGENT_CREATED = "agent_created", "Agent created"
         CANVAS_EXPORT = "canvas_export", "Canvas export"
         RESTORE = "restore", "Restore"
+        USER_EDITED = "user_edited", "User edited"
 
     document = models.ForeignKey(
         DataRoomDocument,

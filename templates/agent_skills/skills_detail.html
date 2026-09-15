@@ -127,6 +127,7 @@
            data-create-url="{% url 'agent_skills_resource_create' skill_id=skill.id %}"
            data-status-url="{% url 'agent_skills_resource_status' skill_id=skill.id %}"
            data-update-url-tpl="{% url 'agent_skills_resource_update' skill_id=skill.id resource_id='00000000-0000-0000-0000-000000000000' %}"
+           data-replace-url-tpl="{% url 'agent_skills_resource_replace' skill_id=skill.id resource_id='00000000-0000-0000-0000-000000000000' %}"
            data-delete-url-tpl="{% url 'agent_skills_resource_delete' skill_id=skill.id resource_id='00000000-0000-0000-0000-000000000000' %}">
     <div class="flex items-center justify-between gap-3 mb-3">
       <div class="min-w-0">
@@ -159,7 +160,14 @@
       </button>
     </div>
 
-    <div class="rounded-base border border-default bg-neutral-primary-soft">
+    <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
+      <div id="resource-list-head" class="hidden items-center gap-3 px-4 py-2.5 border-b border-default bg-neutral-secondary-soft">
+        {% if editable %}
+        <input type="checkbox" id="resource-select-all" class="shrink-0 w-4 h-4 rounded border-default text-brand focus:ring-brand cursor-pointer" aria-label="Select all resources">
+        <span class="text-sm text-body">Select all</span>
+        {% endif %}
+        <span id="resource-count" class="ms-auto font-mono text-xs text-body"></span>
+      </div>
       <div id="resource-list" class="divide-y divide-default-subtle">
         {# Rows rendered by skills-resources.js from #resources-data #}
       </div>
@@ -295,61 +303,97 @@
   </div>
 
   {# ----- Resource row template (for JS cloning) ----- #}
+  {# Row anatomy: checkbox · status · icon · name (+ mono filename subline) ·   #}
+  {# copper Template pill · PII pills · mono time · kebab. Whole row opens the   #}
+  {# modal; the menu contents are injected per-row by skills-resources.js       #}
+  {# (View/edit vs View depending on can-edit).                                 #}
   <template id="resource-row-template">
-    <div class="resource-row flex items-center gap-3 px-4 py-3" data-resource-id="">
+    <div class="resource-row flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-neutral-secondary-soft" data-resource-id="">
       <input type="checkbox" class="resource-checkbox shrink-0 w-4 h-4 rounded border-default text-brand focus:ring-brand cursor-pointer" aria-label="Select resource">
       <span class="resource-status shrink-0 inline-flex items-center justify-center w-5 h-5" title=""></span>
       <span class="resource-icon shrink-0 inline-flex items-center justify-center w-5 h-5 text-body"></span>
       <div class="flex-1 min-w-0">
-        <span class="resource-name block truncate text-sm text-heading"></span>
+        <span class="resource-name block truncate text-sm font-medium text-heading"></span>
+        <span class="resource-subline hidden truncate font-mono text-xs text-body"></span>
         <span class="resource-error block truncate text-xs text-fg-danger"></span>
       </div>
+      <span class="resource-template-pill hidden shrink-0 inline-flex items-center px-2 py-0.5 rounded-full border border-accent-subtle bg-accent-soft text-fg-accent text-[10px] font-semibold uppercase tracking-wide">Template</span>
       <span class="resource-pii flex items-center gap-1 shrink-0"></span>
-      <span class="resource-time text-xs text-body shrink-0 hidden sm:inline"></span>
+      <span class="resource-time font-mono text-xs text-body shrink-0 hidden sm:inline"></span>
       <div class="resource-menu-wrap relative shrink-0">
         <button type="button" class="resource-menu-btn inline-flex items-center justify-center w-8 h-8 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary" aria-label="Options" aria-haspopup="true" aria-expanded="false">
           <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>
         </button>
-        <div class="resource-menu hidden absolute right-0 top-full mt-1 z-30 w-40 py-1 bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg">
-          <button type="button" data-action="edit" class="resource-menu-item block w-full text-left px-3 py-1.5 text-sm text-body hover:bg-neutral-tertiary">View / edit</button>
-          <button type="button" data-action="delete" class="resource-menu-item block w-full text-left px-3 py-1.5 text-sm text-fg-danger hover:bg-danger-soft">Delete</button>
-        </div>
+        <div class="resource-menu hidden absolute right-0 top-full mt-1 z-30 w-44 py-1 bg-neutral-primary-soft border border-default-medium rounded-base shadow-lg"></div>
       </div>
     </div>
   </template>
 
-  {# ----- Resource create/edit modal ----- #}
+  {# ----- Resource create/edit/view modal (shared file-modal shell) ----- #}
   <div id="resource-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed inset-0 z-50 hidden items-center justify-center p-4">
-    <div class="resource-modal-close absolute inset-0 bg-black/40" aria-hidden="true"></div>
-    <div class="relative w-full max-w-2xl bg-neutral-primary-medium border border-default-subtle rounded-xl shadow-xl overflow-hidden flex flex-col max-h-[calc(100vh-4rem)]">
-      <div class="flex items-center justify-between px-6 py-4 border-b border-default-subtle">
-        <h2 id="resource-modal-title" class="font-serif text-lg font-semibold text-heading">Create resource</h2>
-        <button type="button" class="resource-modal-close inline-flex items-center justify-center w-8 h-8 rounded-base text-body hover:text-heading hover:bg-neutral-secondary-soft" aria-label="Close"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg></button>
+    <div class="resource-modal-close absolute inset-0 bg-dark-backdrop/70" aria-hidden="true"></div>
+    <div class="wf-file-modal relative w-full bg-neutral-primary-soft border border-default-subtle rounded-xl shadow-xl overflow-hidden flex flex-col max-h-[calc(100vh-4rem)]">
+      {# Header #}
+      <div class="flex items-center justify-between gap-3 px-5 py-4 border-b border-default-subtle">
+        <div class="flex items-center gap-3 min-w-0">
+          <span id="resource-modal-icon" class="inline-flex items-center justify-center w-8 h-8 rounded-base shrink-0"></span>
+          <h2 id="resource-modal-title" class="font-serif text-lg font-semibold text-heading truncate">Create resource</h2>
+        </div>
+        <button type="button" class="resource-modal-close inline-flex items-center justify-center w-8 h-8 rounded-base text-body hover:text-heading hover:bg-neutral-secondary-soft shrink-0" aria-label="Close"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg></button>
       </div>
-      <div class="px-6 py-4 space-y-4 overflow-y-auto">
-        <div>
-          <label for="resource-modal-name" class="block mb-1.5 text-xs font-medium uppercase tracking-wide text-body">Name</label>
+      {# Body #}
+      <div class="px-5 py-4 space-y-4 overflow-y-auto">
+        <div id="resource-modal-name-row">
+          <label for="resource-modal-name" class="block mb-1.5 text-xs font-semibold uppercase tracking-wide text-fg-accent">Name</label>
           <input type="text" id="resource-modal-name" maxlength="255" placeholder="e.g. Objection handling"
-                 class="wf-input text-heading text-sm rounded-base block w-full px-3 py-2 placeholder:text-body">
+                 class="wf-input text-heading text-sm rounded-base block w-full px-3 py-2.5 placeholder:text-body">
         </div>
+        {# Text: WilfredEditor (Write/Preview) #}
         <div id="resource-modal-content-wrap">
-          <label class="block mb-1.5 text-xs font-medium uppercase tracking-wide text-body">Content</label>
-          <div id="resource-modal-editor" class="wf-input rounded-base overflow-hidden"></div>
+          <label class="block mb-1.5 text-xs font-semibold uppercase tracking-wide text-fg-accent">Content</label>
+          <div id="resource-modal-editor" class="cm-field wf-input rounded-base overflow-hidden"></div>
         </div>
-        <div id="resource-modal-file-note" class="hidden items-center gap-3 rounded-base border border-default bg-neutral-primary-soft px-4 py-6">
-          <span id="resource-modal-file-icon" class="inline-flex items-center justify-center w-8 h-8 shrink-0"></span>
-          <span class="text-sm text-body">This is a <span id="resource-modal-file-type" class="font-medium text-heading"></span> file — its content isn't edited here. Rename it below, or delete and re-upload to replace it.</span>
+        {# Image preview #}
+        <div id="resource-modal-image-wrap" class="hidden">
+          <label class="block mb-1.5 text-xs font-semibold uppercase tracking-wide text-fg-accent">File</label>
+          <div class="wf-checker rounded-base border border-default flex items-center justify-center p-4">
+            <img id="resource-modal-image" alt="" class="max-h-[360px] max-w-full object-contain rounded-sm">
+          </div>
+        </div>
+        {# PDF preview (inline browser viewer) #}
+        <div id="resource-modal-pdf-wrap" class="hidden">
+          <label class="block mb-1.5 text-xs font-semibold uppercase tracking-wide text-fg-accent">File</label>
+          <embed id="resource-modal-pdf" type="application/pdf" class="w-full rounded-base border border-default bg-neutral-secondary-soft" style="height:420px;">
         </div>
         <p id="resource-modal-error" class="hidden text-sm text-fg-danger-strong"></p>
       </div>
-      <div class="flex items-center justify-end gap-3 px-6 py-4 border-t border-default-subtle bg-neutral-primary-soft">
-        <button type="button" class="resource-modal-close text-sm font-medium text-body hover:text-heading px-3 py-2">Cancel</button>
-        <button type="button" id="resource-modal-save" class="inline-flex items-center gap-2 text-on-brand bg-brand hover:bg-brand-strong font-medium rounded-base text-sm px-4 py-2 focus:outline-none focus:ring-2 focus:ring-brand">
-          <span class="resource-modal-save-spinner hidden w-4 h-4 animate-spin"><svg viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg></span>
-          <span class="resource-modal-save-label">Save</span>
-        </button>
+      {# Footer #}
+      <div class="wf-soft-panel flex items-center justify-between gap-3 px-5 py-3.5 border-t border-default-subtle">
+        <label id="resource-modal-template-row" class="inline-flex items-start gap-2.5 cursor-pointer min-w-0">
+          <input type="checkbox" id="resource-modal-template" class="shrink-0 mt-0.5 w-[18px] h-[18px] rounded border-default text-brand focus:ring-brand cursor-pointer">
+          <span class="min-w-0">
+            <span class="block text-sm font-medium text-heading">This is a template</span>
+            <span class="block text-xs text-body">{{ assistant_name }} can load it into the canvas to fill in, instead of reading it as reference.</span>
+          </span>
+        </label>
+        <div class="flex items-center gap-2.5 shrink-0 ms-auto">
+          <a id="resource-modal-download" href="#" class="hidden inline-flex items-center gap-1.5 bg-neutral-primary-soft hover:bg-neutral-secondary border border-default text-heading font-medium rounded-base text-sm px-3 py-2">
+            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+            Download
+          </a>
+          <button type="button" class="resource-modal-close text-sm font-medium text-body hover:text-heading px-3 py-2">Cancel</button>
+          <button type="button" id="resource-modal-replace" class="hidden inline-flex items-center gap-1.5 bg-neutral-primary-soft hover:bg-neutral-secondary border border-default text-heading font-medium rounded-base text-sm px-3 py-2">
+            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5"/></svg>
+            Replace file
+          </button>
+          <button type="button" id="resource-modal-save" class="inline-flex items-center gap-2 text-on-brand bg-brand hover:bg-brand-strong font-medium rounded-base text-sm px-4 py-2 focus:outline-none focus:ring-2 focus:ring-brand">
+            <span class="resource-modal-save-spinner hidden w-4 h-4 animate-spin"><svg viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg></span>
+            <span class="resource-modal-save-label">Save</span>
+          </button>
+        </div>
       </div>
     </div>
+    <input type="file" id="resource-modal-replace-input" class="hidden">
   </div>
 
   {# ----- Tool chip template ----- #}

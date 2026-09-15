@@ -990,3 +990,103 @@ class SkillResourceEndpointTests(TestCase):
             )
         self.assertTrue(resp.json()["ok"])
         scan.assert_called_once()
+
+    # --- kind (reference/template) via the modal checkbox ---
+    def test_create_with_template_flag(self):
+        resp = self.client.post(
+            self._url("agent_skills_resource_create"),
+            {"name": "Tpl", "content": "body", "is_template": "1"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["resource"]["kind"], "template")
+
+    def test_update_toggles_template_kind(self):
+        r = self.client.post(
+            self._url("agent_skills_resource_create"), {"name": "A", "content": "x"}
+        ).json()["resource"]
+        self.assertEqual(r["kind"], "reference")
+        upd = reverse("agent_skills_resource_update",
+                      kwargs={"skill_id": self.skill.id, "resource_id": r["id"]})
+        on = self.client.post(upd, {"name": "A", "content": "x", "is_template": "1"})
+        self.assertEqual(on.json()["resource"]["kind"], "template")
+        off = self.client.post(upd, {"name": "A", "content": "x", "is_template": "0"})
+        self.assertEqual(off.json()["resource"]["kind"], "reference")
+
+    # --- file serving + view-on-non-editable ---
+    @staticmethod
+    def _png():
+        import base64
+
+        return base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA"
+            "60e6kgAAAABJRU5ErkJggg=="
+        )
+
+    def test_resource_file_served_for_viewer_and_download(self):
+        import tempfile
+
+        from agent_skills.resources import seed_file_resource
+
+        with self.settings(MEDIA_ROOT=tempfile.mkdtemp()):
+            sys_skill = AgentSkill.objects.create(
+                slug="sysimg", name="SysImg", instructions="i", level="system",
+            )
+            res = seed_file_resource(sys_skill, data=self._png(), filename="pic.png")
+            # A plain user can view a system skill (which they cannot edit).
+            viewer = User.objects.create_user(email="v@example.com", password="pw")
+            self.client.force_login(viewer)
+            url = reverse("agent_skills_resource_file",
+                          kwargs={"skill_id": sys_skill.id, "resource_id": res.id})
+            resp = self.client.get(url)
+            self.assertEqual(resp.status_code, 200)
+            self.assertIn("inline", resp["Content-Disposition"])
+            dl = self.client.get(url + "?download=1")
+            self.assertEqual(dl.status_code, 200)
+            self.assertIn("attachment", dl["Content-Disposition"])
+
+    def test_resource_file_404_for_non_viewer(self):
+        import tempfile
+
+        from agent_skills.resources import ingest_file
+
+        with self.settings(MEDIA_ROOT=tempfile.mkdtemp()):
+            with self._clean:
+                res = ingest_file(
+                    self.skill, data=self._png(), filename="pic.png", user=self.user
+                )
+            other = User.objects.create_user(email="nope@example.com", password="pw")
+            self.client.force_login(other)
+            url = reverse("agent_skills_resource_file",
+                          kwargs={"skill_id": self.skill.id, "resource_id": res.id})
+            self.assertEqual(self.client.get(url).status_code, 404)
+
+    def test_replace_file_reprocesses(self):
+        import tempfile
+        from unittest.mock import patch
+
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        from agent_skills.resources import ingest_file
+
+        with self.settings(MEDIA_ROOT=tempfile.mkdtemp()):
+            with self._clean:
+                res = ingest_file(
+                    self.skill, data=b"first text", filename="a.txt", user=self.user
+                )
+            self.assertEqual(res.file_type, "text")
+            with patch(
+                "agent_skills.tasks.process_skill_resource_upload_task.delay"
+            ) as delayed:
+                resp = self.client.post(
+                    reverse("agent_skills_resource_replace",
+                            kwargs={"skill_id": self.skill.id, "resource_id": res.id}),
+                    {"file": SimpleUploadedFile(
+                        "b.pdf", b"%PDF-1.4 body", content_type="application/pdf")},
+                )
+            self.assertEqual(resp.status_code, 200)
+            self.assertTrue(resp.json()["ok"])
+            delayed.assert_called_once()
+            res.refresh_from_db()
+            self.assertEqual(res.status, "processing")
+            self.assertEqual(res.file_type, "pdf")
+            self.assertEqual(res.original_filename, "b.pdf")

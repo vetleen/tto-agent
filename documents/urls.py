@@ -35,6 +35,21 @@ urlpatterns = [
         name="document_chunks",
     ),
     path(
+        "<uuid:data_room_id>/documents/<int:document_id>/file/",
+        views.document_file,
+        name="document_file",
+    ),
+    path(
+        "<uuid:data_room_id>/documents/<int:document_id>/edit-source/",
+        views.document_edit_source,
+        name="document_edit_source",
+    ),
+    path(
+        "<uuid:data_room_id>/documents/<int:document_id>/save/",
+        views.document_save,
+        name="document_save",
+    ),
+    path(
         "<uuid:data_room_id>/documents/<int:document_id>/rescan/",
         views.document_rescan,
         name="document_rescan",

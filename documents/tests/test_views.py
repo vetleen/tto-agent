@@ -2077,3 +2077,139 @@ class DocumentUploadDedupeTests(TestCase):
     def test_duplicate_check_rejects_non_object_body(self):
         resp = self.client.post(self.check_url, data="[]", content_type="application/json")
         self.assertEqual(resp.status_code, 400)
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class DocumentFileServeAndEditTests(TestCase):
+    """document_file (serve bytes) + document_edit_source / document_save."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="edit@example.com", password="pw")
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+        self.data_room = DataRoom.objects.create(name="Edit", slug="edit", created_by=self.user)
+        self.other = User.objects.create_user(email="stranger@example.com", password="pw")
+        self.client.force_login(self.user)
+
+    @staticmethod
+    def _png():
+        import base64
+
+        return base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA"
+            "60e6kgAAAABJRU5ErkJggg=="
+        )
+
+    def _text_doc(self, content="# Hello\n\nBody.", quarantined=False):
+        from documents.tests._helpers import make_document
+
+        doc = make_document(
+            self.data_room, self.user, original_filename="notes.txt",
+            mime_type="text/plain", is_quarantined=quarantined,
+            chunks=[content],
+        )
+        v = doc.current_version
+        v.content = content
+        v.save(update_fields=["content"])
+        return doc
+
+    def _url(self, name, doc):
+        return reverse(name, kwargs={"data_room_id": self.data_room.uuid, "document_id": doc.id})
+
+    # --- document_file ---
+    def test_file_served_inline_and_download(self):
+        import tempfile
+
+        from django.core.files.base import ContentFile
+        from documents.tests._helpers import make_document
+
+        with self.settings(MEDIA_ROOT=tempfile.mkdtemp()):
+            doc = make_document(
+                self.data_room, self.user, original_filename="pic.png",
+                mime_type="image/png",
+            )
+            doc.original_file.save("pic.png", ContentFile(self._png()), save=True)
+            url = self._url("document_file", doc)
+            resp = self.client.get(url)
+            self.assertEqual(resp.status_code, 200)
+            self.assertIn("inline", resp["Content-Disposition"])
+            dl = self.client.get(url + "?download=1")
+            self.assertIn("attachment", dl["Content-Disposition"])
+
+    def test_file_404_for_non_owner(self):
+        import tempfile
+
+        from django.core.files.base import ContentFile
+        from documents.tests._helpers import make_document
+
+        with self.settings(MEDIA_ROOT=tempfile.mkdtemp()):
+            doc = make_document(
+                self.data_room, self.user, original_filename="pic.png",
+                mime_type="image/png",
+            )
+            doc.original_file.save("pic.png", ContentFile(self._png()), save=True)
+            self.client.force_login(self.other)
+            self.assertEqual(self.client.get(self._url("document_file", doc)).status_code, 404)
+
+    # --- document_edit_source ---
+    def test_edit_source_returns_working_content(self):
+        doc = self._text_doc(content="# Draft")
+        resp = self.client.get(self._url("document_edit_source", doc))
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["content"], "# Draft")
+
+    def test_edit_source_forbidden_for_non_owner(self):
+        doc = self._text_doc()
+        self.client.force_login(self.other)
+        self.assertEqual(self.client.get(self._url("document_edit_source", doc)).status_code, 403)
+
+    def test_edit_source_rejects_non_text(self):
+        from documents.tests._helpers import make_document
+
+        doc = make_document(
+            self.data_room, self.user, original_filename="pic.png", mime_type="image/png",
+        )
+        resp = self.client.get(self._url("document_edit_source", doc))
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["error"], "not_editable")
+
+    # --- document_save ---
+    def test_save_unchanged_is_noop(self):
+        doc = self._text_doc(content="same")
+        before = doc.versions.count()
+        resp = self.client.post(self._url("document_save", doc), {"content": "same"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()["unchanged"])
+        self.assertEqual(doc.versions.count(), before)  # no new version
+
+    def test_save_changed_creates_version_and_rescans(self):
+        from documents.services.sync_scan import Verdict
+
+        doc = self._text_doc(content="old")
+        before = doc.versions.count()
+        verdict = Verdict(
+            status="clean", is_quarantined=False, is_partially_quarantined=False,
+            reasons=[], reviewer_reasoning=None, version_index=1, became_active=True,
+        )
+        with patch(
+            "documents.services.sync_scan.scan_version_synchronously", return_value=verdict
+        ) as scan:
+            resp = self.client.post(self._url("document_save", doc), {"content": "new body"})
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertFalse(data["unchanged"])
+        self.assertEqual(data["verdict"], "clean")
+        scan.assert_called_once()
+        self.assertEqual(doc.versions.count(), before + 1)  # a new version was created
+
+    def test_save_rejects_non_text(self):
+        from documents.tests._helpers import make_document
+
+        doc = make_document(
+            self.data_room, self.user, original_filename="pic.png", mime_type="image/png",
+        )
+        resp = self.client.post(self._url("document_save", doc), {"content": "x"})
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["error"], "not_editable")
