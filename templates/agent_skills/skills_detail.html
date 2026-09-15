@@ -369,12 +369,9 @@
       </div>
       {# Footer #}
       <div class="wf-soft-panel flex items-center justify-between gap-3 px-5 py-3.5 border-t border-default-subtle">
-        <label id="resource-modal-template-row" class="inline-flex items-start gap-2.5 cursor-pointer min-w-0">
-          <input type="checkbox" id="resource-modal-template" class="shrink-0 mt-0.5 w-[18px] h-[18px] rounded border-default text-brand focus:ring-brand cursor-pointer">
-          <span class="min-w-0">
-            <span class="block text-sm font-medium text-heading">This is a template</span>
-            <span class="block text-xs text-body">{{ assistant_name }} can load it into the canvas to fill in, instead of reading it as reference.</span>
-          </span>
+        <label id="resource-modal-template-row" class="inline-flex items-center gap-2.5 cursor-pointer min-w-0" title="{{ assistant_name }} can load a template into the canvas to fill in, instead of reading it as reference.">
+          <input type="checkbox" id="resource-modal-template" class="shrink-0 w-[18px] h-[18px] rounded border-default text-brand focus:ring-brand cursor-pointer">
+          <span class="text-sm font-medium text-heading">Template</span>
         </label>
         <div class="flex items-center gap-2.5 shrink-0 ms-auto">
           <a id="resource-modal-download" href="#" class="hidden inline-flex items-center gap-1.5 bg-neutral-primary-soft hover:bg-neutral-secondary border border-default text-heading font-medium rounded-base text-sm px-3 py-2">
