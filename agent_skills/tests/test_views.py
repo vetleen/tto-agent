@@ -1040,9 +1040,32 @@ class SkillResourceEndpointTests(TestCase):
             resp = self.client.get(url)
             self.assertEqual(resp.status_code, 200)
             self.assertIn("inline", resp["Content-Disposition"])
+            # The modal's PDF preview is a same-origin <iframe> of this URL, so
+            # the response must permit same-origin framing (site-wide default is
+            # X-Frame-Options DENY + CSP frame-ancestors 'none').
+            self.assertEqual(resp["X-Frame-Options"], "SAMEORIGIN")
+            self.assertIn("frame-ancestors 'self'", resp["Content-Security-Policy"])
             dl = self.client.get(url + "?download=1")
             self.assertEqual(dl.status_code, 200)
             self.assertIn("attachment", dl["Content-Disposition"])
+
+    def test_resource_file_unicode_filename_header(self):
+        import tempfile
+
+        from agent_skills.resources import seed_file_resource
+
+        with self.settings(MEDIA_ROOT=tempfile.mkdtemp()):
+            sys_skill = AgentSkill.objects.create(
+                slug="sysuni", name="SysUni", instructions="i", level="system",
+            )
+            res = seed_file_resource(sys_skill, data=self._png(), filename="bilde æøå.png")
+            self.client.force_login(self.user)
+            url = reverse("agent_skills_resource_file",
+                          kwargs={"skill_id": sys_skill.id, "resource_id": res.id})
+            resp = self.client.get(url + "?download=1")
+            self.assertEqual(resp.status_code, 200)
+            # Non-ASCII names go out RFC 5987-encoded, not MIME-mangled.
+            self.assertIn("filename*=utf-8''", resp["Content-Disposition"])
 
     def test_resource_file_404_for_non_viewer(self):
         import tempfile

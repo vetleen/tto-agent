@@ -12,7 +12,10 @@ from django.contrib.auth.decorators import login_required
 from django.http import FileResponse, HttpResponseForbidden, JsonResponse
 from django.shortcuts import redirect, render
 from django.utils import timezone
+from django.views.decorators.clickjacking import xframe_options_sameorigin
 from django.views.decorators.http import require_http_methods, require_POST
+from csp.constants import SELF
+from csp.decorators import csp_replace
 
 from accounts.models import Membership
 from agent_skills.models import (
@@ -1094,12 +1097,17 @@ def skills_resource_delete(request, skill_id, resource_id):
 
 @login_required
 @require_http_methods(["GET"])
+# The PDF preview is a same-origin <iframe> of this URL (the CSP's object-src
+# 'none' rules out <embed>). The framed response must therefore allow same-origin
+# framing: site-wide it's X-Frame-Options DENY + frame-ancestors 'none'.
+@xframe_options_sameorigin
+@csp_replace({"frame-ancestors": [SELF]})
 def skills_resource_file(request, skill_id, resource_id):
     """Stream a resource's file bytes so the modal can preview/download it.
 
     Gated by the READ primitive ``get_skill_for_user`` (not the edit gate) so a
     resource on a skill the user can only view (system/org) is still viewable.
-    PDFs and known-safe images are served inline (for <img>/<embed>); everything
+    PDFs and known-safe images are served inline (for <img>/<iframe>); everything
     else — and ``?download=1`` — is forced to download. Bytes stream through this
     view because storage is private S3 (a ``.url`` is a short-lived signed link).
     """
@@ -1130,21 +1138,25 @@ def skills_resource_file(request, skill_id, resource_id):
     want_download = request.GET.get("download") == "1"
     inline = displayable and not want_download
 
+    fname = resource.original_filename or (
+        f"{resource.name}.{extension_for_mime(ct)}" if extension_for_mime(ct) else resource.name
+    )
     try:
+        # as_attachment/filename → Django builds the Content-Disposition header
+        # (RFC 6266): quotes/backslashes escaped, non-ASCII names (æøå) emitted
+        # as filename*=utf-8''… instead of a MIME-encoded header the browser
+        # would render as garbage.
         resp = FileResponse(
             source.open("rb"),
             content_type=ct if inline else "application/octet-stream",
+            as_attachment=not inline,
+            filename=fname,
         )
     except Exception as exc:  # noqa: BLE001 — a row can outlive its blob
         logger.warning(
             "skill resource %s blob unreadable (%s)", resource.id, type(exc).__name__
         )
         raise Http404
-    fname = resource.original_filename or (
-        f"{resource.name}.{extension_for_mime(ct)}" if extension_for_mime(ct) else resource.name
-    )
-    disposition = "inline" if inline else "attachment"
-    resp["Content-Disposition"] = f'{disposition}; filename="{fname}"'
     resp["X-Content-Type-Options"] = "nosniff"
     return resp
 

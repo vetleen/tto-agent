@@ -11,7 +11,10 @@ from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.utils.text import slugify
+from django.views.decorators.clickjacking import xframe_options_sameorigin
 from django.views.decorators.http import require_http_methods, require_POST
+from csp.constants import SELF
+from csp.decorators import csp_replace
 from django_ratelimit.decorators import ratelimit
 
 from core.files import safe_filename, sha256_of_upload
@@ -100,6 +103,11 @@ def _content_sha(text: str) -> str:
     import hashlib
 
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
+
+
+def _inline_edit_max_chars() -> int:
+    """Char ceiling for the in-browser edit/save path (synchronous re-index)."""
+    return getattr(settings, "DOCUMENT_INLINE_EDIT_MAX_CHARS", 75_000)
 
 
 @login_required
@@ -842,10 +850,15 @@ def document_bulk_archive(request, data_room_id):
 
 @login_required
 @require_http_methods(["GET"])
+# The PDF preview is a same-origin <iframe> of this URL (the CSP's object-src
+# 'none' rules out <embed>). The framed response must therefore allow same-origin
+# framing: site-wide it's X-Frame-Options DENY + frame-ancestors 'none'.
+@xframe_options_sameorigin
+@csp_replace({"frame-ancestors": [SELF]})
 def document_file(request, data_room_id, document_id):
     """Stream a document's native file so a modal can preview/download it.
 
-    Images and PDFs are served inline (for <img>/<embed>); everything else — and
+    Images and PDFs are served inline (for <img>/<iframe>); everything else — and
     ``?download=1`` — is forced to download. Bytes stream through this view (no
     presigned URL). Resolves the document's newest native file, matching the
     ``[[file:]]`` download the agent tools offer.
@@ -865,19 +878,21 @@ def document_file(request, data_room_id, document_id):
     displayable = kind_for_mime(ct) in (KIND_IMAGE, KIND_PDF)
     inline = displayable and request.GET.get("download") != "1"
     try:
+        # as_attachment/filename → Django builds the Content-Disposition header
+        # (RFC 6266): quotes/backslashes escaped, non-ASCII names (æøå) emitted
+        # as filename*=utf-8''… instead of a MIME-encoded header the browser
+        # would render as garbage.
         resp = FileResponse(
             source.open("rb"),
             content_type=ct if inline else "application/octet-stream",
+            as_attachment=not inline,
+            filename=filename or f"document-{doc.pk}",
         )
     except Exception as exc:  # noqa: BLE001 — a row can outlive its blob
         logger.warning(
             "document %s native blob unreadable (%s)", doc.pk, type(exc).__name__
         )
         raise Http404
-    disposition = "inline" if inline else "attachment"
-    resp["Content-Disposition"] = (
-        f'{disposition}; filename="{filename or f"document-{doc.pk}"}"'
-    )
     resp["X-Content-Type-Options"] = "nosniff"
     return resp
 
@@ -901,8 +916,20 @@ def document_edit_source(request, data_room_id, document_id):
     from documents.services.versioning import open_working_version
 
     content, _version, warning = open_working_version(doc)
+    max_chars = _inline_edit_max_chars()
+    if len(content or "") > max_chars:
+        # Too big for the synchronous re-index a save would run (see
+        # DOCUMENT_INLINE_EDIT_MAX_CHARS). The modal falls back to read-only.
+        return JsonResponse({
+            "ok": True,
+            "editable": False,
+            "reason": "too_large",
+            "max_chars": max_chars,
+            "is_quarantined": bool(doc.is_quarantined),
+        })
     return JsonResponse({
         "ok": True,
+        "editable": True,
         "content": content,
         "sha256": _content_sha(content),
         "warning": warning,
@@ -932,6 +959,13 @@ def document_save(request, data_room_id, document_id):
     new_content = request.POST.get("content")
     if new_content is None:
         return JsonResponse({"ok": False, "error": "content_required"}, status=400)
+    max_chars = _inline_edit_max_chars()
+    if len(new_content) > max_chars:
+        # The re-index below runs inline on the web dyno; bound it so a huge paste
+        # can't push the request past the router timeout.
+        return JsonResponse(
+            {"ok": False, "error": "too_large", "max_chars": max_chars}, status=400
+        )
 
     from documents.models import DataRoomDocumentVersion
     from documents.services.sync_scan import scan_version_synchronously

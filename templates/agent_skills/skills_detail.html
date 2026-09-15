@@ -160,8 +160,10 @@
       </button>
     </div>
 
-    <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
-      <div id="resource-list-head" class="hidden items-center gap-3 px-4 py-2.5 border-b border-default bg-neutral-secondary-soft">
+    {# No overflow-hidden here: it would clip the per-row ⋯ dropdown. The header's #}
+    {# top corners are rounded instead so its fill still matches the card edge.    #}
+    <div class="rounded-base border border-default bg-neutral-primary-soft">
+      <div id="resource-list-head" class="hidden items-center gap-3 px-4 py-2.5 border-b border-default bg-neutral-secondary-soft rounded-t-base">
         {% if editable %}
         <input type="checkbox" id="resource-select-all" class="shrink-0 w-4 h-4 rounded border-default text-brand focus:ring-brand cursor-pointer" aria-label="Select all resources">
         <span class="text-sm text-body">Select all</span>
@@ -360,10 +362,13 @@
             <img id="resource-modal-image" alt="" class="max-h-[360px] max-w-full object-contain rounded-sm">
           </div>
         </div>
-        {# PDF preview (inline browser viewer) #}
+        {# PDF preview (inline browser viewer). An iframe, not embed: the CSP's     #}
+        {# object-src 'none' blocks embed/object, while a same-origin frame is     #}
+        {# allowed by default-src 'self' (skills_resource_file relaxes            #}
+        {# X-Frame-Options / frame-ancestors to same-origin for this).            #}
         <div id="resource-modal-pdf-wrap" class="hidden">
           <label class="block mb-1.5 text-xs font-semibold uppercase tracking-wide text-fg-accent">File</label>
-          <embed id="resource-modal-pdf" type="application/pdf" class="w-full rounded-base border border-default bg-neutral-secondary-soft" style="height:420px;">
+          <iframe id="resource-modal-pdf" title="PDF preview" class="w-full rounded-base border border-default bg-neutral-secondary-soft" style="height:420px;"></iframe>
         </div>
         <p id="resource-modal-error" class="hidden text-sm text-fg-danger-strong"></p>
       </div>

@@ -76,6 +76,11 @@ class SkillResourceMigrationTests(TransactionTestCase):
         self.assertEqual(sysn.scan_state, "unscanned")
 
     def tearDown(self):
-        # Leave the schema at head for any following tests.
+        # Leave the schema at HEAD (not at MIGRATE_TO) for any following tests.
+        # TransactionTestCase's post-teardown flush emits post_migrate, which runs
+        # the system-skill seeder against whatever schema we leave behind — at 0006
+        # AgentSkill.deleted_at doesn't exist yet and the seeder's query errors,
+        # failing this test and poisoning later TransactionTestCases in the run.
         executor = MigrationExecutor(connection)
-        executor.migrate(MIGRATE_TO)
+        executor.loader.build_graph()
+        executor.migrate(executor.loader.graph.leaf_nodes())

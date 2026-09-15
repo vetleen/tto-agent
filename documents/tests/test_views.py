@@ -2133,8 +2133,30 @@ class DocumentFileServeAndEditTests(TestCase):
             resp = self.client.get(url)
             self.assertEqual(resp.status_code, 200)
             self.assertIn("inline", resp["Content-Disposition"])
+            # The modal's PDF preview is a same-origin <iframe> of this URL, so
+            # the response must permit same-origin framing (site-wide default is
+            # X-Frame-Options DENY + CSP frame-ancestors 'none').
+            self.assertEqual(resp["X-Frame-Options"], "SAMEORIGIN")
+            self.assertIn("frame-ancestors 'self'", resp["Content-Security-Policy"])
             dl = self.client.get(url + "?download=1")
             self.assertIn("attachment", dl["Content-Disposition"])
+
+    def test_file_unicode_filename_header(self):
+        import tempfile
+
+        from django.core.files.base import ContentFile
+        from documents.tests._helpers import make_document
+
+        with self.settings(MEDIA_ROOT=tempfile.mkdtemp()):
+            doc = make_document(
+                self.data_room, self.user, original_filename="bilde æøå.png",
+                mime_type="image/png",
+            )
+            doc.original_file.save("pic.png", ContentFile(self._png()), save=True)
+            resp = self.client.get(self._url("document_file", doc) + "?download=1")
+            self.assertEqual(resp.status_code, 200)
+            # Non-ASCII names go out RFC 5987-encoded, not MIME-mangled.
+            self.assertIn("filename*=utf-8''", resp["Content-Disposition"])
 
     def test_file_404_for_non_owner(self):
         import tempfile
@@ -2213,3 +2235,26 @@ class DocumentFileServeAndEditTests(TestCase):
         resp = self.client.post(self._url("document_save", doc), {"content": "x"})
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(resp.json()["error"], "not_editable")
+
+    # --- inline-edit size ceiling (the save re-indexes synchronously on the web dyno) ---
+    @override_settings(DOCUMENT_INLINE_EDIT_MAX_CHARS=10)
+    def test_edit_source_too_large_opens_read_only(self):
+        doc = self._text_doc(content="x" * 20)
+        resp = self.client.get(self._url("document_edit_source", doc))
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertFalse(data["editable"])
+        self.assertEqual(data["reason"], "too_large")
+        self.assertEqual(data["max_chars"], 10)
+        self.assertNotIn("content", data)  # nothing to edit is shipped
+
+    @override_settings(DOCUMENT_INLINE_EDIT_MAX_CHARS=10)
+    def test_save_rejects_too_large_without_scanning(self):
+        doc = self._text_doc(content="old")
+        before = doc.versions.count()
+        with patch("documents.services.sync_scan.scan_version_synchronously") as scan:
+            resp = self.client.post(self._url("document_save", doc), {"content": "y" * 20})
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["error"], "too_large")
+        scan.assert_not_called()
+        self.assertEqual(doc.versions.count(), before)  # no version created

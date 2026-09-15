@@ -257,6 +257,19 @@
         return r.json();
       })
       .then(function (data) {
+        if (data.editable === false) {
+          // Over DOCUMENT_INLINE_EDIT_MAX_CHARS: a save would re-index inline on
+          // the web dyno, so the server refuses to offer the editor. Read-only.
+          segText.classList.add("hidden");
+          setStatus(
+            "This document is too large to edit here (over " +
+              Number(data.max_chars || 0).toLocaleString() +
+              " characters). Showing it read-only — upload a revised file instead.",
+            "warn"
+          );
+          openReadOnly();
+          return;
+        }
         cur.content = data.content || "";
         if (data.warning) setStatus(data.warning, "warn");
         enterTextEdit();
@@ -311,6 +324,15 @@
         .then(function (r) { return r.json().catch(function () { return {}; }); })
         .then(function (data) {
           setSaving(false);
+          if (data.error === "too_large") {
+            setStatus(
+              "Too large to save here (max " +
+                Number(data.max_chars || 0).toLocaleString() +
+                " characters). Trim the text or upload it as a file.",
+              "danger"
+            );
+            return;
+          }
           if (data.unchanged) {
             setStatus("No changes to save.");
             return;

@@ -321,6 +321,11 @@
     #view-document-preview-btn.is-active, #view-document-preview-btn.is-active:hover { background: var(--color-brand-softer); color: var(--color-fg-accent); }
     .wf-docbtn-ghost:hover { background: var(--color-neutral-secondary-soft); }
     .wf-docbtn-secondary:hover { border-color: var(--color-default-strong); background: var(--color-neutral-secondary-soft); }
+    /* Save + save-status are shown by the modal JS removing `hidden` (editable text
+       only). Their display must therefore live in a rule that yields to `hidden`,
+       not in an inline style= — an inline display beats the class and left a dead
+       Save button on every read-only (PDF/image) viewer. */
+    #view-document-save:not(.hidden), #view-document-savestatus:not(.hidden) { display: inline-flex; }
   </style>
   <div id="view-document-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed top-0 left-0 right-0 z-50 hidden w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] max-h-full">
     <div class="wf-docmodal" style="position:relative;width:724px;max-width:100%;margin:auto;background:var(--color-neutral-primary-medium);border:1px solid var(--color-default-subtle);border-radius:12px;box-shadow:var(--shadow-xl);overflow:hidden;">
@@ -382,21 +387,24 @@
             <div id="view-document-desc" class="markdown-content" style="max-width:64ch;font-size:13.5px;line-height:1.6;color:var(--color-body);"></div>
           </div>
         </div>
-        <!-- PDF pages (inline browser viewer, full-bleed) -->
+        <!-- PDF pages (inline browser viewer, full-bleed). An <iframe>, not <embed>:
+             the CSP's object-src 'none' blocks <embed>/<object>, while a same-origin
+             frame is allowed by default-src 'self' (document_file relaxes
+             X-Frame-Options / frame-ancestors to same-origin for this). -->
         <div id="view-document-pdf-pane" class="hidden" style="padding:0;">
-          <embed id="view-document-pdf" type="application/pdf" style="display:block;width:100%;height:60vh;background:var(--color-neutral-secondary);">
+          <iframe id="view-document-pdf" title="PDF preview" style="display:block;width:100%;height:60vh;border:0;background:var(--color-neutral-secondary);"></iframe>
         </div>
       </div>
       {# Footer #}
       <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 20px;border-top:1px solid var(--color-default-subtle);background:var(--color-neutral-primary-soft);">
         <div style="display:flex;align-items:center;gap:10px;min-width:0;flex-wrap:wrap;">
           <div id="view-document-pii" style="display:flex;align-items:center;gap:6px;min-width:0;flex-wrap:wrap;"></div>
-          <span id="view-document-savestatus" class="hidden" style="display:inline-flex;align-items:center;gap:7px;font-size:12.5px;color:var(--color-body-subtle);"></span>
+          <span id="view-document-savestatus" class="hidden" style="align-items:center;gap:7px;font-size:12.5px;color:var(--color-body-subtle);"></span>
         </div>
         <div style="display:flex;gap:10px;flex-shrink:0;">
           <button type="button" data-modal-hide="view-document-modal" class="wf-docbtn-ghost" style="height:40px;padding:0 14px;border:0;border-radius:8px;background:transparent;font-family:var(--font-sans);font-size:14px;font-weight:500;color:var(--color-body);cursor:pointer;">Close</button>
           <button type="button" id="view-document-download" class="wf-docbtn-secondary" style="display:inline-flex;align-items:center;gap:7px;height:40px;padding:0 14px;border:1px solid var(--color-default);border-radius:8px;background:var(--color-neutral-primary-soft);font-family:var(--font-sans);font-size:14px;font-weight:600;color:var(--color-heading);cursor:pointer;"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>Download</button>
-          <button type="button" id="view-document-save" class="hidden" style="display:inline-flex;align-items:center;gap:7px;height:40px;padding:0 16px;border:0;border-radius:8px;font-family:var(--font-sans);font-size:14px;font-weight:600;color:var(--color-on-brand);background:var(--color-brand);cursor:pointer;">
+          <button type="button" id="view-document-save" class="hidden" style="align-items:center;gap:7px;height:40px;padding:0 16px;border:0;border-radius:8px;font-family:var(--font-sans);font-size:14px;font-weight:600;color:var(--color-on-brand);background:var(--color-brand);cursor:pointer;">
             <span id="view-document-save-spinner" class="hidden"><svg class="animate-spin" viewBox="0 0 24 24" width="15" height="15" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg></span>
             <span id="view-document-save-label">Save</span>
           </button>

@@ -3,8 +3,9 @@
  * Resources are managed independently of the main skill-detail form.
  *
  * The modal is one shared shell that adapts to the resource kind: a WilfredEditor
- * (Write/Preview) for text, an <img> preview for images, an inline <embed> for
- * PDFs. On a skill the user can't edit it opens read-only (View + Download only).
+ * (Write/Preview) for text, an <img> preview for images, a same-origin <iframe>
+ * for PDFs (the CSP's object-src 'none' rules out <embed>). On a skill the user
+ * can't edit it opens read-only (View + Download only).
  */
 (function () {
   "use strict";

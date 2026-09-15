@@ -710,6 +710,12 @@ SKILL_ATTACH_TOKEN_BUDGET = _env_int("SKILL_ATTACH_TOKEN_BUDGET", "60000")
 # Decompression-bomb guards for the processing pipeline (worker has ~512 MB).
 DOCX_MAX_UNCOMPRESSED_BYTES = _env_int("DOCX_MAX_UNCOMPRESSED_BYTES", "250000000")  # 250 MB
 DOCUMENT_MAX_EXTRACTED_CHARS = _env_int("DOCUMENT_MAX_EXTRACTED_CHARS", "20000000")  # 20M chars
+# Ceiling for the in-browser "Edit document" path (documents.views.document_save):
+# that save chunks, embeds and scans INLINE on the web dyno so the modal can show
+# the verdict, so it must stay well inside Heroku's 30 s router timeout. 75k chars
+# matches CANVAS_MAX_CHARS — the canvas save runs the same synchronous scan. Larger
+# text documents open read-only; re-upload them as a file instead.
+DOCUMENT_INLINE_EDIT_MAX_CHARS = _env_int("DOCUMENT_INLINE_EDIT_MAX_CHARS", "75000")
 DOCUMENT_ATTACHMENT_MAX_BYTES = _env_int("DOCUMENT_ATTACHMENT_MAX_BYTES", "20000000")  # 20 MB
 # Spreadsheet (.xlsx/.xlsm) processing. The cell budget is the memory AND cost
 # cap: every stored cell becomes chunk text that is embedded and guardrail-
