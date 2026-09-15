@@ -50,9 +50,11 @@ def _render_working_canvas(content: str | None, title: str | None) -> str:
     block = (
         "\n# Working canvas\n"
         "You have a single working canvas — a durable document you build with the "
-        "`subagent_canvas_*` tools. It is returned to the orchestrator alongside "
-        "your final message, so build substantial structured deliverables there "
-        "rather than squeezing them into your final answer.\n"
+        "`subagent_canvas_*` tools. It is your **deliverable**: it is returned to "
+        "the orchestrator alongside your final message, so build substantial "
+        "structured output there rather than squeezing it into your final answer. "
+        "(For rough notes you only need to remember while working, use your "
+        "scratchpad instead — that is private and is not returned.)\n"
     )
     if content:
         label = title or "Working document"
@@ -60,6 +62,29 @@ def _render_working_canvas(content: str | None, title: str | None) -> str:
     else:
         block += "\nYour canvas is currently empty.\n"
     return block
+
+
+def _render_scratchpad_guidance() -> str:
+    """Orient the sub-agent to its private scratchpad — distinct from the canvas.
+
+    The canvas is the returned deliverable; the scratchpad is private working
+    memory that survives mid-run tool-result pruning and is never returned.
+    """
+    return (
+        "\n# Your scratchpad\n"
+        "As this run grows, older tool results (web pages you read, documents you "
+        "opened, search results) are automatically cleared from your context to "
+        "stay within limits — so something you looked at early may no longer be "
+        "visible to you later. Your scratchpad is the one exception: it is shown "
+        "back to you every step and is never cleared.\n"
+        "On any long or multi-step task — especially research where you read "
+        "several sources — use `subagent_scratchpad_append` to record the specific "
+        "facts, figures, quotes, and source URLs you'll need *as you find them*, "
+        "not all at once at the end. It is private working memory: unlike your "
+        "working canvas it is NOT returned to the orchestrator, and the user never "
+        "sees it. Keep the canvas for your polished deliverable; keep the "
+        "scratchpad for rough notes you don't want to lose.\n"
+    )
 
 
 def build_subagent_system_prompt(
@@ -103,6 +128,7 @@ You have been given a specific task. Complete it thoroughly and return your find
         prompt += _render_specialization(specialization_skill)
 
     prompt += _render_working_canvas(canvas_content, canvas_title)
+    prompt += _render_scratchpad_guidance()
 
     if has_task_tool:
         prompt += """

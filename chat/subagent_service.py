@@ -7,7 +7,7 @@ import uuid
 
 from django.utils import timezone
 
-from core.preferences import ResolvedPreferences
+from core.preferences import MIN_CONTEXT_TOKENS, ResolvedPreferences
 
 logger = logging.getLogger(__name__)
 
@@ -315,6 +315,9 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
         )
         context.run_id = str(run_id)
         context.agent_kind = "subagent"
+        # Seed the in-memory scratchpad so a resumed run re-reads its prior notes;
+        # the tool loop re-injects context.scratchpad into the prompt each round.
+        context.scratchpad = run.scratchpad or ""
         # Reuse this one (already memoized) User instance for every tool call in the
         # run, so UserSettings/Membership are read once instead of per tool. Set on
         # this single thread before the streaming tool loop spawns its workers.
@@ -323,6 +326,17 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
         # Cooperative cancellation: check if the run has been marked FAILED
         def _is_cancelled():
             return SubAgentRun.objects.filter(pk=run_id, status=SubAgentRun.Status.FAILED).exists()
+
+        # Per-tier context budget (org-only). When set, this is the aim the
+        # mid-turn pruner (llm/pipelines/simple_chat.py) sizes to — otherwise the
+        # sub-agent grows to the model's full hard window. 0/unset = unlimited.
+        params = {
+            "_cancel_check": _is_cancelled,
+            "max_tool_iterations": SUBAGENT_MAX_TOOL_ITERATIONS,
+        }
+        budget = prefs.subagent_context_budgets.get(run.model_tier, 0)
+        if budget:
+            params["max_context_tokens"] = max(budget, MIN_CONTEXT_TOKENS)
 
         request = ChatRequest(
             messages=[
@@ -333,10 +347,7 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
             stream=True,
             tools=tool_list if tool_list else None,
             context=context,
-            params={
-                "_cancel_check": _is_cancelled,
-                "max_tool_iterations": SUBAGENT_MAX_TOOL_ITERATIONS,
-            },
+            params=params,
         )
 
         # Execute via streaming so a long generation never trips a non-streaming

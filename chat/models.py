@@ -635,6 +635,14 @@ class SubAgentRun(models.Model):
     canvas = models.TextField(blank=True)
     canvas_title = models.CharField(max_length=255, blank=True)
 
+    # Private scratchpad: the sub-agent's own append-only working notes
+    # (subagent_scratchpad_append). Re-injected into the system prompt every
+    # tool-loop iteration so it survives mid-run tool-result pruning. Unlike the
+    # canvas it is NOT returned to the orchestrator and is never shown to the
+    # user — it is discarded once the run ends (kept here only for durability
+    # during the run / a retry).
+    scratchpad = models.TextField(blank=True, default="")
+
     # Metrics
     tokens_used = models.PositiveIntegerField(default=0)
     cost_usd = models.FloatField(default=0.0)

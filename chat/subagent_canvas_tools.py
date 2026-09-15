@@ -104,9 +104,11 @@ class SubagentCanvasWriteTool(ContextAwareTool):
         "Replace the entire contents of your working canvas. Use this when "
         "creating your deliverable from scratch or doing a full rewrite. For "
         "targeted changes to existing canvas content, prefer subagent_canvas_edit. "
-        "Your working canvas is returned to the orchestrator alongside your final "
-        "message, so build substantial structured deliverables here rather than "
-        "squeezing them into your final text answer."
+        "Your working canvas is your deliverable — returned to the orchestrator "
+        "alongside your final message — so build substantial structured output "
+        "here rather than squeezing it into your final text answer. (For rough "
+        "notes you just need to remember while working, use subagent_scratchpad_"
+        "append instead; that is private and is not returned.)"
     )
     args_schema: type[BaseModel] = SubagentCanvasWriteInput
 

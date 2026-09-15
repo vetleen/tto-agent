@@ -407,7 +407,7 @@
       <section id="context" class="scroll-mt-24">
         <div class="mb-3">
           <h2 class="text-base font-semibold text-heading">Context window limit</h2>
-          <p class="mt-0.5 text-sm text-body">Set the maximum context tokens for conversations. Members can set a lower limit in their personal settings.</p>
+          <p class="mt-0.5 text-sm text-body">Set the maximum context tokens for conversations. This applies to every member of the organization.</p>
         </div>
         <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
           <div class="px-5 py-4">
@@ -420,6 +420,28 @@
               step="10000"
               value="{{ org_max_context_tokens }}"
               class="wf-mono mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+            >
+          </div>
+          <div class="border-t border-default px-5 py-4">
+            <h3 class="text-sm font-medium text-heading">Sub-agent context budgets</h3>
+            <p class="text-xs text-body mt-0.5">Cap how large a sub-agent's context may grow before older tool results are trimmed to re-read stubs. <span class="wf-mono">0</span> = unlimited (the model's full window). Applied per sub-agent tier.</p>
+            <label class="block text-xs font-medium text-heading mt-3" for="subagent-budget-mid">Mid</label>
+            <input
+              type="number"
+              id="subagent-budget-mid"
+              min="0"
+              step="10000"
+              value="{{ subagent_budget_mid }}"
+              class="wf-mono mt-1 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+            >
+            <label class="block text-xs font-medium text-heading mt-3" for="subagent-budget-top">Standard</label>
+            <input
+              type="number"
+              id="subagent-budget-top"
+              min="0"
+              step="10000"
+              value="{{ subagent_budget_top }}"
+              class="wf-mono mt-1 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
             >
           </div>
         </div>
@@ -1063,6 +1085,28 @@
       });
     });
   }
+
+  // --- Sub-agent context budgets ---
+  function wireSubagentBudget(id, tier) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('change', function() {
+      var val = parseInt(this.value, 10);
+      if (isNaN(val) || val < 0) { val = 0; this.value = 0; }
+      var body = {};
+      body[tier] = val;
+      fetch('{% url "accounts:org_subagent_budgets_update" %}', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        credentials: 'same-origin',
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.error) alert(data.error);
+      });
+    });
+  }
+  wireSubagentBudget('subagent-budget-mid', 'mid');
+  wireSubagentBudget('subagent-budget-top', 'top');
 
   // --- Skills section ---
 

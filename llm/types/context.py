@@ -71,6 +71,11 @@ class RunContext(BaseModel):
     # mid-turn skill attach respects the same aim-relative skill budget as the UI
     # (agent_skills.resources.attach_token_budget). None → the fixed budget.
     max_context_tokens: Optional[int] = None
+    # Sub-agent private scratchpad (subagent_scratchpad_append). Held in memory so
+    # the tool loop can re-inject it into the system prompt every iteration without
+    # a DB read; the durable copy lives on SubAgentRun.scratchpad. Empty for the
+    # main agent (which uses the thread-scoped scratchpad instead).
+    scratchpad: str = ""
     # Files a tool asked to surface to the model this turn (document_view_native
     # queues images/pdf). The chat pipeline drains these into a user message as
     # native content blocks when the model supports the modality, else a text

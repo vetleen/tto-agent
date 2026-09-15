@@ -112,13 +112,9 @@ def settings_page(request):
     prefs = get_preferences(request.user)
     user_settings, _ = UserSettings.objects.get_or_create(user=request.user)
 
-    from core.preferences import DEFAULT_MAX_CONTEXT_TOKENS, _get_org_preferences
+    from core.preferences import _get_org_preferences
 
     org_prefs = _get_org_preferences(request.user)
-    org_max_context = org_prefs.get("max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)
-    if not isinstance(org_max_context, int):
-        org_max_context = DEFAULT_MAX_CONTEXT_TOKENS
-    user_max_context = (user_settings.preferences or {}).get("max_context_tokens")
 
     # Default transcription language: the user's raw override (blank = inherit),
     # and the label of what they'd inherit (org default, else system auto-detect)
@@ -134,8 +130,6 @@ def settings_page(request):
 
     return render(request, "accounts/settings.html", {
         "resolved": prefs,
-        "org_max_context_tokens": org_max_context,
-        "user_max_context_tokens": user_max_context,
         "allowed_transcription_models": prefs.allowed_transcription_models,
         "user_transcription_language": user_transcription_language or "",
         "org_default_language_label": org_default_language_label,
@@ -365,6 +359,14 @@ def org_settings_page(request):
     if not isinstance(org_max_context_tokens, int):
         org_max_context_tokens = DEFAULT_MAX_CONTEXT_TOKENS
 
+    # Per-tier sub-agent context budgets (0 = unlimited). The "top" tier is
+    # surfaced as "Standard" in the UI.
+    subagent_budgets = org_subagent_prefs.get("context_budget", {}) or {}
+    subagent_budget_mid = subagent_budgets.get("mid")
+    subagent_budget_mid = subagent_budget_mid if isinstance(subagent_budget_mid, int) else 0
+    subagent_budget_top = subagent_budgets.get("top")
+    subagent_budget_top = subagent_budget_top if isinstance(subagent_budget_top, int) else 0
+
     from llm.transcription_registry import get_all_transcription_models
 
     system_transcription_models = list(getattr(django_settings, "TRANSCRIPTION_ALLOWED_MODELS", []))
@@ -493,6 +495,8 @@ def org_settings_page(request):
         "pii_scan_enabled": pii_scan_enabled,
         "pii_quarantine_enabled": pii_quarantine_enabled,
         "org_max_context_tokens": org_max_context_tokens,
+        "subagent_budget_mid": subagent_budget_mid,
+        "subagent_budget_top": subagent_budget_top,
         "system_transcription_models": system_transcription_models,
         "org_allowed_transcription": org_allowed_transcription,
         "org_transcription_default": org_transcription_models.get("default", ""),
@@ -1411,6 +1415,57 @@ def org_max_context_update(request):
 @login_required
 @require_POST
 @org_admin_required
+def org_subagent_budgets_update(request):
+    """Set org's per-tier sub-agent context-token budgets (0 = unlimited).
+
+    Accepts a POST body with optional "mid" and/or "top" integer fields (the
+    SubAgentRun.model_tier values; "top" is labelled "Standard" in the UI).
+    A value of 0 clears that tier's budget (unlimited). Only the tiers present
+    in the request are touched, so each field can save independently.
+    """
+    from core.preferences import MAX_CONTEXT_TOKENS
+
+    membership = request.org_membership
+
+    data, err = _parse_json_body(request)
+    if err:
+        return err
+
+    cleaned: dict[str, int] = {}
+    for tier in ("mid", "top"):
+        if tier not in data:
+            continue
+        value = data.get(tier)
+        if value is None:
+            value = 0
+        if not isinstance(value, int) or isinstance(value, bool):
+            return JsonResponse({"error": f"{tier} budget must be an integer"}, status=400)
+        if value < 0 or value > MAX_CONTEXT_TOKENS:
+            return JsonResponse(
+                {"error": f"{tier} budget must be between 0 and {MAX_CONTEXT_TOKENS:,}"},
+                status=400,
+            )
+        cleaned[tier] = value
+
+    def mutate(prefs):
+        subagents = prefs.get("subagents", {})
+        budgets = subagents.get("context_budget", {})
+        for tier, value in cleaned.items():
+            if value:
+                budgets[tier] = value
+            else:
+                budgets.pop(tier, None)
+        subagents["context_budget"] = budgets
+        prefs["subagents"] = subagents
+
+    update_org_preferences(membership.org_id, mutate)
+
+    return JsonResponse({"ok": True, "context_budget": cleaned})
+
+
+@login_required
+@require_POST
+@org_admin_required
 def org_budget_update(request):
     """Update org's monthly budget settings."""
     membership = request.org_membership
@@ -1438,54 +1493,6 @@ def org_budget_update(request):
     update_org_preferences(membership.org_id, lambda prefs: prefs.update(updates))
 
     return JsonResponse({"ok": True})
-
-
-@login_required
-@require_POST
-def preferences_max_context_update(request):
-    """Update user's max context tokens preference."""
-    from core.preferences import (
-        DEFAULT_MAX_CONTEXT_TOKENS,
-        MAX_CONTEXT_TOKENS,
-        MIN_CONTEXT_TOKENS,
-        _get_org_preferences,
-    )
-
-    data, err = _parse_json_body(request)
-    if err:
-        return err
-
-    value = data.get("max_context_tokens")
-    if value is None:
-        # Clear user override
-        update_user_preferences(
-            request.user, lambda prefs: prefs.pop("max_context_tokens", None)
-        )
-        return JsonResponse({"ok": True, "max_context_tokens": None})
-
-    if not isinstance(value, int) or isinstance(value, bool):
-        return JsonResponse({"error": "max_context_tokens must be an integer"}, status=400)
-
-    if value < MIN_CONTEXT_TOKENS:
-        return JsonResponse({"error": f"max_context_tokens must be at least {MIN_CONTEXT_TOKENS:,}"}, status=400)
-
-    if value > MAX_CONTEXT_TOKENS:
-        return JsonResponse({"error": f"max_context_tokens must be at most {MAX_CONTEXT_TOKENS:,}"}, status=400)
-
-    # Check against org limit
-    org_prefs = _get_org_preferences(request.user)
-    org_limit = org_prefs.get("max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)
-    if not isinstance(org_limit, int):
-        org_limit = DEFAULT_MAX_CONTEXT_TOKENS
-    if value > org_limit:
-        return JsonResponse({"error": f"Cannot exceed organization limit of {org_limit:,} tokens"}, status=400)
-
-    def mutate(prefs):
-        prefs["max_context_tokens"] = value
-
-    update_user_preferences(request.user, mutate)
-
-    return JsonResponse({"ok": True, "max_context_tokens": value})
 
 
 @login_required

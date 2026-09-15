@@ -1046,6 +1046,73 @@ class RunSubagentServiceTests(TestCase):
 
     @patch("llm.get_llm_service")
     @patch("core.preferences.get_preferences")
+    def test_tier_budget_sets_max_context_tokens(self, mock_prefs, mock_svc):
+        """An org budget for the run's tier is passed into the request params so
+        the mid-turn pruner sizes to it (mid tier -> mid budget)."""
+        mock_prefs.return_value = _prefs(subagent_context_budgets={"mid": 120_000})
+        mock_response = MagicMock()
+        mock_response.message.content = "Done"
+        mock_response.usage.total_tokens = 100
+        mock_response.usage.cost_usd = 0.0
+        mock_svc.return_value.run_via_stream.return_value = mock_response
+
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="task", model_tier="mid",
+        )
+
+        from chat.subagent_service import run_subagent
+        run_subagent(run.id)
+
+        request = mock_svc.return_value.run_via_stream.call_args[0][1]
+        self.assertEqual(request.params.get("max_context_tokens"), 120_000)
+
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
+    def test_no_budget_leaves_max_context_unset(self, mock_prefs, mock_svc):
+        """With no budget for the tier, max_context_tokens is absent (unlimited —
+        the pruner falls back to the model window)."""
+        mock_prefs.return_value = _prefs(subagent_context_budgets={"top": 150_000})
+        mock_response = MagicMock()
+        mock_response.message.content = "Done"
+        mock_response.usage.total_tokens = 100
+        mock_response.usage.cost_usd = 0.0
+        mock_svc.return_value.run_via_stream.return_value = mock_response
+
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="task", model_tier="mid",
+        )
+
+        from chat.subagent_service import run_subagent
+        run_subagent(run.id)
+
+        request = mock_svc.return_value.run_via_stream.call_args[0][1]
+        self.assertNotIn("max_context_tokens", request.params)
+
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
+    def test_tier_budget_floored_at_minimum(self, mock_prefs, mock_svc):
+        """A tiny budget is floored at MIN_CONTEXT_TOKENS to avoid prune thrash."""
+        from core.preferences import MIN_CONTEXT_TOKENS
+
+        mock_prefs.return_value = _prefs(subagent_context_budgets={"top": 10_000})
+        mock_response = MagicMock()
+        mock_response.message.content = "Done"
+        mock_response.usage.total_tokens = 100
+        mock_response.usage.cost_usd = 0.0
+        mock_svc.return_value.run_via_stream.return_value = mock_response
+
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="task", model_tier="top",
+        )
+
+        from chat.subagent_service import run_subagent
+        run_subagent(run.id)
+
+        request = mock_svc.return_value.run_via_stream.call_args[0][1]
+        self.assertEqual(request.params.get("max_context_tokens"), MIN_CONTEXT_TOKENS)
+
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
     def test_creates_hidden_message_on_completion(self, mock_prefs, mock_svc):
         mock_prefs.return_value = _prefs()
         mock_response = MagicMock()

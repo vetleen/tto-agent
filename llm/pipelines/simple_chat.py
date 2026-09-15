@@ -29,6 +29,11 @@ logger = logging.getLogger(__name__)
 # covered without per-tool logic.
 MAX_TOOL_RESULT_CHARS = 200_000
 
+# Header that prefixes the sub-agent scratchpad block re-injected each tool-loop
+# iteration. Used both to render the block and to strip the prior copy so exactly
+# one is ever present (see _refresh_subagent_scratchpad).
+_SUBAGENT_SCRATCHPAD_MARKER = "# Scratchpad (your private notes)"
+
 
 def _iteration_notice(
     iteration_index: int,
@@ -534,6 +539,50 @@ class SimpleChatPipeline(BasePipeline):
                 req.context.bump_stat("prunes", 1)
         return pruned
 
+    def _refresh_subagent_scratchpad(self, messages: List[Message], req: ChatRequest) -> None:
+        """Re-inject the sub-agent's private scratchpad as a trailing message so it
+        stays visible every iteration despite mid-run tool-result pruning.
+
+        Idempotent: strips the prior injected block (matched by header) before
+        appending the current one, so exactly one copy — at the tail, mirroring
+        where the main agent renders its scratchpad — is ever present. No-op for
+        the main agent (it carries its scratchpad in the per-turn preamble). When
+        no notes exist yet, a short nudge is injected only once context is filling,
+        so a long run doesn't silently lose its early findings to pruning."""
+        ctx = req.context
+        if not ctx or getattr(ctx, "agent_kind", "main") != "subagent":
+            return
+        # Drop any previously injected copy (block or nudge — both share the header).
+        messages[:] = [
+            m for m in messages
+            if not (
+                isinstance(getattr(m, "content", None), str)
+                and m.content.startswith(_SUBAGENT_SCRATCHPAD_MARKER)
+            )
+        ]
+        scratchpad = (getattr(ctx, "scratchpad", "") or "").strip()
+        if scratchpad:
+            messages.append(Message(role="user", content=(
+                f"{_SUBAGENT_SCRATCHPAD_MARKER}\n"
+                "Your own notes from earlier in this run — retained even when tool "
+                "results are cleared. Add to it with `subagent_scratchpad_append`.\n"
+                f"```\n{scratchpad}\n```"
+            )))
+            return
+        # No notes yet: nudge only when context is actually filling (mirrors the
+        # main agent's 70%-of-budget nudge), so we don't nag short runs.
+        from core.tokens import estimate_chat_request_tokens
+
+        ceiling = self._midturn_ceiling(req)
+        if ceiling and estimate_chat_request_tokens(messages) >= 0.7 * ceiling:
+            messages.append(Message(role="user", content=(
+                f"{_SUBAGENT_SCRATCHPAD_MARKER}\n"
+                "Your context is filling up, and older tool results will be cleared "
+                "to stay under budget. Save any facts, figures, or URLs you'll need "
+                "for your final answer with `subagent_scratchpad_append` now — cleared "
+                "results don't come back."
+            )))
+
     def _prune_final_messages(self, final_messages: List[Message], req: ChatRequest) -> List[Message]:
         """Backstop prune before the final tool-stripped call: if the assembled
         request still estimates over the ceiling, stub old tool results (keeping
@@ -662,6 +711,7 @@ class SimpleChatPipeline(BasePipeline):
                 real_input_tokens=(response.usage.prompt_tokens if response.usage else 0),
                 protect_call_ids={tc.id for tc in msg.tool_calls},
             )
+            self._refresh_subagent_scratchpad(new_messages, req)
             tools = self._expand_tools_from_context(tools, tool_by_name, req)
             req = req.model_copy(update={"messages": new_messages, "tool_schemas": tools})
         else:
@@ -952,6 +1002,7 @@ class SimpleChatPipeline(BasePipeline):
                 real_input_tokens=(end_data.get("input_tokens") or 0),
                 protect_call_ids={tc.id for tc in parsed_tool_calls},
             )
+            self._refresh_subagent_scratchpad(new_messages, req)
             tools = self._expand_tools_from_context(tools, tool_by_name, req)
             req = req.model_copy(update={"messages": new_messages, "tool_schemas": tools})
         else:

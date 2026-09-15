@@ -46,6 +46,10 @@ class ResolvedPreferences:
     allowed_specializations: list[dict] = field(default_factory=list)
     theme: str = "system"
     parallel_subagents: bool = True
+    # Per-tier sub-agent context-token budgets (org-only). Keys are
+    # SubAgentRun.model_tier values ("mid"/"top"); each value is the aim handed
+    # to the mid-turn pruner for that tier. Absent/0 = unlimited (model window).
+    subagent_context_budgets: dict[str, int] = field(default_factory=dict)
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
     transcription_model: str = ""
     allowed_transcription_models: list[str] = field(default_factory=list)
@@ -484,16 +488,20 @@ def get_preferences(user) -> ResolvedPreferences:
     # Resolve subagent settings
     org_subagent_prefs = org_prefs.get("subagents", {})
     parallel_subagents = org_subagent_prefs.get("parallel", True)
+    # Per-tier sub-agent context budgets (org-only). Keep only positive ints;
+    # 0 / absent / invalid means unlimited for that tier.
+    raw_budgets = org_subagent_prefs.get("context_budget", {}) or {}
+    subagent_context_budgets = {
+        tier: v
+        for tier in ("mid", "top")
+        if isinstance((v := raw_budgets.get(tier)), int) and v > 0
+    }
 
-    # Resolve max context tokens: org sets limit, user can lower it
+    # Resolve max context tokens: org-only. The individual-user override was
+    # removed — the organization's limit governs every member.
     org_max_ctx = org_prefs.get("max_context_tokens")
     org_max_ctx = org_max_ctx if isinstance(org_max_ctx, int) else DEFAULT_MAX_CONTEXT_TOKENS
-    user_max_ctx = user_prefs.get("max_context_tokens")
-    if isinstance(user_max_ctx, int):
-        max_context_tokens = min(user_max_ctx, org_max_ctx)
-    else:
-        max_context_tokens = org_max_ctx
-    max_context_tokens = max(max_context_tokens, MIN_CONTEXT_TOKENS)
+    max_context_tokens = max(org_max_ctx, MIN_CONTEXT_TOKENS)
 
     # Resolve per-feature model overrides
     from llm.display import supports_modality
@@ -538,6 +546,7 @@ def get_preferences(user) -> ResolvedPreferences:
         allowed_specializations=allowed_specializations,
         theme=user_theme,
         parallel_subagents=parallel_subagents,
+        subagent_context_budgets=subagent_context_budgets,
         max_context_tokens=max_context_tokens,
         transcription_model=transcription_model,
         allowed_transcription_models=effective_transcription_allowed,

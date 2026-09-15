@@ -467,8 +467,9 @@ class MaxContextTokensTest(TestCase):
     )
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
     @patch("llm.tools.registry.get_tool_registry")
-    def test_user_lowers_below_org(self, mock_registry, mock_allowed):
-        """User sets 150k when org allows 200k — resolves to 150k."""
+    def test_user_value_ignored_org_governs(self, mock_registry, mock_allowed):
+        """The individual-user override was removed: a user value is ignored and
+        the org limit governs (org 200k + user 150k -> 200k)."""
         mock_registry.return_value.list_tools.return_value = {}
 
         user = _create_user(email="ctx-lower@example.com")
@@ -482,7 +483,7 @@ class MaxContextTokensTest(TestCase):
         settings.save()
 
         prefs = get_preferences(user)
-        self.assertEqual(prefs.max_context_tokens, 150_000)
+        self.assertEqual(prefs.max_context_tokens, 200_000)
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
@@ -491,8 +492,9 @@ class MaxContextTokensTest(TestCase):
     )
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
     @patch("llm.tools.registry.get_tool_registry")
-    def test_user_cannot_exceed_org(self, mock_registry, mock_allowed):
-        """User sets 200k when org limits to 100k — resolves to 100k."""
+    def test_user_value_never_raises_org(self, mock_registry, mock_allowed):
+        """A user value (higher or lower) is ignored — org 100k stays 100k even
+        when the user stored 200k."""
         mock_registry.return_value.list_tools.return_value = {}
 
         user = _create_user(email="ctx-exceed@example.com")
@@ -527,6 +529,42 @@ class MaxContextTokensTest(TestCase):
 
         prefs = get_preferences(user)
         self.assertEqual(prefs.max_context_tokens, MIN_CONTEXT_TOKENS)
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5.4",
+        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_CHEAP_MODEL="",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_subagent_context_budgets_resolved(self, mock_registry, mock_allowed):
+        """Per-tier sub-agent budgets come from org prefs; 0 / unknown tiers / bad
+        types are dropped, positive ints are kept."""
+        mock_registry.return_value.list_tools.return_value = {}
+
+        user = _create_user(email="ctx-budget@example.com")
+        org = Organization.objects.create(name="CtxOrg5", slug="ctxorg5", preferences={
+            "subagents": {"context_budget": {"mid": 120_000, "top": 0, "bogus": 5}},
+        })
+        Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
+
+        prefs = get_preferences(user)
+        self.assertEqual(prefs.subagent_context_budgets, {"mid": 120_000})
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5.4",
+        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_CHEAP_MODEL="",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_subagent_context_budgets_default_empty(self, mock_registry, mock_allowed):
+        """No org budget -> empty dict (every tier unlimited)."""
+        mock_registry.return_value.list_tools.return_value = {}
+
+        user = _create_user(email="ctx-budget-none@example.com")
+        prefs = get_preferences(user)
+        self.assertEqual(prefs.subagent_context_budgets, {})
 
 
 class TranscriptionModelCascadeTest(TestCase):
