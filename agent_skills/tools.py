@@ -1131,14 +1131,17 @@ class AttachSkillsTool(ContextAwareTool):
                 ),
             })
 
-        # Token budget replaces the old fixed count cap.
-        _, dropped = skills_within_budget(chosen)
+        # Token budget replaces the old fixed count cap. Aim-relative: a small
+        # max_context_tokens caps skills so they can't crowd out history (same
+        # budget the UI applies). None → the fixed ceiling.
+        aim = getattr(self.context, "max_context_tokens", None) if self.context else None
+        _, dropped = skills_within_budget(chosen, max_context_tokens=aim)
         if dropped:
             return json.dumps({
                 "status": "error",
                 "message": (
                     "Attaching all of these would exceed this thread's skill "
-                    f"size budget (~{attach_token_budget()} tokens). Drop one of: "
+                    f"size budget (~{attach_token_budget(aim)} tokens). Drop one of: "
                     + ", ".join(s.slug for s in dropped)
                     + "."
                 ),

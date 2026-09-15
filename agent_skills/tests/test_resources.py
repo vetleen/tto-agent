@@ -227,3 +227,47 @@ class ApprovalGateTests(TestCase):
         self.assertFalse(ok)
         self.skill.refresh_from_db()
         self.assertEqual(self.skill.scan_state, AgentSkill.ScanState.BLOCKED)
+
+
+class AttachTokenBudgetTests(TestCase):
+    def test_none_returns_fixed_max(self):
+        self.assertEqual(svc.attach_token_budget(None), 60_000)
+
+    def test_scales_with_aim(self):
+        small = svc.attach_token_budget(50_000)
+        big = svc.attach_token_budget(200_000)
+        self.assertLess(small, big)
+        self.assertEqual(small, int(0.55 * (50_000 - 16_384 - 8_000)))
+        self.assertEqual(big, 60_000)  # large aim clamps to the fixed ceiling
+
+    def test_never_below_one(self):
+        self.assertGreaterEqual(svc.attach_token_budget(1000), 1)
+
+
+class SkillsWithinBudgetTests(TestCase):
+    def _skill(self, slug, tokens):
+        return AgentSkill.objects.create(
+            slug=slug, name=slug.upper(), instructions="x", level="system",
+            standing_token_count=tokens,
+        )
+
+    def test_dropped_surfaced_and_aim_relative(self):
+        a = self._skill("a", 10_000)
+        b = self._skill("b", 10_000)
+        c = self._skill("c", 10_000)
+        # aim=50k -> budget ~14k -> only the first fits; rest dropped.
+        kept_ids, dropped = svc.trim_ids_to_budget_verbose([a.id, b.id, c.id], None, 50_000)
+        self.assertEqual(kept_ids, [str(a.id)])
+        self.assertEqual({s.slug for s in dropped}, {"b", "c"})
+
+    def test_large_aim_keeps_all(self):
+        skills = [self._skill("s%d" % i, 5_000) for i in range(5)]
+        kept_ids, dropped = svc.trim_ids_to_budget_verbose([s.id for s in skills], None, 200_000)
+        self.assertEqual(len(kept_ids), 5)
+        self.assertEqual(dropped, [])
+
+    def test_at_least_one_kept_even_if_oversize(self):
+        big = self._skill("big", 100_000)
+        kept_ids, dropped = svc.trim_ids_to_budget_verbose([big.id], None, 50_000)
+        self.assertEqual(kept_ids, [str(big.id)])
+        self.assertEqual(dropped, [])

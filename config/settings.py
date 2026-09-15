@@ -645,10 +645,19 @@ VISION_IMAGE_JPEG_QUALITY = _env_int("VISION_IMAGE_JPEG_QUALITY", "82")
 # these carve the model window into output reservation + input overhead + history.
 CONTEXT_SAFETY_MARGIN_TOKENS = _env_int("CONTEXT_SAFETY_MARGIN_TOKENS", "8_000")
 # Conservative reservation for the system prompt + tool schemas + current message
-# when the caller can't measure them before history is windowed (the per-round
+# when the caller can't measure them before history is windowed (used only as the
+# fallback now that _assemble_turn_inputs measures the real overhead; the per-round
 # pruner is the exact in-turn backstop).
 CONTEXT_INPUT_OVERHEAD_TOKENS = _env_int("CONTEXT_INPUT_OVERHEAD_TOKENS", "24_000")
-MIN_HISTORY_BUDGET_TOKENS = _env_int("MIN_HISTORY_BUDGET_TOKENS", "4_000")
+# Floor on conversation history — even when overhead is large the model always
+# sees at least this much recent conversation (a few turns), and it's the guard
+# against a negative budget when overhead exceeds the input ceiling.
+MIN_HISTORY_BUDGET_TOKENS = _env_int("MIN_HISTORY_BUDGET_TOKENS", "8_000")
+# Attached-skill instructions are capped so they can't crowd out history. The cap
+# is the SMALLER of this fixed ceiling and a fraction of the turn's input ceiling
+# (SKILL_ATTACH_BUDGET_FRACTION) — so a small max_context_tokens allows fewer/
+# smaller skills and the aim + history are preserved (agent_skills/resources.py).
+SKILL_ATTACH_BUDGET_FRACTION = float(os.environ.get("SKILL_ATTACH_BUDGET_FRACTION", "0.55"))
 # Per-native-asset token estimates for the context budget (what the provider
 # actually charges): an image is ~(w*h)/750 capped ~1600 after our downscale; a
 # native PDF page is image+text ≈ 2300 tokens. See core/tokens.count_tokens.
@@ -692,10 +701,12 @@ DOCUMENT_UPLOAD_REQUEST_MAX_BYTES = _env_int("DOCUMENT_UPLOAD_REQUEST_MAX_BYTES"
 # for the client-side per-drag limit — bounds concurrent processing load (the shared
 # Redis) and blocks drip-feeding a second batch into an already-processing window.
 DOCUMENT_MAX_IN_FLIGHT_PER_USER = _env_int("DOCUMENT_MAX_IN_FLIGHT_PER_USER", "100")
-# Standing prompt-token budget for skills attached to one chat thread (instructions
-# + resource manifest, summed). Replaces the old fixed count cap — a thread may
-# attach any number of skills as long as their combined standing cost fits here.
-SKILL_ATTACH_TOKEN_BUDGET = _env_int("SKILL_ATTACH_TOKEN_BUDGET", "40000")
+# Fixed ceiling on the standing prompt-token budget for skills attached to one chat
+# thread (instructions + resource manifest, summed). The effective budget is the
+# MIN of this and SKILL_ATTACH_BUDGET_FRACTION x the turn's input ceiling, so large
+# context budgets get the full 60k while small ones cap skills to leave room for
+# history. Replaces the old fixed count cap.
+SKILL_ATTACH_TOKEN_BUDGET = _env_int("SKILL_ATTACH_TOKEN_BUDGET", "60000")
 # Decompression-bomb guards for the processing pipeline (worker has ~512 MB).
 DOCX_MAX_UNCOMPRESSED_BYTES = _env_int("DOCX_MAX_UNCOMPRESSED_BYTES", "250000000")  # 250 MB
 DOCUMENT_MAX_EXTRACTED_CHARS = _env_int("DOCUMENT_MAX_EXTRACTED_CHARS", "20000000")  # 20M chars

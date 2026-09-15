@@ -3062,7 +3062,17 @@
       }
       return;
     }
-    if (et === "skills.set") { setActiveSkills(data.skills || []); return; }
+    if (et === "skills.set") {
+      setActiveSkills(data.skills || []);
+      if (data.trimmed && data.trimmed.length && typeof showToast === 'function') {
+        var names = data.trimmed.join(', ');
+        showToast(
+          (data.trimmed.length === 1 ? '“' + names + '” wasn’t attached' : names + ' weren’t attached') +
+          ' — your context limit is too low for all these skills. Raise the limit in settings or use fewer skills.'
+        );
+      }
+      return;
+    }
     if (et === "data_room.attached") { addDataRoomPill(data.data_room_id, data.data_room_name); return; }
     if (et === "data_room.detached") { removeDataRoomPill(data.data_room_id); return; }
     if (et === "error") {

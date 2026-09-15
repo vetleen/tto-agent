@@ -409,7 +409,9 @@ def _link_loop_resources(thread, user, data_room_ids, skill_ids, model=None):
         sid = str(sid)
         if sid in allowed and sid not in resolved_skill_ids:
             resolved_skill_ids.append(sid)
-    resolved_skill_ids = trim_ids_to_budget(resolved_skill_ids)
+    resolved_skill_ids = trim_ids_to_budget(
+        resolved_skill_ids, None, getattr(prefs, "max_context_tokens", None)
+    )
     ChatThreadSkill.objects.filter(thread=thread).delete()
     ChatThreadSkill.objects.bulk_create(
         [ChatThreadSkill(thread=thread, skill_id=sid) for sid in resolved_skill_ids]

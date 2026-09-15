@@ -165,21 +165,40 @@ def recompute_standing_tokens(skill: AgentSkill) -> int:
     return total
 
 
-def attach_token_budget() -> int:
+def attach_token_budget(max_context_tokens: int | None = None) -> int:
+    """Standing-token budget for the skills attached to one chat thread.
+
+    The MIN of the fixed ceiling (``SKILL_ATTACH_TOKEN_BUDGET``, 60k) and a
+    fraction (``SKILL_ATTACH_BUDGET_FRACTION``, 0.55) of the turn's input ceiling.
+    So a small ``max_context_tokens`` caps skills to leave room for conversation
+    history + the aim, while large budgets get the full 60k. Model-agnostic — it
+    uses a nominal medium-effort output reservation so the budget can be computed
+    at skill-attach time (before a model/turn is chosen); the exact per-turn
+    input ceiling still governs the actual history window.
+    """
     from django.conf import settings
 
-    return int(getattr(settings, "SKILL_ATTACH_TOKEN_BUDGET", 40_000))
+    fixed = int(getattr(settings, "SKILL_ATTACH_TOKEN_BUDGET", 60_000))
+    if not max_context_tokens:
+        return fixed
+    fraction = float(getattr(settings, "SKILL_ATTACH_BUDGET_FRACTION", 0.55))
+    margin = int(getattr(settings, "CONTEXT_SAFETY_MARGIN_TOKENS", 8_000))
+    # Nominal medium-effort output reservation (see llm.context_budget); avoids a
+    # model dependency at attach time.
+    ceiling_est = max(int(max_context_tokens) - 16_384 - margin, 0)
+    return max(1, min(fixed, int(fraction * ceiling_est)))
 
 
 def _standing(skill: AgentSkill) -> int:
     return skill.standing_token_count or recompute_standing_tokens(skill)
 
 
-def skills_within_budget(skills, budget: int | None = None):
+def skills_within_budget(skills, budget: int | None = None, max_context_tokens: int | None = None):
     """Greedy in attach order: return ``(kept, dropped)`` so the summed standing
     cost stays within ``budget``. At least one skill is always kept (a single
-    skill's instructions are capped well under the budget)."""
-    budget = attach_token_budget() if budget is None else budget
+    skill's instructions are capped well under the budget). When ``budget`` is
+    None it's derived from ``max_context_tokens`` (aim-relative)."""
+    budget = attach_token_budget(max_context_tokens) if budget is None else budget
     kept, dropped, total = [], [], 0
     for skill in skills:
         cost = _standing(skill)
@@ -191,13 +210,25 @@ def skills_within_budget(skills, budget: int | None = None):
     return kept, dropped
 
 
-def trim_ids_to_budget(skill_ids, budget: int | None = None) -> list[str]:
-    """Budget-trim an ordered list of skill ids (load-path backstop)."""
+def trim_ids_to_budget_verbose(
+    skill_ids, budget: int | None = None, max_context_tokens: int | None = None
+):
+    """Budget-trim an ordered list of skill ids; return ``(kept_ids, dropped)``
+    where ``dropped`` is the list of AgentSkill objects that didn't fit (for
+    surfacing a graceful notice to the user)."""
     ids = [str(i) for i in skill_ids]
     by_id = {str(s.id): s for s in AgentSkill.objects.filter(id__in=ids)}
     ordered = [by_id[i] for i in ids if i in by_id]
-    kept, _ = skills_within_budget(ordered, budget)
-    return [str(s.id) for s in kept]
+    kept, dropped = skills_within_budget(ordered, budget, max_context_tokens)
+    return [str(s.id) for s in kept], dropped
+
+
+def trim_ids_to_budget(
+    skill_ids, budget: int | None = None, max_context_tokens: int | None = None
+) -> list[str]:
+    """Budget-trim an ordered list of skill ids (load-path backstop)."""
+    kept, _ = trim_ids_to_budget_verbose(skill_ids, budget, max_context_tokens)
+    return kept
 
 
 # --- text extraction -------------------------------------------------------

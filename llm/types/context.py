@@ -67,6 +67,10 @@ class RunContext(BaseModel):
     # Which agent kind this run is: "main" (the orchestrator) or "subagent".
     # Lets the pipeline defensively drop tools whose audience excludes this kind.
     agent_kind: str = "main"
+    # The org/user context aim for this run. Read by chat_skill_attach so a
+    # mid-turn skill attach respects the same aim-relative skill budget as the UI
+    # (agent_skills.resources.attach_token_budget). None → the fixed budget.
+    max_context_tokens: Optional[int] = None
     # Files a tool asked to surface to the model this turn (document_view_native
     # queues images/pdf). The chat pipeline drains these into a user message as
     # native content blocks when the model supports the modality, else a text

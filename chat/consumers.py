@@ -1151,15 +1151,17 @@ class ChatConsumer(AsyncWebsocketConsumer):
         """
         from asgiref.sync import sync_to_async
 
-        from agent_skills.resources import trim_ids_to_budget
+        from agent_skills.resources import trim_ids_to_budget_verbose
 
         thread_id = data.get("thread_id")
         skill_ids = data.get("skill_ids") or []
 
         skills = await self._validate_skills(skill_ids)
-        kept = set(
-            await sync_to_async(trim_ids_to_budget)([s["id"] for s in skills])
+        aim = self.resolved_prefs.max_context_tokens if self.resolved_prefs else None
+        kept_ids, dropped = await sync_to_async(trim_ids_to_budget_verbose)(
+            [s["id"] for s in skills], None, aim
         )
+        kept = set(kept_ids)
         skills = [s for s in skills if str(s["id"]) in kept]
 
         self.active_skill_ids = [s["id"] for s in skills]
@@ -1167,9 +1169,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if thread_id:
             await self._persist_thread_skills(thread_id, self.active_skill_ids)
 
+        # Surface budget-trimmed skills so the UI can tell the user gracefully
+        # (their context limit is too low for all of them).
+        trimmed = [s.name for s in dropped]
         await self.send(text_data=json.dumps({
             "event_type": "skills.set",
             "skills": skills,
+            "trimmed": trimmed,
         }))
 
     async def _handle_load_thread(self, data):
@@ -1859,8 +1865,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
             from agent_skills.resources import trim_ids_to_budget
 
             validated_skills = await self._validate_skills(payload_skill_ids)
+            aim = self.resolved_prefs.max_context_tokens if self.resolved_prefs else None
             payload_skills_validated = await sync_to_async(trim_ids_to_budget)(
-                [s["id"] for s in validated_skills]
+                [s["id"] for s in validated_skills], None, aim
             )
 
         try:
@@ -2745,6 +2752,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             conversation_id=str(thread.id),
             data_room_ids=self.data_room_ids,
         )
+        context.max_context_tokens = self.resolved_prefs.max_context_tokens if self.resolved_prefs else None
 
         # Enrich user messages that have image/PDF attachments with multimodal
         # content blocks, metering each against the run's native-asset budget.
