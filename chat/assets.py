@@ -174,6 +174,31 @@ def file_token_for_document(document) -> str | None:
     return get_or_create_version_file_token(version_id=version_id, mime=ct, filename=filename)
 
 
+def user_can_access_asset(user, asset) -> bool:
+    """Re-derive access from the asset's owner (version / canvas / message /
+    thread / slide set).
+
+    Returns False for orphans. This is the single gate on serving or reusing an
+    asset's bytes (images and file downloads alike) — never a presigned S3 URL.
+    Version-scoped assets defer to the data-room ACL; the rest are owned via the
+    thread's creator. Kept here (beside the byte resolvers) so any caller that
+    resolves an asset to bytes can authorize it without importing the views.
+    """
+    if asset.canvas_id:
+        return asset.canvas.thread.created_by_id == user.id
+    if asset.message_id:
+        return asset.message.thread.created_by_id == user.id
+    if asset.thread_id:
+        return asset.thread.created_by_id == user.id
+    if asset.slide_set_id:
+        return asset.slide_set.thread.created_by_id == user.id
+    if asset.version_id:
+        from documents.views import _user_can_access_data_room
+
+        return _user_can_access_data_room(user, asset.version.document.data_room)
+    return False
+
+
 def store_canvas_image(
     canvas, *, img_bytes, content_type, description="", alt_text="", created_by=None, dedupe=True
 ):

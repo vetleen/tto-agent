@@ -169,10 +169,7 @@ class CreateSkillInput(ReasonBaseModel):
 class SaveCanvasToSkillFieldInput(ReasonBaseModel):
     skill_slug: str = Field(description="Slug of the skill to save to.")
     field_name: str = Field(
-        description=(
-            "Field to save canvas content to: 'instructions', 'description', "
-            "or a template name."
-        )
+        description="Field to save canvas content to: 'instructions' or 'description'."
     )
     canvas_name: str = Field(
         default="",
@@ -183,9 +180,7 @@ class SaveCanvasToSkillFieldInput(ReasonBaseModel):
 class ShowSkillFieldInCanvasInput(ReasonBaseModel):
     skill_slug: str = Field(description="Slug of the skill to read from.")
     field_name: str = Field(
-        description=(
-            "Field to show: 'instructions', 'description', or a template name."
-        )
+        description="Field to show: 'instructions' or 'description'."
     )
     canvas_name: str = Field(
         default="",
@@ -209,10 +204,6 @@ class EditSkillInput(ReasonBaseModel):
         default_factory=list,
         description="Find-replace edits for text fields like description.",
     )
-    delete_templates: list[str] = Field(
-        default_factory=list,
-        description="Template names to delete.",
-    )
 
 
 class DeleteSkillInput(ReasonBaseModel):
@@ -220,7 +211,7 @@ class DeleteSkillInput(ReasonBaseModel):
 
 
 class ViewTemplateInput(ReasonBaseModel):
-    template_name: str = Field(description="Name of the template to view.")
+    template_name: str = Field(description="Name of the resource to view.")
     pages: str | None = Field(
         default=None,
         description=(
@@ -229,13 +220,82 @@ class ViewTemplateInput(ReasonBaseModel):
             "Omit to view the whole PDF."
         ),
     )
+    skill_slug: str = Field(
+        default="",
+        description=(
+            "Optional: slug of the skill you are authoring, to read a resource "
+            "on THAT skill. Omit to read from a skill attached to this thread."
+        ),
+    )
 
 
 class LoadTemplateToCanvasInput(ReasonBaseModel):
-    template_name: str = Field(description="Name of the template to load into the canvas.")
+    template_name: str = Field(description="Name of the resource to load into the canvas.")
     canvas_name: str = Field(
         default="",
-        description="Title for the canvas tab. If omitted, uses the template name.",
+        description="Title for the canvas tab. If omitted, uses the resource name.",
+    )
+    skill_slug: str = Field(
+        default="",
+        description=(
+            "Optional: slug of the skill you are authoring, to load a resource "
+            "from THAT skill. Omit to load from a skill attached to this thread."
+        ),
+    )
+
+
+class SkillResourceListInput(ReasonBaseModel):
+    skill_slug: str = Field(description="Slug of the skill whose resources to list.")
+
+
+class SkillResourceSaveInput(ReasonBaseModel):
+    skill_slug: str = Field(description="Slug of the skill to save the resource on.")
+    name: str = Field(description="Resource name (unique within the skill).")
+    kind: str = Field(
+        default="reference",
+        description=(
+            "'template' for a fill-in skeleton the agent loads and completes, "
+            "'reference' for read-only material."
+        ),
+    )
+    canvas_name: str = Field(
+        default="",
+        description="Title of the canvas to save from. If omitted, uses the active canvas.",
+    )
+
+
+class SkillResourceAttachInput(ReasonBaseModel):
+    skill_slug: str = Field(description="Slug of the skill to attach the file to.")
+    source: str = Field(
+        description=(
+            "A file/image reference you already have: a [[file:<uuid>]] or "
+            "[[image:<uuid>]] token, or the bare uuid."
+        )
+    )
+    kind: str = Field(
+        default="reference",
+        description="'reference' (read-only material) or 'template' (a fill-in skeleton).",
+    )
+    name: str = Field(
+        default="",
+        description="Optional resource name. If omitted, the source file's name is used.",
+    )
+
+
+class SkillResourceUpdateInput(ReasonBaseModel):
+    skill_slug: str = Field(description="Slug of the skill owning the resource.")
+    name: str = Field(description="Current name of the resource to update.")
+    new_name: str = Field(default="", description="New name (omit to keep the current name).")
+    kind: str = Field(
+        default="",
+        description="New kind: 'reference' or 'template' (omit to keep the current kind).",
+    )
+
+
+class SkillResourceDeleteInput(ReasonBaseModel):
+    skill_slug: str = Field(description="Slug of the skill owning the resource(s).")
+    names: list[str] = Field(
+        default_factory=list, description="Resource names to delete."
     )
 
 
@@ -314,14 +374,14 @@ class SaveCanvasToSkillFieldTool(ContextAwareTool):
     start_label: str = "Saving to skill..."
     end_label: str = "Saved to skill"
     description: str = (
-        "Save the current canvas content into a skill's instructions, description, "
-        "or a named template. The canvas content is saved verbatim."
+        "Save the current canvas content into a skill's instructions or "
+        "description (saved verbatim). Resources/templates are managed with the "
+        "skill_resource_* tools, not this one."
     )
     args_schema: type[BaseModel] = SaveCanvasToSkillFieldInput
     section: str = "skills"
 
     def _run(self, skill_slug: str, field_name: str, canvas_name: str = "", **kwargs) -> str:
-        from agent_skills.models import SkillTemplate
         from chat.services import resolve_canvas
 
         user_id = self.context.user_id if self.context else None
@@ -337,11 +397,18 @@ class SaveCanvasToSkillFieldTool(ContextAwareTool):
         except User.DoesNotExist:
             return json.dumps({"status": "error", "message": "User not found."})
 
-        # Guard against a blank target so an empty/whitespace name can't create
-        # a junk SkillTemplate(name="") via the template branch below.
+        # Only the two authored text columns are writable here. A template/
+        # resource name is rejected with a pointer to the resource tools.
         field_name = (field_name or "").strip()
-        if not field_name:
-            return json.dumps({"status": "error", "message": "field_name is required."})
+        if field_name not in ("instructions", "description"):
+            return json.dumps({
+                "status": "error",
+                "message": (
+                    "skill_field_save writes only 'instructions' or 'description'. "
+                    "To save a resource, use skill_resource_save (text) or "
+                    "skill_resource_attach (files)."
+                ),
+            })
 
         skill, err = resolve_skill_for_thread_edit(user, thread_id, skill_slug)
         if err:
@@ -354,30 +421,19 @@ class SaveCanvasToSkillFieldTool(ContextAwareTool):
                 "message": err,
             })
 
-        # Cap each target at its field's limit: instructions at the model cap,
-        # description at the CharField-style 1024 the edit form enforces (it is
-        # injected verbatim into the system prompt of every thread using the
-        # skill), templates at the shared template cap.
+        # Cap each column at its limit: instructions at the model cap; description
+        # at the CharField-style 1024 the edit form enforces (it is injected
+        # verbatim into the system prompt of every thread using the skill).
         content = canvas.content
         if field_name == "instructions":
             from agent_skills.models import MAX_INSTRUCTIONS_CHARS
 
             content = content[:MAX_INSTRUCTIONS_CHARS]
-        elif field_name == "description":
+        else:  # description
             content = content[:1024]
-        else:
-            from agent_skills.models import MAX_TEMPLATE_CHARS
 
-            content = content[:MAX_TEMPLATE_CHARS]
-
-        if field_name in ("instructions", "description"):
-            setattr(skill, field_name, content)
-            skill.save(update_fields=[field_name, "updated_at"])
-        else:
-            SkillTemplate.objects.update_or_create(
-                skill=skill, name=field_name,
-                defaults={"content": content},
-            )
+        setattr(skill, field_name, content)
+        skill.save(update_fields=[field_name, "updated_at"])
 
         return json.dumps({
             "status": "ok",
@@ -395,8 +451,8 @@ class ShowSkillFieldInCanvasTool(ContextAwareTool):
     start_label: str = "Loading skill field..."
     end_label: str = "Loaded skill field to canvas"
     description: str = (
-        "Load a skill's instructions, description, or a named template into "
-        "the canvas. This allows the user to view and edit the content."
+        "Load a skill's instructions or description into the canvas so the user "
+        "can view and edit it. To load a resource/template, use skill_resource_load."
     )
     args_schema: type[BaseModel] = ShowSkillFieldInCanvasInput
     section: str = "skills"
@@ -416,6 +472,16 @@ class ShowSkillFieldInCanvasTool(ContextAwareTool):
             user = User.objects.get(pk=user_id)
         except User.DoesNotExist:
             return json.dumps({"status": "error", "message": "User not found."})
+
+        field_name = (field_name or "").strip()
+        if field_name not in ("instructions", "description"):
+            return json.dumps({
+                "status": "error",
+                "message": (
+                    "skill_field_load loads only 'instructions' or 'description'. "
+                    "To load a resource into the canvas, use skill_resource_load."
+                ),
+            })
 
         # Read access: any accessible skill via shadowing
         skills = get_available_skills(user)
@@ -452,8 +518,9 @@ class EditSkillTool(ContextAwareTool):
     start_label: str = "Editing skill..."
     end_label: str = "Updated skill"
     description: str = (
-        "Edit a skill's name, slug, tool_names, is_active, or apply "
-        "find-replace edits to text fields like description."
+        "Edit a skill's name, slug, or tool_names, or apply find-replace edits "
+        "to its description/instructions. Resources are managed with the "
+        "skill_resource_* tools."
     )
     args_schema: type[BaseModel] = EditSkillInput
     section: str = "skills"
@@ -463,7 +530,6 @@ class EditSkillTool(ContextAwareTool):
         skill_slug: str,
         updates: dict | None = None,
         text_edits: list[dict] | list[TextEdit] | None = None,
-        delete_templates: list[str] | None = None,
         **kwargs,
     ) -> str:
         user_id = self.context.user_id if self.context else None
@@ -593,16 +659,6 @@ class EditSkillTool(ContextAwareTool):
 
                 migrate_skill_slug_prefs(skill, old_slug, skill.slug)
 
-        # Delete templates by name
-        templates_deleted = 0
-        if delete_templates:
-            from agent_skills.models import SkillTemplate
-
-            deleted_count, _ = SkillTemplate.objects.filter(
-                skill=skill, name__in=delete_templates,
-            ).delete()
-            templates_deleted = deleted_count
-
         return json.dumps({
             "status": "ok",
             "slug": skill.slug,
@@ -612,7 +668,6 @@ class EditSkillTool(ContextAwareTool):
             "tool_names": skill.tool_names,
             "edits_applied": applied,
             "edits_failed": failed,
-            "templates_deleted": templates_deleted,
         })
 
 
@@ -703,6 +758,64 @@ def _resolve_thread_template(thread_id, template_name):
     return winner, note
 
 
+def _coerce_kind(raw, default: str | None = None):
+    """Coerce a caller-supplied kind to 'reference'/'template'.
+
+    Returns ``default`` (None for "leave unchanged") when the value is blank or
+    unrecognized. Mirrors views._kind_from_post.
+    """
+    from agent_skills.models import SkillResource
+
+    val = (raw or "").strip().lower()
+    return val if val in SkillResource.Kind.values else default
+
+
+def _load_context_user(context):
+    """Resolve the acting User from a RunContext. Returns ``(user, error_json)``
+    where exactly one is non-None (error_json is a ready-to-return JSON string)."""
+    from django.contrib.auth import get_user_model
+
+    user_id = context.user_id if context else None
+    if not user_id:
+        return None, json.dumps({"status": "error", "message": "No user context."})
+    User = get_user_model()
+    try:
+        return User.objects.get(pk=user_id), None
+    except User.DoesNotExist:
+        return None, json.dumps({"status": "error", "message": "User not found."})
+
+
+def _read_skill_by_slug(user, slug: str):
+    """The user-accessible skill for ``slug`` (read access via shadowing), or None."""
+    from agent_skills.services import get_available_skills
+
+    for s in get_available_skills(user):
+        if s.slug == slug:
+            return s
+    return None
+
+
+def _resolve_authoring_resource(user, skill_slug: str, name: str, *, allow_quarantined=False):
+    """Resolve a resource by name on a specific skill the user can read.
+
+    Returns ``(resource, error)`` — exactly one is non-None. Quarantined
+    resources are hidden from view/load (they must not be readable) but visible
+    to ``skill_resource_list`` so the author can see why and remove them.
+    """
+    from agent_skills.models import SkillResource
+
+    skill = _read_skill_by_slug(user, skill_slug)
+    if skill is None:
+        return None, f"Skill '{skill_slug}' not found."
+    qs = skill.templates.filter(name=name)
+    if not allow_quarantined:
+        qs = qs.filter(is_quarantined=False)
+    resource = qs.first()
+    if resource is None:
+        return None, f"Resource '{name}' not found on skill '{skill_slug}'."
+    return resource, None
+
+
 class ViewTemplateTool(ContextAwareTool):
     """View the content of a resource from an attached skill (read whole, by name).
 
@@ -716,22 +829,29 @@ class ViewTemplateTool(ContextAwareTool):
     start_label: str = "Loading resource..."
     end_label: str = "Viewed resource"
     description: str = (
-        "View the full content of a named resource from an attached skill. Text "
-        "resources are returned as text; PDF and image resources are attached "
-        "inline for you to read directly. Use this to consult a skill's bundled "
-        "reference material or a template before generating output."
+        "View the full content of a named resource. Text resources are returned "
+        "as text; PDF and image resources are attached inline for you to read "
+        "directly. Reads from a skill attached to this thread by default; pass "
+        "skill_slug to read a resource on the skill you are authoring. Use this "
+        "to consult bundled reference material or a template before generating."
     )
     args_schema: type[BaseModel] = ViewTemplateInput
     section: str = "skills"
 
-    def _run(self, template_name: str, pages: str | None = None, **kwargs) -> str:
+    def _run(self, template_name: str, pages: str | None = None,
+             skill_slug: str = "", **kwargs) -> str:
         from agent_skills.models import MAX_RESOURCE_CHARS, SkillResource
 
-        thread_id = self.context.conversation_id if self.context else None
-        if not thread_id:
-            return json.dumps({"status": "error", "message": "No thread context."})
-
-        resource, note = _resolve_thread_template(thread_id, template_name)
+        if skill_slug:
+            user, err = _load_context_user(self.context)
+            if err:
+                return err
+            resource, note = _resolve_authoring_resource(user, skill_slug, template_name)
+        else:
+            thread_id = self.context.conversation_id if self.context else None
+            if not thread_id:
+                return json.dumps({"status": "error", "message": "No thread context."})
+            resource, note = _resolve_thread_template(thread_id, template_name)
         if resource is None:
             return json.dumps({"status": "error", "message": note})
 
@@ -880,14 +1000,16 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
     start_label: str = "Loading template to canvas..."
     end_label: str = "Loaded template to canvas"
     description: str = (
-        "Load a named template from an attached skill into the canvas. "
-        "Use this to give the user a starting point they can edit. "
-        "This replaces the current canvas content."
+        "Load a named text resource into the canvas as an editable starting "
+        "point (replaces the current canvas content). Loads from a skill "
+        "attached to this thread by default; pass skill_slug to load a resource "
+        "from the skill you are authoring."
     )
     args_schema: type[BaseModel] = LoadTemplateToCanvasInput
     section: str = "skills"
 
-    def _run(self, template_name: str, canvas_name: str = "", **kwargs) -> str:
+    def _run(self, template_name: str, canvas_name: str = "",
+             skill_slug: str = "", **kwargs) -> str:
         from django.db import IntegrityError
 
         from chat.models import ChatCanvas
@@ -897,7 +1019,13 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
         if not thread_id:
             return json.dumps({"status": "error", "message": "No thread context."})
 
-        tmpl, note = _resolve_thread_template(thread_id, template_name)
+        if skill_slug:
+            user, err = _load_context_user(self.context)
+            if err:
+                return err
+            tmpl, note = _resolve_authoring_resource(user, skill_slug, template_name)
+        else:
+            tmpl, note = _resolve_thread_template(thread_id, template_name)
         if tmpl is None:
             return json.dumps({"status": "error", "message": note})
 
@@ -950,6 +1078,404 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
         if note:
             result["note"] = note
         return json.dumps(result)
+
+
+class SkillResourceListTool(ContextAwareTool):
+    """List the resources bundled with a skill the user can read."""
+
+    name: str = "skill_resource_list"
+    audience: str = "main"
+    start_label: str = "Listing resources..."
+    end_label: str = "Listed resources"
+    description: str = (
+        "List the resources bundled with a skill you're authoring — each with "
+        "its name, kind (reference/template), file type, processing status, and "
+        "whether it was quarantined. Pass the slug of the skill under edit."
+    )
+    args_schema: type[BaseModel] = SkillResourceListInput
+    section: str = "skills"
+
+    def _run(self, skill_slug: str, **kwargs) -> str:
+        user, err = _load_context_user(self.context)
+        if err:
+            return err
+        skill = _read_skill_by_slug(user, skill_slug)
+        if skill is None:
+            return json.dumps({
+                "status": "error", "message": f"Skill '{skill_slug}' not found.",
+            })
+        resources = [
+            {
+                "name": r.name,
+                "kind": r.kind,
+                "file_type": r.file_type,
+                "status": r.status,
+                "is_quarantined": r.is_quarantined,
+                "quarantine_reason": r.quarantine_reason,
+                "token_count": r.token_count,
+            }
+            for r in skill.templates.order_by("name")
+        ]
+        return json.dumps({
+            "status": "ok", "skill_slug": skill.slug, "resources": resources,
+        })
+
+
+class SkillResourceSaveTool(ContextAwareTool):
+    """Create or update a text resource by saving canvas content into it."""
+
+    name: str = "skill_resource_save"
+    audience: str = "main"
+    start_label: str = "Saving resource..."
+    end_label: str = "Saved resource"
+    description: str = (
+        "Create or update a TEXT resource on a skill by saving a canvas tab into "
+        "it. Set kind='template' for a fill-in skeleton the agent loads and "
+        "completes, or 'reference' for read-only material. For PDF/image/Office "
+        "files, use skill_resource_attach instead."
+    )
+    args_schema: type[BaseModel] = SkillResourceSaveInput
+    section: str = "skills"
+
+    def _run(self, skill_slug: str, name: str, kind: str = "reference",
+             canvas_name: str = "", **kwargs) -> str:
+        from agent_skills.models import SkillResource
+        from agent_skills.resources import (
+            RESOURCE_COUNT_CAP,
+            create_text_resource,
+            update_resource,
+        )
+        from chat.services import resolve_canvas
+
+        user, err = _load_context_user(self.context)
+        if err:
+            return err
+        thread_id = self.context.conversation_id if self.context else None
+        if not thread_id:
+            return json.dumps({"status": "error", "message": "No thread context."})
+
+        name = (name or "").strip()
+        if not name:
+            return json.dumps({"status": "error", "message": "name is required."})
+        kind = _coerce_kind(kind, SkillResource.Kind.REFERENCE)
+
+        skill, rerr = resolve_skill_for_thread_edit(user, thread_id, skill_slug)
+        if rerr:
+            return json.dumps({"status": "error", "message": rerr})
+
+        canvas, cerr = resolve_canvas(thread_id, canvas_name or None)
+        if cerr:
+            return json.dumps({"status": "error", "message": cerr})
+
+        existing = skill.templates.filter(name=name).first()
+        if existing is not None:
+            # Only typed text resources are content-editable; a file resource's
+            # content comes from its upload.
+            if existing.file_type != SkillResource.FileType.TEXT or existing.original_filename:
+                return json.dumps({
+                    "status": "error",
+                    "message": (
+                        f"Resource '{name}' is a file, not text. Replace it by "
+                        "attaching a new file (skill_resource_attach) and deleting "
+                        "the old, or rename/retype it with skill_resource_update."
+                    ),
+                })
+            update_resource(existing, content=canvas.content, kind=kind)
+            existing.refresh_from_db()
+            resource, created = existing, False
+        else:
+            if skill.templates.count() >= RESOURCE_COUNT_CAP:
+                return json.dumps({
+                    "status": "error",
+                    "message": f"Resource limit ({RESOURCE_COUNT_CAP}) reached.",
+                })
+            resource = create_text_resource(
+                skill, name=name, content=canvas.content, user=user, kind=kind
+            )
+            created = True
+
+        return json.dumps({
+            "status": "ok",
+            "skill_slug": skill.slug,
+            "name": resource.name,
+            "kind": resource.kind,
+            "created": created,
+            "chars_saved": len(resource.content or ""),
+        })
+
+
+class SkillResourceAttachTool(ContextAwareTool):
+    """Attach a file (from an asset token/uuid) to a skill as a resource."""
+
+    name: str = "skill_resource_attach"
+    audience: str = "main"
+    start_label: str = "Attaching file..."
+    end_label: str = "Attached file — scanning"
+    description: str = (
+        "Attach a file (PDF, image, or Office document) to a skill as a "
+        "resource, using a file/image you already have — a data-room document's "
+        "[[file:...]]/[[image:...]] token or a generated image (pass the token or "
+        "its uuid). The file is stored and then scanned in the background, so it "
+        "starts 'processing'; check skill_resource_list on a later turn to "
+        "confirm it became 'ready' (or was 'quarantined')."
+    )
+    args_schema: type[BaseModel] = SkillResourceAttachInput
+    section: str = "skills"
+
+    def _run(self, skill_slug: str, source: str, kind: str = "reference",
+             name: str = "", **kwargs) -> str:
+        import re as _re
+
+        from django.conf import settings as dj_settings
+
+        from agent_skills.models import SkillResource
+        from agent_skills.resources import (
+            RESOURCE_COUNT_CAP,
+            UnsupportedResourceType,
+            create_pending_upload,
+            detect_file_type,
+        )
+        from agent_skills.tasks import process_skill_resource_upload_task
+        from chat.assets import (
+            file_asset_source,
+            image_asset_source,
+            user_can_access_asset,
+        )
+        from chat.models import Asset
+        from core.file_types import extension_for_mime
+
+        user, err = _load_context_user(self.context)
+        if err:
+            return err
+        thread_id = self.context.conversation_id if self.context else None
+        if not thread_id:
+            return json.dumps({"status": "error", "message": "No thread context."})
+
+        # Accept a [[file:uuid]]/[[image:uuid]] token or a bare uuid.
+        m = _re.search(
+            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+            r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+            source or "",
+        )
+        if not m:
+            return json.dumps({
+                "status": "error",
+                "message": "source must be a [[file:uuid]]/[[image:uuid]] token or a uuid.",
+            })
+        asset_id = m.group(0)
+
+        asset = Asset.objects.filter(id=asset_id).first()
+        if asset is None:
+            return json.dumps({
+                "status": "error", "message": "That file reference no longer exists.",
+            })
+        if not user_can_access_asset(user, asset):
+            return json.dumps({
+                "status": "error", "message": "You don't have access to that file.",
+            })
+
+        # Resolve bytes + filename + content type by asset kind.
+        if asset.kind == Asset.KIND_FILE:
+            src, filename, ct = file_asset_source(asset)
+        else:
+            src, ct = image_asset_source(asset)
+            filename = ""
+        if src is None:
+            return json.dumps({
+                "status": "error", "message": "That file's bytes could not be read.",
+            })
+        if not filename:
+            ext = extension_for_mime(ct or "") or "bin"
+            base = (name or "image").strip() or "image"
+            filename = f"{base}.{ext}"
+
+        try:
+            file_type = detect_file_type(filename)
+        except UnsupportedResourceType:
+            return json.dumps({
+                "status": "error",
+                "message": f"Unsupported file type for '{filename}'.",
+            })
+
+        # Per-type size cap (mirrors the upload view).
+        general_max = getattr(dj_settings, "SKILL_RESOURCE_MAX_SIZE_BYTES", 15_000_000)
+        image_max = getattr(dj_settings, "SKILL_RESOURCE_IMAGE_MAX_SIZE_BYTES", 25_000_000)
+        pdf_max = getattr(dj_settings, "SKILL_RESOURCE_PDF_MAX_SIZE_BYTES", 15_000_000)
+        max_size = {
+            SkillResource.FileType.IMAGE: image_max,
+            SkillResource.FileType.PDF: pdf_max,
+        }.get(file_type, general_max)
+        size = asset.size_bytes or 0
+        if not size:
+            try:
+                size = src.size or 0
+            except Exception:
+                size = 0
+        if size and size > max_size:
+            return json.dumps({
+                "status": "error",
+                "message": f"File is too large (max {max_size // 1_000_000} MB).",
+            })
+
+        skill, rerr = resolve_skill_for_thread_edit(user, thread_id, skill_slug)
+        if rerr:
+            return json.dumps({"status": "error", "message": rerr})
+        if skill.templates.count() >= RESOURCE_COUNT_CAP:
+            return json.dumps({
+                "status": "error",
+                "message": f"Resource limit ({RESOURCE_COUNT_CAP}) reached.",
+            })
+
+        kind = _coerce_kind(kind, SkillResource.Kind.REFERENCE)
+
+        try:
+            with src.open("rb") as fh:
+                data = fh.read()
+        except Exception:
+            logger.exception("skill_resource_attach: could not read asset %s bytes", asset_id)
+            return json.dumps({
+                "status": "error", "message": "That file's bytes could not be read.",
+            })
+
+        try:
+            resource = create_pending_upload(
+                skill, data=data, filename=filename, user=user,
+                kind=kind, name=(name.strip() or None),
+            )
+        except UnsupportedResourceType:
+            return json.dumps({
+                "status": "error",
+                "message": f"Unsupported file type for '{filename}'.",
+            })
+
+        # Extraction + guardrail/PII scan run on the worker (heavy PDF/Office work
+        # must not block the turn). The agent polls skill_resource_list.
+        process_skill_resource_upload_task.delay(str(resource.id), user.id)
+
+        return json.dumps({
+            "status": "processing",
+            "skill_slug": skill.slug,
+            "resource": {
+                "name": resource.name,
+                "kind": resource.kind,
+                "file_type": resource.file_type,
+                "status": resource.status,
+            },
+            "note": (
+                "The file is being scanned in the background. Check "
+                "skill_resource_list on a later turn for 'ready' or 'quarantined'."
+            ),
+        })
+
+
+class SkillResourceUpdateTool(ContextAwareTool):
+    """Rename a resource and/or change its kind (no content change)."""
+
+    name: str = "skill_resource_update"
+    audience: str = "main"
+    start_label: str = "Updating resource..."
+    end_label: str = "Updated resource"
+    description: str = (
+        "Rename a resource and/or change its kind (reference/template) without "
+        "touching its content. To change a text resource's content, use "
+        "skill_resource_save; to swap a file, attach the new one and delete the old."
+    )
+    args_schema: type[BaseModel] = SkillResourceUpdateInput
+    section: str = "skills"
+
+    def _run(self, skill_slug: str, name: str, new_name: str = "",
+             kind: str = "", **kwargs) -> str:
+        from django.db import IntegrityError
+
+        from agent_skills.resources import update_resource
+
+        user, err = _load_context_user(self.context)
+        if err:
+            return err
+        thread_id = self.context.conversation_id if self.context else None
+        if not thread_id:
+            return json.dumps({"status": "error", "message": "No thread context."})
+
+        new_kind = _coerce_kind(kind, None)  # None → leave unchanged
+        new_name = (new_name or "").strip()
+        if not new_name and new_kind is None:
+            return json.dumps({
+                "status": "error",
+                "message": "Nothing to update: provide new_name and/or kind.",
+            })
+
+        skill, rerr = resolve_skill_for_thread_edit(user, thread_id, skill_slug)
+        if rerr:
+            return json.dumps({"status": "error", "message": rerr})
+
+        resource = skill.templates.filter(name=name).first()
+        if resource is None:
+            return json.dumps({
+                "status": "error",
+                "message": f"Resource '{name}' not found on skill '{skill.slug}'.",
+            })
+
+        try:
+            update_resource(resource, name=(new_name or None), kind=new_kind)
+        except IntegrityError:
+            return json.dumps({
+                "status": "error",
+                "message": f"A resource named '{new_name}' already exists on this skill.",
+            })
+        resource.refresh_from_db()
+        return json.dumps({
+            "status": "ok", "skill_slug": skill.slug,
+            "name": resource.name, "kind": resource.kind,
+        })
+
+
+class SkillResourceDeleteTool(ContextAwareTool):
+    """Delete one or more resources from a skill by name."""
+
+    name: str = "skill_resource_delete"
+    audience: str = "main"
+    start_label: str = "Deleting resources..."
+    end_label: str = "Deleted resources"
+
+    def end_label_for_result(self, result: dict) -> str | None:
+        if result.get("status") != "ok":
+            return None
+        n = result.get("deleted_count", 0)
+        return f"Deleted {n} resource" + ("" if n == 1 else "s")
+
+    description: str = (
+        "Delete one or more resources from a skill by name. Pass the skill slug "
+        "and the list of resource names."
+    )
+    args_schema: type[BaseModel] = SkillResourceDeleteInput
+    section: str = "skills"
+
+    def _run(self, skill_slug: str, names: list[str] | None = None, **kwargs) -> str:
+        from agent_skills.models import SkillResource
+        from agent_skills.resources import recompute_standing_tokens
+
+        user, err = _load_context_user(self.context)
+        if err:
+            return err
+        thread_id = self.context.conversation_id if self.context else None
+        if not thread_id:
+            return json.dumps({"status": "error", "message": "No thread context."})
+
+        names = [str(n).strip() for n in (names or []) if str(n).strip()]
+        if not names:
+            return json.dumps({"status": "error", "message": "names is required."})
+
+        skill, rerr = resolve_skill_for_thread_edit(user, thread_id, skill_slug)
+        if rerr:
+            return json.dumps({"status": "error", "message": rerr})
+
+        deleted_count, _ = SkillResource.objects.filter(
+            skill=skill, name__in=names
+        ).delete()
+        recompute_standing_tokens(skill)
+        return json.dumps({
+            "status": "ok", "skill_slug": skill.slug, "deleted_count": deleted_count,
+        })
 
 
 class ListSkillToolsTool(ContextAwareTool):
@@ -1210,6 +1736,11 @@ _registry.register_tool(EditSkillTool())
 _registry.register_tool(DeleteSkillTool())
 _registry.register_tool(ViewTemplateTool())
 _registry.register_tool(LoadTemplateToCanvasTool())
+_registry.register_tool(SkillResourceListTool())
+_registry.register_tool(SkillResourceSaveTool())
+_registry.register_tool(SkillResourceAttachTool())
+_registry.register_tool(SkillResourceUpdateTool())
+_registry.register_tool(SkillResourceDeleteTool())
 _registry.register_tool(ListSkillToolsTool())
 _registry.register_tool(InspectToolTool())
 _registry.register_tool(AttachSkillsTool())

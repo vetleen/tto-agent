@@ -18,6 +18,11 @@ from agent_skills.tools import (
     LoadTemplateToCanvasTool,
     SaveCanvasToSkillFieldTool,
     ShowSkillFieldInCanvasTool,
+    SkillResourceAttachTool,
+    SkillResourceDeleteTool,
+    SkillResourceListTool,
+    SkillResourceSaveTool,
+    SkillResourceUpdateTool,
     ViewTemplateTool,
 )
 from llm.types import RunContext
@@ -262,26 +267,6 @@ class EditSkillToolTests(TestCase):
             skills_prefs["renamed"]["selected_skill_id"], str(self.skill.id)
         )
 
-    def test_delete_templates(self):
-        SkillTemplate.objects.create(skill=self.skill, name="tmpl-a", content="A")
-        SkillTemplate.objects.create(skill=self.skill, name="tmpl-b", content="B")
-        SkillTemplate.objects.create(skill=self.skill, name="tmpl-keep", content="Keep")
-        result = json.loads(self.tool._run(
-            skill_slug="editable", delete_templates=["tmpl-a", "tmpl-b"],
-        ))
-        self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["templates_deleted"], 2)
-        self.assertFalse(SkillTemplate.objects.filter(skill=self.skill, name="tmpl-a").exists())
-        self.assertFalse(SkillTemplate.objects.filter(skill=self.skill, name="tmpl-b").exists())
-        self.assertTrue(SkillTemplate.objects.filter(skill=self.skill, name="tmpl-keep").exists())
-
-    def test_delete_templates_nonexistent_ignored(self):
-        result = json.loads(self.tool._run(
-            skill_slug="editable", delete_templates=["no-such-template"],
-        ))
-        self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["templates_deleted"], 0)
-
     def test_system_skill_not_editable(self):
         AgentSkill.objects.create(
             slug="sys", name="System", instructions="Inst.", level="system",
@@ -366,11 +351,13 @@ class SaveCanvasToSkillFieldToolTests(TestCase):
         self.skill.refresh_from_db()
         self.assertEqual(self.skill.description, "Canvas content here.")
 
-    def test_save_to_template(self):
+    def test_template_field_name_rejected(self):
+        """skill_field_save no longer writes resources — a non-column field_name
+        is rejected (resources go through skill_resource_save/attach)."""
         result = json.loads(self.tool._run(skill_slug="canvas-skill", field_name="Patent Claim"))
-        self.assertEqual(result["status"], "ok")
-        tmpl = SkillTemplate.objects.get(skill=self.skill, name="Patent Claim")
-        self.assertEqual(tmpl.content, "Canvas content here.")
+        self.assertEqual(result["status"], "error")
+        self.assertIn("skill_resource_save", result["message"])
+        self.assertFalse(SkillTemplate.objects.filter(skill=self.skill, name="Patent Claim").exists())
 
     def test_not_editable_denied(self):
         AgentSkill.objects.create(
@@ -418,20 +405,6 @@ class SaveCanvasToSkillFieldToolTests(TestCase):
         self.skill.refresh_from_db()
         self.assertEqual(len(self.skill.description), 1024)
 
-    def test_save_template_caps_at_template_limit(self):
-        """An oversized canvas saved to a template is capped at MAX_TEMPLATE_CHARS."""
-        from agent_skills.models import MAX_TEMPLATE_CHARS
-
-        self.canvas.content = "z" * (MAX_TEMPLATE_CHARS + 1000)
-        self.canvas.save(update_fields=["content"])
-        result = json.loads(self.tool._run(
-            skill_slug="canvas-skill", field_name="Big Template",
-        ))
-        self.assertEqual(result["status"], "ok")
-        tmpl = SkillTemplate.objects.get(skill=self.skill, name="Big Template")
-        self.assertEqual(len(tmpl.content), MAX_TEMPLATE_CHARS)
-
-
 class ShowSkillFieldInCanvasToolTests(TestCase):
     def setUp(self):
         AgentSkill.objects.all().delete()
@@ -458,13 +431,14 @@ class ShowSkillFieldInCanvasToolTests(TestCase):
         self.assertNotIn("content", result)
         self.assertNotIn("accepted_content", result)
 
-    def test_show_template(self):
+    def test_template_field_name_rejected(self):
+        """skill_field_load loads only the text columns; a resource name is
+        rejected with a pointer to skill_resource_load."""
         result = json.loads(self.tool._run(skill_slug="show-skill", field_name="My Template"))
-        self.assertEqual(result["status"], "ok")
-        self.assertIn("title", result)
-        self.assertNotIn("content", result)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("skill_resource_load", result["message"])
 
-    def test_nonexistent_template(self):
+    def test_nonexistent_field_rejected(self):
         result = json.loads(self.tool._run(skill_slug="show-skill", field_name="No Such"))
         self.assertEqual(result["status"], "error")
 
@@ -702,6 +676,39 @@ class ViewTemplateToolTests(TestCase):
         result = json.loads(self.tool._run(template_name="Bad"))
         self.assertEqual(result["status"], "error")
 
+    def test_view_from_skill_under_edit_via_skill_slug(self):
+        """skill_slug reads a resource on a skill that is NOT attached to the
+        thread — the authoring case."""
+        editing = AgentSkill.objects.create(
+            slug="under-edit", name="Under Edit", instructions="Inst.",
+            level="user", created_by=self.user,
+        )
+        SkillTemplate.objects.create(
+            skill=editing, name="Draft Format", content="draft body here",
+        )
+        # A bare thread with nothing attached — resolution must come from skill_slug.
+        from chat.models import ChatThread
+
+        bare = ChatThread.objects.create(created_by=self.user)
+        self.tool.context = _make_context(self.user, thread_id=str(bare.id))
+        result = json.loads(self.tool._run(
+            template_name="Draft Format", skill_slug="under-edit",
+        ))
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("draft body here", result["content"])
+
+    def test_view_via_skill_slug_other_user_denied(self):
+        other = User.objects.create_user(email="vt-other@example.com", password="pass")
+        theirs = AgentSkill.objects.create(
+            slug="theirs", name="Theirs", instructions="Inst.",
+            level="user", created_by=other,
+        )
+        SkillTemplate.objects.create(skill=theirs, name="Secret", content="nope")
+        result = json.loads(self.tool._run(
+            template_name="Secret", skill_slug="theirs",
+        ))
+        self.assertEqual(result["status"], "error")
+
 
 class LoadTemplateToCanvasToolTests(TestCase):
     def setUp(self):
@@ -779,3 +786,286 @@ class LoadTemplateToCanvasToolTests(TestCase):
         from chat.models import ChatCanvas
         canvas = ChatCanvas.objects.get(thread=self.thread, title="Ref Note")
         self.assertIn("Reference body", canvas.content)
+
+    def test_load_from_skill_under_edit_via_skill_slug(self):
+        """skill_slug loads a resource from a skill not attached to the thread."""
+        editing = AgentSkill.objects.create(
+            slug="lt-under-edit", name="LT Under Edit", instructions="Inst.",
+            level="user", created_by=self.user,
+        )
+        SkillTemplate.objects.create(
+            skill=editing, name="Edit Draft", content="editable draft body",
+        )
+        from chat.models import ChatCanvas, ChatThread
+
+        bare = ChatThread.objects.create(created_by=self.user)
+        self.tool.context = _make_context(self.user, thread_id=str(bare.id))
+        result = json.loads(self.tool._run(
+            template_name="Edit Draft", skill_slug="lt-under-edit",
+        ))
+        self.assertEqual(result["status"], "ok")
+        canvas = ChatCanvas.objects.get(thread=bare, title="Edit Draft")
+        self.assertIn("editable draft body", canvas.content)
+
+
+class _ResourceToolTestBase(TestCase):
+    """Shared fixture: a user-owned skill + an owned thread (so
+    resolve_skill_for_thread_edit resolves the skill by slug for writes)."""
+
+    def setUp(self):
+        AgentSkill.objects.all().delete()
+        self.user = User.objects.create_user(email="res@example.com", password="pass")
+        self.skill = AgentSkill.objects.create(
+            slug="res-skill", name="Res Skill", instructions="Inst.",
+            level="user", created_by=self.user,
+        )
+        from chat.models import ChatThread
+
+        self.thread = ChatThread.objects.create(created_by=self.user)
+
+
+class SkillResourceListToolTests(_ResourceToolTestBase):
+    def setUp(self):
+        super().setUp()
+        self.tool = SkillResourceListTool()
+        self.tool.context = _make_context(self.user, thread_id=str(self.thread.id))
+
+    def test_lists_resources_with_metadata(self):
+        from agent_skills.models import SkillResource
+
+        SkillResource.objects.create(
+            skill=self.skill, name="Fmt", kind=SkillResource.Kind.TEMPLATE,
+            content="body", status="ready", token_count=3,
+        )
+        SkillResource.objects.create(
+            skill=self.skill, name="Bad", kind=SkillResource.Kind.REFERENCE,
+            content="x", is_quarantined=True, status="quarantined",
+            quarantine_reason="nope",
+        )
+        result = json.loads(self.tool._run(skill_slug="res-skill"))
+        self.assertEqual(result["status"], "ok")
+        by_name = {r["name"]: r for r in result["resources"]}
+        self.assertEqual(by_name["Fmt"]["kind"], "template")
+        # Quarantined rows ARE listed so the author can see + remove them.
+        self.assertTrue(by_name["Bad"]["is_quarantined"])
+        self.assertEqual(by_name["Bad"]["quarantine_reason"], "nope")
+
+    def test_nonexistent_skill(self):
+        result = json.loads(self.tool._run(skill_slug="no-such"))
+        self.assertEqual(result["status"], "error")
+
+
+class SkillResourceSaveToolTests(_ResourceToolTestBase):
+    def setUp(self):
+        super().setUp()
+        from django.utils import timezone
+
+        from chat.models import ChatCanvas
+
+        self.canvas = ChatCanvas.objects.create(
+            thread=self.thread, title="Draft", content="Resource body from canvas.",
+            is_active=True, last_activated_at=timezone.now(),
+        )
+        self.thread.active_canvas = self.canvas
+        self.thread.save(update_fields=["active_canvas"])
+        self.tool = SkillResourceSaveTool()
+        self.tool.context = _make_context(self.user, thread_id=str(self.thread.id))
+
+    def test_creates_text_resource_with_kind(self):
+        result = json.loads(self.tool._run(
+            skill_slug="res-skill", name="Report Fmt", kind="template",
+        ))
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["created"])
+        from agent_skills.models import SkillResource
+
+        res = SkillResource.objects.get(skill=self.skill, name="Report Fmt")
+        self.assertEqual(res.kind, "template")
+        self.assertEqual(res.content, "Resource body from canvas.")
+
+    def test_invalid_kind_defaults_to_reference(self):
+        result = json.loads(self.tool._run(
+            skill_slug="res-skill", name="Ref A", kind="bogus",
+        ))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["kind"], "reference")
+
+    def test_updates_existing_text_resource(self):
+        from agent_skills.models import SkillResource
+
+        SkillResource.objects.create(
+            skill=self.skill, name="Report Fmt", kind="reference", content="old",
+        )
+        result = json.loads(self.tool._run(
+            skill_slug="res-skill", name="Report Fmt", kind="template",
+        ))
+        self.assertEqual(result["status"], "ok")
+        self.assertFalse(result["created"])
+        res = SkillResource.objects.get(skill=self.skill, name="Report Fmt")
+        self.assertEqual(res.content, "Resource body from canvas.")
+        self.assertEqual(res.kind, "template")
+
+    def test_cannot_overwrite_file_resource(self):
+        from django.core.files.base import ContentFile
+
+        from agent_skills.models import SkillResource
+
+        res = SkillResource(
+            skill=self.skill, name="Doc", kind="reference",
+            file_type="pdf", original_filename="d.pdf", status="ready",
+        )
+        res.original_file.save("d.pdf", ContentFile(b"%PDF-fake"), save=False)
+        res.save()
+        result = json.loads(self.tool._run(skill_slug="res-skill", name="Doc"))
+        self.assertEqual(result["status"], "error")
+        self.assertIn("file", result["message"])
+
+    def test_count_cap_enforced(self):
+        from agent_skills.models import SkillResource
+        from agent_skills.resources import RESOURCE_COUNT_CAP
+
+        for i in range(RESOURCE_COUNT_CAP):
+            SkillResource.objects.create(
+                skill=self.skill, name=f"r{i}", kind="reference", content="x",
+            )
+        result = json.loads(self.tool._run(skill_slug="res-skill", name="one-too-many"))
+        self.assertEqual(result["status"], "error")
+
+
+class SkillResourceUpdateToolTests(_ResourceToolTestBase):
+    def setUp(self):
+        super().setUp()
+        from agent_skills.models import SkillResource
+
+        self.res = SkillResource.objects.create(
+            skill=self.skill, name="Old Name", kind="reference", content="body",
+        )
+        self.tool = SkillResourceUpdateTool()
+        self.tool.context = _make_context(self.user, thread_id=str(self.thread.id))
+
+    def test_rename(self):
+        result = json.loads(self.tool._run(
+            skill_slug="res-skill", name="Old Name", new_name="New Name",
+        ))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["name"], "New Name")
+        self.res.refresh_from_db()
+        self.assertEqual(self.res.name, "New Name")
+
+    def test_retype_kind(self):
+        result = json.loads(self.tool._run(
+            skill_slug="res-skill", name="Old Name", kind="template",
+        ))
+        self.assertEqual(result["status"], "ok")
+        self.res.refresh_from_db()
+        self.assertEqual(self.res.kind, "template")
+
+    def test_nothing_to_update_rejected(self):
+        result = json.loads(self.tool._run(skill_slug="res-skill", name="Old Name"))
+        self.assertEqual(result["status"], "error")
+
+    def test_rename_collision_rejected(self):
+        from agent_skills.models import SkillResource
+
+        SkillResource.objects.create(
+            skill=self.skill, name="Taken", kind="reference", content="x",
+        )
+        result = json.loads(self.tool._run(
+            skill_slug="res-skill", name="Old Name", new_name="Taken",
+        ))
+        self.assertEqual(result["status"], "error")
+
+    def test_missing_resource_rejected(self):
+        result = json.loads(self.tool._run(
+            skill_slug="res-skill", name="Ghost", new_name="X",
+        ))
+        self.assertEqual(result["status"], "error")
+
+
+class SkillResourceDeleteToolTests(_ResourceToolTestBase):
+    def setUp(self):
+        super().setUp()
+        self.tool = SkillResourceDeleteTool()
+        self.tool.context = _make_context(self.user, thread_id=str(self.thread.id))
+
+    def test_deletes_by_name(self):
+        from agent_skills.models import SkillResource
+
+        SkillResource.objects.create(skill=self.skill, name="a", content="A")
+        SkillResource.objects.create(skill=self.skill, name="b", content="B")
+        SkillResource.objects.create(skill=self.skill, name="keep", content="K")
+        result = json.loads(self.tool._run(skill_slug="res-skill", names=["a", "b"]))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["deleted_count"], 2)
+        self.assertFalse(SkillResource.objects.filter(skill=self.skill, name="a").exists())
+        self.assertTrue(SkillResource.objects.filter(skill=self.skill, name="keep").exists())
+
+    def test_empty_names_rejected(self):
+        result = json.loads(self.tool._run(skill_slug="res-skill", names=[]))
+        self.assertEqual(result["status"], "error")
+
+    def test_nonexistent_names_delete_zero(self):
+        result = json.loads(self.tool._run(skill_slug="res-skill", names=["ghost"]))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["deleted_count"], 0)
+
+
+class SkillResourceAttachToolTests(_ResourceToolTestBase):
+    def setUp(self):
+        super().setUp()
+        self.tool = SkillResourceAttachTool()
+        self.tool.context = _make_context(self.user, thread_id=str(self.thread.id))
+
+    def _thread_image_asset(self, owner=None, data=b"\x89PNG-fake"):
+        from django.core.files.base import ContentFile
+
+        from chat.models import Asset, ChatThread
+
+        thr = ChatThread.objects.create(created_by=owner or self.user)
+        asset = Asset(thread=thr, kind=Asset.KIND_IMAGE, content_type="image/png")
+        asset.blob.save("a.png", ContentFile(data), save=True)
+        return asset
+
+    @patch("agent_skills.tasks.process_skill_resource_upload_task.delay")
+    def test_attach_thread_image_returns_processing(self, m_delay):
+        asset = self._thread_image_asset()
+        result = json.loads(self.tool._run(
+            skill_slug="res-skill", source=f"[[image:{asset.id}|pic]]",
+            kind="reference", name="Diagram",
+        ))
+        self.assertEqual(result["status"], "processing")
+        from agent_skills.models import SkillResource
+
+        res = SkillResource.objects.get(skill=self.skill, name="Diagram")
+        self.assertEqual(res.file_type, "image")
+        self.assertEqual(res.status, "processing")
+        m_delay.assert_called_once()
+
+    @patch("agent_skills.tasks.process_skill_resource_upload_task.delay")
+    def test_attach_accepts_bare_uuid(self, m_delay):
+        asset = self._thread_image_asset()
+        result = json.loads(self.tool._run(
+            skill_slug="res-skill", source=str(asset.id),
+        ))
+        self.assertEqual(result["status"], "processing")
+        m_delay.assert_called_once()
+
+    @patch("agent_skills.tasks.process_skill_resource_upload_task.delay")
+    def test_attach_other_users_asset_denied(self, m_delay):
+        other = User.objects.create_user(email="att-other@example.com", password="pass")
+        asset = self._thread_image_asset(owner=other)
+        result = json.loads(self.tool._run(
+            skill_slug="res-skill", source=str(asset.id),
+        ))
+        self.assertEqual(result["status"], "error")
+        m_delay.assert_not_called()
+
+    def test_attach_bad_source_rejected(self):
+        result = json.loads(self.tool._run(skill_slug="res-skill", source="not-a-uuid"))
+        self.assertEqual(result["status"], "error")
+
+    def test_attach_missing_asset_rejected(self):
+        result = json.loads(self.tool._run(
+            skill_slug="res-skill", source=str(uuid.uuid4()),
+        ))
+        self.assertEqual(result["status"], "error")

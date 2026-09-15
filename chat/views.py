@@ -29,25 +29,10 @@ def _get_accessible_data_rooms(user):
     )
 
 
-def _user_can_access_asset(user, asset) -> bool:
-    """Re-derive access from the asset's owner (version / canvas / message / thread).
-
-    Returns False for orphans. This is the only gate on serving asset bytes (both
-    images and file downloads) — never a presigned S3 URL.
-    """
-    if asset.canvas_id:
-        return asset.canvas.thread.created_by_id == user.id
-    if asset.message_id:
-        return asset.message.thread.created_by_id == user.id
-    if asset.thread_id:
-        return asset.thread.created_by_id == user.id
-    if asset.slide_set_id:
-        return asset.slide_set.thread.created_by_id == user.id
-    if asset.version_id:
-        from documents.views import _user_can_access_data_room
-
-        return _user_can_access_data_room(user, asset.version.document.data_room)
-    return False
+# Access gate for serving/reusing asset bytes. Promoted to chat.assets (beside
+# the byte resolvers) so tool code can authorize an asset without importing the
+# views; re-exported here under the private name every call site already uses.
+from chat.assets import user_can_access_asset as _user_can_access_asset  # noqa: E402
 
 
 @login_required

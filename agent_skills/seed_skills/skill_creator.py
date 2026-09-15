@@ -9,7 +9,7 @@ SKILL_CREATOR = {
     "description": """\
 Create a new agent skill or improve existing ones.\
 
-**Note:** A skill is a set of instructions, tools and templates that is dropped into an AI agent's prompt \
+**Note:** A skill is a set of instructions, tools and resources that is dropped into an AI agent's prompt \
 that teaches it how to do something specific.
 
 Use this skill when the user wants to build \
@@ -30,7 +30,7 @@ A skill is a database record with these fields:
 - **description** — 1-1024 chars. This is the ONLY text the system sees when deciding whether to activate the skill. It is the primary trigger mechanism. Keep it short.
 - **instructions** — The full playbook injected into your system prompt when the skill is active. This is where the skill's logic lives.
 - **tool_names** — List of tool names the skill needs (e.g. `["document_search", "document_read"]`). These tools become available only when they are attached to an active skill.
-- **templates** — Named text templates associated with the skill (e.g. a patent claim format, a report skeleton). When the skill is active, template names are listed in the system prompt; the agent accesses their content on demand via `skill_resource_view` or `skill_resource_load`. This is the skill's progressive-disclosure layer: heavy content lives in templates and loads only when needed.
+- **resources** — Files and text blobs bundled with the skill (e.g. a report skeleton, a style-guide PDF, an example image). Each is either a *template* (a fill-in skeleton the agent loads and completes) or a *reference* (read-only material). When the skill is active its resources are listed in the system prompt automatically and read on demand — this is the skill's progressive-disclosure layer: heavy content lives in resources and loads only when needed, keeping the always-on instructions lean.
 
 Skills exist at three levels: **system** (provided by the application, not editable), **org** (shared within an organization), and **user** (personal). Higher levels shadow lower ones by slug — a user-level skill with the same slug as a system skill overrides it for the user by default, but user may toggle which version is active in the settings.
 
@@ -38,15 +38,9 @@ Skills also carry an **audience**. Skills created through chat serve the main as
 
 ## Workspace and tools
 
-Each skill field lives in its own canvas tab:
+Draft the two text columns — `description` and `instructions` — each in its own canvas tab, then persist with `skill_field_save`. Resources are managed with their own tools: create or edit a text resource with `skill_resource_save`, attach a file (PDF/image/Office) with `skill_resource_attach`, and see what a skill already carries with `skill_resource_list`.
 
-| Canvas tab title | Skill field | Persist with |
-|---|---|---|
-| `Description` | `description` | `skill_field_save(canvas_name="Description", field_name="description")` |
-| `Instructions` | `instructions` | `skill_field_save(canvas_name="Instructions", field_name="instructions")` |
-| `Template: <name>` | template `<name>` | `skill_field_save(canvas_name="Template: <name>", field_name="<name>")` |
-
-For small surgical fixes to an existing skill, skip the canvas round-trip: `skill_edit` accepts `text_edits` (find-replace on `description`/`instructions`) and `delete_templates`.
+For small surgical fixes to the text columns, skip the canvas round-trip: `skill_edit` applies `text_edits` (find-replace on `description`/`instructions`) directly.
 
 ## Workflow
 
@@ -54,7 +48,7 @@ You guide the user through a repeating loop:
 
 1. **Capture intent & baseline** — understand what the skill should do, and what fails without it
 2. **Draft in canvas** — each field (description, instructions, and any templates) gets its own canvas tab. Iterate with the user.
-3. **Create & persist** — `skill_create` to create the DB record, then `skill_field_save` for each tab
+3. **Create & persist** — `skill_create` to create the DB record, then `skill_field_save` for the text columns and the `skill_resource_*` tools for any resources
 4. **Attach tools** — choose which existing tools the skill needs via `skill_edit` with `tool_names`
 5. **Test** — activation and behavior, in fresh conversations
 6. **Review & improve** — revise based on evidence, optimize the description for trigger accuracy
@@ -243,26 +237,29 @@ For multi-step tasks:
   re-check, and only then deliver. A template works well as the validator
   document.
 
-### Creating templates
+### Creating resources
 
-Use templates when the skill should produce output in a very specific format
-(e.g. a report skeleton, email template, meeting minutes format) — and to keep
-heavy reference content out of the always-loaded instructions.
+Bundle a resource when the skill needs heavy or reusable content that shouldn't
+sit in the always-loaded instructions — a report skeleton, an email format, a
+style-guide document, an example image. Choose the kind deliberately:
 
-- **Template names are routing signals.** Give each a descriptive name, and
-  put a one-line "load this when..." note in the instructions.
-- **Keep loading one level deep.** A template must not instruct the agent to
-  load another template.
-- **Split by mutually exclusive cases** (e.g. one template per report type)
-  so only relevant content is ever loaded.
-- **Long templates start with a short table of contents.**
+- A **template** is a fill-in skeleton the agent loads and completes (e.g. a
+  report format). A **reference** is read-only material the agent consults.
+- **Names are routing signals.** Give each a descriptive name and put a
+  one-line "load this when..." note in the instructions.
+- **Keep loading one level deep.** A resource must not tell the agent to load
+  another resource.
+- **Split by mutually exclusive cases** (one template per report type) so only
+  the relevant content ever loads.
+- **Long text resources start with a short table of contents.**
 
-When adding a template to the skill, draft it in its own canvas tab (`Template: <name>`), iterate with
-the user, then persist alongside the other fields in Step 3.
-
-**Important:** When a skill has templates, add `skill_resource_view` and
-`skill_resource_load` to the skill's `tool_names` — otherwise the agent
-won't be able to access the templates at runtime.
+Draft a text resource in a canvas tab and persist it with `skill_resource_save`
+(setting its kind); to bundle a file, attach it with `skill_resource_attach`
+from a data-room document or a generated image — files are scanned in the
+background, so confirm they became ready with `skill_resource_list`. The skill's
+resources are listed to the runtime agent automatically, and the tools to read
+them are always available — you don't need to name resources in the instructions
+or add any resource-reading tool to `tool_names`.
 
 ---
 
@@ -271,25 +268,27 @@ won't be able to access the templates at runtime.
 Once the user is happy with the drafts:
 
 1. `skill_create` to create the DB record
-2. `skill_field_save` for each canvas tab (Description, Instructions, and any Templates)
+2. `skill_field_save` for the Description and Instructions canvases
+3. Persist any resources: `skill_resource_save` for text, `skill_resource_attach` for files
 
 ---
 
 ## Step 4: Attach tools
 
-Use `skill_tool_list` to see the tools that can be attached to a skill.
-These are skill-specific tools — they are only available when a skill explicitly
-lists them in its `tool_names`. Standard tools (web search, canvas, document
-search, sub-agents, etc.) are always available and do not need to be attached.
+Some tools are **skill-specific** — available only when a skill lists them in
+its `tool_names`. Standard tools (web search, canvas, document search,
+sub-agents, etc.) are always available and don't need attaching, and the tools
+that read a skill's own resources are granted automatically to any skill that
+carries resources — never add those.
 
-To discover and attach tools:
-1. Use `skill_tool_list` to see available skill-specific tools
-2. Use `skill_tool_inspect` to inspect a specific tool in more detail
-3. Discuss with the user which tools the skill actually needs
-4. Save the list via `skill_edit`, e.g. `updates={{"tool_names": ["skill_resource_view", "skill_resource_load"]}}`
+To pick the skill-specific tools a skill needs:
+1. `skill_tool_list` — see what's attachable
+2. `skill_tool_inspect` — read a specific tool's details
+3. Discuss with the user which the skill actually needs
+4. Save via `skill_edit`, e.g. `updates={{"tool_names": ["<name from skill_tool_list>"]}}`
 
 Unknown or incompatible tool names are silently dropped on save — check the
-`tool_names` in the response to confirm what was actually stored.
+`tool_names` in the response to confirm what was stored.
 
 ---
 
@@ -321,9 +320,9 @@ conversation with the results.
 
 Based on test results, iterate on the skill:
 
-1. Use `skill_field_load` to load fields into canvas tabs, if they are not already loaded (or apply small fixes directly via `skill_edit` `text_edits`).
+1. Load a text column with `skill_field_load` if it isn't already open (or apply small fixes directly via `skill_edit` `text_edits`); load or inspect resources with `skill_resource_load` / `skill_resource_view` / `skill_resource_list`.
 2. Edit with the user
-3. Save back with `skill_field_save`
+3. Save back with `skill_field_save` (columns) or `skill_resource_save` / `skill_resource_update` (resources)
 
 **How to think about improvements:**
 
@@ -360,7 +359,7 @@ Repeat until the user is satisfied.
 | Triggers when it shouldn't | Add negative triggers ("Not for...") and sharpen the WHEN clause. |
 | Instructions ignored late in a long conversation | Phrase rules as standing behavior ("Whenever X, do Y"). |
 | Overly rigid instructions | Reframe as reasoning: explain why the thing matters. |
-| Bloated instructions | Apply the token-cost challenge; cut what the model already knows; move reference content to templates. |
+| Bloated instructions | Apply the token-cost challenge; cut what the model already knows; move heavy content into resources. |
 | Inconsistent output across runs | Lower the freedom: preferred pattern, template, or exact steps plus a validation checklist. |
 
 ---
@@ -395,6 +394,11 @@ Repeat until the user is satisfied.
         "skill_delete",
         "skill_field_save",
         "skill_field_load",
+        "skill_resource_list",
+        "skill_resource_save",
+        "skill_resource_attach",
+        "skill_resource_update",
+        "skill_resource_delete",
         "skill_tool_list",
         "skill_tool_inspect",
     ],

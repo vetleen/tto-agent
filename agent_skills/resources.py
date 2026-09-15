@@ -427,15 +427,20 @@ def scan_resource(resource: SkillResource, user) -> None:
 # --- creation --------------------------------------------------------------
 
 def create_pending_upload(skill: AgentSkill, *, data: bytes, filename: str, user,
-                          kind: str = SkillResource.Kind.REFERENCE) -> SkillResource:
+                          kind: str = SkillResource.Kind.REFERENCE,
+                          name: str | None = None) -> SkillResource:
     """Store an uploaded file and return a PROCESSING resource — fast, no
     extraction or scanning (those run off the request in ``process_upload``, so
-    heavy PDF/Office extraction never ties up or OOMs the web dyno)."""
+    heavy PDF/Office extraction never ties up or OOMs the web dyno).
+
+    ``name`` overrides the display name (deduped within the skill); when omitted
+    the name is derived from ``filename`` (the upload form's behavior). The
+    agent's file-attach tool passes an explicit name."""
     file_type = detect_file_type(filename)  # raises UnsupportedResourceType
     ext = _ext_of(filename)
     resource = SkillResource(
         skill=skill,
-        name=_unique_name(skill, filename),
+        name=_unique_name(skill, name or filename),
         kind=kind,
         file_type=file_type,
         original_filename=filename,
