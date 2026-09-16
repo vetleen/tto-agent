@@ -384,7 +384,8 @@ def _build_loop_fields(body, *, now, tz_name, default_max_runs):
 def _link_loop_resources(thread, user, data_room_ids, skill_ids, model=None):
     """Attach validated data rooms + skills + model to a loop's thread (idempotent)."""
     from agent_skills.resources import trim_ids_to_budget
-    from chat.models import ChatThreadDataRoom, ChatThreadSkill
+    from chat.models import ChatThreadDataRoom
+    from chat.thread_skills import replace_thread_skills
     from core.preferences import get_preferences
     from documents.access import accessible_data_rooms
 
@@ -412,10 +413,9 @@ def _link_loop_resources(thread, user, data_room_ids, skill_ids, model=None):
     resolved_skill_ids = trim_ids_to_budget(
         resolved_skill_ids, None, getattr(prefs, "max_context_tokens", None)
     )
-    ChatThreadSkill.objects.filter(thread=thread).delete()
-    ChatThreadSkill.objects.bulk_create(
-        [ChatThreadSkill(thread=thread, skill_id=sid) for sid in resolved_skill_ids]
-    )
+    # Atomic + lock-serialized (chat.thread_skills): the bare delete+insert
+    # could leave a loop thread with no skills if the insert failed.
+    replace_thread_skills(thread, resolved_skill_ids)
 
     # Per-thread model: store only an allowed model; otherwise clear so it
     # resolves to the user's preferred chat model.

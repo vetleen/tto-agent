@@ -261,6 +261,52 @@ class AttachSkillsToolTests(TestCase):
         self._attach("my-skill")
         self.assertEqual(self.tool.context.pending_skill_instructions, [])
 
+    # --- Concurrency: read → diff → write runs under the thread's row lock ---
+
+    def test_diff_sees_rows_committed_before_the_lock(self):
+        """WILFRED-8P: two parallel chat_skill_attach calls raced their
+        delete+insert and the loser hit the (thread, skill) unique constraint.
+        Now the current set is read only after taking the lock, so a writer that
+        committed just before us shows up in the diff and the replace re-inserts
+        its row instead of colliding. Simulated by attaching from the lock hook."""
+        second = AgentSkill.objects.create(
+            slug="second", name="Second", instructions="x",
+            level="user", created_by=self.user,
+        )
+        _approve(second)
+
+        def concurrent_writer(thread_id):
+            # Idempotent: replace_thread_skills re-locks inside the same
+            # transaction, and the row must still be there for that second call.
+            ChatThreadSkill.objects.get_or_create(thread=self.thread, skill=self.skill)
+
+        with patch("chat.thread_skills.lock_thread", side_effect=concurrent_writer):
+            result = self._attach("my-skill", "second")
+
+        self.assertEqual(result["status"], "ok")
+        self.assertFalse(result["no_change"])
+        # Only "second" is new relative to what the other writer committed.
+        self.assertEqual(result["added"], [str(second.id)])
+        self.assertEqual(result["removed"], [])
+        self.assertEqual(_attached_ids(self.thread), [str(self.skill.id), str(second.id)])
+        # And "my-skill" counts as already attached: no instruction re-injection.
+        self.assertEqual(len(self.tool.context.pending_skill_instructions), 1)
+        self.assertIn("Second", self.tool.context.pending_skill_instructions[0])
+
+    def test_failed_write_leaves_turn_state_untouched(self):
+        """The same-turn effects (tool unlock, instruction injection) run after
+        the commit, so a failed write can't leave the live turn out of step with
+        what was persisted."""
+        self.tool.context.skill_tool_map = {"my-skill": ["skill_resource_view"]}
+        with patch(
+            "chat.thread_skills.replace_thread_skills", side_effect=RuntimeError("boom")
+        ):
+            with self.assertRaises(RuntimeError):
+                self.tool._run(skill_slugs=["my-skill"])
+        self.assertEqual(self.tool.context.added_tool_names, [])
+        self.assertEqual(self.tool.context.pending_skill_instructions, [])
+        self.assertEqual(_attached_ids(self.thread), [])
+
     def test_tool_registered(self):
         from llm.tools.registry import get_tool_registry
         self.assertIn("chat_skill_attach", get_tool_registry().list_tools())

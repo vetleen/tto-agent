@@ -1591,6 +1591,7 @@ class AttachSkillsTool(ContextAwareTool):
 
         from agent_skills.services import get_available_skills
         from chat.models import ChatThread, ChatThreadSkill
+        from chat.thread_skills import lock_thread, replace_thread_skills
 
         user_id = self.context.user_id if self.context else None
         thread_id = self.context.conversation_id if self.context else None
@@ -1634,44 +1635,66 @@ class AttachSkillsTool(ContextAwareTool):
             skills_within_budget,
         )
 
-        # What's already on the thread — a re-attach of an active skill is a
-        # no-op, never an approval event (its content is already in context).
-        previous_ids = [
-            str(i) for i in ChatThreadSkill.objects.filter(
-                thread=thread
-            ).values_list("skill_id", flat=True)
-        ]
+        # Read → diff → write under the thread's row lock (chat.thread_skills).
+        # The pipeline runs a round's tool calls in parallel, and this tool can
+        # also race the UI's skills.set: a concurrent replace waits here, then
+        # diffs against what the other writer committed instead of racing its
+        # delete+insert into the (thread, skill) unique constraint (WILFRED-8P).
+        # The early returns commit nothing.
+        with transaction.atomic():
+            lock_thread(thread.pk)
 
-        # Approval gate applies only to NEWLY-attached skills: refusing a skill
-        # the user already attached would just strand the agent (and its manifest
-        # already told the agent to use its resource tools).
-        newly = [s for s in chosen if str(s.id) not in previous_ids]
-        unapproved = [s for s in newly if not skill_is_approved(s)]
-        if unapproved:
-            return json.dumps({
-                "status": "error",
-                "message": (
-                    "These skills aren't enabled yet — enable them in Skills "
-                    "(which runs a safety scan) before attaching: "
-                    + ", ".join(s.slug for s in unapproved)
-                ),
-            })
+            # What's already on the thread — a re-attach of an active skill is a
+            # no-op, never an approval event (its content is already in context).
+            previous_ids = [
+                str(i) for i in ChatThreadSkill.objects.filter(
+                    thread=thread
+                ).values_list("skill_id", flat=True)
+            ]
 
-        # Token budget replaces the old fixed count cap. Aim-relative: a small
-        # max_context_tokens caps skills so they can't crowd out history (same
-        # budget the UI applies). None → the fixed ceiling.
-        aim = getattr(self.context, "max_context_tokens", None) if self.context else None
-        _, dropped = skills_within_budget(chosen, max_context_tokens=aim)
-        if dropped:
-            return json.dumps({
-                "status": "error",
-                "message": (
-                    "Attaching all of these would exceed this thread's skill "
-                    f"size budget (~{attach_token_budget(aim)} tokens). Drop one of: "
-                    + ", ".join(s.slug for s in dropped)
-                    + "."
-                ),
-            })
+            # Approval gate applies only to NEWLY-attached skills: refusing a skill
+            # the user already attached would just strand the agent (and its manifest
+            # already told the agent to use its resource tools).
+            newly = [s for s in chosen if str(s.id) not in previous_ids]
+            unapproved = [s for s in newly if not skill_is_approved(s)]
+            if unapproved:
+                return json.dumps({
+                    "status": "error",
+                    "message": (
+                        "These skills aren't enabled yet — enable them in Skills "
+                        "(which runs a safety scan) before attaching: "
+                        + ", ".join(s.slug for s in unapproved)
+                    ),
+                })
+
+            # Token budget replaces the old fixed count cap. Aim-relative: a small
+            # max_context_tokens caps skills so they can't crowd out history (same
+            # budget the UI applies). None → the fixed ceiling.
+            aim = getattr(self.context, "max_context_tokens", None) if self.context else None
+            _, dropped = skills_within_budget(chosen, max_context_tokens=aim)
+            if dropped:
+                return json.dumps({
+                    "status": "error",
+                    "message": (
+                        "Attaching all of these would exceed this thread's skill "
+                        f"size budget (~{attach_token_budget(aim)} tokens). Drop one of: "
+                        + ", ".join(s.slug for s in dropped)
+                        + "."
+                    ),
+                })
+
+            desired_ids = [str(s.id) for s in chosen]
+            no_change = previous_ids == desired_ids
+
+            if not no_change:
+                # Declarative full replace: the new set IS the desired state, in
+                # the caller's order (the ChatThreadSkill id tie-break preserves
+                # insertion order for the prompt / tool-union / template lookups).
+                replace_thread_skills(thread, [s.id for s in chosen])
+
+        # The same-turn, in-memory effects below run only after the write has
+        # committed, so a failed write can't leave the turn's live tool set or
+        # injected instructions out of step with what was persisted.
 
         # Unlock the attached skills' tools for the REST OF THIS TURN. The chat
         # pipeline drains ctx.added_tool_names each tool-loop iteration and unions
@@ -1687,19 +1710,6 @@ class AttachSkillsTool(ContextAwareTool):
                 for t in tool_map.get(s.slug, []):
                     if t not in ctx.added_tool_names:
                         ctx.added_tool_names.append(t)
-
-        desired_ids = [str(s.id) for s in chosen]
-        no_change = previous_ids == desired_ids
-
-        if not no_change:
-            # Declarative full replace: the new set IS the desired state, in
-            # the caller's order (the ChatThreadSkill id tie-break preserves
-            # insertion order for the prompt / tool-union / template lookups).
-            with transaction.atomic():
-                ChatThreadSkill.objects.filter(thread=thread).delete()
-                ChatThreadSkill.objects.bulk_create(
-                    [ChatThreadSkill(thread=thread, skill=s) for s in chosen]
-                )
 
         prev_set = set(previous_ids)
         desired_set = set(desired_ids)

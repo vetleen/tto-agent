@@ -3982,20 +3982,17 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _persist_thread_skills(self, thread_id, skill_ids):
-        from django.db import transaction
-
-        from chat.models import ChatThread, ChatThreadSkill
+        from chat.models import ChatThread
+        from chat.thread_skills import replace_thread_skills
 
         thread = ChatThread.objects.filter(
             pk=thread_id, created_by=self.user
         ).first()
         if thread is None:
             return
-        with transaction.atomic():
-            ChatThreadSkill.objects.filter(thread=thread).delete()
-            ChatThreadSkill.objects.bulk_create(
-                [ChatThreadSkill(thread=thread, skill_id=sid) for sid in skill_ids]
-            )
+        # Lock-serialized: this can race the agent's chat_skill_attach tool on
+        # the same thread (chat.thread_skills).
+        replace_thread_skills(thread, skill_ids)
 
     @database_sync_to_async
     def _load_thread_skills(self, thread_id):
