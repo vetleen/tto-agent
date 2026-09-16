@@ -274,8 +274,12 @@ def build_last_message_preamble(
     return prefix + delimiter
 
 
-def _render_one_skill(skill: Any) -> str:
+def _render_one_skill(skill: Any, attached_by: str | None = None) -> str:
     """Render one attached skill as a ``## {name}`` sub-block for the prompt.
+
+    ``attached_by`` (``"user"`` / ``"agent"`` / None) is the ``ChatThreadSkill``
+    origin; it is passed in rather than read off the skill so rendering stays
+    query-free (and safe on the consumer's event loop).
 
     The skill's own headings are deepened by two levels so they nest under the
     ``## {name}`` heading instead of competing with the prompt's top-level
@@ -284,6 +288,19 @@ def _render_one_skill(skill: Any) -> str:
     """
     deepened = re.sub(r"^(#+)", r"##\1", skill.instructions, flags=re.MULTILINE)
     block = f"## {skill.name}\n"
+    # The slug is what the agent needs to reference this skill again (the
+    # available-skills catalogue excludes attached skills, so it appears nowhere
+    # else); the origin tells it whether chat_skill_detach may remove it.
+    slug = getattr(skill, "slug", "") or ""
+    if attached_by == "user":
+        block += f"Slug: `{slug}` — attached by the user (you can't detach it).\n"
+    elif attached_by == "agent":
+        block += (
+            f"Slug: `{slug}` — attached by you (detach it with `chat_skill_detach` "
+            "when it's no longer needed).\n"
+        )
+    else:
+        block += f"Slug: `{slug}`\n"
     if skill.description:
         block += f"## Skill description:\n{skill.description}\n"
     block += f"## Skill instructions:\n{deepened}\n"
@@ -324,8 +341,12 @@ def build_semi_static_prompt(
     user_context: dict[str, str] | None = None,
     available_skills: list[dict[str, Any]] | None = None,
     specializations: list[dict[str, Any]] | None = None,
+    skill_origins: dict[str, str] | None = None,
 ) -> str:
     """Build the semi-static portion of the system prompt.
+
+    *skill_origins* maps attached skill id → ``"user"``/``"agent"`` (who attached
+    it); it drives the per-skill slug line under ``# Relevant skills``.
 
     Contains content that is stable for most of a conversation but may
     change occasionally: today's date, user/org context, skill instructions,
@@ -382,23 +403,24 @@ def build_semi_static_prompt(
         prompt += "</about>\n"
 
     # -- Available skills catalogue --
-    # Skills already attached (rendered under "# Relevant skills" below with
-    # their resource tools active) are excluded from this catalogue so the agent
+    # Skills already attached (rendered under "# Relevant skills" below, each
+    # with its slug and origin) are excluded from this catalogue so the agent
     # doesn't try to re-attach one it already has.
     _attached_ids = {str(getattr(sk, "id", "")) for sk in (skills or [])}
     catalogue = [s for s in (available_skills or []) if s.get("id") not in _attached_ids]
     if catalogue:
         prompt += (
             "\n# Skills available to this user\n"
-            "The following skills are NOT yet attached. Call "
-            "`chat_skill_attach(skill_slugs=[\"<slug>\", ...])` with the full set "
-            "of slugs you want attached when they fit the user's request (the list "
-            "replaces whatever is currently attached, so include any already-active "
-            "skills you want to keep; pass an empty list to detach all).\n"
-            "Note that several core capabilities are delivered through "
-            "skills rather than as always-on tools. Therefore, be eager to attach a "
-            "relevant skill when the task calls for that capability, and keep any other active "
-            "skills in the same list, since it is declarative.\n"
+            "The following skills are NOT yet attached. Attach one or more with "
+            "`chat_skill_attach(skill_slugs=[\"<slug>\", ...])` when they fit the "
+            "user's request. Attaching is additive: pass only the slugs to add — "
+            "everything already attached stays attached.\n"
+            "Several core capabilities are delivered through skills rather than as "
+            "always-on tools, so be eager to attach a relevant skill when the task "
+            "calls for that capability. When a skill you attached is no longer "
+            "needed, detach it with `chat_skill_detach(skill_slugs=[\"<slug>\", ...])` "
+            "(each attached skill's slug is listed under it in # Relevant skills). "
+            "Skills the user attached can't be detached by you — ask the user instead.\n"
         )
         for s in catalogue:
             desc = (s.get("description") or "").strip().replace("\n", " ")
@@ -440,8 +462,11 @@ def build_semi_static_prompt(
             "a user request of a particular type. Follow them to the best of your ability. "
             "Some skills primarily provide new tools within a domain.\n"
         )
+        origins = skill_origins or {}
         for skill in skills:
-            prompt += "\n" + _render_one_skill(skill)
+            prompt += "\n" + _render_one_skill(
+                skill, attached_by=origins.get(str(getattr(skill, "id", "")))
+            )
 
     # -- Data rooms section --
     if data_rooms:
@@ -830,6 +855,7 @@ def build_system_prompt(
     skills: list | None = None,
     available_skills: list[dict[str, Any]] | None = None,
     specializations: list[dict[str, Any]] | None = None,
+    skill_origins: dict[str, str] | None = None,
     has_subagent_tool: bool = False,
     subagent_runs: list[dict] | None = None,
     tasks: list[dict] | None = None,
@@ -872,6 +898,7 @@ def build_system_prompt(
         user_context=user_context,
         available_skills=available_skills,
         specializations=specializations if has_subagent_tool else None,
+        skill_origins=skill_origins,
     )
 
     dynamic = build_dynamic_context(

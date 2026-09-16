@@ -1265,6 +1265,60 @@ class PayloadDataRoomValidationTests(TransactionTestCase):
 
         await communicator.disconnect()
 
+    async def test_set_skills_preserves_agent_origin(self):
+        """The UI's full-list replace keeps who-attached-what for surviving
+        rows, so a skill the agent attached stays detachable by the agent after
+        the browser re-sends the list."""
+        from agent_skills.models import AgentSkill
+        from chat.models import ChatThreadSkill
+
+        mine = await database_sync_to_async(AgentSkill.objects.create)(
+            name="Agent Pick", slug="agent-pick", level="user",
+            created_by=self.user, instructions="Do it.",
+        )
+        theirs = await database_sync_to_async(AgentSkill.objects.create)(
+            name="User Pick", slug="user-pick", level="user",
+            created_by=self.user, instructions="Do it.",
+        )
+        thread = await database_sync_to_async(ChatThread.objects.create)(
+            created_by=self.user,
+        )
+        await database_sync_to_async(ChatThreadSkill.objects.create)(
+            thread=thread, skill=mine, attached_by="agent",
+        )
+
+        async def origins():
+            return await database_sync_to_async(
+                lambda: {
+                    str(sid): who
+                    for sid, who in ChatThreadSkill.objects.filter(thread=thread)
+                    .values_list("skill_id", "attached_by")
+                }
+            )()
+
+        communicator = await self._connect()
+        await communicator.send_json_to({
+            "type": "chat.set_skills",
+            "skill_ids": [str(mine.pk), str(theirs.pk)],
+            "thread_id": str(thread.id),
+        })
+        resp = await communicator.receive_json_from(timeout=5)
+        self.assertEqual(resp["event_type"], "skills.set")
+        self.assertEqual(
+            await origins(), {str(mine.pk): "agent", str(theirs.pk): "user"}
+        )
+
+        # Dropping the agent's pick from the list removes it (user intent).
+        await communicator.send_json_to({
+            "type": "chat.set_skills",
+            "skill_ids": [str(theirs.pk)],
+            "thread_id": str(thread.id),
+        })
+        await communicator.receive_json_from(timeout=5)
+        self.assertEqual(await origins(), {str(theirs.pk): "user"})
+
+        await communicator.disconnect()
+
 
 @override_settings(
     CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}},

@@ -1395,7 +1395,9 @@ def thread_branch(request, thread_id):
             for link in source.thread_data_rooms.order_by("attached_at", "id")
         ])
         ChatThreadSkill.objects.bulk_create([
-            ChatThreadSkill(thread=new, skill_id=link.skill_id)
+            ChatThreadSkill(
+                thread=new, skill_id=link.skill_id, attached_by=link.attached_by,
+            )
             for link in source.thread_skills.order_by("attached_at", "id")
         ])
 

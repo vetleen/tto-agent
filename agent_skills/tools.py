@@ -1540,18 +1540,36 @@ class InspectToolTool(ContextAwareTool):
         })
 
 
-# NOTE: Section is "chat" (not "skills" like the tools above) because this
-# tool manages which skill is attached to the thread — it is exposed to the
-# base chat agent, not gated behind an already-attached skill.
+def _skill_entry(skill, attached_by: str) -> dict:
+    """One attached skill as the attach/detach tools (and the consumer's
+    ``skills.set`` mirror) report it. ``slug`` is what the model needs to
+    reference the skill again; ``attached_by`` tells it whether it may detach."""
+    return {
+        "id": str(skill.id),
+        "slug": skill.slug,
+        "name": skill.name,
+        "emoji": skill.emoji,
+        "attached_by": attached_by,
+    }
+
+
+def _live(row) -> bool:
+    """Whether an attachment row's skill is still usable (rows survive a
+    soft-delete / deactivation; see _resolve_thread_template)."""
+    return bool(row.skill.is_active) and row.skill.deleted_at is None
+
+
+# NOTE: Section is "chat" (not "skills" like the tools above) because these
+# two tools manage which skills are attached to the thread — they are exposed
+# to the base chat agent, not gated behind an already-attached skill.
 class AttachSkillsInput(ReasonBaseModel):
     skill_slugs: list[str] = Field(
         default_factory=list,
         description=(
-            "The complete set of skill slugs that should be attached to this "
-            "thread. This REPLACES whatever is currently attached, so pass every "
-            "slug you want attached — not just new ones. Pass an empty list to "
-            "detach all skills. You may attach as many skills as fit the thread's "
-            "combined skill size budget."
+            "Slugs of the skills to ADD to this thread. Attaching is additive: "
+            "everything already attached stays attached, so pass only the new "
+            "slugs. An empty list does nothing. To remove a skill you attached, "
+            "use chat_skill_detach."
         ),
     )
 
@@ -1559,28 +1577,28 @@ class AttachSkillsInput(ReasonBaseModel):
 class AttachSkillsTool(ContextAwareTool):
     name: str = "chat_skill_attach"
     audience: str = "main"
-    start_label: str = "Updating attached skills..."
-    end_label: str = "Updated attached skills"
+    start_label: str = "Attaching skill..."
+    end_label: str = "Attached skill"
 
     def end_label_for_result(self, result: dict) -> str | None:
         if result.get("status") != "ok":
             return None
-        skills = result.get("skills") or []
-        if result.get("no_change"):
-            return "Skill already attached" if skills else "No skills attached"
-        if not skills:
-            return "Detached skill"
-        if len(skills) == 1:
-            return f"Attached skill: {skills[0].get('name', '')}".rstrip()
-        return "Updated attached skills"
+        added = result.get("added") or []
+        if not added:
+            return "Skill already attached" if result.get("skills") else "No skills attached"
+        if len(added) == 1:
+            names = {s.get("slug"): s.get("name", "") for s in result.get("skills") or []}
+            return f"Attached skill: {names.get(added[0], '')}".rstrip()
+        return f"Attached {len(added)} skills"
 
     description: str = (
-        "Set the skills attached to this chat thread to the given set of slugs, "
-        "replacing whatever is currently attached. Pass an empty list to detach "
-        "all. A skill's tools and instructions become active immediately — from "
-        "your next step in this same turn — so you can attach a skill and then "
-        "use its tools right away. You may attach any number of skills as long as "
-        "their combined size fits the thread's skill budget."
+        "Attach one or more skills to this chat thread by slug. Additive: skills "
+        "already attached stay attached, so pass only the ones to add. A skill's "
+        "tools and instructions become active immediately — from your next step in "
+        "this same turn — so you can attach a skill and then use its tools right "
+        "away. You may attach any number of skills as long as their combined size "
+        "fits the thread's skill budget. To remove a skill you attached earlier, "
+        "use chat_skill_detach; skills the user attached can't be detached by you."
     )
     args_schema: type[BaseModel] = AttachSkillsInput
     section: str = "chat"
@@ -1591,7 +1609,7 @@ class AttachSkillsTool(ContextAwareTool):
 
         from agent_skills.services import get_available_skills
         from chat.models import ChatThread, ChatThreadSkill
-        from chat.thread_skills import lock_thread, replace_thread_skills
+        from chat.thread_skills import add_thread_skills, lock_thread
 
         user_id = self.context.user_id if self.context else None
         thread_id = self.context.conversation_id if self.context else None
@@ -1637,20 +1655,23 @@ class AttachSkillsTool(ContextAwareTool):
 
         # Read → diff → write under the thread's row lock (chat.thread_skills).
         # The pipeline runs a round's tool calls in parallel, and this tool can
-        # also race the UI's skills.set: a concurrent replace waits here, then
-        # diffs against what the other writer committed instead of racing its
-        # delete+insert into the (thread, skill) unique constraint (WILFRED-8P).
-        # The early returns commit nothing.
+        # also race the UI's skills.set: a concurrent writer waits here, then
+        # diffs against what the other writer committed instead of racing into
+        # the (thread, skill) unique constraint (WILFRED-8P). The early returns
+        # commit nothing.
+        added: list = []
         with transaction.atomic():
             lock_thread(thread.pk)
 
-            # What's already on the thread — a re-attach of an active skill is a
-            # no-op, never an approval event (its content is already in context).
-            previous_ids = [
-                str(i) for i in ChatThreadSkill.objects.filter(
-                    thread=thread
-                ).values_list("skill_id", flat=True)
-            ]
+            # What's already on the thread (attach order). ALL rows count for
+            # the diff — re-listing an attached skill is a no-op, never an
+            # approval event — but only rows whose skill is still live feed the
+            # budget and the reported set (rows survive a soft-delete).
+            rows = list(
+                ChatThreadSkill.objects.filter(thread=thread).select_related("skill")
+            )
+            previous_ids = {str(r.skill_id) for r in rows}
+            live_rows = [r for r in rows if _live(r)]
 
             # Approval gate applies only to NEWLY-attached skills: refusing a skill
             # the user already attached would just strand the agent (and its manifest
@@ -1667,36 +1688,44 @@ class AttachSkillsTool(ContextAwareTool):
                     ),
                 })
 
-            # Token budget replaces the old fixed count cap. Aim-relative: a small
-            # max_context_tokens caps skills so they can't crowd out history (same
-            # budget the UI applies). None → the fixed ceiling.
-            aim = getattr(self.context, "max_context_tokens", None) if self.context else None
-            _, dropped = skills_within_budget(chosen, max_context_tokens=aim)
-            if dropped:
-                return json.dumps({
-                    "status": "error",
-                    "message": (
-                        "Attaching all of these would exceed this thread's skill "
-                        f"size budget (~{attach_token_budget(aim)} tokens). Drop one of: "
-                        + ", ".join(s.slug for s in dropped)
-                        + "."
-                    ),
-                })
+            if newly:
+                # Token budget over the RESULTING set (attached + new). Greedy in
+                # attach order, so what's already attached is kept and only new
+                # skills can be refused. Aim-relative: a small max_context_tokens
+                # caps skills so they can't crowd out history (same budget the UI
+                # applies). None → the fixed ceiling.
+                aim = getattr(self.context, "max_context_tokens", None) if self.context else None
+                _, dropped = skills_within_budget(
+                    [r.skill for r in live_rows] + newly, max_context_tokens=aim,
+                )
+                newly_ids = {str(s.id) for s in newly}
+                dropped_new = [s for s in dropped if str(s.id) in newly_ids]
+                if dropped_new:
+                    return json.dumps({
+                        "status": "error",
+                        "message": (
+                            "Attaching these would exceed this thread's skill size "
+                            f"budget (~{attach_token_budget(aim)} tokens): "
+                            + ", ".join(s.slug for s in dropped_new)
+                            + ". Detach a skill you attached earlier with "
+                            "chat_skill_detach, or ask the user to remove one of theirs."
+                        ),
+                    })
 
-            desired_ids = [str(s.id) for s in chosen]
-            no_change = previous_ids == desired_ids
+                # Additive: insert only the new rows, marked as agent-attached.
+                # Existing rows keep their attach order and origin.
+                added_ids = set(
+                    add_thread_skills(thread, [s.id for s in newly], attached_by="agent")
+                )
+                added = [s for s in newly if str(s.id) in added_ids]
 
-            if not no_change:
-                # Declarative full replace: the new set IS the desired state, in
-                # the caller's order (the ChatThreadSkill id tie-break preserves
-                # insertion order for the prompt / tool-union / template lookups).
-                replace_thread_skills(thread, [s.id for s in chosen])
+        no_change = not added
 
         # The same-turn, in-memory effects below run only after the write has
         # committed, so a failed write can't leave the turn's live tool set or
         # injected instructions out of step with what was persisted.
 
-        # Unlock the attached skills' tools for the REST OF THIS TURN. The chat
+        # Unlock the listed skills' tools for the REST OF THIS TURN. The chat
         # pipeline drains ctx.added_tool_names each tool-loop iteration and unions
         # them into the live tool set (SimpleChatPipeline._expand_tools_from_context),
         # so a skill the agent attaches takes effect on its next step, not next turn.
@@ -1711,29 +1740,146 @@ class AttachSkillsTool(ContextAwareTool):
                     if t not in ctx.added_tool_names:
                         ctx.added_tool_names.append(t)
 
-        prev_set = set(previous_ids)
-        desired_set = set(desired_ids)
-
-        # Inject NEWLY-attached skills' instructions into this same turn so the agent
-        # follows them immediately. Skills already attached are already rendered into
-        # this turn's system prompt (# Relevant skills), so re-injecting would
-        # duplicate; the prev_set check skips them. The pipeline drains this into an
-        # ephemeral (non-persisted) user message.
-        if ctx is not None:
+            # Inject NEWLY-attached skills' instructions into this same turn so the
+            # agent follows them immediately. Skills already attached are already
+            # rendered into this turn's system prompt (# Relevant skills), so
+            # re-injecting would duplicate. The pipeline drains this into an
+            # ephemeral (non-persisted) user message.
             from chat.prompts import _render_one_skill  # local: avoid app import cycle
-            for s in chosen:
-                if str(s.id) not in prev_set:
-                    ctx.pending_skill_instructions.append(_render_one_skill(s))
+            for s in added:
+                ctx.pending_skill_instructions.append(
+                    _render_one_skill(s, attached_by="agent")
+                )
 
         return json.dumps({
             "status": "ok",
             "no_change": no_change,
-            "skills": [
-                {"id": str(s.id), "name": s.name, "emoji": s.emoji}
-                for s in chosen
-            ],
-            "added": [i for i in desired_ids if i not in prev_set],
-            "removed": [i for i in previous_ids if i not in desired_set],
+            "skills": (
+                [_skill_entry(r.skill, r.attached_by) for r in live_rows]
+                + [_skill_entry(s, "agent") for s in added]
+            ),
+            "added": [s.slug for s in added],
+        })
+
+
+class DetachSkillsInput(ReasonBaseModel):
+    skill_slugs: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Slugs of the skills to detach from this thread (each attached skill's "
+            "slug is listed under its heading in '# Relevant skills'). Only skills "
+            "you attached yourself can be detached; skills the user attached are "
+            "protected, and the call then fails without detaching anything."
+        ),
+    )
+
+
+class DetachSkillsTool(ContextAwareTool):
+    name: str = "chat_skill_detach"
+    audience: str = "main"
+    start_label: str = "Detaching skill..."
+    end_label: str = "Detached skill"
+
+    def end_label_for_result(self, result: dict) -> str | None:
+        if result.get("status") != "ok":
+            return None
+        removed = result.get("removed") or []
+        if not removed:
+            return "No skills detached"
+        if len(removed) == 1:
+            name = (result.get("removed_names") or [""])[0]
+            return f"Detached skill: {name}".rstrip()
+        return f"Detached {len(removed)} skills"
+
+    description: str = (
+        "Detach skills YOU attached earlier (with chat_skill_attach) from this chat "
+        "thread when they're no longer needed. Skills attached by the user can't be "
+        "detached by you — ask the user to remove them instead. Detaching takes "
+        "effect from the next turn: the skill's tools and instructions stay active "
+        "for the rest of the current turn."
+    )
+    args_schema: type[BaseModel] = DetachSkillsInput
+    section: str = "chat"
+
+    def _run(self, skill_slugs: list[str] | None = None, **kwargs) -> str:
+        from django.contrib.auth import get_user_model
+        from django.db import transaction
+
+        from chat.models import ChatThread, ChatThreadSkill
+        from chat.thread_skills import lock_thread, remove_thread_skills
+
+        user_id = self.context.user_id if self.context else None
+        thread_id = self.context.conversation_id if self.context else None
+        if not user_id or not thread_id:
+            return json.dumps({"status": "error", "message": "No context available."})
+
+        # Dedupe slugs, preserving the order the caller asked for.
+        slugs: list[str] = []
+        for raw in (skill_slugs or []):
+            slug = raw.strip()
+            if slug and slug not in slugs:
+                slugs.append(slug)
+        User = get_user_model()
+        try:
+            user = User.objects.get(pk=user_id)
+        except User.DoesNotExist:
+            return json.dumps({"status": "error", "message": "User not found."})
+
+        try:
+            thread = ChatThread.objects.get(pk=thread_id, created_by=user)
+        except ChatThread.DoesNotExist:
+            return json.dumps({"status": "error", "message": "Thread not found."})
+
+        # Same lock discipline as chat_skill_attach: the protection check and
+        # the delete see the same committed rows, even against a concurrent
+        # attach or a UI skills.set on this thread. Early returns commit nothing.
+        with transaction.atomic():
+            lock_thread(thread.pk)
+            rows = list(
+                ChatThreadSkill.objects.filter(thread=thread).select_related("skill")
+            )
+            by_slug = {r.skill.slug: r for r in rows}
+            unknown = [s for s in slugs if s not in by_slug]
+            if unknown:
+                return json.dumps({
+                    "status": "error",
+                    "message": f"Skill '{unknown[0]}' is not attached to this thread.",
+                    "attached_slugs": list(by_slug),
+                })
+            targets = [by_slug[s] for s in slugs]
+            # Skills the user attached are theirs to remove, never the agent's:
+            # the whole request is refused so a mixed call detaches nothing.
+            protected = [
+                r for r in targets
+                if r.attached_by != ChatThreadSkill.AttachedBy.AGENT
+            ]
+            if protected:
+                return json.dumps({
+                    "status": "error",
+                    "message": (
+                        "These skills were attached by the user and can't be detached "
+                        "by you: "
+                        + ", ".join(r.skill.slug for r in protected)
+                        + ". Ask the user to remove them if they're not needed."
+                    ),
+                })
+            removed_ids = (
+                set(remove_thread_skills(thread, [r.skill_id for r in targets]))
+                if targets else set()
+            )
+
+        # No same-turn effect: the pipeline's tool set is additive-only, so the
+        # detached skill's tools/instructions stay live until the next turn.
+        removed_rows = [r for r in targets if str(r.skill_id) in removed_ids]
+        remaining = [
+            r for r in rows if str(r.skill_id) not in removed_ids and _live(r)
+        ]
+        return json.dumps({
+            "status": "ok",
+            "no_change": not removed_rows,
+            "removed": [r.skill.slug for r in removed_rows],
+            "removed_names": [r.skill.name for r in removed_rows],
+            "skills": [_skill_entry(r.skill, r.attached_by) for r in remaining],
         })
 
 
@@ -1754,3 +1900,4 @@ _registry.register_tool(SkillResourceDeleteTool())
 _registry.register_tool(ListSkillToolsTool())
 _registry.register_tool(InspectToolTool())
 _registry.register_tool(AttachSkillsTool())
+_registry.register_tool(DetachSkillsTool())

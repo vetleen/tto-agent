@@ -169,7 +169,8 @@ class ResolveSubagentToolsTests(TestCase):
         for name in [
             "canvas_activate", "canvas_write", "canvas_edit",
             "canvas_save_to_document", "chat_subagent_create",
-            "chat_skill_attach", "skill_create", "skill_resource_load",
+            "chat_skill_attach", "chat_skill_detach", "skill_create",
+            "skill_resource_load",
         ]:
             self.assertNotIn(name, tools)
 

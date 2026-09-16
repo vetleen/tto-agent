@@ -58,13 +58,16 @@ class AttachSkillsToolTests(TestCase):
     def test_attach_single_slug_updates_thread(self):
         result = self._attach("my-skill")
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["skills"], [
-            {"id": str(self.skill.id), "name": "My Skill", "emoji": self.skill.emoji},
-        ])
-        self.assertEqual(result["added"], [str(self.skill.id)])
-        self.assertEqual(result["removed"], [])
+        self.assertEqual(result["skills"], [{
+            "id": str(self.skill.id), "slug": "my-skill", "name": "My Skill",
+            "emoji": self.skill.emoji, "attached_by": "agent",
+        }])
+        self.assertEqual(result["added"], ["my-skill"])
+        self.assertNotIn("removed", result)
         self.assertFalse(result["no_change"])
         self.assertEqual(_attached_ids(self.thread), [str(self.skill.id)])
+        row = ChatThreadSkill.objects.get(thread=self.thread, skill=self.skill)
+        self.assertEqual(row.attached_by, "agent")
 
     def test_attach_many_beyond_old_count_cap(self):
         # No count cap any more: attach 7 small skills, all fit the token budget.
@@ -125,13 +128,19 @@ class AttachSkillsToolTests(TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(_attached_ids(self.thread), [str(self.skill.id)])
 
-    def test_empty_list_detaches_all(self):
+    def test_empty_list_is_noop_and_keeps_attached(self):
+        """Additive tool: an empty list never detaches (that was the old replace
+        semantics, and the reason user-attached skills kept disappearing)."""
         ChatThreadSkill.objects.create(thread=self.thread, skill=self.skill)
         result = self._attach()
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["skills"], [])
-        self.assertEqual(result["removed"], [str(self.skill.id)])
-        self.assertEqual(_attached_ids(self.thread), [])
+        self.assertTrue(result["no_change"])
+        self.assertEqual(result["added"], [])
+        self.assertEqual(
+            [(s["slug"], s["attached_by"]) for s in result["skills"]],
+            [("my-skill", "user")],
+        )
+        self.assertEqual(_attached_ids(self.thread), [str(self.skill.id)])
 
     def test_empty_list_when_nothing_attached_is_noop(self):
         result = self._attach()
@@ -140,18 +149,77 @@ class AttachSkillsToolTests(TestCase):
         self.assertEqual(result["skills"], [])
         self.assertEqual(_attached_ids(self.thread), [])
 
-    def test_declarative_replace_diffs_added_and_removed(self):
+    def test_attach_is_additive(self):
+        """Attaching a second skill keeps the first (previous-then-new order)."""
         second = AgentSkill.objects.create(
             slug="second", name="Second", instructions="x",
             level="user", created_by=self.user,
         )
         _approve(second)
         self._attach("my-skill")
-        result = self._attach("second")  # full replace, not additive
+        result = self._attach("second")
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["added"], [str(second.id)])
-        self.assertEqual(result["removed"], [str(self.skill.id)])
-        self.assertEqual(_attached_ids(self.thread), [str(second.id)])
+        self.assertEqual(result["added"], ["second"])
+        self.assertEqual([s["slug"] for s in result["skills"]], ["my-skill", "second"])
+        self.assertEqual(
+            _attached_ids(self.thread), [str(self.skill.id), str(second.id)]
+        )
+
+    def test_attach_keeps_user_attached_skill(self):
+        """The production bug: a user-attached skill must survive the agent
+        attaching another one, and the result says who attached what."""
+        other = AgentSkill.objects.create(
+            slug="users-pick", name="Users Pick", instructions="x",
+            level="user", created_by=self.user,
+        )
+        ChatThreadSkill.objects.create(thread=self.thread, skill=other)  # UI → "user"
+        result = self._attach("my-skill")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(
+            [(s["slug"], s["attached_by"]) for s in result["skills"]],
+            [("users-pick", "user"), ("my-skill", "agent")],
+        )
+        self.assertEqual(
+            _attached_ids(self.thread), [str(other.id), str(self.skill.id)]
+        )
+        self.assertEqual(
+            ChatThreadSkill.objects.get(thread=self.thread, skill=other).attached_by,
+            "user",
+        )
+
+    @override_settings(SKILL_ATTACH_TOKEN_BUDGET=1)
+    def test_budget_error_names_only_new_skills(self):
+        """The budget covers attached + new, but only NEW skills can be refused,
+        and the message points at chat_skill_detach rather than at dropping the
+        user's skill."""
+        ChatThreadSkill.objects.create(thread=self.thread, skill=self.skill)
+        second = AgentSkill.objects.create(
+            slug="second", name="Second", instructions="x",
+            level="user", created_by=self.user,
+        )
+        _approve(second)
+        result = self._attach("second")
+        self.assertEqual(result["status"], "error")
+        self.assertIn("second", result["message"])
+        self.assertNotIn("my-skill", result["message"])
+        self.assertIn("chat_skill_detach", result["message"])
+        self.assertEqual(_attached_ids(self.thread), [str(self.skill.id)])
+
+    def test_end_label_for_result(self):
+        label = self.tool.end_label_for_result
+        self.assertIsNone(label({"status": "error"}))
+        self.assertEqual(label({"status": "ok", "added": [], "skills": []}), "No skills attached")
+        self.assertEqual(
+            label({"status": "ok", "added": [], "skills": [{"slug": "a"}]}),
+            "Skill already attached",
+        )
+        self.assertEqual(
+            label({"status": "ok", "added": ["a"], "skills": [{"slug": "a", "name": "Alpha"}]}),
+            "Attached skill: Alpha",
+        )
+        self.assertEqual(
+            label({"status": "ok", "added": ["a", "b"], "skills": []}), "Attached 2 skills"
+        )
 
     def test_same_set_is_noop(self):
         ChatThreadSkill.objects.create(thread=self.thread, skill=self.skill)
@@ -253,6 +321,9 @@ class AttachSkillsToolTests(TestCase):
         instr = self.tool.context.pending_skill_instructions
         self.assertEqual(len(instr), 1)
         self.assertIn("Do the thing.", instr[0])
+        # Rendered with its slug and origin so the agent can detach it later.
+        self.assertIn("Slug: `my-skill`", instr[0])
+        self.assertIn("attached by you", instr[0])
 
     def test_attach_already_attached_skips_instructions(self):
         """Instructions are NOT re-injected for a skill already in this turn's
@@ -267,8 +338,8 @@ class AttachSkillsToolTests(TestCase):
         """WILFRED-8P: two parallel chat_skill_attach calls raced their
         delete+insert and the loser hit the (thread, skill) unique constraint.
         Now the current set is read only after taking the lock, so a writer that
-        committed just before us shows up in the diff and the replace re-inserts
-        its row instead of colliding. Simulated by attaching from the lock hook."""
+        committed just before us shows up in the diff and only the missing row
+        is inserted. Simulated by attaching from the lock hook."""
         second = AgentSkill.objects.create(
             slug="second", name="Second", instructions="x",
             level="user", created_by=self.user,
@@ -276,7 +347,7 @@ class AttachSkillsToolTests(TestCase):
         _approve(second)
 
         def concurrent_writer(thread_id):
-            # Idempotent: replace_thread_skills re-locks inside the same
+            # Idempotent: add_thread_skills re-locks inside the same
             # transaction, and the row must still be there for that second call.
             ChatThreadSkill.objects.get_or_create(thread=self.thread, skill=self.skill)
 
@@ -286,8 +357,11 @@ class AttachSkillsToolTests(TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertFalse(result["no_change"])
         # Only "second" is new relative to what the other writer committed.
-        self.assertEqual(result["added"], [str(second.id)])
-        self.assertEqual(result["removed"], [])
+        self.assertEqual(result["added"], ["second"])
+        self.assertEqual(
+            [(s["slug"], s["attached_by"]) for s in result["skills"]],
+            [("my-skill", "user"), ("second", "agent")],
+        )
         self.assertEqual(_attached_ids(self.thread), [str(self.skill.id), str(second.id)])
         # And "my-skill" counts as already attached: no instruction re-injection.
         self.assertEqual(len(self.tool.context.pending_skill_instructions), 1)
@@ -299,7 +373,7 @@ class AttachSkillsToolTests(TestCase):
         what was persisted."""
         self.tool.context.skill_tool_map = {"my-skill": ["skill_resource_view"]}
         with patch(
-            "chat.thread_skills.replace_thread_skills", side_effect=RuntimeError("boom")
+            "chat.thread_skills.add_thread_skills", side_effect=RuntimeError("boom")
         ):
             with self.assertRaises(RuntimeError):
                 self.tool._run(skill_slugs=["my-skill"])
@@ -309,4 +383,6 @@ class AttachSkillsToolTests(TestCase):
 
     def test_tool_registered(self):
         from llm.tools.registry import get_tool_registry
-        self.assertIn("chat_skill_attach", get_tool_registry().list_tools())
+        names = get_tool_registry().list_tools()
+        self.assertIn("chat_skill_attach", names)
+        self.assertIn("chat_skill_detach", names)

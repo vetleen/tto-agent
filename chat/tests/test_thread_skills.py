@@ -1,5 +1,6 @@
-"""Tests for chat.thread_skills — lock-serialized replacement of a thread's skills."""
+"""Tests for chat.thread_skills — lock-serialized writes to a thread's skills."""
 
+import uuid
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -9,7 +10,12 @@ from django.test.utils import CaptureQueriesContext
 
 from agent_skills.models import AgentSkill
 from chat.models import ChatThread, ChatThreadSkill
-from chat.thread_skills import lock_thread, replace_thread_skills
+from chat.thread_skills import (
+    add_thread_skills,
+    lock_thread,
+    remove_thread_skills,
+    replace_thread_skills,
+)
 
 User = get_user_model()
 
@@ -31,6 +37,14 @@ class ReplaceThreadSkillsTests(TestCase):
                 "skill_id", flat=True
             )
         )
+
+    def _origins(self):
+        return {
+            sid: who
+            for sid, who in ChatThreadSkill.objects.filter(thread=self.thread).values_list(
+                "skill_id", "attached_by"
+            )
+        }
 
     def test_replaces_in_caller_order(self):
         replace_thread_skills(self.thread, [self.b.id, self.a.id])
@@ -86,4 +100,64 @@ class ReplaceThreadSkillsTests(TestCase):
     def test_replace_calls_lock_for_the_thread(self):
         with patch("chat.thread_skills.lock_thread") as lock:
             replace_thread_skills(self.thread, [self.a.id])
+        lock.assert_called_once_with(self.thread.pk)
+
+    # --- attached_by origin ---
+
+    def test_replace_defaults_new_rows_to_user(self):
+        replace_thread_skills(self.thread, [self.a.id])
+        self.assertEqual(self._origins(), {self.a.id: "user"})
+
+    def test_replace_preserves_agent_origin_for_survivors(self):
+        """The browser re-sends the full list on every message; a skill the
+        agent attached must not silently become user-attached (and thereby
+        undetachable by the agent) on that round-trip."""
+        ChatThreadSkill.objects.create(thread=self.thread, skill=self.a, attached_by="agent")
+        replace_thread_skills(self.thread, [self.a.id, self.b.id], attached_by="user")
+        self.assertEqual(self._origins(), {self.a.id: "agent", self.b.id: "user"})
+
+    def test_replace_applies_given_origin_to_new_rows(self):
+        replace_thread_skills(self.thread, [self.a.id], attached_by="agent")
+        self.assertEqual(self._origins(), {self.a.id: "agent"})
+
+    # --- add_thread_skills ---
+
+    def test_add_inserts_only_missing_and_reports_added(self):
+        first = ChatThreadSkill.objects.create(thread=self.thread, skill=self.a)
+        added = add_thread_skills(self.thread, [self.a.id, self.b.id, self.b.id])
+        self.assertEqual(added, [str(self.b.id)])
+        self.assertEqual(self._ids(), [self.a.id, self.b.id])
+        # The existing row is untouched: same pk, attach time and origin.
+        row = ChatThreadSkill.objects.get(thread=self.thread, skill=self.a)
+        self.assertEqual(
+            (row.pk, row.attached_at, row.attached_by),
+            (first.pk, first.attached_at, "user"),
+        )
+        self.assertEqual(
+            ChatThreadSkill.objects.get(thread=self.thread, skill=self.b).attached_by,
+            "agent",
+        )
+
+    def test_add_nothing_new_returns_empty(self):
+        ChatThreadSkill.objects.create(thread=self.thread, skill=self.a)
+        self.assertEqual(add_thread_skills(self.thread, [self.a.id]), [])
+        self.assertEqual(self._ids(), [self.a.id])
+
+    def test_add_calls_lock(self):
+        with patch("chat.thread_skills.lock_thread") as lock:
+            add_thread_skills(self.thread, [self.a.id])
+        lock.assert_called_once_with(self.thread.pk)
+
+    # --- remove_thread_skills ---
+
+    def test_remove_deletes_only_listed_and_ignores_unknown(self):
+        ChatThreadSkill.objects.create(thread=self.thread, skill=self.a)
+        ChatThreadSkill.objects.create(thread=self.thread, skill=self.b, attached_by="agent")
+        removed = remove_thread_skills(self.thread, [self.b.id, uuid.uuid4()])
+        self.assertEqual(removed, [str(self.b.id)])
+        self.assertEqual(self._ids(), [self.a.id])
+
+    def test_remove_calls_lock(self):
+        with patch("chat.thread_skills.lock_thread") as lock:
+            remove_thread_skills(self.thread, [self.a.id])
         lock.assert_called_once_with(self.thread.pk)

@@ -147,18 +147,19 @@ class ThreadBranchTests(TestCase):
             level="user", created_by=self.user,
         )
         ChatThreadSkill.objects.create(thread=self.thread, skill=s1)
-        ChatThreadSkill.objects.create(thread=self.thread, skill=s2)
+        ChatThreadSkill.objects.create(thread=self.thread, skill=s2, attached_by="agent")
 
         new = self._new_thread(self._branch(self.m_a2.id))
         self.assertEqual(
             set(new.thread_data_rooms.values_list("data_room_id", flat=True)),
             {r1.id, r2.id},
         )
-        # Skill order preserved (id tie-break mirrors source attach order).
+        # Skill order preserved (id tie-break mirrors source attach order), and
+        # who attached each skill carries over (the agent may still detach s2).
         self.assertEqual(
             list(new.thread_skills.order_by("attached_at", "id").values_list(
-                "skill_id", flat=True)),
-            [s1.id, s2.id],
+                "skill_id", "attached_by")),
+            [(s1.id, "user"), (s2.id, "agent")],
         )
 
     def test_attachments_byte_copied_in_range_only(self):

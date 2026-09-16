@@ -107,6 +107,13 @@ class ChatThreadDataRoom(models.Model):
 
 
 class ChatThreadSkill(models.Model):
+    class AttachedBy(models.TextChoices):
+        # UI pill/modal, loop setup, seed threads, branch copies — anything the
+        # user did or that was done on the user's behalf.
+        USER = "user", "User"
+        # chat_skill_attach — the only origin chat_skill_detach may remove.
+        AGENT = "agent", "Agent"
+
     thread = models.ForeignKey(
         ChatThread,
         on_delete=models.CASCADE,
@@ -118,6 +125,12 @@ class ChatThreadSkill(models.Model):
         related_name="thread_skill_links",
     )
     attached_at = models.DateTimeField(auto_now_add=True)
+    # Who attached it. Skills the user attached are protected from the agent's
+    # detach tool ("clearly the user meant for that skill to be used"); the
+    # origin survives UI round-trips (see chat.thread_skills.replace_thread_skills).
+    attached_by = models.CharField(
+        max_length=8, choices=AttachedBy.choices, default=AttachedBy.USER,
+    )
 
     class Meta:
         unique_together = [("thread", "skill")]

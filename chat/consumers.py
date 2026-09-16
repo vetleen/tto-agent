@@ -2416,6 +2416,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
             skill_obj = await self._load_skill(sid)
             if skill_obj is not None:
                 skill_objs.append(skill_obj)
+        # Who attached each skill (for the slug line under # Relevant skills).
+        # Omitted when the agent may not manage skills: the detach hint would
+        # point at a tool that _resolve_selected_tools strips.
+        skill_origins = (
+            await self._load_thread_skill_origins(str(thread.id))
+            if skill_objs and prefs and prefs.allow_agent_attach_skills
+            else {}
+        )
         tasks = await self._get_thread_tasks(str(thread.id))
         subagent_runs = await self._get_subagent_runs(str(thread.id)) if self._has_tool("chat_subagent_create") else None
         parallel_subagents = prefs.parallel_subagents if prefs else True
@@ -2447,6 +2455,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             user_context=self._user_context,
             available_skills=available_skills_for_prompt,
             specializations=specializations_for_prompt,
+            skill_origins=skill_origins,
         )
         scratchpad = getattr(thread, "scratchpad", "") or ""
         tools, selected_tool_schemas = await self._resolve_selected_tools(
@@ -2683,10 +2692,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     if t not in tools:
                         tools.append(t)
 
-        # Strip chat_skill_attach when the user has disabled agent-driven skill
-        # attachment (the catalogue is also omitted from the prompt above).
+        # Strip the agent's skill-management tools when the user has disabled
+        # agent-driven skill attachment (the catalogue is also omitted from the
+        # prompt above, and the attached-skill slug lines carry no detach hint).
         if prefs and not prefs.allow_agent_attach_skills:
-            tools = [t for t in tools if t != "chat_skill_attach"]
+            tools = [
+                t for t in tools
+                if t not in ("chat_skill_attach", "chat_skill_detach")
+            ]
 
         # A loop's own headless turn must not spawn or reschedule loops, or a
         # loop whose prompt mentions automations could fork itself indefinitely.
@@ -3030,10 +3043,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
                                 })
                         except (json.JSONDecodeError, AttributeError):
                             pass
-                    # Intercept chat_skill_attach results: mirror the resolved
-                    # set on self.active_skill_ids and emit a single skills.set
+                    # Intercept chat_skill_attach / chat_skill_detach results:
+                    # both report the full resulting set, mirrored on
+                    # self.active_skill_ids and emitted as a single skills.set
                     # event so the frontend pill UI updates automatically.
-                    if tool_name == "chat_skill_attach":
+                    if tool_name in ("chat_skill_attach", "chat_skill_detach"):
                         try:
                             result = json.loads(event.data.get("result", "{}"))
                             if result.get("status") == "ok":
@@ -3990,17 +4004,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
         ).first()
         if thread is None:
             return
-        # Lock-serialized: this can race the agent's chat_skill_attach tool on
-        # the same thread (chat.thread_skills).
-        replace_thread_skills(thread, skill_ids)
+        # Lock-serialized: this can race the agent's attach/detach tools on the
+        # same thread (chat.thread_skills). The user's declarative set: new rows
+        # are user-attached; rows that survive keep their origin, so a skill the
+        # agent attached stays detachable by the agent.
+        replace_thread_skills(thread, skill_ids, attached_by="user")
 
     @database_sync_to_async
     def _load_thread_skills(self, thread_id):
         """Return the thread's attached skills (active only), in attach order.
 
-        Each entry is ``{id, name, emoji}`` — the same shape the skills.set
-        event and the chat_skill_attach tool result use, so the frontend has a
-        single skill shape to render.
+        Each entry is ``{id, name, emoji, attached_by}`` — the same shape the
+        skills.set event and the attach/detach tool results use, so the frontend
+        has a single skill shape to render (it ignores ``attached_by``).
         """
         from chat.models import ChatThreadSkill
 
@@ -4012,9 +4028,28 @@ class ChatConsumer(AsyncWebsocketConsumer):
             ).select_related("skill")
         )
         return [
-            {"id": str(r.skill.pk), "name": r.skill.name, "emoji": r.skill.emoji}
+            {
+                "id": str(r.skill.pk),
+                "name": r.skill.name,
+                "emoji": r.skill.emoji,
+                "attached_by": r.attached_by,
+            }
             for r in rows
         ]
+
+    @database_sync_to_async
+    def _load_thread_skill_origins(self, thread_id):
+        """``{skill_id: attached_by}`` for the thread's attachment rows
+        (owner-filtered). Feeds the per-skill slug line in the prompt so the
+        model knows which attached skills it may detach."""
+        from chat.models import ChatThreadSkill
+
+        return {
+            str(sid): who
+            for sid, who in ChatThreadSkill.objects.filter(
+                thread_id=thread_id, thread__created_by=self.user,
+            ).values_list("skill_id", "attached_by")
+        }
 
     @database_sync_to_async
     def _load_skill(self, skill_id):

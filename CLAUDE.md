@@ -110,6 +110,17 @@ Resolution lives in `core/preferences.py` (`allowed_tools` / `allowed_subagent_t
 (`resolve_subagent_tools`). `RunContext.agent_kind` (`"main"`/`"subagent"`) lets the
 pipeline defensively drop wrong-audience tools.
 
+## Thread Skills
+
+Every write to a thread's attached-skill rows (`ChatThreadSkill`) goes through
+`chat/thread_skills.py` — `replace_thread_skills` for the user's declarative set (UI,
+loop setup), `add_thread_skills` / `remove_thread_skills` for the agent — each under the
+thread's row lock, so parallel tool calls and the UI can't race into the `(thread, skill)`
+unique constraint. Rows carry `attached_by` (`user`/`agent`): `chat_skill_attach` is
+**additive** and marks its rows `agent`; `chat_skill_detach` may only remove `agent` rows —
+skills the user attached are protected. The user-facing replace preserves survivors' origin.
+The prompt's `# Relevant skills` section renders each attached skill's slug and origin.
+
 ## Context Management
 
 `max_context_tokens` (org/user pref, default 200k, floor `MIN_CONTEXT_TOKENS`=50k) is the

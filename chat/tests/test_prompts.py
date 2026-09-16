@@ -148,6 +148,8 @@ class BuildSystemPromptTests(TestCase):
         """Create a mock skill with a templates manager."""
         skill = MagicMock()
         skill.name = name
+        skill.slug = name.lower().replace(" ", "-")
+        skill.id = f"id-{skill.slug}"
         skill.description = description
         skill.instructions = instructions
         skill.templates.all.return_value = []
@@ -159,6 +161,39 @@ class BuildSystemPromptTests(TestCase):
         self.assertIn("# Relevant skills", prompt)
         self.assertIn("## Patent Drafter", prompt)
         self.assertIn("Draft patents carefully.", prompt)
+
+    def test_skill_slug_line_rendered_under_heading(self):
+        """The catalogue excludes attached skills, so the slug the agent needs
+        to reference one again is rendered right under its heading."""
+        skill = self._make_skill("Patent Drafter", "Draft patents carefully.")
+        prompt = build_system_prompt(skills=[skill])
+        self.assertIn("## Patent Drafter\nSlug: `patent-drafter`\n", prompt)
+
+    def test_skill_origin_user_marks_protected(self):
+        skill = self._make_skill("Patent Drafter", "Draft patents carefully.")
+        prompt = build_system_prompt(skills=[skill], skill_origins={skill.id: "user"})
+        self.assertIn(
+            "Slug: `patent-drafter` — attached by the user (you can't detach it).",
+            prompt,
+        )
+        self.assertNotIn("chat_skill_detach", prompt)
+
+    def test_skill_origin_agent_points_at_detach(self):
+        skill = self._make_skill("Patent Drafter", "Draft patents carefully.")
+        prompt = build_system_prompt(skills=[skill], skill_origins={skill.id: "agent"})
+        self.assertIn(
+            "Slug: `patent-drafter` — attached by you (detach it with "
+            "`chat_skill_detach`",
+            prompt,
+        )
+
+    def test_skill_origin_unknown_renders_bare_slug(self):
+        skill = self._make_skill("Patent Drafter", "Draft patents carefully.")
+        prompt = build_system_prompt(
+            skills=[skill], skill_origins={"someone-else": "agent"}
+        )
+        self.assertIn("Slug: `patent-drafter`\n", prompt)
+        self.assertNotIn("Slug: `patent-drafter` —", prompt)
 
     def test_skill_description_included(self):
         skill = self._make_skill(
@@ -1144,6 +1179,10 @@ class AvailableSkillsSectionTests(TestCase):
         self.assertIn("Drafts patents.", prompt)
         self.assertIn("**licensing** — Licensing Helper", prompt)
         self.assertIn("chat_skill_attach", prompt)
+        # Additive semantics + the detach tool; the old replace wording is gone.
+        self.assertIn("additive", prompt)
+        self.assertIn("chat_skill_detach", prompt)
+        self.assertNotIn("replaces whatever", prompt)
 
     def test_section_omitted_when_available_skills_none(self):
         prompt = build_semi_static_prompt(available_skills=None)
@@ -1365,3 +1404,13 @@ class SkillResourceAsyncRenderTests(TestCase):
         skill = self._prefetched_skill()  # one query, templates prefetched
         with self.assertNumQueries(0):
             build_system_prompt(skills=[skill])
+
+    def test_render_with_origins_uses_no_query_when_prefetched(self):
+        """The slug/origin line is rendered from the loaded row + the origins
+        dict, never from a relation (which would also break the async path)."""
+        skill = self._prefetched_skill()
+        with self.assertNumQueries(0):
+            prompt = build_system_prompt(
+                skills=[skill], skill_origins={str(skill.id): "agent"}
+            )
+        self.assertIn(f"Slug: `{skill.slug}` — attached by you", prompt)
