@@ -1025,12 +1025,18 @@ class DocumentViewsTests(TestCase):
             original_filename="quar.txt", status=DataRoomDocument.Status.READY,
             is_quarantined=True,
             quarantine_reason="Contains GDPR Article 9 (special category) personal data.",
+            quarantine_detail="Row 23 names a patient's diagnosis.",
         )
         response = self.client.get(
             reverse("data_room_documents", kwargs={"data_room_id": self.data_room.uuid}),
         )
         self.assertContains(response, "Quarantined")
         self.assertContains(response, "won't use it in any answer")
+        # The reviewer's specific finding is surfaced (tooltip + modal data attr).
+        self.assertContains(response, "Row 23 names a patient&#x27;s diagnosis.")
+        # PII docs get a "Why was this quarantined?" menu item flagged as pii.
+        self.assertContains(response, "Why was this quarantined?")
+        self.assertContains(response, 'data-kind="pii"')
 
     def test_data_room_documents_renders_partial_quarantine_badge(self):
         self.client.force_login(self.user)
@@ -1038,11 +1044,19 @@ class DocumentViewsTests(TestCase):
             data_room=self.data_room, uploaded_by=self.user,
             original_filename="partial.txt", status=DataRoomDocument.Status.READY,
             is_partially_quarantined=True,
+            # Defensive: even if a detail somehow exists, it must NOT leak for a
+            # guardrails (partial) quarantine — the template gates it on is_quarantined.
+            quarantine_detail="SECRET REVIEWER FINDING",
         )
         response = self.client.get(
             reverse("data_room_documents", kwargs={"data_room_id": self.data_room.uuid}),
         )
         self.assertContains(response, "Partially quarantined")
+        # Guardrails docs also get the menu item, flagged as guardrails...
+        self.assertContains(response, "Why was this quarantined?")
+        self.assertContains(response, 'data-kind="guardrails"')
+        # ...but the specific finding is never exposed.
+        self.assertNotContains(response, "SECRET REVIEWER FINDING")
 
     # ------------------------------------------------------------------ #
     # data_room_list POST — description                                    #

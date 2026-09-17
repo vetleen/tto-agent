@@ -199,6 +199,7 @@ def recompute_document_sensitivity(document_id: int) -> None:
     is_q = versions.filter(is_quarantined=True).exists()
     is_pq = is_q or versions.filter(is_partially_quarantined=True).exists()
     reason = ""
+    detail = ""
     if is_q:
         v = (
             versions.filter(is_quarantined=True)
@@ -207,10 +208,12 @@ def recompute_document_sensitivity(document_id: int) -> None:
             .first()
         )
         reason = v.quarantine_reason if v else ""
+        detail = v.quarantine_detail if v else ""
     DataRoomDocument.objects.filter(pk=document_id).update(
         is_quarantined=is_q,
         is_partially_quarantined=is_pq,
         quarantine_reason=reason,
+        quarantine_detail=detail,
     )
 
 

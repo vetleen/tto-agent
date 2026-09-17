@@ -32,11 +32,12 @@ class VersioningSmokeTests(TestCase):
             original_filename="d.md", status=READY,
         )
 
-    def _version(self, idx, *, searchable, status=READY, quarantined=False, chunk_texts=()):
+    def _version(self, idx, *, searchable, status=READY, quarantined=False, detail="", chunk_texts=()):
         v = DataRoomDocumentVersion.objects.create(
             document=self.doc, version_index=idx, status=status,
             is_searchable=searchable, is_quarantined=quarantined,
             quarantine_reason="GDPR Article 9" if quarantined else "",
+            quarantine_detail=detail,
         )
         for i, t in enumerate(chunk_texts):
             DataRoomDocumentChunk.objects.create(
@@ -58,7 +59,10 @@ class VersioningSmokeTests(TestCase):
 
     def test_sensitivity_union_keeps_doc_flagged_while_v0_quarantined(self):
         # v0 (original) contained Article-9 data; v1 (clean edit) does not.
-        self._version(0, searchable=False, quarantined=True, chunk_texts=["sensitive"])
+        self._version(
+            0, searchable=False, quarantined=True,
+            detail="Row 23 names a patient's diagnosis.", chunk_texts=["sensitive"],
+        )
         v1 = self._version(1, searchable=True, quarantined=False, chunk_texts=["clean"])
         self.doc.current_version = v1
         self.doc.active_searchable_version = v1
@@ -71,6 +75,8 @@ class VersioningSmokeTests(TestCase):
         self.assertEqual({c["text"] for c in chunks}, {"clean"})
         # ...but the document stays flagged because the original v0 still has it.
         self.assertTrue(self.doc.is_quarantined)
+        # ...and the reviewer's specific finding is rolled up to the document level.
+        self.assertEqual(self.doc.quarantine_detail, "Row 23 names a patient's diagnosis.")
 
     def test_document_status_reports_processing_when_current_ahead_of_active(self):
         v0 = self._version(0, searchable=True)

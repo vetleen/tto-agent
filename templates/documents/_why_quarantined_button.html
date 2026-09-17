@@ -1,0 +1,17 @@
+{% comment %}
+"Why was this quarantined?" dropdown item. Expects `doc` (with `.is_quarantined`,
+`.is_partially_quarantined`, `.quarantine_reason`, `.quarantine_detail`) and
+`assistant_name` in context. Only rendered when the doc is quarantined or partially
+quarantined. Carries the explanation as data attributes so one shared modal
+(#why-quarantined-modal) serves every row; static/js/why-quarantined-modal.js reads them.
+For PII (full quarantine) the reviewer's specific detail is included; for guardrails
+(partial quarantine) only the generic sentence is shown.
+{% endcomment %}
+<button type="button"
+        class="why-quarantined-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left"
+        data-why-modal="why-quarantined-modal"
+        data-kind="{% if doc.is_quarantined %}pii{% else %}guardrails{% endif %}"
+        data-intro="{% if doc.is_quarantined %}{{ doc.quarantine_reason|default:'This document is quarantined.' }} {{ assistant_name }} won't use it in any answer.{% else %}Content safety checks quarantined parts of this document, so {{ assistant_name }} won't use them in answers.{% endif %}"
+        {% if doc.is_quarantined and doc.quarantine_detail %}data-detail="{{ doc.quarantine_detail }}"{% endif %}>
+  Why was this quarantined?
+</button>

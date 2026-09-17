@@ -116,6 +116,12 @@ class DataRoomDocument(models.Model):
     is_archived = models.BooleanField(default=False)
     is_quarantined = models.BooleanField(default=False, db_index=True)
     quarantine_reason = models.TextField(blank=True, default="")
+    # User-facing specifics from the PII reviewer, rolled up from the earliest
+    # quarantined version's ``quarantine_detail`` by recompute_document_sensitivity.
+    # Populated only for Article 9/10 (full) quarantine; empty for guardrails
+    # (partial) quarantine. Surfaced in the document list tooltip + "Why was this
+    # quarantined?" modal.
+    quarantine_detail = models.TextField(blank=True, default="")
     is_partially_quarantined = models.BooleanField(default=False, db_index=True)
     doc_index = models.PositiveIntegerField(default=0)
     file_metadata_date = models.DateField(null=True, blank=True)
