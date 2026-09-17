@@ -3361,6 +3361,17 @@
       canvasAutoSaveBeforeChat();
       var payload = { type: "chat.message", content: text, thread_id: activeThreadId || "", data_room_ids: attachedDataRoomIds, skill_ids: activeSkillIds, model: selectedModel, thinking_level: thinkingLevel };
       if (sendAttachmentIds.length > 0) payload.attachment_ids = sendAttachmentIds;
+      // New chat + canvas open with content: the normal save path can't run (it
+      // needs a thread that doesn't exist yet), so carry the pasted canvas on the
+      // message itself. The consumer persists it before turn 1 assembles context
+      // and echoes back a canvas_id (via canvas.updated) so the next save targets it.
+      if (canvasIsOpen && !activeThreadId && canvasTextarea) {
+        var pastedCanvas = canvasTextarea.value;
+        if (pastedCanvas && pastedCanvas.trim()) {
+          payload.canvas_content = pastedCanvas;
+          payload.canvas_title = (canvasTitleInput && canvasTitleInput.value.trim()) || "Untitled document";
+        }
+      }
       ws.send(JSON.stringify(payload));
     }
     setTimeout(function() { locked = false; }, 500);

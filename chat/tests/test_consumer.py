@@ -160,6 +160,100 @@ class ConsumerMessageTests(TransactionTestCase):
 
         await communicator.disconnect()
 
+    @patch("llm.get_llm_service")
+    async def test_first_message_carries_pasted_canvas(self, mock_get_service):
+        # New-chat flow: the client can't save its open canvas the normal way (no
+        # thread yet), so it carries the pasted content on the first chat.message.
+        # The consumer must persist + activate it and echo the new canvas_id back.
+        mock_service = MagicMock()
+
+        async def mock_astream(*args, **kwargs):
+            return
+            yield
+
+        mock_service.astream = mock_astream
+        mock_get_service.return_value = mock_service
+
+        communicator = await self._connect()
+        await communicator.send_json_to({
+            "type": "chat.message",
+            "content": "Add markdown formatting, keep the wording.",
+            "canvas_content": "The provided policy text, verbatim.",
+            "canvas_title": "Untitled document",
+        })
+
+        # thread.created first, then the canvas.updated echo carrying the new id.
+        created = await communicator.receive_json_from(timeout=5)
+        self.assertEqual(created["event_type"], "thread.created")
+
+        canvas_evt = None
+        for _ in range(6):
+            evt = await communicator.receive_json_from(timeout=5)
+            if evt.get("event_type") == "canvas.updated":
+                canvas_evt = evt
+                break
+        self.assertIsNotNone(canvas_evt, "expected a canvas.updated echo")
+        self.assertTrue(canvas_evt["canvas_id"])
+        self.assertEqual(canvas_evt["content"], "The provided policy text, verbatim.")
+
+        # The canvas is persisted, active, and pointed to by the thread.
+        canvas = await database_sync_to_async(ChatCanvas.objects.get)()
+        self.assertEqual(canvas.content, "The provided policy text, verbatim.")
+        self.assertEqual(canvas.title, "Untitled document")
+        self.assertTrue(canvas.is_active)
+        self.assertEqual(str(canvas.pk), canvas_evt["canvas_id"])
+
+        thread = await database_sync_to_async(ChatThread.objects.get)()
+        self.assertEqual(thread.active_canvas_id, canvas.pk)
+
+        await communicator.disconnect()
+
+    @patch("llm.get_llm_service")
+    async def test_first_message_without_canvas_creates_no_canvas(self, mock_get_service):
+        mock_service = MagicMock()
+
+        async def mock_astream(*args, **kwargs):
+            return
+            yield
+
+        mock_service.astream = mock_astream
+        mock_get_service.return_value = mock_service
+
+        communicator = await self._connect()
+        await communicator.send_json_to({"type": "chat.message", "content": "Hello"})
+        created = await communicator.receive_json_from(timeout=5)
+        self.assertEqual(created["event_type"], "thread.created")
+        await communicator.disconnect()
+
+        count = await database_sync_to_async(ChatCanvas.objects.count)()
+        self.assertEqual(count, 0)
+
+    @patch("llm.get_llm_service")
+    async def test_first_message_blank_canvas_content_skipped(self, mock_get_service):
+        # Whitespace-only content must not spawn an empty canvas.
+        mock_service = MagicMock()
+
+        async def mock_astream(*args, **kwargs):
+            return
+            yield
+
+        mock_service.astream = mock_astream
+        mock_get_service.return_value = mock_service
+
+        communicator = await self._connect()
+        await communicator.send_json_to({
+            "type": "chat.message",
+            "content": "Hello",
+            "canvas_content": "   ",
+            "canvas_title": "Untitled document",
+        })
+        created = await communicator.receive_json_from(timeout=5)
+        self.assertEqual(created["event_type"], "thread.created")
+        await communicator.disconnect()
+
+        count = await database_sync_to_async(ChatCanvas.objects.count)()
+        self.assertEqual(count, 0)
+
     async def test_empty_message_rejected(self):
         communicator = await self._connect()
         await communicator.send_json_to({

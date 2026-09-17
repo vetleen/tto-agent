@@ -1858,6 +1858,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # absent) = keep whatever the thread has; a list (including empty) = the
         # desired full set, access-gated, deduped, and capped.
         payload_skill_ids = data.get("skill_ids")
+        # A brand-new chat can't persist its open canvas the normal way (that path
+        # needs a thread that doesn't exist yet — chat.html saveCanvasNow bails on
+        # !activeThreadId), so the client carries the pasted canvas on the FIRST
+        # message. We persist + activate it right after thread creation, before the
+        # turn assembles context, so turn 1 can see it. See _persist_pasted_canvas.
+        payload_canvas_content = data.get("canvas_content")
+        payload_canvas_title = data.get("canvas_title")
         payload_skills_validated: list[str] | None = None
         if isinstance(payload_skill_ids, list):
             from asgiref.sync import sync_to_async
@@ -1899,6 +1906,24 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     "event_type": "thread.created",
                     "thread_id": str(thread.id),
                 }))
+
+                # Persist a canvas the client pasted before this thread existed
+                # (new-chat flow). Emitted AFTER thread.created so the client has
+                # adopted activeThreadId first; the canvas.updated echo then lets it
+                # adopt the new canvas_id (its next save targets this row instead of
+                # creating a duplicate "Untitled document").
+                if payload_canvas_content and payload_canvas_content.strip():
+                    canvas_echo = await self._persist_pasted_canvas(
+                        str(thread.id), payload_canvas_title, payload_canvas_content,
+                    )
+                    await self.send(text_data=json.dumps({
+                        "event_type": "canvas.updated",
+                        "canvas_id": canvas_echo["id"],
+                        "title": canvas_echo["title"],
+                        "content": canvas_echo["content"],
+                        "accepted_content": canvas_echo["accepted_content"],
+                        "pending_ai_review": canvas_echo["pending_ai_review"],
+                    }))
             else:
                 # Sync session state from the thread's persisted data to
                 # prevent stale values leaking from a previously loaded thread.
@@ -3785,6 +3810,40 @@ class ChatConsumer(AsyncWebsocketConsumer):
             except IntegrityError:
                 if attempt == 2:
                     raise
+
+    @database_sync_to_async
+    def _persist_pasted_canvas(self, thread_id, title, content):
+        """Create + activate a canvas the client pasted before the thread existed.
+
+        Mirrors ``_save_canvas``'s create branch (dedupe title, create, activate)
+        and returns the ``active_canvas`` echo shape (id/title/content + diff
+        baseline) so the caller can push a ``canvas.updated`` event and the client
+        adopts the new canvas_id. Ownership is already guaranteed — this only runs
+        for a thread just created for ``self.user``. No checkpoint is created,
+        matching how a UI-authored canvas has no baseline until the first AI edit.
+        """
+        from chat.models import ChatCanvas
+        from chat.services import (
+            CANVAS_MAX_CHARS,
+            canvas_diff_baseline,
+            set_active_canvas,
+        )
+
+        content = (content or "")[:CANVAS_MAX_CHARS]
+        title = (title or "Untitled document")[:255]
+        candidate = self._dedupe_canvas_title(thread_id, title)
+        canvas = ChatCanvas.objects.create(
+            thread_id=thread_id, title=candidate, content=content,
+        )
+        set_active_canvas(thread_id, canvas)
+        accepted_content, pending_ai_review = canvas_diff_baseline(canvas)
+        return {
+            "id": str(canvas.pk),
+            "title": canvas.title,
+            "content": canvas.content,
+            "accepted_content": accepted_content,
+            "pending_ai_review": pending_ai_review,
+        }
 
     @database_sync_to_async
     def _get_or_create_canvas(self, thread_id):

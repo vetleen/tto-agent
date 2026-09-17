@@ -194,6 +194,52 @@ class ChatEndToEndTests(TransactionTestCase):
         {"LLM_ALLOWED_MODELS": "gpt-5.4", "DEFAULT_LLM_MODEL": "gpt-5.4"},
         clear=False,
     )
+    async def test_first_message_canvas_injected_into_turn_one(self):
+        # A canvas pasted before the thread existed (carried on the first
+        # chat.message) must be persisted + activated BEFORE turn 1 assembles its
+        # context — so the model sees it on the first message, not only the second.
+        fake = _FakeChatModel(model_name="gpt-5.4", tokens="Done")
+        self._register_fake_model(fake)
+
+        communicator = await self._connect()
+        await communicator.send_json_to({
+            "type": "chat.message",
+            "content": "Add markdown formatting, keep the wording.",
+            "canvas_content": "PLACEHOLDER_POLICY_TEXT rights and obligations.",
+            "canvas_title": "Untitled document",
+        })
+
+        created = await communicator.receive_json_from(timeout=5)
+        self.assertEqual(created["event_type"], "thread.created")
+
+        # Drain the canvas.updated echo + stream events; stop once the stream has
+        # been requested (its request is captured before any event is yielded), so
+        # we never over-receive and trip the "receive-timeout cancels the app" race.
+        events = []
+        for _ in range(8):
+            try:
+                ev = await communicator.receive_json_from(timeout=5)
+            except Exception:
+                break
+            events.append(ev.get("event_type"))
+            if ev.get("event_type") in ("message_end", "thread.cost_updated"):
+                break
+
+        await communicator.disconnect()
+
+        # Turn 1's assembled request already carries the pasted canvas.
+        self.assertGreaterEqual(
+            len(fake.stream_requests), 1, f"no stream request; events={events}"
+        )
+        last = fake.stream_requests[0].messages[-1].content
+        self.assertIn("Active Canvas Content", last)
+        self.assertIn("PLACEHOLDER_POLICY_TEXT", last)
+
+    @patch.dict(
+        os.environ,
+        {"LLM_ALLOWED_MODELS": "gpt-5.4", "DEFAULT_LLM_MODEL": "gpt-5.4"},
+        clear=False,
+    )
     @patch("documents.services.retrieval.similarity_search_chunks")
     async def test_tool_events_emitted_and_tool_called(self, mock_search):
         mock_search.return_value = []
