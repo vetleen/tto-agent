@@ -38,6 +38,7 @@ from documents.models import (
     DataRoomDocumentVersion,
 )
 from documents.services.chunking import clean_extracted_text, extract_file_metadata_date, load_documents, semantic_chunk, structure_aware_chunk
+from documents.services.progress import bump_progress, clear as clear_progress, set_stage
 from documents.services.storage_utils import local_copy
 
 logger = logging.getLogger(__name__)
@@ -291,23 +292,35 @@ def _extract_native(version, doc):
                 version.parser_type = "text"
 
             logger.info("process_document_version: version_id=%s stage=extracting", version.id)
-            image_sink = None
-            if ext in ("docx", "pdf", "pptx"):
+            set_stage(version.id, "extracting")
+            describer = None
+            if ext in ("docx", "pdf", "pptx", "msg", "eml"):
                 # Embedded images become Assets (bytes preserved) + inline
-                # [[image:uuid|...]] tokens (searchable descriptions).
-                from documents.services.image_assets import image_asset_sink
-                image_sink = image_asset_sink(version, doc)
-            elif ext in ("msg", "eml"):
-                # Email trees: one sink threaded through every attachment (and
-                # nested email), so image numbering, the vision-description cap,
-                # and content-hash dedup all span the whole message rather than
-                # resetting per attachment.
-                from documents.services.image_assets import image_asset_sink
-                image_sink = image_asset_sink(version, doc)
-            docs = load_documents(file_path, ext, image_sink=image_sink)
+                # [[image:uuid|...]] tokens (searchable descriptions). For email
+                # trees one describer is threaded through every attachment (and
+                # nested email), so image numbering, the description budget, and
+                # content-hash dedup span the whole message rather than resetting
+                # per attachment.
+                from documents.services.image_assets import EmbeddedImageDescriber
+                describer = EmbeddedImageDescriber(version, doc)
+            docs = load_documents(file_path, ext, image_sink=describer.sink if describer else None)
             combined = "\n\n".join(getattr(d, "page_content", "") or "" for d in docs)
+            del docs
+            # Phase 2/3: describe the embedded images concurrently (I/O-bound), then
+            # swap each described image's fallback label for the real description
+            # before the text is chunked.
+            if describer is not None and describer.total:
+                set_stage(version.id, "describing_images", current=0, total=describer.total)
+                logger.info(
+                    "process_document_version: version_id=%s stage=describing_images count=%s",
+                    version.id, describer.total,
+                )
+                described = describer.run_descriptions(
+                    progress_cb=lambda c, t: bump_progress(version.id, "describing_images", c, t),
+                )
+                combined = describer.substitute(combined, described)
             cleaned = clean_extracted_text(combined)
-            del docs, combined
+            del combined
 
         file_meta_date = extract_file_metadata_date(file_path, ext)
     return cleaned, file_meta_date, prechunked
@@ -383,6 +396,7 @@ def process_document_version(version_id: int, *, dispatch_scan: bool = True) -> 
 
             # 2. Chunk (pre-chunked formats bring their own; else strategy from settings)
             logger.info("process_document_version: version_id=%s stage=chunking", version_id)
+            set_stage(version_id, "chunking")
             if prechunked is not None:
                 chunks_data = prechunked["chunks"]
                 version.chunking_strategy = "spreadsheet_rows"
@@ -457,6 +471,7 @@ def process_document_version(version_id: int, *, dispatch_scan: bool = True) -> 
                 logger.info("process_document_version: version_id=%s stage=vector_delete", version_id)
                 vs.delete_vectors_for_version(version.id)
                 logger.info("process_document_version: version_id=%s stage=embedding", version_id)
+                set_stage(version_id, "embedding")
                 vs.add_chunk_vectors(
                     iter_version_chunks(version.id, fields=("id", "text", "chunk_index")),
                     document_id=doc.id, data_room_id=doc.data_room_id,
@@ -479,6 +494,9 @@ def process_document_version(version_id: int, *, dispatch_scan: bool = True) -> 
         version.save(update_fields=["status", "processing_error", "processed_at", "embedding_model", "updated_at"])
         _mirror_doc_status(doc, version, "scanning")
         _mirror_doc_metadata(doc, version)
+        # Fine-grained progress ends here; the coarse "scanning" status drives the
+        # UI note through the guardrail scan.
+        clear_progress(version_id)
 
         duration_seconds = time.perf_counter() - started_at
         logger.info(
@@ -515,6 +533,7 @@ def process_document_version(version_id: int, *, dispatch_scan: bool = True) -> 
         version.processing_error = str(e)[:2000]
         version.save(update_fields=["status", "processing_error", "updated_at"])
         _mirror_doc_status(doc, version, "failed")
+        clear_progress(version_id)
     except Exception as e:
         duration_seconds = time.perf_counter() - started_at
         logger.exception(
@@ -525,3 +544,4 @@ def process_document_version(version_id: int, *, dispatch_scan: bool = True) -> 
         version.processing_error = str(e)[:2000]
         version.save(update_fields=["status", "processing_error", "updated_at"])
         _mirror_doc_status(doc, version, "failed")
+        clear_progress(version_id)

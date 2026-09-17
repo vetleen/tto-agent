@@ -1112,7 +1112,7 @@ class ProcessDocumentServiceTests(TestCase):
         from chat.models import Asset
         from chat.tests.test_attachments import _tiny_png
         from documents.models import DataRoomDocumentVersion
-        from documents.services.image_assets import image_asset_sink
+        from documents.services.image_assets import EmbeddedImageDescriber
 
         class _FakeImg:
             def __init__(self, data, content_type="image/png", alt_text=""):
@@ -1138,19 +1138,26 @@ class ProcessDocumentServiceTests(TestCase):
             with self.settings(MEDIA_ROOT=tmpdir):
                 with patch("chat.services.describe_image", return_value="A logo") as mock_describe, \
                      patch("core.preferences.resolve_org_feature_model", return_value="anthropic/claude-opus-4-8"):
-                    sink = image_asset_sink(version, doc)
-                    t1 = sink(_FakeImg(same), 1)
-                    t2 = sink(_FakeImg(same), 2)   # duplicate -> no work
-                    t3 = sink(_FakeImg(other), 3)  # distinct image
+                    describer = EmbeddedImageDescriber(version, doc)
+                    # Phase 1 (inline): dedup + store, emitting a fallback label.
+                    t1 = describer.sink(_FakeImg(same), 1)
+                    t2 = describer.sink(_FakeImg(same), 2)   # duplicate -> no work
+                    t3 = describer.sink(_FakeImg(other), 3)  # distinct image
+                    # Phase 2/3: describe the distinct images, then substitute.
+                    described = describer.run_descriptions()
+                    combined = describer.substitute(t1 + "\n" + t3, described)
 
         # The duplicate re-emits the first occurrence's token verbatim.
         self.assertEqual(t1, t2)
         self.assertIn("Image 1:", t1)
         # The next distinct image is numbered 2 (the duplicate consumed no ordinal).
         self.assertIn("Image 2:", t3)
-        # One Asset + one vision call per *distinct* image.
+        # One Asset + one vision call per *distinct* image (calls deferred to phase 2).
         self.assertEqual(Asset.objects.filter(version=version).count(), 2)
+        self.assertEqual(describer.total, 2)
         self.assertEqual(mock_describe.call_count, 2)
+        # Phase 3 replaces the fallback label with the real description.
+        self.assertEqual(combined.count("A logo"), 2)
 
     @override_settings(PGVECTOR_CONNECTION="")
     @unittest.skipIf(not LANGCHAIN_AVAILABLE, "langchain not installed")

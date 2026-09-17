@@ -1158,18 +1158,32 @@ def document_status(request, data_room_id):
     data_room = get_object_or_404(DataRoom, uuid=data_room_id)
     if not _user_can_access_data_room(request.user, data_room):
         return JsonResponse({"error": "Forbidden"}, status=403)
-    statuses = {
-        str(pk): DataRoomDocument.presentation_status(
-            status, err, waiting=bool(q_at and not d_at),
-        )
-        for pk, status, err, q_at, d_at in data_room.documents.filter(
-            is_archived=False,
-        ).values_list(
-            "id", "status", "processing_error",
-            "current_version__queued_at", "current_version__dispatched_at",
-        )
+    from documents.services.progress import read_many
+
+    _TERMINAL = {"ready", "failed", "scan_failed"}
+    statuses = {}
+    version_by_doc = {}
+    for pk, status, err, q_at, d_at, cur_vid in data_room.documents.filter(
+        is_archived=False,
+    ).values_list(
+        "id", "status", "processing_error",
+        "current_version__queued_at", "current_version__dispatched_at",
+        "current_version_id",
+    ):
+        pres = DataRoomDocument.presentation_status(status, err, waiting=bool(q_at and not d_at))
+        statuses[str(pk)] = pres
+        # Only non-terminal docs can have a live progress dict — skip the rest so
+        # the cache read stays small.
+        if pres not in _TERMINAL and cur_vid is not None:
+            version_by_doc[pk] = cur_vid
+
+    progress_by_version = read_many(version_by_doc.values())
+    progress = {
+        str(pk): progress_by_version[vid]
+        for pk, vid in version_by_doc.items()
+        if vid in progress_by_version
     }
-    return JsonResponse({"statuses": statuses})
+    return JsonResponse({"statuses": statuses, "progress": progress})
 
 
 @login_required

@@ -924,11 +924,10 @@ def describe_image(
     b64 = base64.b64encode(image_bytes).decode("ascii")
 
     prompt = (
-        "Describe this image accurately and in detail, so that someone who cannot see "
-        "it would understand its content. Cover the subject, the composition, and any "
-        "notable details. For a chart, graph, or diagram, state its type and report the "
-        "axes, series, labels, and the values or relationships it shows. Transcribe any "
-        "text that appears in the image verbatim. Describe only what is actually visible "
+        "Describe this image in a single short paragraph, so someone who cannot see it "
+        "understands what it shows — the subject and any notable details. If the image "
+        "contains text, a table, or a chart's labels and values, transcribe that text "
+        "verbatim (this matters more than prose). Describe only what is actually visible "
         "— do not guess or invent anything. Output only the description, with no preamble."
     )
     if alt_text:

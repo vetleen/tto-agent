@@ -760,6 +760,20 @@ XLSX_READ_MAX_ROWS = _env_int("XLSX_READ_MAX_ROWS", "200")
 # PDF so a pathological deck can't fan out into thousands of assets.
 PDF_MIN_IMAGE_DIMENSION = _env_int("PDF_MIN_IMAGE_DIMENSION", "32")
 PDF_MAX_EMBEDDED_IMAGES = _env_int("PDF_MAX_EMBEDDED_IMAGES", "200")
+# Embedded-image description is I/O-bound (one non-streaming vision call apiece),
+# so it runs on a small thread pool per document. Peak provider calls in flight is
+# roughly this x DOCUMENT_WORKER_SLOTS, and each call briefly writes one LLMCallLog
+# row from its worker thread — keep it modest so it stays under the DB conn cap.
+DOCUMENT_IMAGE_DESCRIBE_CONCURRENCY = _env_int("DOCUMENT_IMAGE_DESCRIBE_CONCURRENCY", "5")
+# Per-version processing-progress dict (stage + current/total) in the Redis cache,
+# read by the document_status poll endpoint. Best-effort and short-lived; the TTL
+# only has to outlive one processing run.
+DOCPROGRESS_CACHE_TTL = _env_int("DOCPROGRESS_CACHE_TTL", "600")  # 10 min
+# Org-scoped cache of embedded-image vision descriptions, keyed by sha256, so a
+# letterhead/logo described once in an org isn't re-described in the next document.
+# Bump the key version in documents.services.image_assets when the vision prompt
+# changes so stale-prompt descriptions age out.
+IMGDESC_CACHE_TTL = _env_int("IMGDESC_CACHE_TTL", "2592000")  # 30 days
 TARGET_CHUNK_TOKENS = _env_int("TARGET_CHUNK_TOKENS", "768")
 MAX_CHUNK_TOKENS = _env_int("MAX_CHUNK_TOKENS", "1200")
 CHUNK_OVERLAP_TOKENS = _env_int("CHUNK_OVERLAP_TOKENS", "100")

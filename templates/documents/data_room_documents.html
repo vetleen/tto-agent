@@ -841,6 +841,13 @@
 
       if (uploaded > 0 && typeof window.startProcessingTracker === 'function') {
         window.startProcessingTracker(uploadedDocIds);
+        // Processing has taken over via the "Processing: X/Y" banner, so the
+        // in-card upload bar is now a redundant second marker — hide it on a clean
+        // upload. Keep it visible when there's something to read: failures, or the
+        // skipped/too-large notices in #upload-error-list (a child of this div).
+        if (failed === 0 && errorList.children.length === 0) {
+          progressDiv.classList.add('hidden');
+        }
       }
 
       uploading = false;

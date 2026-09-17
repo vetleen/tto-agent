@@ -44,6 +44,49 @@
     return STATUS_TITLES[status] || '';
   }
 
+  // Fine-grained processing stages (from the status endpoint's `progress` map,
+  // stored on the row as data-stage/-current/-total). Only surfaced while the
+  // coarse status is still "processing"; the "scanning" note is handled below.
+  var STAGE_LABELS = {
+    extracting: 'Extracting text and images…',
+    chunking: 'Organizing content…',
+    embedding: 'Indexing…',
+    scanning: 'Checking for sensitive data…'
+  };
+
+  function progressLabel(row) {
+    var stage = row.dataset.stage;
+    if (!stage) return '';
+    if (stage === 'describing_images') {
+      var total = parseInt(row.dataset.total, 10);
+      var current = parseInt(row.dataset.current, 10);
+      if (total > 0) {
+        return 'Reading images ' + (current || 0) + ' of ' + total + '…';
+      }
+      return 'Reading images…';
+    }
+    return STAGE_LABELS[stage] || '';
+  }
+
+  // Store a doc's progress dict on its row's dataset; return whether anything
+  // changed (so we only re-render when it did — most polls don't move the count).
+  function applyProgress(row, p) {
+    var stage = (p && p.stage) ? String(p.stage) : '';
+    var current = (p && p.current != null) ? String(p.current) : '';
+    var total = (p && p.total != null) ? String(p.total) : '';
+    if ((row.dataset.stage || '') === stage &&
+        (row.dataset.current || '') === current &&
+        (row.dataset.total || '') === total) {
+      return false;
+    }
+    if (!stage) {
+      delete row.dataset.stage; delete row.dataset.current; delete row.dataset.total;
+    } else {
+      row.dataset.stage = stage; row.dataset.current = current; row.dataset.total = total;
+    }
+    return true;
+  }
+
   function rescanUrlFor(docId) {
     if (!rescanUrlTemplate) return null;
     return rescanUrlTemplate.replace('/documents/0/rescan/', '/documents/' + docId + '/rescan/');
@@ -54,31 +97,41 @@
   function syncScanNotes() {
     document.querySelectorAll('[data-doc-id]').forEach(function (row) {
       var status = row.dataset.status;
+      var active = row.dataset.list === 'active';
       var note = row.querySelector('.doc-scan-note');
-      var wanted = (status === 'scanning' || status === 'scan_retrying' || status === 'scan_failed') && row.dataset.list === 'active';
-      if (!wanted) {
+
+      // What to show, if anything: the scan-state note (with its Retry button) or
+      // a fine-grained processing-stage note ("Reading images 12 of 46…").
+      var kind = '';
+      var text = '';
+      if (active && (status === 'scanning' || status === 'scan_retrying' || status === 'scan_failed')) {
+        kind = status;
+        text = status === 'scanning' ? 'Checking for sensitive data…'
+          : status === 'scan_retrying' ? 'Queued — retrying automatically…'  // transient broker blip; self-healing
+          : 'Sensitive-data check failed';
+      } else if (active && (status === 'processing' || status === 'uploaded')) {
+        var pl = progressLabel(row);
+        if (pl) { kind = 'progress'; text = pl; }
+      }
+
+      if (!kind) {
         if (note) note.remove();
         return;
       }
-      if (note && note.dataset.forStatus === status) return;
+      // Key on the rendered text so the counter re-renders as it advances.
+      var key = kind + '|' + text;
+      if (note && note.dataset.forKey === key) return;
       if (note) note.remove();
 
       note = document.createElement('span');
       note.className = 'doc-scan-note shrink-0 ms-2 inline-flex items-center gap-1.5';
-      note.dataset.forStatus = status;
+      note.dataset.forKey = key;
 
       var label = document.createElement('span');
-      if (status === 'scanning') {
-        label.className = 'text-xs text-body-subtle italic';
-        label.textContent = 'Checking for sensitive data…';
-      } else if (status === 'scan_retrying') {
-        // Transient broker blip — self-healing, so read as queued, not failed.
-        label.className = 'text-xs text-body-subtle italic';
-        label.textContent = 'Queued — retrying automatically…';
-      } else {
-        label.className = 'text-xs text-fg-warning font-medium';
-        label.textContent = 'Sensitive-data check failed';
-      }
+      label.className = kind === 'scan_failed'
+        ? 'text-xs text-fg-warning font-medium'
+        : 'text-xs text-body-subtle italic';
+      label.textContent = text;
       label.title = statusTitle(row);
       note.appendChild(label);
 
@@ -86,11 +139,11 @@
       // (an impatient user can force an immediate rescan rather than wait for the
       // sweeper). Both hit the same rescan endpoint; the underlying status is
       // scan_failed either way, which document_rescan accepts.
-      if ((status === 'scan_failed' || status === 'scan_retrying') && rescanUrlFor(row.dataset.docId)) {
+      if ((kind === 'scan_failed' || kind === 'scan_retrying') && rescanUrlFor(row.dataset.docId)) {
         var btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'retry-scan-btn inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium text-heading bg-neutral-primary-soft hover:bg-neutral-tertiary border border-default rounded-base';
-        btn.textContent = status === 'scan_retrying' ? 'Retry now' : 'Retry scan';
+        btn.textContent = kind === 'scan_retrying' ? 'Retry now' : 'Retry scan';
         note.appendChild(btn);
       }
 
@@ -246,6 +299,7 @@
       .then(function (r) { return r.json(); })
       .then(function (data) {
         var statuses = data.statuses || {};
+        var progress = data.progress || {};
         var changed = false;
         document.querySelectorAll('[data-doc-id]').forEach(function (row) {
           var newStatus = statuses[row.dataset.docId];
@@ -253,6 +307,7 @@
             row.dataset.status = newStatus;
             changed = true;
           }
+          if (applyProgress(row, progress[row.dataset.docId])) changed = true;
         });
         if (changed) renderStatusIcons();
         updateProcessingBanner(statuses);
