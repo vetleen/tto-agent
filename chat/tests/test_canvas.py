@@ -1755,8 +1755,10 @@ class MultiCanvasPromptTests(TestCase):
         from chat.prompts import build_system_prompt
 
         prompt = build_system_prompt()
-        self.assertIn("Each unique title creates a new canvas tab", prompt)
-        self.assertNotIn("multiple document tabs", prompt)
+        # Base canvas guidance is always present...
+        self.assertIn("canvas workspace", prompt)
+        # ...but the per-thread canvas-tab listing only appears when canvases exist.
+        self.assertNotIn("This thread has these canvas tabs", prompt)
 
     def test_backward_compat_single_canvas(self):
         from chat.prompts import build_system_prompt
