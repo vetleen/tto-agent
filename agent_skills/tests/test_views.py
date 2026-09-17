@@ -305,8 +305,25 @@ class SkillsSaveViewTests(TestCase):
     # by SkillResourceEndpointTests. The old form-reconciliation tests were
     # removed with that behavior.
 
+    def _post_raw(self, **extra):
+        """Post to the save endpoint with arbitrary fields (the shared _post
+        helper only passes a fixed field set, so slug/slug_customize need this)."""
+        payload = {
+            "action": "save",
+            "name": "My Skill",
+            "description": "desc",
+            "instructions": "hello",
+            "tool_names_json": "[]",
+            "templates_json": "[]",
+        }
+        payload.update(extra)
+        return self.client.post(
+            reverse("agent_skills_save", kwargs={"skill_id": self.skill.id}),
+            payload,
+        )
+
     def test_save_slug_rename_migrates_prefs(self):
-        """Renaming the slug on the detail form carries the user's slug-keyed
+        """A customized slug on the detail form carries the user's slug-keyed
         selection over (prefs live under preferences["skills"][slug])."""
         us, _ = UserSettings.objects.get_or_create(user=self.user)
         us.preferences = {
@@ -315,28 +332,92 @@ class SkillsSaveViewTests(TestCase):
         us.save(update_fields=["preferences"])
 
         self.client.force_login(self.user)
-        payload = {
-            "action": "save",
-            "name": "My Skill",
-            "slug": "my-renamed",
-            "description": "desc",
-            "instructions": "hello",
-            "tool_names_json": "[]",
-            "templates_json": "[]",
-        }
-        response = self.client.post(
-            reverse("agent_skills_save", kwargs={"skill_id": self.skill.id}),
-            payload,
-        )
+        response = self._post_raw(slug="my-renamed", slug_customize="1")
         self.assertEqual(response.status_code, 302)
         self.skill.refresh_from_db()
         self.assertEqual(self.skill.slug, "my-renamed")
+        self.assertTrue(self.skill.slug_customized)
         us.refresh_from_db()
         skills_prefs = us.preferences["skills"]
         self.assertNotIn("my", skills_prefs)
         self.assertEqual(
             skills_prefs["my-renamed"]["selected_skill_id"], str(self.skill.id)
         )
+
+    def test_rename_reslugs_when_not_customized(self):
+        """Renaming a non-customized skill re-derives the slug from the name."""
+        self.client.force_login(self.user)
+        response = self._post_raw(name="Patent Analyzer", slug_customize="0")
+        self.assertEqual(response.status_code, 302)
+        self.skill.refresh_from_db()
+        self.assertEqual(self.skill.slug, "patent-analyzer")
+        self.assertFalse(self.skill.slug_customized)
+
+    def test_name_driven_reslug_migrates_prefs(self):
+        """An auto (name-driven) re-slug also carries slug-keyed prefs over."""
+        us, _ = UserSettings.objects.get_or_create(user=self.user)
+        us.preferences = {
+            "skills": {"my": {"selected_skill_id": str(self.skill.id)}}
+        }
+        us.save(update_fields=["preferences"])
+
+        self.client.force_login(self.user)
+        response = self._post_raw(name="Renamed Skill", slug_customize="0")
+        self.assertEqual(response.status_code, 302)
+        self.skill.refresh_from_db()
+        self.assertEqual(self.skill.slug, "renamed-skill")
+        us.refresh_from_db()
+        skills_prefs = us.preferences["skills"]
+        self.assertNotIn("my", skills_prefs)
+        self.assertEqual(
+            skills_prefs["renamed-skill"]["selected_skill_id"], str(self.skill.id)
+        )
+
+    def test_rename_keeps_slug_when_customized(self):
+        """A customized skill's slug survives a rename (plain re-save)."""
+        self.skill.slug_customized = True
+        self.skill.save(update_fields=["slug_customized"])
+        self.client.force_login(self.user)
+        response = self._post_raw(name="Totally New Name", slug_customize="0")
+        self.assertEqual(response.status_code, 302)
+        self.skill.refresh_from_db()
+        self.assertEqual(self.skill.slug, "my")
+        self.assertEqual(self.skill.name, "Totally New Name")
+
+    def test_manual_editor_slugifies_and_freezes(self):
+        """The advanced editor slugifies junk input and sets the frozen flag."""
+        self.client.force_login(self.user)
+        response = self._post_raw(
+            name="Whatever", slug="My Weird SLUG!! \U0001f389", slug_customize="1",
+        )
+        self.assertEqual(response.status_code, 302)
+        self.skill.refresh_from_db()
+        self.assertEqual(self.skill.slug, "my-weird-slug")
+        self.assertTrue(self.skill.slug_customized)
+
+    def test_manual_editor_auto_numbers_collision(self):
+        """A manual slug colliding with another of the user's skills gets a
+        running-number suffix instead of a hard error."""
+        AgentSkill.objects.create(
+            slug="taken", name="Taken", instructions="i",
+            level="user", created_by=self.user,
+        )
+        self.client.force_login(self.user)
+        response = self._post_raw(slug="taken", slug_customize="1")
+        self.assertEqual(response.status_code, 302)
+        # 302 to the list (success), not back to the detail page (error).
+        self.assertEqual(response["Location"], reverse("agent_skills_list"))
+        self.skill.refresh_from_db()
+        self.assertEqual(self.skill.slug, "taken-1")
+
+    def test_manual_editor_empty_slug_falls_back_to_name(self):
+        """An empty manual slug falls back to the name-derived slug."""
+        self.client.force_login(self.user)
+        response = self._post_raw(name="My Thing", slug="", slug_customize="1")
+        self.assertEqual(response.status_code, 302)
+        self.skill.refresh_from_db()
+        self.assertEqual(self.skill.slug, "my-thing")
+        self.assertTrue(self.skill.slug_customized)
 
     def test_non_owner_save_forbidden(self):
         outsider = User.objects.create_user(email="o2@example.com", password="pw")

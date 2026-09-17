@@ -417,6 +417,14 @@ def _apply_skill_form(skill: AgentSkill, request) -> None:
     error propagates — silently swallowing them previously hid a bug where
     every template on a freshly-copied skill was deleted.
     """
+    from django.utils.text import slugify
+
+    from agent_skills.services import (
+        _live_slug_taken,
+        _save_with_free_slug,
+        migrate_skill_slug_prefs,
+    )
+
     name = (request.POST.get("name") or skill.name).strip() or skill.name
     emoji = (request.POST.get("emoji") or "").strip()[:16]
     description = request.POST.get("description") or ""
@@ -426,37 +434,44 @@ def _apply_skill_form(skill: AgentSkill, request) -> None:
         skill_audience=skill.audience,
     )
 
-    # Handle slug updates for user-level skills.
-    old_slug = skill.slug
-    raw_slug = request.POST.get("slug", "").strip()
-    if raw_slug and skill.level == "user":
-        from django.utils.text import slugify
-
-        new_slug = slugify(raw_slug)[:64]
-        if new_slug and new_slug != skill.slug:
-            conflict = AgentSkill.objects.filter(
-                slug=new_slug, level="user", created_by=skill.created_by,
-            ).exclude(pk=skill.pk).exists()
-            if conflict:
-                raise SkillFormValidationError(
-                    f"You already have a skill with slug '{new_slug}'."
-                )
-            skill.slug = new_slug
-
     skill.name = name[:255]
     skill.emoji = emoji
     skill.description = description[:1024]
     skill.instructions = instructions
     skill.tool_names = tool_names
-    skill.save(update_fields=[
-        "slug", "name", "emoji", "description", "instructions", "tool_names", "updated_at",
-    ])
+
+    # Slug management (user tier only). The slug auto-follows the name on every
+    # save unless the user froze it via the advanced editor — signalled by the
+    # ``slug_customize`` hidden field. ``base`` is the desired slug before dedup;
+    # collisions resolve with a running-number suffix instead of an error.
+    old_slug = skill.slug
+    if skill.level == "user":
+        if request.POST.get("slug_customize") == "1":
+            raw_slug = (request.POST.get("slug") or "").strip()
+            base = slugify(raw_slug)[:64] or slugify(skill.name)[:64] or "skill"
+            skill.slug_customized = True
+        elif not skill.slug_customized:
+            base = slugify(skill.name)[:64] or "skill"
+        else:
+            base = skill.slug
+    else:
+        base = skill.slug
+
+    def _persist(slug: str) -> AgentSkill:
+        skill.slug = slug
+        skill.save(update_fields=[
+            "slug", "slug_customized", "name", "emoji", "description",
+            "instructions", "tool_names", "updated_at",
+        ])
+        return skill
+
+    # Route through the race-safe dedup helper; ``_live_slug_taken`` excludes
+    # this skill, so an unchanged slug is returned as-is.
+    _save_with_free_slug(base, _live_slug_taken(skill), _persist)
 
     # Keep the user's slug-keyed enable/disable selection pointing at this
     # skill across a rename (prefs live under preferences["skills"][slug]).
     if skill.slug != old_slug:
-        from agent_skills.services import migrate_skill_slug_prefs
-
         migrate_skill_slug_prefs(skill, old_slug, skill.slug)
 
     # Resources (formerly "templates") are managed via their own endpoints

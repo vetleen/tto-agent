@@ -22,6 +22,7 @@ from agent_skills.services import (
     promote_skill_to_org,
     restore_skill,
     set_user_skill_selection,
+    slug_is_auto,
     soft_delete_skill,
 )
 
@@ -288,6 +289,41 @@ class CreateUserSkillTests(TestCase):
     def test_custom_slug(self):
         skill = create_user_skill(self.user, "Custom", slug="custom-slug")
         self.assertEqual(skill.slug, "custom-slug")
+
+    def test_created_skill_is_not_customized(self):
+        skill = create_user_skill(self.user, "My Cool Skill")
+        self.assertFalse(skill.slug_customized)
+
+
+class SlugIsAutoTests(TestCase):
+    """slug_is_auto drives the migration backfill and the frozen-flag logic."""
+
+    def test_exact_match(self):
+        self.assertTrue(slug_is_auto("Foo Bar", "foo-bar"))
+
+    def test_name_slugifies_to_numeric_tail(self):
+        # slugify("Report 2") == "report-2" — a legitimate exact match.
+        self.assertTrue(slug_is_auto("Report 2", "report-2"))
+
+    def test_deduped_variant(self):
+        self.assertTrue(slug_is_auto("Foo", "foo-1"))
+        self.assertTrue(slug_is_auto("Foo", "foo-12"))
+
+    def test_placeholder_family(self):
+        self.assertTrue(slug_is_auto("Anything", "untitled-skill"))
+        self.assertTrue(slug_is_auto("Anything", "untitled-skill-3"))
+        self.assertTrue(slug_is_auto("Anything", "untitled-sub-agent-skill"))
+        self.assertTrue(slug_is_auto("Anything", "skill"))
+        self.assertTrue(slug_is_auto("Anything", "skill-2"))
+
+    def test_long_name_truncation_dedup(self):
+        name = "a" * 70
+        # _next_free_slug truncates base to 62 chars before appending "-1".
+        self.assertTrue(slug_is_auto(name, "a" * 62 + "-1"))
+
+    def test_genuinely_custom(self):
+        self.assertFalse(slug_is_auto("My Report", "totally-different"))
+        self.assertFalse(slug_is_auto("My Report", "my-reports"))
 
 
 class GetEditableSkillForUserTests(TestCase):

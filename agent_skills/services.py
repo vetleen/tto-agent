@@ -401,6 +401,36 @@ def soft_delete_skill(skill: AgentSkill) -> AgentSkill:
     return skill
 
 
+# Placeholder slugs a user-tier skill gets when created but never renamed (see
+# create_user_skill's fallback and the "New" button's default names). These must
+# stay auto so they self-correct on the first real rename.
+_PLACEHOLDER_SLUG_STEMS = {"untitled-skill", "untitled-sub-agent-skill", "skill"}
+
+
+def slug_is_auto(name: str, slug: str) -> bool:
+    """Whether ``slug`` looks auto-derived from ``name`` (vs. hand-picked).
+
+    Used to decide ``AgentSkill.slug_customized``: an auto slug keeps following
+    the name on rename, a custom one is frozen. Erring toward "auto" only means
+    the slug re-syncs on the next rename — the safe direction — so this is a
+    heuristic, not a proof.
+    """
+    base = slugify(name)[:64] or "skill"
+    if slug == base:
+        # Exact match — also covers names that slugify to a "-<digits>" tail
+        # (e.g. "Report 2" -> "report-2").
+        return True
+    stem = re.sub(r"-\d+$", "", slug)
+    if stem == base:
+        # Deduped auto slug: "foo" -> "foo-1".
+        return True
+    if slug != stem and base.startswith(stem):
+        # Long-name deduped slug: _next_free_slug truncates the base before
+        # appending "-N", so the stem is a prefix of base, not base itself.
+        return True
+    return stem in _PLACEHOLDER_SLUG_STEMS
+
+
 def _live_slug_taken(skill: AgentSkill) -> Callable[[str], bool]:
     """Predicate: is ``slug`` already used by another *live* skill of this tier?
 

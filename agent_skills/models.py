@@ -59,6 +59,11 @@ class AgentSkill(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     slug = models.SlugField(max_length=64)
+    # User-tier only. False = the slug auto-follows ``name`` on every rename
+    # (deduped with a running-number suffix); True = the user froze it via the
+    # advanced slug editor and renames no longer touch it. Org/system skills
+    # ignore this flag (their slug UI is read-only).
+    slug_customized = models.BooleanField(default=False)
     name = models.CharField(max_length=255)
     emoji = models.CharField(max_length=16, blank=True, default="")
     description = models.TextField(max_length=1024, blank=True)

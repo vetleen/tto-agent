@@ -41,13 +41,19 @@
             <span class="wf-mono inline-block px-2 py-0.5 rounded-full border border-accent-subtle text-fg-accent">{{ level_label }}</span>
             {% if editable and skill.level == "user" %}
             <span class="inline-flex items-center gap-1">slug:
+              <code id="skill-slug-display" class="wf-mono">{{ skill.slug }}</code>
+              <button type="button" id="skill-slug-edit-btn" class="text-fg-accent hover:underline">Edit</button>
               <input type="text" name="slug" id="skill-slug" value="{{ skill.slug }}" maxlength="64"
-           class="wf-input wf-mono text-heading text-xs rounded-base px-2 py-0.5 w-48">
+           class="wf-input wf-mono text-heading text-xs rounded-base px-2 py-0.5 w-48 hidden">
+              <input type="hidden" name="slug_customize" id="skill-slug-customize" value="{% if skill.slug_customized %}1{% else %}0{% endif %}">
             </span>
             {% else %}
             <span>slug: <code class="wf-mono">{{ skill.slug }}</code></span>
             {% endif %}
             {% if skill.parent %}<span>copied from <em>{{ skill.parent.name }}</em></span>{% endif %}
+          </p>
+          <p id="skill-slug-hint" class="mt-1 text-xs text-body hidden">
+            Editing the slug stops it from updating automatically when you rename this skill.
           </p>
           <p id="slug-override-warning" class="mt-1.5 text-xs text-fg-warning hidden">
             <svg class="w-3.5 h-3.5 inline-block -mt-0.5 me-0.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"/></svg>

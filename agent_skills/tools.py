@@ -551,6 +551,7 @@ class EditSkillTool(ContextAwareTool):
 
         updates = updates or {}
         update_fields = ["updated_at"]
+        old_slug = skill.slug
 
         if "name" in updates:
             # Cap at the CharField limit (DataError on Postgres otherwise) and
@@ -559,36 +560,43 @@ class EditSkillTool(ContextAwareTool):
             if new_name:
                 skill.name = new_name
                 update_fields.append("name")
+                # The slug auto-follows the name unless the user froze it or is
+                # also setting one explicitly in this same call.
+                if not skill.slug_customized and "new_slug" not in updates:
+                    from django.utils.text import slugify
+
+                    from agent_skills.services import (
+                        _live_slug_taken,
+                        _next_free_slug,
+                    )
+
+                    base = slugify(new_name)[:64] or "skill"
+                    skill.slug = _next_free_slug(base, _live_slug_taken(skill))
+                    if "slug" not in update_fields:
+                        update_fields.append("slug")
         if "new_slug" in updates:
             from django.utils.text import slugify
 
-            from agent_skills.models import AgentSkill
+            from agent_skills.services import _live_slug_taken, _next_free_slug
 
-            # Slugify + cap at the SlugField's 64-char limit, mirroring the
-            # save form (views._apply_skill_form). Without this, a raw value
-            # with spaces/uppercase would persist a malformed slug, and a
-            # >64-char value would raise a DataError on Postgres (SlugField
-            # validators don't run on .save()).
-            new_slug = slugify(str(updates["new_slug"]))[:64]
-            if not new_slug:
-                return json.dumps({
-                    "status": "error",
-                    "message": "Invalid slug.",
-                })
-            conflict = AgentSkill.objects.filter(
-                slug=new_slug, level=skill.level, **{
-                    "organization": skill.organization} if skill.level == "org"
-                    else {"created_by": skill.created_by} if skill.level == "user"
-                    else {}
-            ).exclude(pk=skill.pk).exists()
-            if conflict:
-                return json.dumps({
-                    "status": "error",
-                    "message": f"Slug '{new_slug}' is already taken.",
-                })
-            old_slug = skill.slug
-            skill.slug = new_slug
-            update_fields.append("slug")
+            # Slugify + cap at the SlugField's 64-char limit, mirroring the save
+            # form (views._apply_skill_form). Without this, a raw value with
+            # spaces/uppercase would persist a malformed slug, and a >64-char
+            # value would raise a DataError on Postgres (SlugField validators
+            # don't run on .save()). Empty after slugify falls back to the
+            # name-derived slug. Collisions resolve with a running-number suffix
+            # instead of erroring, and setting an explicit slug freezes it from
+            # future name-driven auto-reslugging.
+            base = (
+                slugify(str(updates["new_slug"]))[:64]
+                or slugify(skill.name)[:64]
+                or "skill"
+            )
+            skill.slug = _next_free_slug(base, _live_slug_taken(skill))
+            skill.slug_customized = True
+            if "slug" not in update_fields:
+                update_fields.append("slug")
+            update_fields.append("slug_customized")
         if "tool_names" in updates:
             # Allow-list to skills-section tools only — standard chat/doc tools
             # are always available and don't belong on a skill, and unknown

@@ -354,6 +354,31 @@
     checkSlugOverride();
   }
 
+  // ----- Advanced slug editing -----
+  // The slug auto-follows the name on save; revealing this input marks the slug
+  // as user-customized (via the slug_customize hidden field) so it stops syncing
+  // with the name on future renames.
+  var slugEditBtn = document.getElementById("skill-slug-edit-btn");
+  var slugDisplay = document.getElementById("skill-slug-display");
+  var slugHint = document.getElementById("skill-slug-hint");
+  var slugCustomize = document.getElementById("skill-slug-customize");
+
+  function markSlugCustomized() {
+    if (slugCustomize) slugCustomize.value = "1";
+  }
+
+  if (slugEditBtn && slugInput) {
+    slugEditBtn.addEventListener("click", function () {
+      slugInput.classList.remove("hidden");
+      if (slugDisplay) slugDisplay.classList.add("hidden");
+      slugEditBtn.classList.add("hidden");
+      if (slugHint) slugHint.classList.remove("hidden");
+      markSlugCustomized();
+      slugInput.focus();
+    });
+    slugInput.addEventListener("input", markSlugCustomized);
+  }
+
   // ----- Initial render -----
   renderToolChips();
 

@@ -132,14 +132,54 @@ class EditSkillToolTests(TestCase):
         self.skill.refresh_from_db()
         self.assertEqual(self.skill.slug, "a" * 64)
 
-    def test_new_slug_empty_after_slugify_rejected(self):
-        """A new_slug that slugifies to empty is rejected; slug is unchanged."""
+    def test_new_slug_empty_falls_back_to_name(self):
+        """A new_slug that slugifies to empty falls back to the name-derived
+        slug (rather than erroring) and still freezes the slug."""
         result = json.loads(self.tool._run(
             skill_slug="editable", updates={"new_slug": "!!!"},
         ))
-        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["status"], "ok")
+        self.skill.refresh_from_db()
+        # name "Editable" -> "editable" (unchanged here, but name-derived).
+        self.assertEqual(self.skill.slug, "editable")
+        self.assertTrue(self.skill.slug_customized)
+
+    def test_new_slug_dedupes_instead_of_erroring(self):
+        """A new_slug colliding with another of the user's skills gets a
+        running-number suffix instead of a hard error."""
+        AgentSkill.objects.create(
+            slug="taken", name="Taken", instructions="i",
+            level="user", created_by=self.user,
+        )
+        result = json.loads(self.tool._run(
+            skill_slug="editable", updates={"new_slug": "taken"},
+        ))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["slug"], "taken-1")
+        self.skill.refresh_from_db()
+        self.assertTrue(self.skill.slug_customized)
+
+    def test_rename_reslugs_when_not_customized(self):
+        """Changing the name re-derives the slug while it is not customized."""
+        result = json.loads(self.tool._run(
+            skill_slug="editable", updates={"name": "Patent Analyzer"},
+        ))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["slug"], "patent-analyzer")
+        self.skill.refresh_from_db()
+        self.assertEqual(self.skill.slug, "patent-analyzer")
+
+    def test_rename_keeps_slug_when_customized(self):
+        """Once the slug is customized, a rename no longer moves it."""
+        self.skill.slug_customized = True
+        self.skill.save(update_fields=["slug_customized"])
+        result = json.loads(self.tool._run(
+            skill_slug="editable", updates={"name": "Patent Analyzer"},
+        ))
+        self.assertEqual(result["status"], "ok")
         self.skill.refresh_from_db()
         self.assertEqual(self.skill.slug, "editable")
+        self.assertEqual(self.skill.name, "Patent Analyzer")
 
     def test_find_replace_description(self):
         result = json.loads(self.tool._run(
