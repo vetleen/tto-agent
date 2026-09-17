@@ -27,9 +27,6 @@ preflight's `[hidden]` rule is !important).
     <span class="w-9 h-5 rounded-full bg-neutral-tertiary border border-default-medium transition-colors peer-checked:bg-brand peer-checked:border-transparent peer-focus:ring-2 peer-focus:ring-brand"></span>
     <span class="absolute left-0.5 top-0.5 w-4 h-4 rounded-full bg-neutral-primary-soft dark:bg-body-subtle dark:peer-checked:bg-on-brand shadow-xs transition-transform peer-checked:translate-x-4"></span>
   </label>
-  {% if row.scan_pill == "pending" %}
-  <span class="skill-scan-spinner inline-flex items-center ms-2 align-middle" title="Scanning…"><svg class="w-4 h-4 animate-spin text-body" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg></span>
-  {% endif %}
   <a href="{% url 'agent_skills_detail' skill_id=row.skill.id %}" class="flex items-center gap-3 flex-1 min-w-0 cursor-pointer hover:text-heading focus:outline-none focus:ring-2 focus:ring-brand rounded-base">
     {% if row.skill.emoji %}
     <span data-dim class="flex items-center justify-center shrink-0 w-9 h-9 rounded-base bg-neutral-secondary-soft border border-default-subtle text-lg{% if not row.is_enabled %} opacity-50{% endif %}" aria-hidden="true">{{ row.skill.emoji }}</span>
