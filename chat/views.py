@@ -692,6 +692,10 @@ def chat_home(request):
             "name": s["name"],
             "emoji": s.get("emoji", ""),
             "description": s.get("description", ""),
+            # Safety-scan verdict: the picker greys out a skill the consumer's
+            # skills.set gate (and the agent's chat_skill_attach) would refuse.
+            "approved": s.get("approved", True),
+            "scan_state": s.get("scan_state", ""),
         }
         for s in prefs.allowed_skills
     ])
@@ -1515,7 +1519,13 @@ def skills_for_user(request):
     prefs = get_preferences(request.user)
     return JsonResponse({
         "skills": [
-            {"id": s["id"], "name": s["name"], "description": s.get("description", "")}
+            {
+                "id": s["id"],
+                "name": s["name"],
+                "description": s.get("description", ""),
+                "approved": s.get("approved", True),
+                "scan_state": s.get("scan_state", ""),
+            }
             for s in prefs.allowed_skills
         ]
     })
@@ -1775,7 +1785,13 @@ def loops_list(request):
     for r in data_rooms:
         r["uuid"] = str(r["uuid"])
     skills = [
-        {"id": str(s["id"]), "name": s["name"], "emoji": s.get("emoji", "")}
+        {
+            "id": str(s["id"]),
+            "name": s["name"],
+            "emoji": s.get("emoji", ""),
+            "approved": s.get("approved", True),
+            "scan_state": s.get("scan_state", ""),
+        }
         for s in prefs.allowed_skills
     ]
     model_choices = [{"id": m, "display": get_display_name(m)} for m in prefs.allowed_models]

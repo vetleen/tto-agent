@@ -427,6 +427,7 @@ def get_preferences(user) -> ResolvedPreferences:
     # declares them.  They are further filtered by org per-skill tool toggles
     # and by the org-level tool toggles. Sub-agent "specializations" resolve
     # the same way against the sub-agent-audience skill list.
+    from agent_skills.resources import bulk_skill_approval
     from agent_skills.services import (
         filter_to_skill_tools,
         get_available_skills,
@@ -436,11 +437,19 @@ def get_preferences(user) -> ResolvedPreferences:
     org_skills_prefs = org_prefs.get("skills", {})
 
     def _resolve_skill_entries(skills) -> list[dict]:
+        skills = list(skills)
+        # Safety-scan verdict per skill (one resource prefetch + a memoized
+        # per-org config resolve). The chat catalogue and picker render from
+        # it so the agent is never offered a skill chat_skill_attach refuses.
+        approval = bulk_skill_approval(user, skills)
         entries = []
         for skill in skills:
             skill_pref = org_skills_prefs.get(skill.slug, {})
             if skill_pref.get("enabled", skill.level != "system") is False:
                 continue
+            verdict = approval.get(str(skill.id)) or {
+                "approved": True, "scan_state": skill.scan_state,
+            }
             # Allow-list to skills-section tools (audience-compatible with the
             # carrying skill) first so a dirty stored row can't smuggle a
             # non-skill or wrong-audience tool, then apply org toggles.
@@ -468,6 +477,8 @@ def get_preferences(user) -> ResolvedPreferences:
                 "emoji": skill.emoji,
                 "description": skill.description,
                 "tool_names": filtered_tools,
+                "approved": bool(verdict["approved"]),
+                "scan_state": verdict["scan_state"],
             })
         return entries
 

@@ -1299,3 +1299,55 @@ class SkillResourceAutoGrantsViewToolsTest(TestCase):
         prefs = get_preferences(user)
         entry = next(e for e in prefs.allowed_skills if e["slug"] == "bare")
         self.assertNotIn("skill_resource_view", entry["tool_names"])
+
+
+class SkillApprovalInEntriesTests(TestCase):
+    """allowed_skills / allowed_specializations entries carry the safety-scan
+    verdict, so the chat catalogue and picker never offer what
+    chat_skill_attach refuses."""
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5.4",
+        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_CHEAP_MODEL="",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_entries_carry_approved_and_scan_state(self, mock_registry, mock_allowed):
+        mock_registry.return_value.list_tools.return_value = {}
+
+        from agent_skills.models import AgentSkill
+        from agent_skills.resources import compute_skill_content_hash
+
+        user = _create_user(email="verdict@example.com")
+        ok = AgentSkill.objects.create(
+            slug="ok", name="Ok", instructions="i", level="user", created_by=user,
+        )
+        ok.scan_state = AgentSkill.ScanState.APPROVED
+        ok.approved_content_hash = compute_skill_content_hash(ok)
+        ok.save(update_fields=["scan_state", "approved_content_hash"])
+        AgentSkill.objects.create(
+            slug="raw", name="Raw", instructions="i", level="user", created_by=user,
+        )
+        AgentSkill.objects.create(
+            slug="bad", name="Bad", instructions="i", level="user", created_by=user,
+            scan_state=AgentSkill.ScanState.BLOCKED,
+        )
+        AgentSkill.objects.create(
+            slug="spec", name="Spec", instructions="i", level="user", created_by=user,
+            audience="subagent", scan_state=AgentSkill.ScanState.PENDING,
+        )
+
+        with patch("agent_skills.resources._scanning_configured", return_value=True):
+            prefs = get_preferences(user)
+
+        by_slug = {e["slug"]: e for e in prefs.allowed_skills}
+        self.assertTrue(by_slug["ok"]["approved"])
+        self.assertEqual(by_slug["ok"]["scan_state"], "approved")
+        self.assertFalse(by_slug["raw"]["approved"])
+        self.assertEqual(by_slug["raw"]["scan_state"], "unscanned")
+        self.assertFalse(by_slug["bad"]["approved"])
+        self.assertEqual(by_slug["bad"]["scan_state"], "blocked")
+        specs = {e["slug"]: e for e in prefs.allowed_specializations}
+        self.assertFalse(specs["spec"]["approved"])
+        self.assertEqual(specs["spec"]["scan_state"], "pending")

@@ -104,22 +104,49 @@ def _relative_date(value) -> str:
 _LEVEL_DISPLAY = {"system": "system", "org": "organization", "user": "your"}
 
 
+def _scan_pill(is_selected: bool, info: dict) -> str:
+    """Which status pill a skill shows: ``""`` (usable, or plainly switched
+    off), ``"pending"`` (scan running), ``"blocked"`` (the scan refused it) or
+    ``"needed"`` (selected but never passed a scan — enabling runs it).
+
+    Keyed on ``approved`` first, then on ``scan_state``: a PENDING skill in an
+    org with no scanning configured is usable and shows nothing.
+    """
+    if info["approved"]:
+        return ""
+    state = info["scan_state"]
+    if state == AgentSkill.ScanState.BLOCKED:
+        return "blocked"
+    if state == AgentSkill.ScanState.PENDING:
+        return "pending"
+    return "needed" if is_selected else ""
+
+
 def _annotate_skills(
     user,
     skills: list[AgentSkill],
     accessible: list[AgentSkill],
     user_skill_prefs: dict,
     is_org_admin: bool,
+    approval_by_id: dict | None = None,
 ) -> list[dict]:
     """Compute per-row metadata for the list template.
 
-    Returns dicts with: skill, is_enabled, can_edit, has_conflict,
-    conflict_label, relative_date.
+    Returns dicts with: skill, is_selected (the user's choice), is_approved
+    (the safety-scan verdict), is_enabled (both — what the toggle shows),
+    scan_state, scan_detail, scan_pill, can_edit, has_conflict, conflict_label,
+    relative_date.
 
-    ``accessible``, ``user_skill_prefs`` and ``is_org_admin`` are resolved once
-    by the caller and passed in so this helper issues no per-call or per-row
-    queries (it is invoked once per tier).
+    ``accessible``, ``user_skill_prefs``, ``is_org_admin`` and
+    ``approval_by_id`` (``resources.bulk_skill_approval`` over the accessible
+    set) are resolved once by the caller and passed in so this helper issues no
+    per-call or per-row queries (it is invoked once per tier). ``approval_by_id``
+    is computed here when omitted.
     """
+    from agent_skills.resources import approval_info, bulk_skill_approval
+
+    if approval_by_id is None:
+        approval_by_id = bulk_skill_approval(user, skills)
     # Group all accessible skills by slug for conflict detection.
     by_slug: dict[str, list[AgentSkill]] = {}
     for s in accessible:
@@ -143,12 +170,17 @@ def _annotate_skills(
     for skill in skills:
         candidates = by_slug.get(skill.slug, [skill])
         active = active_by_slug.get(skill.slug)
-        is_enabled = active is not None and active.pk == skill.pk
+        is_selected = active is not None and active.pk == skill.pk
+        info = approval_by_id.get(str(skill.id)) or approval_info(skill, user=user)
+        is_approved = bool(info["approved"])
+        # The toggle reflects EFFECTIVE availability: a selected skill the
+        # safety scan hasn't passed reads as off, with a pill saying why.
+        is_enabled = is_selected and is_approved
         has_conflict = len(candidates) > 1
 
         conflict_label = ""
         if has_conflict:
-            if is_enabled:
+            if is_selected:
                 others = [c for c in candidates if c.pk != skill.pk]
                 other_levels = ", ".join(
                     _LEVEL_DISPLAY.get(o.level, o.level) for o in others
@@ -175,7 +207,12 @@ def _annotate_skills(
 
         rows.append({
             "skill": skill,
+            "is_selected": is_selected,
+            "is_approved": is_approved,
             "is_enabled": is_enabled,
+            "scan_state": info["scan_state"],
+            "scan_detail": info["detail"],
+            "scan_pill": _scan_pill(is_selected, info),
             "can_edit": can_edit,
             "has_conflict": has_conflict,
             "conflict_label": conflict_label,
@@ -218,8 +255,13 @@ def skills_list(request):
     org = _user_org(request.user)
     is_org_admin = _is_org_admin(request.user, org)
 
+    from agent_skills.resources import bulk_skill_approval
+
     accessible = get_accessible_skills(request.user)
     user_skill_prefs = get_user_skill_prefs(request.user)
+    # One resource prefetch + one scan-config resolve for the whole page, shared
+    # by every tier (six _tier calls) instead of per row.
+    approval_by_id = bulk_skill_approval(request.user, accessible)
 
     def _tier(level, audiences):
         skills = sorted(
@@ -230,7 +272,8 @@ def skills_list(request):
             key=lambda s: s.name,
         )
         return _annotate_skills(
-            request.user, skills, accessible, user_skill_prefs, is_org_admin
+            request.user, skills, accessible, user_skill_prefs, is_org_admin,
+            approval_by_id,
         )
 
     # Two surfaces, partitioned by audience: the main assistant (main/shared) and
@@ -298,9 +341,10 @@ def skills_detail(request, skill_id):
 
     templates = list(skill.templates.order_by("name"))
 
-    from agent_skills.resources import RESOURCE_COUNT_CAP, skill_is_approved
+    from agent_skills.resources import RESOURCE_COUNT_CAP, approval_info
 
-    is_approved = skill_is_approved(skill)
+    approval = approval_info(skill, user=request.user, resources=templates)
+    is_approved = approval["approved"]
 
     # Colleague count for the org-skill save warning.
     colleague_count = 0
@@ -329,6 +373,9 @@ def skills_detail(request, skill_id):
             "templates": templates,
             "resources_data": [_resource_json(t) for t in templates],
             "is_approved": is_approved,
+            "scan_state": approval["scan_state"],
+            "scan_detail": approval["detail"],
+            "scan_pill": _scan_pill(True, approval),
             "resource_count_cap": RESOURCE_COUNT_CAP,
             "tool_names_json": json.dumps(list(skill.tool_names or [])),
             "editable": editable,
@@ -491,6 +538,12 @@ def skills_save(request, skill_id):
 
     action = request.POST.get("action", "save")
 
+    # Every successful action ends with ONE request_skill_rescan on the row
+    # that received the form's text: a changed instructions/description (or a
+    # brand-new copy) re-queues the safety scan on the worker; an unchanged one
+    # is a no-op. The copy/move services are told not to queue their own.
+    from agent_skills.resources import request_skill_rescan
+
     if action == "save":
         if not can_edit_skill(request.user, skill):
             return HttpResponseForbidden("Cannot edit this skill.")
@@ -499,6 +552,7 @@ def skills_save(request, skill_id):
         except SkillFormValidationError as exc:
             messages.error(request, str(exc))
             return redirect("agent_skills_detail", skill_id=skill.id)
+        request_skill_rescan(skill, request.user)
         messages.success(request, f"Saved '{skill.name}'.")
         return redirect("agent_skills_list")
 
@@ -506,13 +560,14 @@ def skills_save(request, skill_id):
         # Make a user copy (carrying its resources), then write the form's text
         # fields into it. Resources are copied by fork_skill now that the form
         # no longer recreates them.
-        copy = fork_skill(request.user, skill, copy_templates=True)
+        copy = fork_skill(request.user, skill, copy_templates=True, rescan=False)
         try:
             _apply_skill_form(copy, request)
         except SkillFormValidationError as exc:
             copy.delete()
             messages.error(request, str(exc))
             return redirect("agent_skills_detail", skill_id=skill.id)
+        request_skill_rescan(copy, request.user)
         messages.success(request, f"Saved as new copy '{copy.name}'.")
         return redirect("agent_skills_list")
 
@@ -522,7 +577,7 @@ def skills_save(request, skill_id):
             return HttpResponseForbidden("Org admin required.")
         try:
             promoted = promote_skill_to_org(
-                request.user, skill, org, copy_templates=True
+                request.user, skill, org, copy_templates=True, rescan=False
             )
         except PermissionError:
             return HttpResponseForbidden("Org admin required.")
@@ -537,6 +592,7 @@ def skills_save(request, skill_id):
                 promoted.delete()
             messages.error(request, str(exc))
             return redirect("agent_skills_detail", skill_id=skill.id)
+        request_skill_rescan(promoted, request.user)
         if is_copy:
             messages.success(request, f"Saved as organization skill '{promoted.name}'.")
         else:
@@ -556,10 +612,11 @@ def skills_save(request, skill_id):
             messages.error(request, str(exc))
             return redirect("agent_skills_detail", skill_id=skill.id)
         try:
-            move_skill_to_org(request.user, skill, org)
+            move_skill_to_org(request.user, skill, org, rescan=False)
         except (PermissionError, ValueError) as exc:
             messages.error(request, str(exc))
             return redirect("agent_skills_detail", skill_id=skill.id)
+        request_skill_rescan(skill, request.user)
         messages.success(request, f"Promoted '{skill.name}' to an organization skill.")
         return redirect("agent_skills_detail", skill_id=skill.id)
 
@@ -576,10 +633,11 @@ def skills_save(request, skill_id):
             messages.error(request, str(exc))
             return redirect("agent_skills_detail", skill_id=skill.id)
         try:
-            move_skill_to_personal(request.user, skill)
+            move_skill_to_personal(request.user, skill, rescan=False)
         except (PermissionError, ValueError) as exc:
             messages.error(request, str(exc))
             return redirect("agent_skills_detail", skill_id=skill.id)
+        request_skill_rescan(skill, request.user)
         messages.success(request, f"Demoted '{skill.name}' to a personal skill.")
         return redirect("agent_skills_detail", skill_id=skill.id)
 
@@ -859,22 +917,43 @@ def skills_toggle(request, skill_id):
     enabled_raw = request.POST.get("enabled", "")
     enabled = enabled_raw in ("1", "true", "True", "on")
 
-    # Enabling an unapproved skill runs the safety scan first (synchronous — a
-    # couple of LLM calls, so the client shows a spinner). Only a clean scan
-    # actually enables the selection; a block is surfaced and nothing enables.
-    if enabled:
-        from agent_skills.resources import scan_and_approve_skill, skill_is_approved
+    from agent_skills.resources import approval_info, request_skill_rescan
 
-        if not skill_is_approved(skill):
-            if not scan_and_approve_skill(skill, request.user):
-                return JsonResponse({
-                    "ok": False,
-                    "error": "blocked",
-                    "detail": skill.scan_detail or "This skill couldn't be enabled.",
-                })
-
+    # The selection is the user's intent and is written right away. Enabling a
+    # skill the safety scan hasn't passed queues the scan on the worker and
+    # answers immediately with scan_state="pending" — the client shows the row
+    # as "Scanning…" and polls skills_scan_status. (The scan used to run inside
+    # this request and blew Heroku's 30 s router limit on larger skills.)
+    # Enabling while already pending re-queues, which is the recovery path for
+    # a scan that never landed.
     result = set_user_skill_selection(request.user, skill, enabled)
-    return JsonResponse({"ok": True, **result})
+    if enabled:
+        info = request_skill_rescan(skill, request.user)
+        approved, scan_state = info["approved"], info["scan_state"]
+    else:
+        info = approval_info(skill, user=request.user)
+        approved, scan_state = info["approved"], info["scan_state"]
+    return JsonResponse({
+        "ok": True,
+        **result,
+        "approved": approved,
+        "scan_state": scan_state,
+        "detail": skill.scan_detail or "",
+    })
+
+
+@login_required
+@require_http_methods(["GET"])
+def skills_scan_status(request):
+    """Poll endpoint for the Skills list: the safety-scan verdict of the given
+    skills (``?ids=a,b,…``), restricted to what the user can access."""
+    from agent_skills.resources import bulk_skill_approval
+
+    raw = request.GET.get("ids") or ""
+    wanted = [i.strip() for i in raw.split(",") if i.strip()][:200]
+    accessible = {str(s.id): s for s in get_accessible_skills(request.user)}
+    skills = [accessible[i] for i in wanted if i in accessible]
+    return JsonResponse({"ok": True, "skills": bulk_skill_approval(request.user, skills)})
 
 
 # ----- Skill resources (files + text) -----------------------------------
@@ -1001,7 +1080,7 @@ def skills_resource_upload(request, skill_id):
         return general_max
 
     count = skill.templates.count()
-    created, errors = [], []
+    created, pending, errors = [], [], []
     for f in files:
         if count >= RESOURCE_COUNT_CAP:
             errors.append(f"{f.name}: resource limit ({RESOURCE_COUNT_CAP}) reached")
@@ -1017,7 +1096,7 @@ def skills_resource_upload(request, skill_id):
             resource = create_pending_upload(
                 skill, data=f.read(), filename=f.name, user=request.user
             )
-            process_skill_resource_upload_task.delay(str(resource.id), request.user.id)
+            pending.append(resource)
             created.append(_resource_json(resource))
             count += 1
         except UnsupportedResourceType:
@@ -1025,18 +1104,39 @@ def skills_resource_upload(request, skill_id):
         except Exception:
             logger.exception("skills_resource_upload: failed for %s", f.name)
             errors.append(f"{f.name}: could not be processed")
-    return JsonResponse({"ok": True, "resources": created, "errors": errors})
+    # Mark the skill PENDING *before* the worker can finish: with uploads in
+    # flight nothing is queued here — process_upload runs the approval gate once
+    # the last file lands.
+    scan_state = skill.scan_state
+    if pending:
+        from agent_skills.resources import request_skill_rescan
+
+        scan_state = request_skill_rescan(skill, request.user)["scan_state"]
+        for resource in pending:
+            process_skill_resource_upload_task.delay(str(resource.id), request.user.id)
+    return JsonResponse({
+        "ok": True, "resources": created, "errors": errors, "scan_state": scan_state,
+    })
 
 
 @login_required
 @require_http_methods(["GET"])
 def skills_resource_status(request, skill_id):
-    """Poll endpoint: current status of every resource on a skill."""
+    """Poll endpoint: current status of every resource on a skill, plus the
+    skill's own safety-scan verdict (the detail header pill refreshes from it)."""
+    from agent_skills.resources import approval_info
+
     skill = get_skill_for_user(request.user, str(skill_id))
     if skill is None:
         return JsonResponse({"ok": False, "error": "not_found"}, status=404)
-    resources = [_resource_json(r) for r in skill.templates.order_by("name")]
-    return JsonResponse({"ok": True, "resources": resources})
+    templates = list(skill.templates.order_by("name"))
+    resources = [_resource_json(r) for r in templates]
+    approval = approval_info(skill, user=request.user, resources=templates)
+    return JsonResponse({
+        "ok": True,
+        "resources": resources,
+        "skill": {**approval, "scan_pill": _scan_pill(True, approval)},
+    })
 
 
 @login_required
@@ -1047,7 +1147,11 @@ def skills_resource_create(request, skill_id):
         return err
 
     from agent_skills.models import SkillResource
-    from agent_skills.resources import RESOURCE_COUNT_CAP, create_text_resource
+    from agent_skills.resources import (
+        RESOURCE_COUNT_CAP,
+        create_text_resource,
+        request_skill_rescan,
+    )
 
     name = (request.POST.get("name") or "").strip()
     content = request.POST.get("content") or ""
@@ -1062,7 +1166,10 @@ def skills_resource_create(request, skill_id):
     resource = create_text_resource(
         skill, name=name, content=content, kind=kind, user=request.user
     )
-    return JsonResponse({"ok": True, "resource": _resource_json(resource)})
+    scan = request_skill_rescan(skill, request.user)
+    return JsonResponse({
+        "ok": True, "resource": _resource_json(resource), "scan_state": scan["scan_state"],
+    })
 
 
 @login_required
@@ -1075,7 +1182,7 @@ def skills_resource_update(request, skill_id, resource_id):
     from django.db import IntegrityError
 
     from agent_skills.models import SkillResource
-    from agent_skills.resources import update_resource
+    from agent_skills.resources import request_skill_rescan, update_resource
 
     resource = SkillResource.objects.filter(pk=resource_id, skill=skill).first()
     if resource is None:
@@ -1089,7 +1196,10 @@ def skills_resource_update(request, skill_id, resource_id):
     except IntegrityError:
         return JsonResponse({"ok": False, "error": "duplicate_name"}, status=400)
     resource.refresh_from_db()
-    return JsonResponse({"ok": True, "resource": _resource_json(resource)})
+    scan = request_skill_rescan(skill, request.user)
+    return JsonResponse({
+        "ok": True, "resource": _resource_json(resource), "scan_state": scan["scan_state"],
+    })
 
 
 @login_required
@@ -1100,14 +1210,15 @@ def skills_resource_delete(request, skill_id, resource_id):
         return err
 
     from agent_skills.models import SkillResource
-    from agent_skills.resources import recompute_standing_tokens
+    from agent_skills.resources import recompute_standing_tokens, request_skill_rescan
 
     resource = SkillResource.objects.filter(pk=resource_id, skill=skill).first()
     if resource is None:
         return JsonResponse({"ok": False, "error": "not_found"}, status=404)
     resource.delete()
     recompute_standing_tokens(skill)
-    return JsonResponse({"ok": True})
+    scan = request_skill_rescan(skill, request.user)
+    return JsonResponse({"ok": True, "scan_state": scan["scan_state"]})
 
 
 @login_required
@@ -1216,10 +1327,17 @@ def skills_resource_replace(request, skill_id, resource_id):
     if f.size and f.size > max_size:
         return JsonResponse({"ok": False, "error": "too_large"}, status=400)
 
+    from agent_skills.resources import request_skill_rescan
+
     try:
         replace_resource_file(resource, data=f.read(), filename=f.name)
     except UnsupportedResourceType:
         return JsonResponse({"ok": False, "error": "unsupported_type"}, status=400)
+    # PENDING before the worker can finish (in flight → nothing queued here;
+    # process_upload runs the gate when the new file lands).
+    scan = request_skill_rescan(skill, request.user)
     process_skill_resource_upload_task.delay(str(resource.id), request.user.id)
     resource.refresh_from_db()
-    return JsonResponse({"ok": True, "resource": _resource_json(resource)})
+    return JsonResponse({
+        "ok": True, "resource": _resource_json(resource), "scan_state": scan["scan_state"],
+    })

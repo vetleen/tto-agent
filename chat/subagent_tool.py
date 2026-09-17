@@ -122,7 +122,12 @@ class CreateSubagentTool(ContextAwareTool):
         # than silently ignoring an unknown slug.
         specialization = (kwargs.get("type") or "").strip()
         if specialization:
-            valid_slugs = [s["slug"] for s in prefs.allowed_specializations]
+            # Same safety-scan gate as chat_skill_attach: a specialization the
+            # scan hasn't passed is not on offer.
+            valid_slugs = [
+                s["slug"] for s in prefs.allowed_specializations
+                if s.get("approved", True)
+            ]
             if specialization not in valid_slugs:
                 available = ", ".join(valid_slugs) if valid_slugs else "(none available)"
                 return json.dumps({

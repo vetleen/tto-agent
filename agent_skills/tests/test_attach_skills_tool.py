@@ -100,10 +100,13 @@ class AttachSkillsToolTests(TestCase):
 
     def test_blocked_skill_rejected(self):
         self.skill.scan_state = AgentSkill.ScanState.BLOCKED
-        self.skill.save(update_fields=["scan_state"])
+        self.skill.scan_detail = "flagged as adversarial"
+        self.skill.save(update_fields=["scan_state", "scan_detail"])
         result = self._attach("my-skill")
         self.assertEqual(result["status"], "error")
-        self.assertIn("enabled", result["message"])
+        self.assertIn("Blocked by the safety scan", result["message"])
+        self.assertIn("flagged as adversarial", result["message"])
+        self.assertIn("Skills page", result["message"])
         self.assertEqual(_attached_ids(self.thread), [])
 
     def test_unscanned_rejected_when_scanning_configured(self):
@@ -114,7 +117,67 @@ class AttachSkillsToolTests(TestCase):
         with patch("agent_skills.resources._scanning_configured", return_value=True):
             result = json.loads(self.tool._run(skill_slugs=[fresh.slug]))
         self.assertEqual(result["status"], "error")
+        self.assertIn("Not safety-scanned yet", result["message"])
+        self.assertIn("fresh", result["message"])
         self.assertEqual(_attached_ids(self.thread), [])
+
+    @override_settings(SKILL_ATTACH_PENDING_WAIT_SECONDS=0)
+    def test_pending_skill_rejected_with_retry_hint(self):
+        self.skill.scan_state = AgentSkill.ScanState.PENDING
+        self.skill.approved_content_hash = ""
+        self.skill.save(update_fields=["scan_state", "approved_content_hash"])
+        with patch("agent_skills.resources._scanning_configured", return_value=True):
+            result = self._attach("my-skill")
+        self.assertEqual(result["status"], "error")
+        self.assertIn("Still being safety-scanned", result["message"])
+        self.assertIn("try again", result["message"])
+        self.assertEqual(_attached_ids(self.thread), [])
+
+    @override_settings(
+        SKILL_ATTACH_PENDING_WAIT_SECONDS=2, SKILL_ATTACH_PENDING_POLL_SECONDS=0.05
+    )
+    def test_pending_skill_that_finishes_during_the_wait_attaches(self):
+        from agent_skills.resources import compute_skill_content_hash
+
+        self.skill.scan_state = AgentSkill.ScanState.PENDING
+        self.skill.approved_content_hash = ""
+        self.skill.save(update_fields=["scan_state", "approved_content_hash"])
+        skill_pk, approved_hash = self.skill.pk, compute_skill_content_hash(self.skill)
+        calls = {"n": 0}
+        real_sleep = __import__("time").sleep
+
+        def finish_scan_then_sleep(seconds):
+            # The "worker" lands the verdict while the tool is waiting.
+            calls["n"] += 1
+            AgentSkill.objects.filter(pk=skill_pk).update(
+                scan_state=AgentSkill.ScanState.APPROVED,
+                approved_content_hash=approved_hash,
+            )
+            real_sleep(0)
+
+        with patch("agent_skills.resources._scanning_configured", return_value=True), \
+                patch("time.sleep", side_effect=finish_scan_then_sleep):
+            result = self._attach("my-skill")
+        self.assertEqual(result["status"], "ok")
+        self.assertGreaterEqual(calls["n"], 1)
+        self.assertEqual(_attached_ids(self.thread), [str(self.skill.id)])
+
+    def test_gate_runs_before_the_thread_lock(self):
+        order = []
+        from agent_skills import tools as tools_mod
+
+        def fake_await(skills, user):
+            order.append("gate")
+            return None
+
+        def fake_lock(pk):
+            order.append("lock")
+
+        with patch.object(tools_mod, "_await_skill_approval", side_effect=fake_await), \
+                patch("chat.thread_skills.lock_thread", side_effect=fake_lock):
+            result = self._attach("my-skill")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(order[:2], ["gate", "lock"])
 
     def test_already_attached_unapproved_not_rejected(self):
         # A re-list of a skill already on the thread is a no-op, not an approval
@@ -207,7 +270,8 @@ class AttachSkillsToolTests(TestCase):
 
     def test_end_label_for_result(self):
         label = self.tool.end_label_for_result
-        self.assertIsNone(label({"status": "error"}))
+        # A refusal must never fall back to the success label.
+        self.assertEqual(label({"status": "error"}), "Couldn't attach skill")
         self.assertEqual(label({"status": "ok", "added": [], "skills": []}), "No skills attached")
         self.assertEqual(
             label({"status": "ok", "added": [], "skills": [{"slug": "a"}]}),

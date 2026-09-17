@@ -67,6 +67,15 @@
     return tpl.replace(ID_PLACEHOLDER, id);
   }
 
+  // A resource write changes the skill's content hash and re-queues its safety
+  // scan; refresh the header pill (skills-detail.js owns it) so the page shows
+  // "Scanning…" and then the verdict without a reload.
+  function notifySkillScan() {
+    if (window.WilfredSkillScan && typeof window.WilfredSkillScan.refresh === "function") {
+      window.WilfredSkillScan.refresh();
+    }
+  }
+
   function triggerDownload(url) {
     if (!url) return;
     var a = document.createElement("a");
@@ -323,6 +332,12 @@
           if (data && data.ok && Array.isArray(data.resources)) {
             resources = data.resources;
             renderAll();
+            // The poll also carries the skill's own scan verdict (uploads
+            // re-run the approval gate on the worker once they land).
+            if (data.skill && window.WilfredSkillScan) {
+              window.WilfredSkillScan.apply(data.skill);
+              window.WilfredSkillScan.poll();
+            }
             pollStatus();
           }
         })
@@ -389,6 +404,7 @@
         })
       ).then(function () {
         ids.forEach(removeLocal);
+        notifySkillScan();
       });
     });
   }
@@ -396,7 +412,10 @@
   function deleteResource(r) {
     if (!confirm("Delete “" + r.name + "”? This can't be undone.")) return;
     post(urlFor(deleteTpl, r.id), new FormData()).then(function (res) {
-      if (res.data && res.data.ok) removeLocal(r.id);
+      if (res.data && res.data.ok) {
+        removeLocal(r.id);
+        notifySkillScan();
+      }
     });
   }
 
@@ -421,6 +440,7 @@
         if (!res.data) return;
         (res.data.resources || []).forEach(upsert);
         pollStatus();
+        notifySkillScan();
         if (res.data.errors && res.data.errors.length) {
           alert(res.data.errors.join("\n"));
         }
@@ -663,6 +683,7 @@
           if (res.data && res.data.ok) {
             upsert(res.data.resource);
             hideModal();
+            notifySkillScan();
           } else {
             var err = res.data && res.data.error;
             setModalError(
@@ -712,6 +733,7 @@
             upsert(res.data.resource);
             pollStatus();
             hideModal();
+            notifySkillScan();
           } else {
             var err = res.data && res.data.error;
             setModalError(

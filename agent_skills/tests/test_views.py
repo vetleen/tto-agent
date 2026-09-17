@@ -1047,30 +1047,26 @@ class SkillResourceEndpointTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(self.skill.templates.count(), 0)
 
-    def test_toggle_enable_blocks_when_scan_blocks(self):
+    def test_toggle_enable_never_scans_inside_the_request(self):
+        # The scan is queued on the worker (see test_scan_gate for the full
+        # contract); the request answers at once with the pending state.
         from unittest.mock import patch
 
-        with patch("agent_skills.resources.skill_is_approved", return_value=False), \
-                patch("agent_skills.resources.scan_and_approve_skill", return_value=False):
+        with patch("agent_skills.resources._scanning_configured", return_value=True), \
+                patch("agent_skills.resources._dispatch_scan") as dispatch, \
+                patch("agent_skills.resources.scan_and_approve_skill") as scan, \
+                self.captureOnCommitCallbacks(execute=True):
             resp = self.client.post(
                 reverse("agent_skills_toggle", kwargs={"skill_id": self.skill.id}),
                 {"enabled": "1"},
             )
         data = resp.json()
-        self.assertFalse(data["ok"])
-        self.assertEqual(data["error"], "blocked")
-
-    def test_toggle_enable_runs_scan_then_enables(self):
-        from unittest.mock import patch
-
-        with patch("agent_skills.resources.skill_is_approved", return_value=False), \
-                patch("agent_skills.resources.scan_and_approve_skill", return_value=True) as scan:
-            resp = self.client.post(
-                reverse("agent_skills_toggle", kwargs={"skill_id": self.skill.id}),
-                {"enabled": "1"},
-            )
-        self.assertTrue(resp.json()["ok"])
-        scan.assert_called_once()
+        self.assertTrue(data["ok"])
+        self.assertTrue(data["now_active"])
+        self.assertEqual(data["scan_state"], "pending")
+        self.assertFalse(data["approved"])
+        scan.assert_not_called()
+        dispatch.assert_called_once()
 
     # --- kind (reference/template) via the modal checkbox ---
     def test_create_with_template_flag(self):

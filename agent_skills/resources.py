@@ -10,9 +10,12 @@ Scan timing (confirmed with user):
   (``ingest_file`` -> ``scan_resource``), setting a per-resource quarantine.
   An upload always sets ``original_filename``.
 - Typed text (instructions, description, and text resources created via the
-  modal — ``create_text_resource``, ``original_filename == ""``) is scanned at
-  the **enable gate** (``scan_and_approve_skill``), hash-cached — never on every
-  draft save.
+  modal — ``create_text_resource``, ``original_filename == ""``) is scanned by
+  the **approval gate** (``scan_and_approve_skill``), which every content write
+  re-queues through ``request_skill_rescan`` (asynchronously, on the worker —
+  the gate makes LLM calls and must never run inside a web request). Approval
+  is hash-cached on the skill, and each clean text blob's verdict is cached by
+  content, so a save only re-scans what actually changed.
 """
 
 from __future__ import annotations
@@ -39,6 +42,19 @@ _SCAN_WINDOW_CHARS = 40_000
 # Max resources per skill (authoring-time guard; mirrors the spirit of the
 # Data Room in-flight cap).
 RESOURCE_COUNT_CAP = 50
+
+# Resource statuses whose content hash is not final yet (an upload still
+# extracting/scanning on the worker). The approval gate defers while any
+# resource is in flight; ``process_upload`` re-runs it when the upload lands.
+IN_FLIGHT_STATUSES = (
+    SkillResource.Status.PENDING,
+    SkillResource.Status.PROCESSING,
+    SkillResource.Status.SCANNING,
+)
+
+# Memo attribute (on a user instance) for the per-org "is scanning configured"
+# answer — the same request-scoped pattern as ``services._active_system_skill_slugs``.
+_SCAN_CONFIG_CACHE_ATTR = "_cached_skill_scanning_configured"
 
 
 class UnsupportedResourceType(ValueError):
@@ -97,47 +113,104 @@ def resource_content_hash(content: str) -> str:
     return hashlib.sha256((content or "").encode("utf-8")).hexdigest()
 
 
-def compute_skill_content_hash(skill: AgentSkill) -> str:
+def compute_skill_content_hash(skill: AgentSkill, resources=None) -> str:
     """Stable hash over the skill's authored text + its resource set.
 
     MUST match the algorithm the 0006 grandfather migration used, so a
     grandfathered skill stays approved until it is actually edited.
+
+    ``resources`` lets bulk callers pass a pre-fetched, name-ordered list (see
+    :func:`bulk_skill_approval`). Without it ``skill.templates.all()`` is used;
+    ``SkillResource.Meta.ordering`` is ``["name"]``, so both paths keep the
+    database's collation order. Never sort in Python here — codepoint order
+    differs from the Postgres collation for mixed-case names and would silently
+    change (and un-approve) every existing hash.
     """
+    if resources is None:
+        resources = skill.templates.all()
     parts = [skill.instructions or "", skill.description or ""]
-    for res in skill.templates.order_by("name"):
+    for res in resources:
         parts.append(
             "\x1f".join([res.name or "", res.kind or "", res.content_sha256 or ""])
         )
     return hashlib.sha256("\x1e".join(parts).encode("utf-8")).hexdigest()
 
 
-def _scanning_configured(skill: AgentSkill) -> bool:
-    """Whether this skill's org has any content scanning configured. When it has
-    none, there is nothing to gate on, so an unscanned skill is trivially usable
-    (also the case in tests / unconfigured orgs)."""
+def _org_id_for_scanning(skill: AgentSkill, user=None) -> int | None:
+    """Org whose scan configuration governs ``skill``: the skill's own org, else
+    its creator's org (a user skill). When ``user`` *is* the creator, the memoized
+    ``get_membership`` answers without a query."""
+    if skill.organization_id:
+        return skill.organization_id
+    if not skill.created_by_id:
+        return None
+    if user is not None and getattr(user, "pk", None) == skill.created_by_id:
+        from accounts.models import get_membership
+
+        membership = get_membership(user)
+        return membership.org_id if membership else None
+    from accounts.models import Membership
+
+    return (
+        Membership.objects.filter(user_id=skill.created_by_id)
+        .values_list("org_id", flat=True)
+        .first()
+    )
+
+
+def _scanning_configured_for_org(org_id) -> bool:
     from core.preferences import resolve_org_feature_model
     from documents.services.pii_scan import pii_gate_applies
 
-    org_id = _org_id_for_skill(skill, None)
-    if skill.organization_id is None and skill.created_by_id:
-        from accounts.models import Membership
-
-        org_id = (
-            Membership.objects.filter(user_id=skill.created_by_id)
-            .values_list("org_id", flat=True)
-            .first()
-        )
     return bool(
         pii_gate_applies(org_id)
         or resolve_org_feature_model(org_id, "guardrail_web_scan")
     )
 
 
-def skill_is_approved(skill: AgentSkill) -> bool:
+def _scanning_configured(skill: AgentSkill, user=None) -> bool:
+    """Whether this skill's org has any content scanning configured. When it has
+    none, there is nothing to gate on, so an unscanned skill is trivially usable
+    (also the case in tests / unconfigured orgs).
+
+    The per-org answer costs several queries (feature-model + PII-gate
+    resolution), so it is memoized on ``user`` for the life of the request or
+    connection — every skill in a list resolves against the same one or two orgs.
+    Long-lived holders (WebSocket consumers) call
+    :func:`invalidate_scan_config_cache` before re-reading org state.
+    """
+    org_id = _org_id_for_scanning(skill, user)
+    memo = getattr(user, _SCAN_CONFIG_CACHE_ATTR, None) if user is not None else None
+    if isinstance(memo, dict) and org_id in memo:
+        return memo[org_id]
+    configured = _scanning_configured_for_org(org_id)
+    if user is not None:
+        try:
+            if not isinstance(memo, dict):
+                memo = {}
+                setattr(user, _SCAN_CONFIG_CACHE_ATTR, memo)
+            memo[org_id] = configured
+        except (AttributeError, TypeError):
+            # A user object that refuses attributes (not a real Django User) —
+            # degrade to the uncached result rather than blow up the gate.
+            pass
+    return configured
+
+
+def invalidate_scan_config_cache(user) -> None:
+    """Drop the memoized per-org scan configuration so the next read re-resolves."""
+    if hasattr(user, _SCAN_CONFIG_CACHE_ATTR):
+        delattr(user, _SCAN_CONFIG_CACHE_ATTR)
+
+
+def skill_is_approved(skill: AgentSkill, *, user=None, resources=None) -> bool:
     """Whether a skill may be attached to a thread. System skills are trusted; a
     BLOCKED skill never passes; an APPROVED skill passes while its content is
     unchanged; an unscanned skill passes only when the org has no scanning
-    configured (nothing to scan)."""
+    configured (nothing to scan).
+
+    ``user`` enables the per-org config memo; ``resources`` is a pre-fetched,
+    name-ordered resource list (bulk callers). Both are optional."""
     if skill.level == AgentSkill.Level.SYSTEM:
         return True
     if skill.scan_state == AgentSkill.ScanState.BLOCKED:
@@ -145,10 +218,45 @@ def skill_is_approved(skill: AgentSkill) -> bool:
     if (
         skill.scan_state == AgentSkill.ScanState.APPROVED
         and bool(skill.approved_content_hash)
-        and skill.approved_content_hash == compute_skill_content_hash(skill)
+        and skill.approved_content_hash == compute_skill_content_hash(skill, resources)
     ):
         return True
-    return not _scanning_configured(skill)
+    return not _scanning_configured(skill, user)
+
+
+def approval_info(skill: AgentSkill, *, user=None, resources=None) -> dict:
+    """``{"approved", "scan_state", "detail"}`` for one skill — the shape the
+    Skills list, the chat catalogue and the status endpoints all render from.
+    ``approved`` is the attachability verdict (:func:`skill_is_approved`);
+    ``scan_state`` only flavours it (pending → "Scanning…", blocked → why)."""
+    return {
+        "approved": skill_is_approved(skill, user=user, resources=resources),
+        "scan_state": skill.scan_state,
+        "detail": skill.scan_detail or "",
+    }
+
+
+def bulk_skill_approval(user, skills) -> dict[str, dict]:
+    """:func:`approval_info` for many skills with a bounded query count: one
+    resource prefetch for every non-system skill plus one scan-config resolve per
+    org (memoized on ``user``). Skills that already carry a resource prefetch are
+    not re-queried. Keyed by ``str(skill.id)``."""
+    from django.db.models import Prefetch, prefetch_related_objects
+
+    skills = list(skills)
+    non_system = [s for s in skills if s.level != AgentSkill.Level.SYSTEM]
+    if non_system:
+        prefetch_related_objects(
+            non_system,
+            Prefetch("templates", queryset=SkillResource.objects.order_by("name")),
+        )
+    out: dict[str, dict] = {}
+    for skill in skills:
+        resources = (
+            None if skill.level == AgentSkill.Level.SYSTEM else list(skill.templates.all())
+        )
+        out[str(skill.id)] = approval_info(skill, user=user, resources=resources)
+    return out
 
 
 def recompute_standing_tokens(skill: AgentSkill) -> int:
@@ -269,6 +377,9 @@ def _scan_text_guardrail(text, user, org_id, label) -> tuple[str, str, list]:
     from guardrails.service import _create_event_sync
 
     detail = "Contains content flagged as adversarial (possible prompt injection)."
+    # ``user`` may be None (an org skill with no creator, scanned by the worker or
+    # a management command): the scan still runs; only the event log is skipped.
+    uid = getattr(user, "pk", None)
     for window in _windows(text, _SCAN_WINDOW_CHARS):
         hres = heuristic_scan(window)
         if hres.should_block:
@@ -279,7 +390,7 @@ def _scan_text_guardrail(text, user, org_id, label) -> tuple[str, str, list]:
             return "quarantine", detail, list(hres.tags)
 
         try:
-            cres = classify_web_content_sync(window, user.pk, org_id)
+            cres = classify_web_content_sync(window, uid, org_id)
         except GuardrailModelUnavailableError:
             logger.warning(
                 "skill guardrail: no classifier model for org_id=%s; skipping", org_id,
@@ -290,7 +401,7 @@ def _scan_text_guardrail(text, user, org_id, label) -> tuple[str, str, list]:
 
         decision = review_flagged_chunk(
             window, cres, document_title=label, neighbor_context="",
-            org_id=org_id, user_id=user.pk,
+            org_id=org_id, user_id=uid,
         )
         if decision is None:
             quarantine = cres.confidence >= 0.9
@@ -314,6 +425,15 @@ def _log_guardrail(
     create_fn, user, org_id, check_type, tags, confidence, severity,
     action_taken, window, reviewer_output=None,
 ):
+    if user is None:
+        # GuardrailEvent.user is required; a creator-less org skill scanned on
+        # the worker has nobody to attribute the event to. The verdict itself is
+        # unaffected — only the audit row is skipped.
+        logger.info(
+            "skill guardrail: no user to attribute a %s/%s event to; skipping event",
+            check_type, action_taken,
+        )
+        return
     try:
         create_fn(
             user=user, org_id=org_id, thread_id=None,
@@ -512,9 +632,29 @@ def process_upload(resource: SkillResource, user) -> None:
         resource.status = SkillResource.Status.SCAN_FAILED
         resource.error = "Could not read this file."
         resource.save(update_fields=["status", "error"])
+        _regate_after_upload(resource, user)
         return
 
     scan_resource(resource, user)
+    _regate_after_upload(resource, user)
+
+
+def _regate_after_upload(resource: SkillResource, user) -> None:
+    """Re-run the skill's approval gate now that an upload's content hash is
+    final — it changed after the request that created the row returned, so the
+    in-request hook (``request_skill_rescan``) deliberately left the skill
+    PENDING without queueing a scan. Never masks the resource's own outcome."""
+    try:
+        skill = AgentSkill.objects.filter(pk=resource.skill_id).first()
+        if skill is None or skill.level == AgentSkill.Level.SYSTEM:
+            return
+        if skill_is_approved(skill, user=user):
+            return
+        scan_and_approve_skill(skill, user)
+    except Exception:  # noqa: BLE001 — the resource outcome is already persisted
+        logger.exception(
+            "process_upload: approval re-scan failed for skill_id=%s", resource.skill_id
+        )
 
 
 def ingest_file(skill: AgentSkill, *, data: bytes, filename: str, user,
@@ -530,7 +670,8 @@ def ingest_file(skill: AgentSkill, *, data: bytes, filename: str, user,
 def create_text_resource(skill: AgentSkill, *, name: str, content: str, user,
                          kind: str = SkillResource.Kind.REFERENCE) -> SkillResource:
     """Create a typed text resource. NOT scanned here — its content is covered by
-    the skill's enable-gate scan (it carries no ``original_filename``)."""
+    the skill's approval-gate scan (it carries no ``original_filename``); the
+    calling view/tool queues that scan via ``request_skill_rescan``."""
     content = (content or "")[:MAX_RESOURCE_CHARS]
     resource = SkillResource.objects.create(
         skill=skill,
@@ -626,8 +767,9 @@ def update_resource(
 
     Content is editable only for typed text resources (no original file);
     uploaded files are rename-only. ``kind`` (reference/template) is editable for
-    any resource. Typed text is (re)scanned at the enable gate, not here, so this
-    makes no LLM calls. Recomputes the skill standing count.
+    any resource. Typed text is (re)scanned by the approval gate, not here, so
+    this makes no LLM calls — the caller queues the gate via
+    ``request_skill_rescan``. Recomputes the skill standing count.
     """
     fields: list[str] = []
     if name is not None:
@@ -638,7 +780,7 @@ def update_resource(
 
     if kind is not None and kind in SkillResource.Kind.values and kind != resource.kind:
         # ``kind`` is part of compute_skill_content_hash, so changing it
-        # un-approves the skill → re-scan at the next enable gate.
+        # un-approves the skill → the caller's request_skill_rescan re-queues it.
         resource.kind = kind
         fields.append("kind")
 
@@ -741,63 +883,274 @@ def _unique_name(skill: AgentSkill, filename: str) -> str:
         n += 1
 
 
-# --- enable gate -----------------------------------------------------------
+# --- approval gate ---------------------------------------------------------
+
+def _scan_user_for_skill(skill: AgentSkill, user):
+    """The user a scan runs as. GuardrailEvent rows need one: the caller when
+    known, else the skill's creator, else an admin of the skill's org, else
+    None (the scan still runs; only the audit rows are skipped)."""
+    if user is not None and getattr(user, "pk", None):
+        return user
+    if skill.created_by_id:
+        return skill.created_by
+    if skill.organization_id:
+        from accounts.models import Membership
+
+        membership = (
+            Membership.objects.filter(
+                org_id=skill.organization_id, role=Membership.Role.ADMIN
+            )
+            .select_related("user")
+            .order_by("pk")
+            .first()
+        )
+        return membership.user if membership else None
+    return None
+
+
+def _scan_config_fingerprint(org_id) -> str:
+    """Short hash of the scan configuration a verdict depends on (guardrail
+    model, PII model and gate switches), so a config change invalidates cached
+    clean verdicts instead of letting a blob the new model never saw through."""
+    from core.preferences import resolve_org_feature_model
+    from documents.services.pii_scan import resolve_pii_gate
+
+    parts = [resolve_org_feature_model(org_id, "guardrail_web_scan") or ""]
+    parts.extend(str(p) for p in resolve_pii_gate(org_id))
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
+def _blob_cache_key(skill_id, fingerprint: str, blob: str) -> str:
+    digest = hashlib.sha256((blob or "").encode("utf-8")).hexdigest()
+    return f"skillscan:v1:{skill_id}:{fingerprint}:{digest}"
+
+
+def _scan_blob(
+    skill: AgentSkill, label: str, blob: str, user, org_id, fingerprint: str
+) -> list[str]:
+    """Guardrail + PII scan one authored text blob; returns the block reasons
+    (empty = clean).
+
+    A clean verdict is cached (Django cache, fail-open) under the skill, the
+    blob's content hash and the scan config, so a later save of the same skill
+    re-scans only the blobs that actually changed — an unchanged 20k-char
+    instructions field costs nothing when the user fixes a typo in the
+    description. Blocks are never cached: the author's fix is re-scanned for
+    real."""
+    from django.conf import settings
+    from django.core.cache import cache
+
+    key = _blob_cache_key(skill.pk, fingerprint, blob)
+    try:
+        if cache.get(key):
+            return []
+    except Exception:  # noqa: BLE001 — a backend that raises degrades to a miss
+        logger.info("skill scan: verdict cache read failed; scanning", exc_info=True)
+
+    title = f"{skill.name}: {label}"
+    reasons: list[str] = []
+    g_action, _, _ = _scan_text_guardrail(blob, user, org_id, title)
+    if g_action == "quarantine":
+        reasons.append(f"“{label}” was flagged as adversarial content.")
+    else:
+        _, pii_quar, pii_reason, _ = _scan_text_pii(blob, user, org_id, title)
+        if pii_quar:
+            reasons.append(f"“{label}”: {pii_reason}")
+
+    if not reasons:
+        ttl = int(getattr(settings, "SKILL_SCAN_VERDICT_TTL_SECONDS", 30 * 86400))
+        try:
+            cache.set(key, 1, timeout=ttl)
+        except Exception:  # noqa: BLE001
+            logger.info("skill scan: verdict cache write failed", exc_info=True)
+    return reasons
+
+
+def _live_content_hash(skill_pk) -> str | None:
+    """The skill's content hash as committed right now (fresh rows, no instance
+    state), or None when the skill is gone."""
+    fresh = (
+        AgentSkill.objects.filter(pk=skill_pk).only("instructions", "description").first()
+    )
+    if fresh is None:
+        return None
+    resources = SkillResource.objects.filter(skill_id=skill_pk).order_by("name")
+    return compute_skill_content_hash(fresh, resources)
+
+
+def _stamp_scan_outcome(skill: AgentSkill, snapshot_hash: str, **fields) -> bool:
+    """Write a scan outcome only if the skill's content is still what was
+    scanned. A save that landed mid-scan has queued its own scan and owns the
+    outcome — stamping here would approve content that was never scanned (or
+    block content that was already fixed). Returns whether the write happened."""
+    if _live_content_hash(skill.pk) != snapshot_hash:
+        logger.info(
+            "skill scan: outcome %s discarded for skill_id=%s (content changed mid-scan)",
+            fields.get("scan_state"), skill.pk,
+        )
+        return False
+    AgentSkill.objects.filter(pk=skill.pk).update(**fields)
+    for name, value in fields.items():
+        setattr(skill, name, value)
+    return True
+
 
 def scan_and_approve_skill(skill: AgentSkill, user) -> bool:
-    """The enable/publish gate. Scans the skill's authored text (instructions,
+    """The approval gate. Scans the skill's authored text (instructions,
     description, typed text resources) and verifies no bundled resource is
-    quarantined, then stamps APPROVED (with the content hash) or BLOCKED.
+    quarantined or failed its own scan, then stamps APPROVED (with the content
+    hash) or BLOCKED (with the reasons). Makes LLM calls — runs on the worker
+    (``scan_and_approve_skill_task``), never inside a web request.
 
-    System skills are auto-approved. Returns True when approved."""
+    System skills are auto-approved. Defers (stays PENDING, stamps nothing)
+    while an upload is still in flight; ``process_upload`` re-runs the gate when
+    the upload lands. Returns True only when APPROVED was written."""
     if skill.level == AgentSkill.Level.SYSTEM:
         return True
 
-    skill.scan_state = AgentSkill.ScanState.PENDING
-    skill.save(update_fields=["scan_state"])
+    user = _scan_user_for_skill(skill, user)
+
+    # Snapshot what is scanned and hash it up front; the outcome is stamped only
+    # if the content is still identical at the end (see _stamp_scan_outcome).
+    skill.refresh_from_db(fields=["name", "instructions", "description", "scan_state"])
+    resources = list(SkillResource.objects.filter(skill=skill).order_by("name"))
+    snapshot_hash = compute_skill_content_hash(skill, resources)
+
+    pending = AgentSkill.ScanState.PENDING
+    if any(r.status in IN_FLIGHT_STATUSES for r in resources):
+        if skill.scan_state != pending:
+            AgentSkill.objects.filter(pk=skill.pk).update(scan_state=pending, scan_detail="")
+            skill.scan_state, skill.scan_detail = pending, ""
+        return False
+
+    if skill.scan_state != pending:
+        AgentSkill.objects.filter(pk=skill.pk).update(scan_state=pending)
+        skill.scan_state = pending
 
     org_id = _org_id_for_skill(skill, user)
     blocked: list[str] = []
 
-    quarantined = list(
-        skill.templates.filter(is_quarantined=True).values_list("name", flat=True)
-    )
+    quarantined = [r.name for r in resources if r.is_quarantined]
     if quarantined:
         blocked.append(
             "Remove or replace quarantined file(s): " + ", ".join(quarantined[:5])
         )
+    failed = [
+        r.name for r in resources
+        if not r.is_quarantined and r.status == SkillResource.Status.SCAN_FAILED
+    ]
+    if failed:
+        blocked.append(
+            "Re-upload file(s) whose safety scan failed: " + ", ".join(failed[:5])
+        )
 
     blobs = [("instructions", skill.instructions), ("description", skill.description)]
-    for res in skill.templates.filter(
-        file_type=SkillResource.FileType.TEXT, original_filename=""
-    ):
-        blobs.append((res.name, res.content))
+    for res in resources:
+        if res.file_type == SkillResource.FileType.TEXT and not res.original_filename:
+            blobs.append((res.name, res.content))
 
     try:
+        fingerprint = _scan_config_fingerprint(org_id)
         for label, blob in blobs:
             if not (blob or "").strip():
                 continue
-            g_action, _, _ = _scan_text_guardrail(blob, user, org_id, f"{skill.name}: {label}")
-            if g_action == "quarantine":
-                blocked.append(f"“{label}” was flagged as adversarial content.")
-                continue
-            _, pii_quar, pii_reason, _ = _scan_text_pii(blob, user, org_id, f"{skill.name}: {label}")
-            if pii_quar:
-                blocked.append(f"“{label}”: {pii_reason}")
+            blocked.extend(_scan_blob(skill, label, blob, user, org_id, fingerprint))
     except Exception:
         logger.exception("scan_and_approve_skill: scan failed for skill_id=%s", skill.pk)
-        skill.scan_state = AgentSkill.ScanState.UNSCANNED
-        skill.scan_detail = "The safety scan could not be completed. Try again."
-        skill.save(update_fields=["scan_state", "scan_detail"])
+        _stamp_scan_outcome(
+            skill, snapshot_hash,
+            scan_state=AgentSkill.ScanState.UNSCANNED,
+            scan_detail="The safety scan could not be completed. Try again.",
+        )
         return False
 
     if blocked:
-        skill.scan_state = AgentSkill.ScanState.BLOCKED
-        skill.scan_detail = " ".join(blocked)[:2000]
-        skill.save(update_fields=["scan_state", "scan_detail"])
+        _stamp_scan_outcome(
+            skill, snapshot_hash,
+            scan_state=AgentSkill.ScanState.BLOCKED,
+            scan_detail=" ".join(blocked)[:2000],
+        )
         return False
 
-    skill.scan_state = AgentSkill.ScanState.APPROVED
-    skill.approved_content_hash = compute_skill_content_hash(skill)
+    return _stamp_scan_outcome(
+        skill, snapshot_hash,
+        scan_state=AgentSkill.ScanState.APPROVED,
+        approved_content_hash=snapshot_hash,
+        scan_detail="",
+    )
+
+
+def _dispatch_scan(skill_id, user_id) -> bool:
+    """Enqueue the approval scan on the worker. A failed publish must not strand
+    the skill in PENDING: the state reverts to UNSCANNED with a retry hint (the
+    toggle or the next save re-dispatches)."""
+    from .tasks import scan_and_approve_skill_task
+
+    try:
+        scan_and_approve_skill_task.delay(str(skill_id), user_id)
+        return True
+    except Exception:  # noqa: BLE001 — broker down, publish retries exhausted, …
+        logger.exception("skill scan: could not enqueue scan for skill_id=%s", skill_id)
+        AgentSkill.objects.filter(
+            pk=skill_id, scan_state=AgentSkill.ScanState.PENDING
+        ).update(
+            scan_state=AgentSkill.ScanState.UNSCANNED,
+            scan_detail="The safety scan could not be scheduled. Try again.",
+        )
+        return False
+
+
+def request_skill_rescan(skill: AgentSkill, user, *, dispatch: bool = True) -> dict:
+    """Re-run the approval gate after a write that may have changed the skill's
+    content — THE hook every writer calls (form save, resource endpoints, the
+    Skill Creator's tools, copy/import/create, tier moves).
+
+    * System skill, or still approved (hash unchanged, or no scanning configured
+      for the org) → no-op. Rename / emoji / tool-list saves cost nothing.
+    * Nothing to scan (no authored text, no blocked resource, nothing in flight)
+      → APPROVED inline: a brand-new skill is usable at birth, no LLM calls.
+    * Otherwise the skill goes PENDING and the scan is queued on the worker once
+      the surrounding transaction commits. With an upload still in flight
+      nothing is queued — ``process_upload`` runs the gate when it lands.
+
+    Returns ``{"scan_state", "approved", "dispatched"}``.
+    """
+    from django.db import transaction
+
+    if skill.level == AgentSkill.Level.SYSTEM:
+        return {"scan_state": skill.scan_state, "approved": True, "dispatched": False}
+
+    resources = list(SkillResource.objects.filter(skill=skill).order_by("name"))
+    if skill_is_approved(skill, user=user, resources=resources):
+        return {"scan_state": skill.scan_state, "approved": True, "dispatched": False}
+
+    in_flight = any(r.status in IN_FLIGHT_STATUSES for r in resources)
+    blocking = any(
+        r.is_quarantined or r.status == SkillResource.Status.SCAN_FAILED
+        for r in resources
+    )
+    texts = [skill.instructions, skill.description] + [
+        r.content for r in resources
+        if r.file_type == SkillResource.FileType.TEXT and not r.original_filename
+    ]
+    # str(): an import payload can hand a non-string through to the instance
+    # (the column stores its text form); anything non-blank is worth scanning.
+    has_text = any(str(t or "").strip() for t in texts)
+
+    if not (in_flight or blocking or has_text):
+        skill.scan_state = AgentSkill.ScanState.APPROVED
+        skill.approved_content_hash = compute_skill_content_hash(skill, resources)
+        skill.scan_detail = ""
+        skill.save(update_fields=["scan_state", "approved_content_hash", "scan_detail"])
+        return {"scan_state": skill.scan_state, "approved": True, "dispatched": False}
+
+    skill.scan_state = AgentSkill.ScanState.PENDING
     skill.scan_detail = ""
-    skill.save(update_fields=["scan_state", "approved_content_hash", "scan_detail"])
-    return True
+    skill.save(update_fields=["scan_state", "scan_detail"])
+
+    dispatched = False
+    if dispatch and not in_flight:
+        skill_id, user_id = str(skill.pk), getattr(user, "pk", None)
+        transaction.on_commit(lambda: _dispatch_scan(skill_id, user_id))
+        dispatched = True
+    return {"scan_state": skill.scan_state, "approved": False, "dispatched": dispatched}

@@ -7,6 +7,7 @@ urlpatterns = [
     path("new/", views.skills_create, name="agent_skills_create"),
     path("new/org/", views.skills_create_org, name="agent_skills_create_org"),
     path("import/", views.skills_import, name="agent_skills_import"),
+    path("scan-status/", views.skills_scan_status, name="agent_skills_scan_status"),
     path("<uuid:skill_id>/", views.skills_detail, name="agent_skills_detail"),
     path("<uuid:skill_id>/save/", views.skills_save, name="agent_skills_save"),
     path("<uuid:skill_id>/copy/", views.skills_copy, name="agent_skills_copy"),

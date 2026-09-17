@@ -707,6 +707,14 @@ DOCUMENT_MAX_IN_FLIGHT_PER_USER = _env_int("DOCUMENT_MAX_IN_FLIGHT_PER_USER", "1
 # context budgets get the full 60k while small ones cap skills to leave room for
 # history. Replaces the old fixed count cap.
 SKILL_ATTACH_TOKEN_BUDGET = _env_int("SKILL_ATTACH_TOKEN_BUDGET", "60000")
+# Skill safety scans run on the worker after every content write
+# (agent_skills/resources.py). A clean verdict per text blob is cached for this
+# long so an unchanged blob is not re-scanned on the next save; the agent's
+# chat_skill_attach waits up to WAIT seconds (polling every POLL) for a scan
+# that is still running before giving up on a freshly saved skill.
+SKILL_SCAN_VERDICT_TTL_SECONDS = _env_int("SKILL_SCAN_VERDICT_TTL_SECONDS", "2592000")
+SKILL_ATTACH_PENDING_WAIT_SECONDS = float(os.environ.get("SKILL_ATTACH_PENDING_WAIT_SECONDS", "10"))
+SKILL_ATTACH_PENDING_POLL_SECONDS = float(os.environ.get("SKILL_ATTACH_PENDING_POLL_SECONDS", "1"))
 # Decompression-bomb guards for the processing pipeline (worker has ~512 MB).
 DOCX_MAX_UNCOMPRESSED_BYTES = _env_int("DOCX_MAX_UNCOMPRESSED_BYTES", "250000000")  # 250 MB
 DOCUMENT_MAX_EXTRACTED_CHARS = _env_int("DOCUMENT_MAX_EXTRACTED_CHARS", "20000000")  # 20M chars

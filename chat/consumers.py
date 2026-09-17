@@ -115,6 +115,16 @@ OVERLAP_TOKENS = 2_000  # legacy default; overridden by dynamic budget when mode
 MESSAGE_MAX_CHARS = 75_000
 
 
+def _skill_scan_refusal_reason(scan_state: str | None) -> str:
+    """User-facing reason a skill was refused by the safety-scan gate
+    (``_validate_skills``), phrased to complete "“<name>” wasn’t attached — …"."""
+    if scan_state == "pending":
+        return "its safety scan is still running. Try again in a moment."
+    if scan_state == "blocked":
+        return "it was blocked by the safety scan. Fix it on the Skills page."
+    return "it hasn’t passed a safety scan yet. Enable it on the Skills page (that runs the scan)."
+
+
 def _resolve_reasoning_level(model: str | None, requested: object) -> str | None:
     """Apply a model's default or reject a level that its API cannot accept."""
     if not model:
@@ -936,6 +946,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             invalidate_membership_cache,
             invalidate_user_preferences_cache,
         )
+        from agent_skills.resources import invalidate_scan_config_cache
         from core.preferences import get_preferences
 
         # Preferences are re-resolved per message so org and user toggles take
@@ -943,6 +954,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # so the per-request memos must be dropped before re-reading.
         invalidate_membership_cache(self.user)
         invalidate_user_preferences_cache(self.user)
+        invalidate_scan_config_cache(self.user)
         return get_preferences(self.user)
 
     @database_sync_to_async
@@ -1156,7 +1168,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         thread_id = data.get("thread_id")
         skill_ids = data.get("skill_ids") or []
 
-        skills = await self._validate_skills(skill_ids)
+        skills, refused = await self._validate_skills(skill_ids, thread_id)
         aim = self.resolved_prefs.max_context_tokens if self.resolved_prefs else None
         kept_ids, dropped = await sync_to_async(trim_ids_to_budget_verbose)(
             [s["id"] for s in skills], None, aim
@@ -1170,12 +1182,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self._persist_thread_skills(thread_id, self.active_skill_ids)
 
         # Surface budget-trimmed skills so the UI can tell the user gracefully
-        # (their context limit is too low for all of them).
+        # (their context limit is too low for all of them), and skills refused
+        # by the safety-scan gate (with what to do about each).
         trimmed = [s.name for s in dropped]
         await self.send(text_data=json.dumps({
             "event_type": "skills.set",
             "skills": skills,
             "trimmed": trimmed,
+            "refused": refused,
         }))
 
     async def _handle_load_thread(self, data):
@@ -1871,11 +1885,23 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
             from agent_skills.resources import trim_ids_to_budget
 
-            validated_skills = await self._validate_skills(payload_skill_ids)
+            validated_skills, refused = await self._validate_skills(
+                payload_skill_ids, thread_id
+            )
             aim = self.resolved_prefs.max_context_tokens if self.resolved_prefs else None
             payload_skills_validated = await sync_to_async(trim_ids_to_budget)(
                 [s["id"] for s in validated_skills], None, aim
             )
+            if refused:
+                # Keep the UI's pills honest: drop what the safety-scan gate
+                # refused and say why.
+                kept = set(payload_skills_validated)
+                await self.send(text_data=json.dumps({
+                    "event_type": "skills.set",
+                    "skills": [s for s in validated_skills if s["id"] in kept],
+                    "trimmed": [],
+                    "refused": refused,
+                }))
 
         try:
             # Get or create thread
@@ -4031,16 +4057,27 @@ class ChatConsumer(AsyncWebsocketConsumer):
     # -- Skill helpers --
 
     @database_sync_to_async
-    def _validate_skills(self, skill_ids):
+    def _validate_skills(self, skill_ids, thread_id=None):
         """Access-gate a list of skill ids, dedupe, and preserve order.
 
-        Returns a list of ``{id, name, emoji}`` dicts for the ids the user can
-        actually access; unknown or inaccessible ids are silently dropped (the
-        same guarantee the payload path relied on for single skills).
-        """
-        from agent_skills.services import get_skill_for_user
+        Returns ``(skills, refused)``: ``skills`` is a list of
+        ``{id, name, emoji}`` dicts for the ids the user can actually access
+        (unknown or inaccessible ids are silently dropped — the same guarantee
+        the payload path relied on for single skills); ``refused`` lists
+        ``{name, reason}`` for skills the safety-scan gate turned away.
 
-        out = []
+        The gate applies only to skills NOT already attached to ``thread_id`` —
+        the same "newly attached only" rule as ``chat_skill_attach`` — so a
+        skill that fell out of approval after an edit is never silently
+        detached by the next ``skills.set``.
+        """
+        from django.core.exceptions import ValidationError
+
+        from agent_skills.resources import bulk_skill_approval
+        from agent_skills.services import get_skill_for_user
+        from chat.models import ChatThreadSkill
+
+        found = []
         seen = set()
         for raw in (skill_ids or []):
             sid = str(raw)
@@ -4050,8 +4087,34 @@ class ChatConsumer(AsyncWebsocketConsumer):
             skill = get_skill_for_user(self.user, sid)
             if skill is None:
                 continue
-            out.append({"id": str(skill.pk), "name": skill.name, "emoji": skill.emoji})
-        return out
+            found.append(skill)
+
+        attached: set[str] = set()
+        if thread_id and found:
+            try:
+                attached = {
+                    str(i) for i in ChatThreadSkill.objects.filter(
+                        thread_id=thread_id, thread__created_by=self.user,
+                    ).values_list("skill_id", flat=True)
+                }
+            except (ValueError, ValidationError):
+                attached = set()  # a malformed client thread id gates everything
+        verdicts = bulk_skill_approval(
+            self.user, [s for s in found if str(s.pk) not in attached]
+        )
+
+        out, refused = [], []
+        for skill in found:
+            sid = str(skill.pk)
+            verdict = verdicts.get(sid)
+            if verdict is not None and not verdict["approved"]:
+                refused.append({
+                    "name": skill.name,
+                    "reason": _skill_scan_refusal_reason(verdict["scan_state"]),
+                })
+                continue
+            out.append({"id": sid, "name": skill.name, "emoji": skill.emoji})
+        return out, refused
 
     @database_sync_to_async
     def _persist_thread_skills(self, thread_id, skill_ids):

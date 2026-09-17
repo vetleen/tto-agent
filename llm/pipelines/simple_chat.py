@@ -965,10 +965,14 @@ class SimpleChatPipeline(BasePipeline):
             for tc, result_str in results:
                 tool = tool_by_name.get(tc.name)
                 display_label = "Done"
+                parsed = _safe_result_dict(result_str)
                 if tool:
-                    parsed = _safe_result_dict(result_str)
                     dynamic = tool.end_label_for_result(parsed) if parsed is not None else None
                     display_label = dynamic or tool.end_label
+                # Tools report failure as {"status": "error", ...}; the client
+                # keys the card's icon on this flag so a refusal never renders
+                # as a green check.
+                is_error = bool(parsed) and parsed.get("status") == "error"
                 yield StreamEvent(
                     event_type="tool_end",
                     data={
@@ -976,6 +980,7 @@ class SimpleChatPipeline(BasePipeline):
                         "tool_call_id": tc.id,
                         "result": result_str,
                         "display_label": display_label,
+                        "is_error": is_error,
                     },
                     sequence=sequence,
                     run_id=run_id,

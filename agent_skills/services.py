@@ -474,7 +474,7 @@ def create_user_skill(
     if not slug:
         slug = "skill"
 
-    return _save_with_free_slug(
+    skill = _save_with_free_slug(
         slug,
         lambda s: AgentSkill.objects.filter(
             slug=s, level="user", created_by=user
@@ -489,6 +489,11 @@ def create_user_skill(
             created_by=user,
         ),
     )
+    # An empty skill has nothing to scan: approved at birth, no LLM calls.
+    from agent_skills.resources import request_skill_rescan
+
+    request_skill_rescan(skill, user)
+    return skill
 
 
 # Matches "Base name" or "Base name (3)"
@@ -531,9 +536,14 @@ def _next_user_skill_name(user, source_name: str) -> str:
 
 def fork_skill(
     user, source_skill: AgentSkill, *, copy_templates: bool = True,
-    audience: str | None = None,
+    audience: str | None = None, rescan: bool = True,
 ) -> AgentSkill:
     """Fork a skill to a user-level copy, including templates.
+
+    The copy is a new, unscanned row, so its approval scan is queued here
+    (``rescan``). A caller that writes to the copy right away (the detail-page
+    "save as copy" action, the edit-in-chat tools) passes ``rescan=False`` and
+    queues one scan after its own write instead of two.
 
     Parent semantics:
     - Copying a system or org skill: ``parent = source_skill``.
@@ -588,6 +598,11 @@ def fork_skill(
         for res in source_skill.templates.all():
             copy_resource(res, new_skill)
         recompute_standing_tokens(new_skill)
+
+    if rescan:
+        from agent_skills.resources import request_skill_rescan
+
+        request_skill_rescan(new_skill, user)
 
     return new_skill
 
@@ -705,7 +720,7 @@ def create_org_skill(
     if not slug:
         slug = "skill"
 
-    return _save_with_free_slug(
+    skill = _save_with_free_slug(
         slug,
         lambda s: AgentSkill.objects.filter(
             slug=s, level="org", organization=organization
@@ -720,17 +735,24 @@ def create_org_skill(
             organization=organization,
         ),
     )
+    # An empty skill has nothing to scan: approved at birth, no LLM calls.
+    from agent_skills.resources import request_skill_rescan
+
+    request_skill_rescan(skill, user)
+    return skill
 
 
 def promote_skill_to_org(
     user, source_skill: AgentSkill, organization, *, copy_templates: bool = True,
-    audience: str | None = None,
+    audience: str | None = None, rescan: bool = True,
 ) -> AgentSkill:
     """Create an org-level copy of ``source_skill`` (or a no-op if already org).
 
     The caller must be an admin of ``organization``. Templates are copied
     by default. The new skill's ``parent`` points back to the source so the
-    link is preserved.
+    link is preserved. The copy's approval scan is queued here unless the
+    caller writes to it right away and passes ``rescan=False`` (see
+    :func:`fork_skill`).
 
     ``copy_templates`` defaults to True for callers that want a complete
     standalone copy. The detail-page form action passes ``False`` because
@@ -781,10 +803,17 @@ def promote_skill_to_org(
             copy_resource(res, new_skill)
         recompute_standing_tokens(new_skill)
 
+    if rescan:
+        from agent_skills.resources import request_skill_rescan
+
+        request_skill_rescan(new_skill, user)
+
     return new_skill
 
 
-def move_skill_to_org(user, skill: AgentSkill, organization) -> AgentSkill:
+def move_skill_to_org(
+    user, skill: AgentSkill, organization, *, rescan: bool = True
+) -> AgentSkill:
     """Promote a personal skill to org level **in place** (no copy).
 
     Unlike :func:`promote_skill_to_org` (which duplicates), this changes the
@@ -826,10 +855,18 @@ def move_skill_to_org(user, skill: AgentSkill, organization) -> AgentSkill:
     )
     if skill.slug != old_slug:
         migrate_skill_slug_prefs(skill, old_slug, skill.slug)
+    if rescan:
+        # The content is unchanged, but the governing org (and so its scan
+        # configuration) is not — a no-op while the approval still holds.
+        from agent_skills.resources import request_skill_rescan
+
+        request_skill_rescan(skill, user)
     return skill
 
 
-def move_skill_to_personal(user, skill: AgentSkill) -> AgentSkill:
+def move_skill_to_personal(
+    user, skill: AgentSkill, *, rescan: bool = True
+) -> AgentSkill:
     """Demote an org skill to the acting admin's personal skills **in place**.
 
     Changes the level of the same row from org to user, assigning ownership to
@@ -870,6 +907,10 @@ def move_skill_to_personal(user, skill: AgentSkill) -> AgentSkill:
     )
     if skill.slug != old_slug:
         migrate_skill_slug_prefs(skill, old_slug, skill.slug)
+    if rescan:
+        from agent_skills.resources import request_skill_rescan
+
+        request_skill_rescan(skill, user)
     return skill
 
 
@@ -1215,6 +1256,13 @@ def import_skill(user, payload: dict) -> AgentSkill:
             status=SkillResource.Status.READY,
         )
     recompute_standing_tokens(skill)
+
+    # Imported content crossed a trust boundary: queue the approval scan. With
+    # file resources still processing on the worker this only marks the skill
+    # PENDING — process_upload runs the gate once the last file lands.
+    from agent_skills.resources import request_skill_rescan
+
+    request_skill_rescan(skill, user)
 
     return skill
 

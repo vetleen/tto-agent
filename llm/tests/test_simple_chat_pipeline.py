@@ -603,6 +603,42 @@ class SimpleChatPipelineTests(TestCase):
         _, end_label = run_with_result("plain text, not json")
         self.assertEqual(end_label, "Scanned")
 
+    def test_tool_end_flags_error_results(self):
+        """tool_end carries is_error, keyed on the tool's {"status": "error"}
+        result, so the client never draws a success check for a refusal."""
+        def end_event_for(return_value):
+            tool = _LabeledMockTool(name="document_search")
+            tool._return_value = return_value
+            request = ChatRequest(
+                messages=[Message(role="user", content="go")],
+                stream=True, model="gpt-4o-mini", tools=["document_search"],
+                context=RunContext.create(),
+            )
+
+            def fake_tool_stream(req):
+                yield StreamEvent(event_type="message_start", data={"model": "m"}, sequence=1, run_id="")
+                yield StreamEvent(event_type="message_end", data={
+                    "content": "",
+                    "tool_calls": [{"id": "s1", "name": "document_search", "arguments": {"a": 1, "b": 2}}],
+                }, sequence=2, run_id="")
+
+            def fake_final_stream(req):
+                yield StreamEvent(event_type="message_start", data={"model": "m"}, sequence=1, run_id="")
+                yield StreamEvent(event_type="message_end", data={"content": "ok"}, sequence=2, run_id="")
+
+            fake_model = MagicMock()
+            fake_model.stream.side_effect = [fake_tool_stream(None), fake_final_stream(None)]
+            with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
+                 self._patch_tool_registry(tool):
+                mock_create.return_value = fake_model
+                events = list(SimpleChatPipeline().stream(request))
+            return next(e for e in events if e.event_type == "tool_end").data
+
+        self.assertTrue(end_event_for('{"status": "error", "message": "nope"}')["is_error"])
+        self.assertFalse(end_event_for('{"status": "ok", "count": 1}')["is_error"])
+        self.assertFalse(end_event_for('{"count": 7}')["is_error"])
+        self.assertFalse(end_event_for("plain text, not json")["is_error"])
+
     def test_safe_result_dict(self):
         """_safe_result_dict returns a dict only for JSON objects, else None."""
         from llm.pipelines.simple_chat import _safe_result_dict

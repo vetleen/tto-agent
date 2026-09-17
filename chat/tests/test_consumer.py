@@ -1312,9 +1312,11 @@ class PayloadDataRoomValidationTests(TransactionTestCase):
 
         await communicator.disconnect()
 
-    async def test_set_skills_round_trip(self):
+    @patch("agent_skills.resources._scanning_configured", return_value=False)
+    async def test_set_skills_round_trip(self, _unconfigured):
         """chat.set_skills attaches the declared set, emits skills.set, and
-        an empty list detaches all."""
+        an empty list detaches all. (No scanning configured: a never-scanned
+        skill passes the safety-scan gate — see the refusal test below.)"""
         from agent_skills.models import AgentSkill
         from chat.models import ChatThreadSkill
 
@@ -1359,7 +1361,8 @@ class PayloadDataRoomValidationTests(TransactionTestCase):
 
         await communicator.disconnect()
 
-    async def test_set_skills_preserves_agent_origin(self):
+    @patch("agent_skills.resources._scanning_configured", return_value=False)
+    async def test_set_skills_preserves_agent_origin(self, _unconfigured):
         """The UI's full-list replace keeps who-attached-what for surviving
         rows, so a skill the agent attached stays detachable by the agent after
         the browser re-sends the list."""
@@ -1410,6 +1413,58 @@ class PayloadDataRoomValidationTests(TransactionTestCase):
         })
         await communicator.receive_json_from(timeout=5)
         self.assertEqual(await origins(), {str(theirs.pk): "user"})
+
+        await communicator.disconnect()
+
+    @patch("agent_skills.resources._scanning_configured", return_value=True)
+    async def test_set_skills_refuses_unscanned_but_keeps_already_attached(self, _configured):
+        """The picker path applies the same safety-scan gate as
+        chat_skill_attach: a skill that hasn't passed the scan is refused (with
+        a reason the UI toasts), but one already on the thread is kept so hash
+        drift after an edit never silently detaches it."""
+        from agent_skills.models import AgentSkill
+        from chat.models import ChatThreadSkill
+
+        fresh = await database_sync_to_async(AgentSkill.objects.create)(
+            name="Fresh", slug="fresh-skill", level="user",
+            created_by=self.user, instructions="Do it.",
+        )
+        blocked = await database_sync_to_async(AgentSkill.objects.create)(
+            name="Blocked", slug="blocked-skill", level="user",
+            created_by=self.user, instructions="Do it.",
+            scan_state=AgentSkill.ScanState.BLOCKED,
+        )
+        attached_before = await database_sync_to_async(AgentSkill.objects.create)(
+            name="Old", slug="old-skill", level="user",
+            created_by=self.user, instructions="Do it.",
+        )
+        thread = await database_sync_to_async(ChatThread.objects.create)(
+            created_by=self.user,
+        )
+        await database_sync_to_async(ChatThreadSkill.objects.create)(
+            thread=thread, skill=attached_before, attached_by="user",
+        )
+
+        communicator = await self._connect()
+        await communicator.send_json_to({
+            "type": "chat.set_skills",
+            "skill_ids": [str(fresh.pk), str(blocked.pk), str(attached_before.pk)],
+            "thread_id": str(thread.id),
+        })
+        resp = await communicator.receive_json_from(timeout=5)
+        self.assertEqual(resp["event_type"], "skills.set")
+        self.assertEqual([s["id"] for s in resp["skills"]], [str(attached_before.pk)])
+        refused = {r["name"]: r["reason"] for r in resp["refused"]}
+        self.assertIn("safety scan", refused["Fresh"])
+        self.assertIn("blocked by the safety scan", refused["Blocked"])
+
+        attached = await database_sync_to_async(
+            lambda: [
+                str(s) for s in ChatThreadSkill.objects.filter(thread=thread)
+                .values_list("skill_id", flat=True)
+            ]
+        )()
+        self.assertEqual(attached, [str(attached_before.pk)])
 
         await communicator.disconnect()
 

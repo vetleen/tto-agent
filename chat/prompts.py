@@ -329,6 +329,15 @@ def _render_one_skill(skill: Any, attached_by: str | None = None) -> str:
     return block
 
 
+def _skill_scan_reason(scan_state: str | None) -> str:
+    """Why a catalogue skill isn't attachable, from its safety-scan state."""
+    if scan_state == "pending":
+        return "safety scan in progress"
+    if scan_state == "blocked":
+        return "blocked by the safety scan"
+    return "needs a safety scan"
+
+
 def build_semi_static_prompt(
     *,
     data_rooms: list[dict[str, Any]] | None = None,
@@ -422,6 +431,12 @@ def build_semi_static_prompt(
             "(each attached skill's slug is listed under it in # Relevant skills). "
             "Skills the user attached can't be detached by you — ask the user instead.\n"
         )
+        if any(s.get("approved", True) is False for s in catalogue):
+            prompt += (
+                "A skill marked NOT attachable hasn't passed its safety scan; "
+                "`chat_skill_attach` refuses it. Don't retry — tell the user what "
+                "the note says to do.\n"
+            )
         for s in catalogue:
             desc = (s.get("description") or "").strip().replace("\n", " ")
             if len(desc) > 160:
@@ -431,6 +446,11 @@ def build_semi_static_prompt(
             line = f"- {prefix}**{s['slug']}** — {s.get('name', '')}"
             if desc:
                 line += f": {desc}"
+            if s.get("approved", True) is False:
+                line += (
+                    f" — NOT attachable yet ({_skill_scan_reason(s.get('scan_state'))}; "
+                    "ask the user to enable it on the Skills page)"
+                )
             prompt += line + "\n"
 
     # -- Sub-agent specializations catalogue --

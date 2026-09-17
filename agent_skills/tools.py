@@ -93,7 +93,9 @@ def resolve_skill_for_thread_edit(user, thread_id, slug: str):
         return source, None
 
     # Fork on first write, then rewrite metadata so future edits target the fork.
-    fork = fork_skill(user, source, copy_templates=True)
+    # The calling tool writes to the fork right away and queues the safety scan
+    # itself (request_skill_rescan), so the fork doesn't queue a second one.
+    fork = fork_skill(user, source, copy_templates=True, rescan=False)
     meta = thread.metadata or {}
     meta["source_skill_id"] = str(fork.id)
     thread.metadata = meta
@@ -435,11 +437,16 @@ class SaveCanvasToSkillFieldTool(ContextAwareTool):
         setattr(skill, field_name, content)
         skill.save(update_fields=[field_name, "updated_at"])
 
+        from agent_skills.resources import request_skill_rescan
+
+        scan = request_skill_rescan(skill, user)
+
         return json.dumps({
             "status": "ok",
             "skill_slug": skill.slug,
             "field": field_name,
             "chars_saved": len(content),
+            "scan_state": scan["scan_state"],
         })
 
 
@@ -658,6 +665,7 @@ class EditSkillTool(ContextAwareTool):
         if "description" in update_fields:
             skill.description = (skill.description or "")[:1024]
 
+        scan_state = skill.scan_state
         if len(update_fields) > 1 or applied > 0:
             skill.save(update_fields=update_fields)
             # Keep the user's slug-keyed enable/disable selection pointing at
@@ -666,6 +674,11 @@ class EditSkillTool(ContextAwareTool):
                 from agent_skills.services import migrate_skill_slug_prefs
 
                 migrate_skill_slug_prefs(skill, old_slug, skill.slug)
+            # A changed description/instructions re-queues the safety scan; a
+            # rename / tool-list change alone is a no-op here.
+            from agent_skills.resources import request_skill_rescan
+
+            scan_state = request_skill_rescan(skill, user)["scan_state"]
 
         return json.dumps({
             "status": "ok",
@@ -676,6 +689,7 @@ class EditSkillTool(ContextAwareTool):
             "tool_names": skill.tool_names,
             "edits_applied": applied,
             "edits_failed": failed,
+            "scan_state": scan_state,
         })
 
 
@@ -1151,6 +1165,7 @@ class SkillResourceSaveTool(ContextAwareTool):
         from agent_skills.resources import (
             RESOURCE_COUNT_CAP,
             create_text_resource,
+            request_skill_rescan,
             update_resource,
         )
         from chat.services import resolve_canvas
@@ -1202,6 +1217,8 @@ class SkillResourceSaveTool(ContextAwareTool):
             )
             created = True
 
+        scan = request_skill_rescan(skill, user)
+
         return json.dumps({
             "status": "ok",
             "skill_slug": skill.slug,
@@ -1209,6 +1226,7 @@ class SkillResourceSaveTool(ContextAwareTool):
             "kind": resource.kind,
             "created": created,
             "chars_saved": len(resource.content or ""),
+            "scan_state": scan["scan_state"],
         })
 
 
@@ -1356,6 +1374,13 @@ class SkillResourceAttachTool(ContextAwareTool):
                 "message": f"Unsupported file type for '{filename}'.",
             })
 
+        # The skill goes PENDING before the worker can finish: with the upload in
+        # flight nothing is queued here — process_upload runs the skill's
+        # approval gate once the file lands.
+        from agent_skills.resources import request_skill_rescan
+
+        scan = request_skill_rescan(skill, user)
+
         # Extraction + guardrail/PII scan run on the worker (heavy PDF/Office work
         # must not block the turn). The agent polls skill_resource_list.
         process_skill_resource_upload_task.delay(str(resource.id), user.id)
@@ -1369,6 +1394,7 @@ class SkillResourceAttachTool(ContextAwareTool):
                 "file_type": resource.file_type,
                 "status": resource.status,
             },
+            "scan_state": scan["scan_state"],
             "note": (
                 "The file is being scanned in the background. Check "
                 "skill_resource_list on a later turn for 'ready' or 'quarantined'."
@@ -1395,7 +1421,7 @@ class SkillResourceUpdateTool(ContextAwareTool):
              kind: str = "", **kwargs) -> str:
         from django.db import IntegrityError
 
-        from agent_skills.resources import update_resource
+        from agent_skills.resources import request_skill_rescan, update_resource
 
         user, err = _load_context_user(self.context)
         if err:
@@ -1431,9 +1457,11 @@ class SkillResourceUpdateTool(ContextAwareTool):
                 "message": f"A resource named '{new_name}' already exists on this skill.",
             })
         resource.refresh_from_db()
+        scan = request_skill_rescan(skill, user)
         return json.dumps({
             "status": "ok", "skill_slug": skill.slug,
             "name": resource.name, "kind": resource.kind,
+            "scan_state": scan["scan_state"],
         })
 
 
@@ -1460,7 +1488,7 @@ class SkillResourceDeleteTool(ContextAwareTool):
 
     def _run(self, skill_slug: str, names: list[str] | None = None, **kwargs) -> str:
         from agent_skills.models import SkillResource
-        from agent_skills.resources import recompute_standing_tokens
+        from agent_skills.resources import recompute_standing_tokens, request_skill_rescan
 
         user, err = _load_context_user(self.context)
         if err:
@@ -1481,8 +1509,10 @@ class SkillResourceDeleteTool(ContextAwareTool):
             skill=skill, name__in=names
         ).delete()
         recompute_standing_tokens(skill)
+        scan = request_skill_rescan(skill, user)
         return json.dumps({
             "status": "ok", "skill_slug": skill.slug, "deleted_count": deleted_count,
+            "scan_state": scan["scan_state"],
         })
 
 
@@ -1582,6 +1612,81 @@ class AttachSkillsInput(ReasonBaseModel):
     )
 
 
+def _await_skill_approval(skills, user) -> str | None:
+    """The approval gate for skills about to be attached to a thread.
+
+    Waits briefly for scans that are still running — a skill the user (or the
+    agent) saved moments ago is PENDING for a few seconds while the worker
+    scans it — then returns one refusal message naming every skill that isn't
+    attachable and what the user must do, or None when all of them passed.
+    Runs OUTSIDE the thread row lock (the wait must not stall the UI's
+    skills.set or the round's other tools).
+    """
+    import time
+
+    from django.conf import settings
+
+    from agent_skills.models import AgentSkill
+    from agent_skills.resources import bulk_skill_approval
+
+    skills = list(skills)
+    if not skills:
+        return None
+
+    wait = float(getattr(settings, "SKILL_ATTACH_PENDING_WAIT_SECONDS", 10))
+    poll = max(float(getattr(settings, "SKILL_ATTACH_PENDING_POLL_SECONDS", 1)), 0.05)
+    pending_state = AgentSkill.ScanState.PENDING
+    deadline = time.monotonic() + wait
+    while True:
+        info = bulk_skill_approval(user, skills)
+        still_pending = [
+            s for s in skills
+            if not info[str(s.id)]["approved"]
+            and info[str(s.id)]["scan_state"] == pending_state
+        ]
+        remaining = deadline - time.monotonic()
+        if not still_pending or remaining <= 0:
+            break
+        time.sleep(min(poll, remaining))
+        fresh = {
+            str(s.pk): s
+            for s in AgentSkill.objects.filter(pk__in=[s.pk for s in skills])
+        }
+        skills = [fresh.get(str(s.pk), s) for s in skills]
+
+    pending, blocked, needed = [], [], []
+    for s in skills:
+        verdict = info[str(s.id)]
+        if verdict["approved"]:
+            continue
+        if verdict["scan_state"] == pending_state:
+            pending.append(s.slug)
+        elif verdict["scan_state"] == AgentSkill.ScanState.BLOCKED:
+            detail = (verdict.get("detail") or "").strip()
+            blocked.append(f"{s.slug} ({detail[:200]})" if detail else s.slug)
+        else:
+            needed.append(s.slug)
+    if not (pending or blocked or needed):
+        return None
+
+    parts = []
+    if pending:
+        parts.append(
+            "Still being safety-scanned — try again in a moment: " + ", ".join(pending) + "."
+        )
+    if blocked:
+        parts.append(
+            "Blocked by the safety scan; the user must fix them on the Skills page "
+            "before they can be attached: " + ", ".join(blocked) + "."
+        )
+    if needed:
+        parts.append(
+            "Not safety-scanned yet; ask the user to enable them on the Skills page "
+            "(that runs the scan): " + ", ".join(needed) + "."
+        )
+    return "These skills can't be attached yet. " + " ".join(parts)
+
+
 class AttachSkillsTool(ContextAwareTool):
     name: str = "chat_skill_attach"
     audience: str = "main"
@@ -1590,7 +1695,8 @@ class AttachSkillsTool(ContextAwareTool):
 
     def end_label_for_result(self, result: dict) -> str | None:
         if result.get("status") != "ok":
-            return None
+            # Never let a refusal fall back to the success label.
+            return "Couldn't attach skill"
         added = result.get("added") or []
         if not added:
             return "Skill already attached" if result.get("skills") else "No skills attached"
@@ -1655,11 +1761,24 @@ class AttachSkillsTool(ContextAwareTool):
                 })
             chosen.append(skill)
 
-        from agent_skills.resources import (
-            attach_token_budget,
-            skill_is_approved,
-            skills_within_budget,
+        from agent_skills.resources import attach_token_budget, skills_within_budget
+
+        # Approval gate — BEFORE the row lock, because it may wait for a scan
+        # that is still running (a wait inside the lock would stall the UI's
+        # skills.set and this round's other tools). It applies only to NEWLY-
+        # attached skills: refusing one the user already attached would just
+        # strand the agent (its manifest already told it to use the resource
+        # tools). This lock-free read is a pre-check; the diff is redone below.
+        attached_ids = {
+            str(sid)
+            for sid in ChatThreadSkill.objects.filter(thread=thread)
+            .values_list("skill_id", flat=True)
+        }
+        refusal = _await_skill_approval(
+            [s for s in chosen if str(s.id) not in attached_ids], user
         )
+        if refusal:
+            return json.dumps({"status": "error", "message": refusal})
 
         # Read → diff → write under the thread's row lock (chat.thread_skills).
         # The pipeline runs a round's tool calls in parallel, and this tool can
@@ -1680,21 +1799,7 @@ class AttachSkillsTool(ContextAwareTool):
             )
             previous_ids = {str(r.skill_id) for r in rows}
             live_rows = [r for r in rows if _live(r)]
-
-            # Approval gate applies only to NEWLY-attached skills: refusing a skill
-            # the user already attached would just strand the agent (and its manifest
-            # already told the agent to use its resource tools).
             newly = [s for s in chosen if str(s.id) not in previous_ids]
-            unapproved = [s for s in newly if not skill_is_approved(s)]
-            if unapproved:
-                return json.dumps({
-                    "status": "error",
-                    "message": (
-                        "These skills aren't enabled yet — enable them in Skills "
-                        "(which runs a safety scan) before attaching: "
-                        + ", ".join(s.slug for s in unapproved)
-                    ),
-                })
 
             if newly:
                 # Token budget over the RESULTING set (attached + new). Greedy in
@@ -1790,7 +1895,7 @@ class DetachSkillsTool(ContextAwareTool):
 
     def end_label_for_result(self, result: dict) -> str | None:
         if result.get("status") != "ok":
-            return None
+            return "Couldn't detach skill"
         removed = result.get("removed") or []
         if not removed:
             return "No skills detached"

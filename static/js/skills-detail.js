@@ -265,13 +265,31 @@
   }
 
   var saveBtn = document.getElementById("save-btn");
+
+  // Busy state while the save POST navigates (the safety scan itself runs on
+  // the worker after the redirect; the list row then shows "Scanning…").
+  function setSaveBusy(on) {
+    if (!saveBtn) return;
+    saveBtn.disabled = on;
+    var spinner = document.getElementById("save-btn-spinner");
+    var label = document.getElementById("save-btn-label");
+    if (spinner) spinner.classList.toggle("hidden", !on);
+    if (label) label.textContent = on ? "Saving…" : "Save";
+  }
+
   if (saveBtn) {
     saveBtn.addEventListener("click", function () {
       if (!confirm(saveWarning())) return;
       actionInput.value = "save";
+      setSaveBusy(true);
       form.submit();
     });
   }
+  // A back-navigation restores the page from bfcache with the button still
+  // busy — reset it.
+  window.addEventListener("pageshow", function (e) {
+    if (e.persisted) setSaveBusy(false);
+  });
 
   var saveAsUserBtn = document.getElementById("save-as-user-btn");
   if (saveAsUserBtn) {
@@ -379,8 +397,98 @@
     slugInput.addEventListener("input", markSlugCustomized);
   }
 
+  // ----- Safety-scan status (header pills) -----
+  // The three pills are pre-rendered by the template; this only toggles
+  // `hidden` and polls the scan-status endpoint while the scan is running.
+  // Exposed as window.WilfredSkillScan so skills-resources.js can refresh the
+  // pill after a resource write re-queues the scan.
+  var scanPillsEl = document.getElementById("skill-scan-pills");
+  var scanStatusUrl = scanPillsEl ? scanPillsEl.getAttribute("data-scan-status-url") : "";
+  var scanSkillId = scanPillsEl ? scanPillsEl.getAttribute("data-skill-id") : "";
+  var scanPolling = false;
+
+  // Same rule as views._scan_pill with is_selected=True (this is the author's
+  // own page): usable → none; blocked; pending; otherwise "scan needed".
+  function scanPillFor(approved, scanState) {
+    if (approved) return "";
+    if (scanState === "blocked") return "blocked";
+    if (scanState === "pending") return "pending";
+    return "needed";
+  }
+
+  function applyScanPills(info) {
+    if (!scanPillsEl || !info) return;
+    var approved = !!info.approved;
+    var scanState = typeof info.scan_state === "string" ? info.scan_state : "";
+    scanPillsEl.setAttribute("data-scan-state", scanState);
+    scanPillsEl.setAttribute("data-approved", approved ? "1" : "0");
+    var pill = scanPillFor(approved, scanState);
+    scanPillsEl.querySelectorAll(".scan-pill").forEach(function (el) {
+      var kind = el.getAttribute("data-pill");
+      // The `hidden` attribute, not the class (see skills-list.js).
+      el.hidden = kind !== pill;
+      if (kind === "blocked" && typeof info.detail === "string" && info.detail) {
+        el.setAttribute("title", info.detail);
+      }
+    });
+  }
+
+  function scanIsPending() {
+    return (
+      !!scanPillsEl &&
+      scanPillsEl.getAttribute("data-scan-state") === "pending" &&
+      scanPillsEl.getAttribute("data-approved") !== "1"
+    );
+  }
+
+  function fetchScanStatus() {
+    if (!scanStatusUrl || !scanSkillId) return Promise.reject();
+    return fetch(scanStatusUrl + "?ids=" + encodeURIComponent(scanSkillId), {
+      credentials: "same-origin",
+      headers: { "X-Requested-With": "XMLHttpRequest", "Accept": "application/json" },
+    })
+      .then(function (resp) {
+        return resp.json();
+      })
+      .then(function (data) {
+        if (data && data.ok && data.skills && data.skills[scanSkillId]) {
+          applyScanPills(data.skills[scanSkillId]);
+        }
+      });
+  }
+
+  function pollScanStatus() {
+    if (scanPolling || !scanIsPending()) return;
+    scanPolling = true;
+    setTimeout(function () {
+      fetchScanStatus()
+        .then(function () {
+          scanPolling = false;
+          pollScanStatus();
+        })
+        .catch(function () {
+          scanPolling = false;
+        });
+    }, 2500);
+  }
+
+  // Fetch the verdict right away (a resource write just re-queued the scan),
+  // then keep polling while it is pending.
+  function refreshScanStatus() {
+    fetchScanStatus()
+      .then(pollScanStatus)
+      .catch(function () {});
+  }
+
+  window.WilfredSkillScan = {
+    apply: applyScanPills,
+    poll: pollScanStatus,
+    refresh: refreshScanStatus,
+  };
+
   // ----- Initial render -----
   renderToolChips();
+  pollScanStatus();
 
   // Mount CM editors over the instructions/description fields. Template rows are
   // mounted inside renderTemplates so they re-attach on add/remove. These two

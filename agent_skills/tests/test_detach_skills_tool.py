@@ -132,7 +132,7 @@ class DetachSkillsToolTests(TestCase):
 
     def test_end_label_for_result(self):
         label = self.tool.end_label_for_result
-        self.assertIsNone(label({"status": "error"}))
+        self.assertEqual(label({"status": "error"}), "Couldn't detach skill")
         self.assertEqual(label({"status": "ok", "removed": []}), "No skills detached")
         self.assertEqual(
             label({"status": "ok", "removed": ["a"], "removed_names": ["Alpha"]}),

@@ -51,6 +51,27 @@
             <span>slug: <code class="wf-mono">{{ skill.slug }}</code></span>
             {% endif %}
             {% if skill.parent %}<span>copied from <em>{{ skill.parent.name }}</em></span>{% endif %}
+            {# Safety-scan verdict. All three pills are pre-rendered (Tailwind sees the #}
+            {# classes); skills-detail.js toggles the `hidden` ATTRIBUTE (the class     #}
+            {# loses to inline-flex in this build) and polls while pending.             #}
+            <span id="skill-scan-pills" class="inline-flex items-center gap-1"
+                  data-scan-state="{{ scan_state }}"
+                  data-approved="{{ is_approved|yesno:'1,0' }}"
+                  data-skill-id="{{ skill.id }}"
+                  data-scan-status-url="{% url 'agent_skills_scan_status' %}">
+              <span class="scan-pill inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full border whitespace-nowrap cursor-default text-body bg-neutral-secondary-soft border-default" data-pill="pending"{% if scan_pill != "pending" %} hidden{% endif %} title="The safety scan is running">
+                <svg class="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                Scanning…
+              </span>
+              <span class="scan-pill inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full border whitespace-nowrap cursor-default text-fg-danger bg-danger-soft border-danger-subtle" data-pill="blocked"{% if scan_pill != "blocked" %} hidden{% endif %} title="{{ scan_detail|default:'This skill was blocked by the safety scan.' }}">
+                <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2 4 5v6c0 5 3.4 8.5 8 10 4.6-1.5 8-5 8-10V5l-8-3z"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                Blocked by safety scan
+              </span>
+              <span class="scan-pill inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full border whitespace-nowrap cursor-default text-fg-warning bg-warning-soft border-warning-subtle" data-pill="needed"{% if scan_pill != "needed" %} hidden{% endif %} title="Enable this skill on the Skills page to run the safety scan">
+                <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                Scan needed
+              </span>
+            </span>
           </p>
           <p id="skill-slug-hint" class="mt-1 text-xs text-body hidden">
             Editing the slug stops it from updating automatically when you rename this skill.
@@ -189,8 +210,9 @@
     {# ----- Action bar ----- #}
     <div class="flex flex-wrap items-center gap-3 pt-2">
       {% if editable %}
-      <button type="button" id="save-btn" class="bg-neutral-primary-soft hover:bg-neutral-secondary border border-default text-heading shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand">
-        Save
+      <button type="button" id="save-btn" class="inline-flex items-center gap-2 bg-neutral-primary-soft hover:bg-neutral-secondary border border-default text-heading shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand disabled:opacity-60 disabled:cursor-wait">
+        <span id="save-btn-spinner" class="hidden w-4 h-4 animate-spin" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg></span>
+        <span id="save-btn-label">Save</span>
       </button>
       {% endif %}
       <form method="post" action="{% url 'agent_skills_edit_in_chat' skill_id=skill.id %}" class="m-0">

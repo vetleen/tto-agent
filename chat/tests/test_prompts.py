@@ -1253,6 +1253,39 @@ class AvailableSkillsSectionTests(TestCase):
         )
         self.assertIn("- **plain** — Plain", prompt)
 
+    def test_unapproved_skills_marked_not_attachable(self):
+        prompt = build_semi_static_prompt(
+            available_skills=[
+                {"slug": "ok", "name": "Ok", "description": "fine", "approved": True,
+                 "scan_state": "approved"},
+                {"slug": "wait", "name": "Wait", "description": "", "approved": False,
+                 "scan_state": "pending"},
+                {"slug": "bad", "name": "Bad", "description": "", "approved": False,
+                 "scan_state": "blocked"},
+                {"slug": "raw", "name": "Raw", "description": "", "approved": False,
+                 "scan_state": "unscanned"},
+            ],
+        )
+        lines = {
+            line.split("**")[1]: line
+            for line in prompt.splitlines() if line.startswith("- **")
+        }
+        self.assertNotIn("NOT attachable", lines["ok"])
+        self.assertIn("NOT attachable yet (safety scan in progress", lines["wait"])
+        self.assertIn("NOT attachable yet (blocked by the safety scan", lines["bad"])
+        self.assertIn("NOT attachable yet (needs a safety scan", lines["raw"])
+        for slug in ("wait", "bad", "raw"):
+            self.assertIn("ask the user to enable it on the Skills page", lines[slug])
+        # The header tells the agent not to retry a refused attach.
+        self.assertIn("`chat_skill_attach` refuses it", prompt)
+
+    def test_entries_without_the_approved_key_are_attachable(self):
+        prompt = build_semi_static_prompt(
+            available_skills=[{"slug": "legacy", "name": "Legacy", "description": ""}],
+        )
+        self.assertNotIn("NOT attachable", prompt)
+        self.assertNotIn("refuses it", prompt)
+
 
 class SoulInSemiStaticPromptTests(TestCase):
     """SOUL (personality) injection in build_semi_static_prompt."""

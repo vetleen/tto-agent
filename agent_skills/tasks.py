@@ -40,11 +40,22 @@ def process_skill_resource_upload_task(resource_id, user_id=None):
 
 @shared_task
 def scan_and_approve_skill_task(skill_id, user_id=None):
-    """Run the enable-gate scan for a skill off the request."""
+    """Run the approval-gate scan for a skill off the request.
+
+    Queued by ``resources.request_skill_rescan`` after every content write. A
+    skill that is already approved for its current content (a duplicate dispatch
+    from two quick saves, the second of which changed nothing) is skipped.
+    """
     from . import resources as svc
 
     skill = AgentSkill.objects.filter(pk=skill_id).first()
     if skill is None:
         logger.warning("scan_and_approve_skill_task: skill %s gone", skill_id)
+        return
+    if (
+        skill.scan_state == AgentSkill.ScanState.APPROVED
+        and skill.approved_content_hash
+        and skill.approved_content_hash == svc.compute_skill_content_hash(skill)
+    ):
         return
     svc.scan_and_approve_skill(skill, _get_user(user_id))
