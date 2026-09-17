@@ -6,7 +6,7 @@ snapshot (not the mutated buffer) is the property both rely on.
 
 from django.test import SimpleTestCase
 
-from chat.edit_utils import apply_unique_text_edits
+from chat.edit_utils import append_with_anchor, apply_unique_text_edits
 
 
 class ApplyUniqueTextEditsTests(SimpleTestCase):
@@ -58,3 +58,32 @@ class ApplyUniqueTextEditsTests(SimpleTestCase):
         self.assertEqual(text, "1 two 3")
         self.assertEqual(applied, 2)
         self.assertEqual(failed, [])
+
+
+class AppendWithAnchorTests(SimpleTestCase):
+    def test_empty_canvas_returns_text_only(self):
+        content, inserted = append_with_anchor("", "pasted", anchor="anything")
+        self.assertEqual(content, "pasted")
+        self.assertFalse(inserted)
+
+    def test_no_anchor_appends_at_end(self):
+        content, inserted = append_with_anchor("existing", "pasted")
+        self.assertEqual(content, "existing\n\npasted")
+        self.assertFalse(inserted)
+
+    def test_unique_anchor_inserts_after_it(self):
+        content, inserted = append_with_anchor(
+            "Intro. Background: end.", "PASTED", anchor="Background:"
+        )
+        self.assertEqual(content, "Intro. Background:\n\nPASTED end.")
+        self.assertTrue(inserted)
+
+    def test_missing_anchor_falls_back_to_append(self):
+        content, inserted = append_with_anchor("existing", "pasted", anchor="nope")
+        self.assertEqual(content, "existing\n\npasted")
+        self.assertFalse(inserted)
+
+    def test_ambiguous_anchor_falls_back_to_append(self):
+        content, inserted = append_with_anchor("x here x here", "pasted", anchor="here")
+        self.assertEqual(content, "x here x here\n\npasted")
+        self.assertFalse(inserted)

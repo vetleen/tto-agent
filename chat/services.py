@@ -1058,6 +1058,98 @@ def import_docx_to_canvas(uploaded_file: UploadedFile, user, *, canvas=None) -> 
     return title, content, truncated
 
 
+def _canvas_title_from_filename(uploaded_file) -> str:
+    original_name = uploaded_file.name or "document"
+    return original_name.rsplit(".", 1)[0][:255] or "Untitled document"
+
+
+def import_file_to_canvas(uploaded_file: UploadedFile, user, *, canvas=None) -> tuple[str, str, bool]:
+    """Convert a supported upload (docx / pdf / text) to markdown for a canvas.
+
+    Dispatches by file kind, reusing the same extractors as chat attachments and
+    the data-room pipeline. docx delegates to :func:`import_docx_to_canvas`; pdf
+    uses ``core.pdf.pdf_to_text`` (embedded images become ``[[image:uuid|...]]``
+    tokens when *canvas* is given, matching docx); text is decoded as UTF-8.
+    Returns ``(title, content, truncated)`` — ``content`` may be empty when a file
+    has no extractable text (e.g. a scanned PDF); the caller decides how to react.
+    Raises ``ValueError`` for an unsupported kind (the view gates on
+    ``CANVAS_IMPORT_KINDS`` first, so this is defensive).
+    """
+    from core.file_types import (
+        KIND_DOCX,
+        KIND_PDF,
+        KIND_TEXT,
+        canonical_extension,
+        kind_for_extension,
+        kind_for_mime,
+    )
+
+    ext = (uploaded_file.name or "").rsplit(".", 1)[-1] if uploaded_file.name and "." in uploaded_file.name else ""
+    kind = kind_for_mime(getattr(uploaded_file, "content_type", "") or "") or kind_for_extension(
+        canonical_extension(ext)
+    )
+
+    if kind == KIND_DOCX:
+        # Reuse the docx path (and stay patchable in tests that mock
+        # import_docx_to_canvas at the module level).
+        return import_docx_to_canvas(uploaded_file, user, canvas=canvas)
+
+    if kind == KIND_PDF:
+        from core.pdf import pdf_to_text
+
+        if canvas is not None:
+            from chat.assets import canvas_asset_sink
+
+            sink = canvas_asset_sink(canvas, user, max_described=CANVAS_MAX_IMAGES)
+        else:
+            sink = describe_image_sink(
+                user,
+                max_described=CANVAS_MAX_IMAGES,
+                over_limit_label="image skipped – import limit reached",
+            )
+        content = pdf_to_text(uploaded_file.read(), image_sink=sink)
+    elif kind == KIND_TEXT:
+        content = uploaded_file.read().decode("utf-8", errors="replace")
+    else:
+        raise ValueError(f"Unsupported file kind for canvas import: {kind!r}")
+
+    truncated = len(content) > CANVAS_MAX_CHARS
+    if truncated:
+        content = content[:CANVAS_MAX_CHARS]
+
+    return _canvas_title_from_filename(uploaded_file), content, truncated
+
+
+def list_pasteable_user_messages(thread_id):
+    """Return ``[(number, ChatMessage), ...]`` for the thread's user messages.
+
+    Numbered 1..N by ``created_at`` and filtered to the messages the user
+    actually sees (the same excludes ``_load_history`` uses), so the ordinal an
+    agent references via ``canvas_paste_user_text`` matches the manifest injected
+    into its context.
+    """
+    from chat.models import ChatMessage
+
+    msgs = list(
+        ChatMessage.objects.filter(thread_id=thread_id, role=ChatMessage.Role.USER)
+        .exclude(is_redacted=True)
+        .exclude(is_hidden_from_user=True)
+        .exclude(metadata__has_key="ui_only")
+        .order_by("created_at")
+    )
+    return list(enumerate(msgs, start=1))
+
+
+def list_thread_attachments(thread_id):
+    """Return ``[(number, ChatAttachment), ...]`` for the thread, 1..N by upload order."""
+    from chat.models import ChatAttachment
+
+    atts = list(
+        ChatAttachment.objects.filter(thread_id=thread_id).order_by("created_at")
+    )
+    return list(enumerate(atts, start=1))
+
+
 # ---------------------------------------------------------------------------
 # Email block rendering (for .docx export)
 # ---------------------------------------------------------------------------

@@ -590,6 +590,8 @@ def build_dynamic_context(
     data_rooms: list[dict[str, Any]] | None = None,
     runtime_stats: RuntimeStats | None = None,
     scratchpad: str | None = None,
+    pasteable_messages: dict[str, Any] | None = None,
+    attachments: list[dict[str, Any]] | None = None,
 ) -> str:
     """Build per-turn dynamic context to inject into the last user message.
 
@@ -736,6 +738,39 @@ def build_dynamic_context(
                 f'# Active Canvas Content: "{ac.title}"\n'
                 f"```markdown\n{ac.content}\n```"
             )
+
+    # -- Pasteable user messages (targets for canvas_paste_user_text) --
+    if pasteable_messages and pasteable_messages.get("messages"):
+        lines = [
+            "# Your messages",
+            "Paste any of these into a canvas verbatim with `canvas_paste_user_text` "
+            "(reference by number) instead of retyping them:",
+        ]
+        for m in pasteable_messages["messages"]:
+            lines.append(f'{m["number"]}. "{m.get("preview") or ""}"')
+        omitted = pasteable_messages.get("omitted") or 0
+        if omitted:
+            lines.append(f"(+{omitted} older message(s) not shown.)")
+        parts.append("\n".join(lines))
+
+    # -- Attachments (targets for chat_attachment_open_to_canvas) --
+    if attachments:
+        lines = [
+            "# Attachments",
+            "Files the user attached to this chat. Load one into a canvas as editable "
+            "text with `chat_attachment_open_to_canvas` (reference by number):",
+        ]
+        for a in attachments:
+            size_kb = (a.get("size_bytes") or 0) / 1024
+            size = f"{size_kb / 1024:.1f} MB" if size_kb >= 1024 else f"{size_kb:.0f} KB"
+            if a.get("is_image"):
+                lines.append(
+                    f'{a["number"]}. {a["filename"]} '
+                    "(image — use its [[image:uuid]] token; can't be loaded as text)"
+                )
+            else:
+                lines.append(f'{a["number"]}. {a["filename"]} ({a.get("kind", "file")}, {size})')
+        parts.append("\n".join(lines))
 
     # -- Scratchpad (agent-only private notes; survives pruning; user never sees it) --
     if scratchpad and scratchpad.strip():

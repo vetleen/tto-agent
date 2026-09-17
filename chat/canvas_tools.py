@@ -398,9 +398,154 @@ class DeleteCanvasTool(ContextAwareTool):
         })
 
 
+class PasteUserTextInput(ReasonBaseModel):
+    message_number: int = Field(
+        description=(
+            "Which of the user's messages to paste, by its number in the "
+            "'# Your messages' list in your context (1 = the first user message)."
+        ),
+    )
+    canvas_name: str = Field(
+        default="",
+        description=(
+            "Target canvas by title. Leave empty to use the active canvas; if no "
+            "canvas exists (or the named one doesn't), a new canvas is created."
+        ),
+    )
+    anchor: str = Field(
+        default="",
+        description=(
+            "Optional. Text already in the canvas to paste immediately after. It "
+            "must match exactly once; if it's missing or ambiguous the message is "
+            "appended at the end instead."
+        ),
+    )
+
+
+class PasteUserTextTool(ContextAwareTool):
+    """Paste one of the user's own messages, verbatim, into a canvas."""
+
+    name: str = "canvas_paste_user_text"
+    audience: str = "main"
+    section: str = "skills"
+    start_label: str = "Pasting your message..."
+    end_label: str = "Pasted your message into the canvas"
+    description: str = (
+        "Insert the exact text of one of the user's messages into a canvas, "
+        "verbatim — use this instead of retyping the user's words, so nothing is "
+        "paraphrased or dropped. Pick the message by its number from the "
+        "'# Your messages' list in your context. The text is appended to the "
+        "canvas (after the optional anchor phrase if it matches once, otherwise at "
+        "the end). If the target canvas doesn't exist yet it is created."
+    )
+    args_schema: type[BaseModel] = PasteUserTextInput
+
+    def _run(self, message_number: int, canvas_name: str = "", anchor: str = "", **kwargs) -> str:
+        from chat.edit_utils import append_with_anchor
+        from chat.models import ChatCanvas
+        from chat.services import (
+            CANVAS_MAX_CHARS,
+            MAX_CANVASES_PER_THREAD,
+            activate_canvas,
+            create_canvas_checkpoint,
+            dedupe_canvas_title,
+            list_pasteable_user_messages,
+            resolve_canvas,
+            snapshot_user_edits,
+        )
+
+        thread_id = self.context.conversation_id if self.context else None
+        if not thread_id:
+            return json.dumps({"status": "error", "message": "No thread context available."})
+
+        # Resolve the requested user message by its per-thread number.
+        pairs = list_pasteable_user_messages(thread_id)
+        if not pairs:
+            return json.dumps({
+                "status": "error",
+                "message": "There are no user messages to paste yet.",
+            })
+        by_num = {n: m for n, m in pairs}
+        msg = by_num.get(message_number)
+        if msg is None:
+            latest = pairs[-1][0]
+            return json.dumps({
+                "status": "error",
+                "message": f"No user message #{message_number}. Valid numbers are 1-{latest}.",
+                "latest_message_number": latest,
+            })
+        text = msg.content or ""
+
+        # Resolve the target canvas, or create one (auto-create per the tool contract).
+        created = False
+        if canvas_name:
+            try:
+                canvas = ChatCanvas.objects.select_related("accepted_checkpoint").get(
+                    thread_id=thread_id, title=canvas_name[:255], deleted_at__isnull=True,
+                )
+            except ChatCanvas.DoesNotExist:
+                canvas = None
+        else:
+            canvas, _err = resolve_canvas(thread_id, None)  # active canvas, or None
+
+        if canvas is None:
+            if ChatCanvas.objects.filter(
+                thread_id=thread_id, deleted_at__isnull=True,
+            ).count() >= MAX_CANVASES_PER_THREAD:
+                return json.dumps({
+                    "status": "error",
+                    "message": f"Maximum of {MAX_CANVASES_PER_THREAD} canvases per thread reached.",
+                })
+            title = dedupe_canvas_title(thread_id, canvas_name or "Untitled document")
+            canvas = ChatCanvas.objects.create(thread_id=thread_id, title=title, content="")
+            created = True
+
+        was_empty = not canvas.content
+        new_content, inserted = append_with_anchor(canvas.content, text, anchor)
+        truncated = len(new_content) > CANVAS_MAX_CHARS
+        if truncated:
+            new_content = new_content[:CANVAS_MAX_CHARS]
+
+        description = f"Pasted your message #{message_number}"
+        if created:
+            # Fresh canvas: establish an accepted baseline so later edits diff cleanly.
+            canvas.content = new_content
+            canvas.save(update_fields=["content", "updated_at"])
+            cp = create_canvas_checkpoint(canvas, source="original", description=description)
+            canvas.accepted_checkpoint = cp
+            canvas.save(update_fields=["accepted_checkpoint"])
+        else:
+            snapshot_user_edits(canvas)
+            pre_ai_cp = None
+            if canvas.accepted_checkpoint_id is None:
+                pre_ai_cp = canvas.checkpoints.order_by("-order").first()
+            canvas.content = new_content
+            canvas.save(update_fields=["content", "updated_at"])
+            create_canvas_checkpoint(canvas, source="ai_edit", description=description)
+            if pre_ai_cp is not None and canvas.accepted_checkpoint_id is None:
+                canvas.accepted_checkpoint = pre_ai_cp
+                canvas.save(update_fields=["accepted_checkpoint"])
+
+        activate_canvas(thread_id, canvas)
+
+        result = {
+            "status": "ok",
+            "canvas_id": str(canvas.pk),
+            "title": canvas.title,
+            "message_number": message_number,
+            "inserted_after_anchor": inserted,
+        }
+        if anchor and not inserted and not was_empty:
+            result["note"] = "Anchor text was not found (or not unique) — appended at the end instead."
+        if truncated:
+            result["truncated"] = True
+        return json.dumps(result)
+
+
 # Register on import
 _registry = get_tool_registry()
 _registry.register_tool(ActiveCanvasTool())
 _registry.register_tool(WriteCanvasTool())
 _registry.register_tool(EditCanvasTool())
 _registry.register_tool(DeleteCanvasTool())
+_registry.register_tool(PasteUserTextTool())

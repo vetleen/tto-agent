@@ -222,3 +222,9 @@ class CanvasBroadcastRegressionTests(TestCase):
         # Guards the regression where the tool ran but its canvas never reached the UI.
         from chat.consumers import CANVAS_UPDATED_TOOLS
         self.assertIn("document_open_to_canvas", CANVAS_UPDATED_TOOLS)
+
+    def test_new_canvas_ingress_tools_are_broadcast(self):
+        # Every canvas-mutating tool must be here or its canvas never refreshes.
+        from chat.consumers import CANVAS_UPDATED_TOOLS
+        self.assertIn("canvas_paste_user_text", CANVAS_UPDATED_TOOLS)
+        self.assertIn("chat_attachment_open_to_canvas", CANVAS_UPDATED_TOOLS)

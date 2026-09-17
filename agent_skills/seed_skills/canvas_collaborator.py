@@ -1,10 +1,11 @@
 """Canvas Collaborator (seed skill).
 
 A main-agent skill that unlocks the canvas workspace tools (``canvas_activate``,
-``canvas_write``, ``canvas_edit``, ``canvas_delete`` and ``canvas_save_to_document``;
-all ``section="skills"``, ``audience="main"``). Activating it lets the assistant
-draft and edit documents in the side-panel canvas. Sub-agents have their own
-canvas tools (``subagent_canvas_*``) and do not use these.
+``canvas_write``, ``canvas_edit``, ``canvas_delete``, ``canvas_save_to_document``,
+``canvas_paste_user_text`` and ``chat_attachment_open_to_canvas``; all
+``section="skills"``, ``audience="main"``). Activating it lets the assistant draft
+and edit documents in the side-panel canvas. Sub-agents have their own canvas
+tools (``subagent_canvas_*``) and do not use these.
 """
 
 CANVAS_COLLABORATOR = {
@@ -23,6 +24,21 @@ CANVAS_COLLABORATOR = {
 
 After working in the canvas, don't reproduce the content in
 chat — just refer to it (e.g. "I've drafted it in the canvas").
+
+# Getting existing content into the canvas
+Prefer copying text into the canvas over retyping it — retyping risks paraphrasing
+or dropping detail. You have three verbatim-copy paths, and none of them require
+you to reproduce the text yourself:
+
+- **The user's own words** → `canvas_paste_user_text`. Your context lists the
+  user's messages under `# Your messages`, numbered; pass that number to paste one
+  in verbatim. It appends to the canvas (after an `anchor` phrase already in the
+  canvas if you give one, otherwise at the end) and creates the canvas if needed.
+- **A file the user attached to the chat** → `chat_attachment_open_to_canvas`.
+  Your context lists them under `# Attachments`, numbered. Word/PDF/text files load
+  as editable text; images can't (embed the `[[image:uuid]]` token instead).
+- **A data-room document** → `document_open_to_canvas` (from the Data Room Tools
+  skill), which opens the document's editable text into a canvas.
 
 # Markdown
 Use markdown in the canvas.
@@ -55,5 +71,7 @@ Supported diagram types: `graph`/`flowchart`, `sequenceDiagram`, `classDiagram`,
         "canvas_edit",
         "canvas_delete",
         "canvas_save_to_document",
+        "canvas_paste_user_text",
+        "chat_attachment_open_to_canvas",
     ],
 }

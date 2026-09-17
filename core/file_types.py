@@ -148,6 +148,11 @@ CHAT_KINDS = frozenset({KIND_IMAGE, KIND_PDF, KIND_DOCX, KIND_TEXT})
 # Meeting attachments are copied into the "minutes with Wilfred" chat thread,
 # so they accept exactly what chat can consume.
 MEETING_ATTACHMENT_KINDS = CHAT_KINDS
+# Canvas file import turns an upload into editable markdown. Only kinds that
+# yield text belong here: Word, PDF, and the decodable text family. Images have
+# no text to import (embed the [[image:uuid]] token instead), and chat has no
+# extraction path for pptx/spreadsheet/email/audio.
+CANVAS_IMPORT_KINDS = frozenset({KIND_DOCX, KIND_PDF, KIND_TEXT})
 
 # Generic MIME tokens browsers send for unfamiliar types — always pass the
 # per-extension cross-check (mirrors documents.views._GENERIC_MIME_TYPES).

@@ -97,6 +97,7 @@ def _tool_stub_boundary(messages, raw_tool_turns):
 # the UI (regression source: document_open_to_canvas, dropped here in the tool rename).
 CANVAS_UPDATED_TOOLS = (
     "canvas_write", "canvas_edit", "document_open_to_canvas",
+    "chat_attachment_open_to_canvas", "canvas_paste_user_text",
     "skill_field_load", "skill_resource_load",
 )
 
@@ -2513,6 +2514,20 @@ class ChatConsumer(AsyncWebsocketConsumer):
             is_loop_turn=is_loop_turn
         )
 
+        # Canvas-ingress manifests — only when the corresponding tool is actually
+        # available this turn, so they cost no tokens when the skill isn't attached.
+        selected_tool_names = {getattr(t, "name", "") for t in tools}
+        pasteable_messages = (
+            await self._get_pasteable_messages_manifest(str(thread.id))
+            if "canvas_paste_user_text" in selected_tool_names
+            else None
+        )
+        attachments_manifest = (
+            await self._get_attachments_manifest(str(thread.id))
+            if "chat_attachment_open_to_canvas" in selected_tool_names
+            else None
+        )
+
         # Model display info for the Runtime block (history-independent).
         model_runtime = {}
         if model:
@@ -2555,6 +2570,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "data_rooms": data_rooms,
             "runtime_stats": provisional_runtime,
             "scratchpad": scratchpad,
+            "pasteable_messages": pasteable_messages,
+            "attachments": attachments_manifest,
         }
         try:
             from core.tokens import measure_request_overhead
@@ -2632,6 +2649,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "data_rooms": data_rooms,
             "runtime_stats": runtime_stats,
             "scratchpad": scratchpad,
+            "pasteable_messages": pasteable_messages,
+            "attachments": attachments_manifest,
         }
         return (
             static_system, history, semi_static_system, dynamic_context_data, meta,
@@ -3632,6 +3651,49 @@ class ChatConsumer(AsyncWebsocketConsumer):
             .order_by("order", "created_at")
             .values("id", "title", "status")
         )
+
+    # -- Canvas-ingress manifests (targets for the paste / attachment tools) --
+
+    @database_sync_to_async
+    def _get_pasteable_messages_manifest(self, thread_id, *, limit=20):
+        """Numbered previews of the user's messages, capped to the most recent
+        ``limit``. Numbering matches ``list_pasteable_user_messages`` so the number
+        the model references resolves to the same message in the tool."""
+        from chat.services import list_pasteable_user_messages
+
+        pairs = list_pasteable_user_messages(thread_id)
+        total = len(pairs)
+        shown = pairs[-limit:] if total > limit else pairs
+        messages = [
+            {"number": number, "preview": " ".join((msg.content or "").split())[:80]}
+            for number, msg in shown
+        ]
+        return {"messages": messages, "total": total, "omitted": total - len(shown)}
+
+    @database_sync_to_async
+    def _get_attachments_manifest(self, thread_id):
+        """Numbered list of the thread's attachments (filename, kind, size)."""
+        from core.file_types import (
+            KIND_IMAGE,
+            canonical_extension,
+            kind_for_extension,
+            kind_for_mime,
+        )
+
+        from chat.services import list_thread_attachments
+
+        out = []
+        for number, att in list_thread_attachments(thread_id):
+            ext = att.original_filename.rsplit(".", 1)[-1] if "." in att.original_filename else ""
+            kind = kind_for_mime(att.content_type) or kind_for_extension(canonical_extension(ext)) or "file"
+            out.append({
+                "number": number,
+                "filename": att.original_filename,
+                "kind": kind,
+                "size_bytes": att.size_bytes,
+                "is_image": kind == KIND_IMAGE,
+            })
+        return out
 
     # -- Sub-agent helpers --
 

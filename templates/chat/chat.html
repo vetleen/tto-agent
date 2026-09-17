@@ -641,13 +641,13 @@
       <button id="canvas-preview-btn" title="Toggle preview" class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
       </button>
-      {# 6. Import .docx #}
-      <label id="canvas-import-label" title="Import .docx" class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
+      {# 6. Import a file (Word/PDF/text) #}
+      <label id="canvas-import-label" title="Import a file (Word, PDF, or text)" class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
         <svg id="canvas-import-icon" class="canvas-btn-icon w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1"/></svg>
         <svg id="canvas-import-spinner" class="canvas-btn-spinner w-4 h-4 animate-spin hidden" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
         <svg class="canvas-btn-check w-4 h-4 hidden text-fg-success" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
         <svg class="canvas-btn-error w-4 h-4 hidden text-fg-danger" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
-        <input id="canvas-import-input" type="file" accept=".docx,.dotx" class="hidden" />
+        <input id="canvas-import-input" type="file" accept="{{ canvas_import_accept }}" class="hidden" />
       </label>
       {# 7. Delete canvas (trash) #}
       <button id="canvas-delete-btn" title="Delete canvas" class="cursor-pointer p-1.5 rounded-base text-body hover:text-heading hover:bg-neutral-tertiary">
@@ -5366,7 +5366,11 @@
           headers: { "X-CSRFToken": getCSRFToken() },
           body: fd,
         }).then(function(r) {
-          if (!r.ok) throw new Error("Couldn't import the document.");
+          if (!r.ok) {
+            return r.json().catch(function() { return {}; }).then(function(e) {
+              throw new Error(e.error || "Couldn't import the document.");
+            });
+          }
           return r.json();
         }).then(function(data) {
           if (data.title !== undefined) openCanvas(data.title, data.content);
@@ -5383,11 +5387,11 @@
             showToast("Document was truncated to 75,000 characters.");
           }
           flashCanvasBtnSuccess(importLabel);
-          if (importLabel) importLabel.title = "Import .docx";
+          if (importLabel) importLabel.title = "Import a file (Word, PDF, or text)";
         }).catch(function(err) {
           flashCanvasBtnError(importLabel);
-          if (importLabel) importLabel.title = "Import .docx";
-          alert("Couldn't import the document. " + err.message);
+          if (importLabel) importLabel.title = "Import a file (Word, PDF, or text)";
+          alert(err.message || "Couldn't import the document.");
         });
       }
 

@@ -669,7 +669,7 @@ def chat_home(request):
     # Resolve preferences (model choices, allowed skills, etc.)
     from django.conf import settings as django_settings
 
-    from core.file_types import CHAT_KINDS, accept_attr
+    from core.file_types import CANVAS_IMPORT_KINDS, CHAT_KINDS, accept_attr
     from core.preferences import get_preferences
     from llm.display import (
         get_capability_level,
@@ -776,6 +776,8 @@ def chat_home(request):
             # Includes image/* so iOS Safari offers the photo library instead of
             # defaulting to the camera/video flow.
             "attach_accept": accept_attr(CHAT_KINDS),
+            # Canvas file import accepts only text-yielding kinds (Word/PDF/text).
+            "canvas_import_accept": accept_attr(CANVAS_IMPORT_KINDS),
             "slide_theme_presets": _slide_theme_presets(),
             "slide_user_themes": _slide_user_themes(request.user),
             "slide_org_theme": _slide_org_theme(request.user),
@@ -1261,22 +1263,30 @@ async def canvas_export(request, thread_id, canvas_id=None):
 @login_required
 @require_POST
 def canvas_import(request, thread_id, canvas_id=None):
-    """Import a .docx file and convert to markdown canvas content."""
+    """Import a Word/PDF/text file and convert it to markdown canvas content."""
     thread = get_object_or_404(ChatThread, id=thread_id, created_by=request.user)
 
     uploaded = request.FILES.get("file")
     if not uploaded:
         return HttpResponseBadRequest("No file uploaded.")
 
-    from chat.services import MAX_ATTACHMENT_SIZE, SUPPORTED_DOCX_TYPES, import_docx_to_canvas, set_active_canvas
-
-    # Validate file type
-    ct = uploaded.content_type or ""
-    is_docx = ct in SUPPORTED_DOCX_TYPES or (
-        uploaded.name and uploaded.name.lower().endswith((".docx", ".dotx"))
+    from core.file_types import (
+        CANVAS_IMPORT_KINDS,
+        canonical_extension,
+        kind_for_extension,
+        kind_for_mime,
     )
-    if not is_docx:
-        return JsonResponse({"error": "Only .docx files are supported for import."}, status=400)
+    from chat.services import MAX_ATTACHMENT_SIZE, import_file_to_canvas, set_active_canvas
+
+    # Validate file type against the canvas-import allow-list (Word/PDF/text).
+    ct = uploaded.content_type or ""
+    ext = uploaded.name.rsplit(".", 1)[-1] if uploaded.name and "." in uploaded.name else ""
+    kind = kind_for_mime(ct) or kind_for_extension(canonical_extension(ext))
+    if kind not in CANVAS_IMPORT_KINDS:
+        return JsonResponse(
+            {"error": "Only Word (.docx), PDF, and text files can be imported."},
+            status=400,
+        )
 
     # Validate file size
     if uploaded.size > MAX_ATTACHMENT_SIZE:
@@ -1290,6 +1300,7 @@ def canvas_import(request, thread_id, canvas_id=None):
     original_name = uploaded.name or "document"
     title = original_name.rsplit(".", 1)[0][:255] or "Untitled document"
 
+    created_canvas = False
     if canvas_id:
         canvas = get_object_or_404(ChatCanvas, pk=canvas_id, thread=thread, deleted_at__isnull=True)
         canvas.title = title
@@ -1300,15 +1311,27 @@ def canvas_import(request, thread_id, canvas_id=None):
         except ChatCanvas.DoesNotExist:
             try:
                 canvas = ChatCanvas.objects.create(thread=thread, title=title, content="")
+                created_canvas = True
             except IntegrityError:
                 canvas = ChatCanvas.objects.get(thread=thread, title=title, deleted_at__isnull=True)
 
-    _title, content, truncated = import_docx_to_canvas(uploaded, request.user, canvas=canvas)
+    _title, content, truncated = import_file_to_canvas(uploaded, request.user, canvas=canvas)
+
+    # No extractable text (e.g. a scanned/image-only PDF or an empty document).
+    # Don't create an empty canvas or a checkpoint — tell the user why.
+    if not content.strip():
+        if not canvas_id and created_canvas:
+            canvas.delete()
+        return JsonResponse(
+            {"error": "That file has no extractable text (it may be a scanned PDF or an empty document)."},
+            status=400,
+        )
+
     canvas.content = content
     canvas.save(update_fields=["title", "content", "updated_at"])
 
     from chat.services import create_canvas_checkpoint
-    cp = create_canvas_checkpoint(canvas, source="import", description="Imported from .docx")
+    cp = create_canvas_checkpoint(canvas, source="import", description="Imported from file")
     canvas.accepted_checkpoint = cp
     canvas.save(update_fields=["accepted_checkpoint"])
     set_active_canvas(thread.pk, canvas)

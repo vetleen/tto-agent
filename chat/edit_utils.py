@@ -55,3 +55,27 @@ def apply_unique_text_edits(
         result = result[:start] + repl + result[end:]
 
     return result, len(accepted), failed
+
+
+def append_with_anchor(content: str, text: str, anchor: str = "") -> tuple[str, bool]:
+    """Insert ``text`` into ``content``, returning ``(new_content, inserted_after_anchor)``.
+
+    Placement rule shared by the canvas insert tools: if ``anchor`` is given and
+    matches **exactly once** in ``content``, ``text`` is inserted immediately
+    after that occurrence; otherwise (no anchor, anchor absent, or anchor
+    ambiguous with >1 matches) ``text`` is appended at the end. Insertion is
+    separated from surrounding content by a blank line. On an empty canvas the
+    result is just ``text``. The unique-match requirement mirrors
+    :func:`apply_unique_text_edits` so the two tools place content identically.
+    """
+    text = text or ""
+    if not content:
+        return text, False
+
+    if anchor and content.count(anchor) == 1:
+        end = content.find(anchor) + len(anchor)
+        new_content = content[:end] + "\n\n" + text + content[end:]
+        return new_content, True
+
+    # No anchor, or it didn't resolve to a single location — append at the end.
+    return content + "\n\n" + text, False

@@ -1105,6 +1105,139 @@ class OpenDocumentToCanvasTool(ContextAwareTool):
         return json.dumps(result)
 
 
+class AttachmentOpenToCanvasInput(ReasonBaseModel):
+    attachment_number: int = Field(
+        description=(
+            "Which attachment to load, by its number in the '# Attachments' list "
+            "in your context."
+        ),
+    )
+    canvas_name: str = Field(
+        default="",
+        description=(
+            "Target canvas title. Leave empty to name it after the file. If a "
+            "canvas with this title doesn't exist yet, it is created."
+        ),
+    )
+
+
+class AttachmentOpenToCanvasTool(ContextAwareTool):
+    """Load a chat attachment's text into a canvas for editing."""
+
+    name: str = "chat_attachment_open_to_canvas"
+    section: str = "skills"
+    # Canvas-mutating (writes/activates ChatCanvas on the parent thread) — main-only,
+    # like every other canvas tool.
+    audience: str = "main"
+    start_label: str = "Loading attachment..."
+    end_label: str = "Loaded attachment into the canvas"
+    description: str = (
+        "Load a file the user attached to this chat into a canvas as editable text "
+        "(Word, PDF, or a text file), so you can work on its exact content without "
+        "retyping it. Pick the file by its number from the '# Attachments' list in "
+        "your context. Images can't be loaded as text — embed the [[image:uuid]] "
+        "token for the image instead."
+    )
+    args_schema: type[BaseModel] = AttachmentOpenToCanvasInput
+
+    def _run(self, attachment_number: int, canvas_name: str = "", **kwargs) -> str:
+        from core.file_types import (
+            KIND_DOCX,
+            KIND_IMAGE,
+            KIND_PDF,
+            KIND_TEXT,
+            canonical_extension,
+            kind_for_extension,
+            kind_for_mime,
+        )
+
+        from chat.models import ChatCanvas
+        from chat.services import (
+            CANVAS_MAX_CHARS,
+            MAX_CANVASES_PER_THREAD,
+            activate_canvas,
+            create_canvas_checkpoint,
+            get_or_extract_attachment_text,
+            list_thread_attachments,
+        )
+
+        context = self.context
+        thread_id = context.conversation_id if context else None
+        if not thread_id:
+            return json.dumps({"error": "No thread context available."})
+
+        pairs = list_thread_attachments(thread_id)
+        if not pairs:
+            return json.dumps({"error": "There are no attachments on this chat."})
+        by_num = {n: a for n, a in pairs}
+        att = by_num.get(attachment_number)
+        if att is None:
+            available = [{"number": n, "filename": a.original_filename} for n, a in pairs]
+            return json.dumps({
+                "error": f"No attachment #{attachment_number}.",
+                "available_attachments": available,
+            })
+
+        ext = att.original_filename.rsplit(".", 1)[-1] if "." in att.original_filename else ""
+        kind = kind_for_mime(att.content_type) or kind_for_extension(canonical_extension(ext))
+
+        if kind == KIND_IMAGE:
+            return json.dumps({
+                "error": "Images can't be loaded as text. Embed the [[image:uuid]] token for the image instead.",
+            })
+        if kind not in (KIND_PDF, KIND_DOCX, KIND_TEXT):
+            return json.dumps({"error": f"Can't load '{att.original_filename}' as text."})
+
+        user = _get_user_ctx(context)
+        try:
+            with att.file.open("rb") as fh:
+                file_bytes = fh.read()
+        except Exception:
+            logger.exception("Failed to read attachment %s", att.id)
+            return json.dumps({"error": "Could not read the attachment file."})
+
+        # Text attachments aren't pre-extracted — decode them. docx/pdf reuse the
+        # cached extractor (embedded images become [[image:uuid]] tokens).
+        if kind == KIND_TEXT:
+            content = file_bytes.decode("utf-8", errors="replace")
+        else:
+            content = get_or_extract_attachment_text(att, file_bytes, user=user)
+
+        content = (content or "")[:CANVAS_MAX_CHARS]
+        if not content.strip():
+            return json.dumps({"error": "That attachment has no extractable text."})
+
+        title = (canvas_name or att.original_filename.rsplit(".", 1)[0] or "Untitled document")[:255]
+        try:
+            canvas = ChatCanvas.objects.get(thread_id=thread_id, title=title, deleted_at__isnull=True)
+            canvas.content = content
+            canvas.save(update_fields=["content", "updated_at"])
+            created = False
+        except ChatCanvas.DoesNotExist:
+            if ChatCanvas.objects.filter(
+                thread_id=thread_id, deleted_at__isnull=True,
+            ).count() >= MAX_CANVASES_PER_THREAD:
+                return json.dumps({"error": f"Maximum of {MAX_CANVASES_PER_THREAD} canvases per thread reached."})
+            canvas = ChatCanvas.objects.create(thread_id=thread_id, title=title, content=content)
+            created = True
+
+        cp = create_canvas_checkpoint(
+            canvas, source="import", description=f"Loaded attachment '{att.original_filename}'",
+        )
+        if created:
+            canvas.accepted_checkpoint = cp
+            canvas.save(update_fields=["accepted_checkpoint"])
+        activate_canvas(thread_id, canvas)
+
+        return json.dumps({
+            "status": "ok",
+            "canvas_title": canvas.title,
+            "canvas_id": str(canvas.pk),
+            "attachment_number": attachment_number,
+            "filename": att.original_filename,
+        })
+
+
 class EditDocumentTool(ContextAwareTool):
     """Edit a data room document — targeted find-replace, or a full rewrite (creates a new version)."""
 
@@ -1654,6 +1787,7 @@ _registry.register_tool(ReadDocumentTool())
 _registry.register_tool(CanvasSaveToDocumentTool())
 _registry.register_tool(ListDocumentsTool())
 _registry.register_tool(OpenDocumentToCanvasTool())
+_registry.register_tool(AttachmentOpenToCanvasTool())
 _registry.register_tool(EditDocumentTool())
 _registry.register_tool(ArchiveDocumentTool())
 _registry.register_tool(RenameDocumentTool())
