@@ -436,7 +436,8 @@ class PasteUserTextTool(ContextAwareTool):
         "paraphrased or dropped. Pick the message by its number from the "
         "'# Your messages' list in your context. The text is appended to the "
         "canvas (after the optional anchor phrase if it matches once, otherwise at "
-        "the end). If the target canvas doesn't exist yet it is created."
+        "the end). If the target canvas doesn't exist yet it is created. "
+        "Use this when verbatim replication of the prompt matters."
     )
     args_schema: type[BaseModel] = PasteUserTextInput
 

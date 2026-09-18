@@ -1135,7 +1135,7 @@ class AttachmentOpenToCanvasTool(ContextAwareTool):
         "Load a file the user attached to this chat into a canvas as editable text "
         "(Word, PDF, or a text file), so you can work on its exact content without "
         "retyping it. Pick the file by its number from the '# Attachments' list in "
-        "your context. Images can't be loaded as text — embed the [[image:uuid]] "
+        "your context. Note that Images can't be loaded with this tool. For images, embed the [[image:uuid]] "
         "token for the image instead."
     )
     args_schema: type[BaseModel] = AttachmentOpenToCanvasInput
