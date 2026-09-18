@@ -1034,8 +1034,8 @@ class DocumentViewsTests(TestCase):
         self.assertContains(response, "won't use it in any answer")
         # The reviewer's specific finding is surfaced (tooltip + modal data attr).
         self.assertContains(response, "Row 23 names a patient&#x27;s diagnosis.")
-        # PII docs get a "Why was this quarantined?" menu item flagged as pii.
-        self.assertContains(response, "Why was this quarantined?")
+        # PII docs get a "Quarantine reason" menu item flagged as pii.
+        self.assertContains(response, "Quarantine reason")
         self.assertContains(response, 'data-kind="pii"')
 
     def test_data_room_documents_renders_partial_quarantine_badge(self):
@@ -1053,7 +1053,7 @@ class DocumentViewsTests(TestCase):
         )
         self.assertContains(response, "Partially quarantined")
         # Guardrails docs also get the menu item, flagged as guardrails...
-        self.assertContains(response, "Why was this quarantined?")
+        self.assertContains(response, "Quarantine reason")
         self.assertContains(response, 'data-kind="guardrails"')
         # ...but the specific finding is never exposed.
         self.assertNotContains(response, "SECRET REVIEWER FINDING")

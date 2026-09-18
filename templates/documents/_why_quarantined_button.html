@@ -13,5 +13,5 @@ For PII (full quarantine) the reviewer's specific detail is included; for guardr
         data-kind="{% if doc.is_quarantined %}pii{% else %}guardrails{% endif %}"
         data-intro="{% if doc.is_quarantined %}{{ doc.quarantine_reason|default:'This document is quarantined.' }} {{ assistant_name }} won't use it in any answer.{% else %}Content safety checks quarantined parts of this document, so {{ assistant_name }} won't use them in answers.{% endif %}"
         {% if doc.is_quarantined and doc.quarantine_detail %}data-detail="{{ doc.quarantine_detail }}"{% endif %}>
-  Why was this quarantined?
+  Quarantine reason
 </button>
