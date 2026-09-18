@@ -15,6 +15,7 @@ from chat.canvas_tools import PasteUserTextTool
 from chat.models import ChatAttachment, ChatCanvas, ChatMessage, ChatThread
 from chat.services import (
     CANVAS_MAX_CHARS,
+    build_canvas_ingress_manifests,
     import_file_to_canvas,
     list_pasteable_user_messages,
     list_thread_attachments,
@@ -159,6 +160,52 @@ class ListingHelperTests(TestCase):
             )
         pairs = list_thread_attachments(str(self.thread.id))
         self.assertEqual([(n, a.original_filename) for n, a in pairs], [(1, "a.txt"), (2, "b.pdf")])
+
+
+@_IN_MEMORY_STORAGE
+class BuildCanvasIngressManifestsTests(TestCase):
+    """Regression: manifests must be gated on tool-NAME strings (what the consumer
+    passes), not tool objects — the latter silently dropped both manifests."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="man@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+        ChatMessage.objects.create(thread=self.thread, role="user", content="hello there")
+        ChatAttachment.objects.create(
+            thread=self.thread, uploaded_by=self.user,
+            file=SimpleUploadedFile("deck.pdf", b"%PDF"), original_filename="deck.pdf",
+            content_type="application/pdf", size_bytes=4,
+        )
+        ChatAttachment.objects.create(
+            thread=self.thread, uploaded_by=self.user,
+            file=SimpleUploadedFile("pic.png", b"\x89PNG"), original_filename="pic.png",
+            content_type="image/png", size_bytes=4,
+        )
+
+    def test_both_manifests_when_both_tools_selected(self):
+        pasteable, attachments = build_canvas_ingress_manifests(
+            str(self.thread.id),
+            {"canvas_write", "canvas_paste_user_text", "chat_attachment_open_to_canvas"},
+        )
+        self.assertEqual(pasteable["messages"], [{"number": 1, "preview": "hello there"}])
+        self.assertEqual(
+            [(a["number"], a["filename"], a["is_image"]) for a in attachments],
+            [(1, "deck.pdf", False), (2, "pic.png", True)],
+        )
+
+    def test_no_manifests_when_tools_absent(self):
+        pasteable, attachments = build_canvas_ingress_manifests(
+            str(self.thread.id), {"canvas_write", "web_search"},
+        )
+        self.assertIsNone(pasteable)
+        self.assertIsNone(attachments)
+
+    def test_each_manifest_gated_independently(self):
+        pasteable, attachments = build_canvas_ingress_manifests(
+            str(self.thread.id), {"canvas_paste_user_text"},
+        )
+        self.assertIsNotNone(pasteable)
+        self.assertIsNone(attachments)
 
 
 # ---------------------------------------------------------------------------

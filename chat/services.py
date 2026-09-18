@@ -1150,6 +1150,55 @@ def list_thread_attachments(thread_id):
     return list(enumerate(atts, start=1))
 
 
+def build_canvas_ingress_manifests(thread_id, selected_tool_names, *, message_limit=20):
+    """Build the (# Your messages, # Attachments) dynamic-context manifests.
+
+    Each is gated on the corresponding tool actually being available this turn, so
+    they cost no tokens when the Canvas Collaborator skill isn't attached.
+    ``selected_tool_names`` must be the set of tool-NAME strings for the turn (what
+    ``_resolve_selected_tools`` returns) — gating on tool objects here was the bug
+    that silently dropped both manifests. Returns ``(pasteable_messages, attachments)``.
+    """
+    from core.file_types import (
+        KIND_IMAGE,
+        canonical_extension,
+        kind_for_extension,
+        kind_for_mime,
+    )
+
+    names = set(selected_tool_names or ())
+
+    pasteable_messages = None
+    if "canvas_paste_user_text" in names:
+        pairs = list_pasteable_user_messages(thread_id)
+        total = len(pairs)
+        shown = pairs[-message_limit:] if total > message_limit else pairs
+        pasteable_messages = {
+            "messages": [
+                {"number": n, "preview": " ".join((m.content or "").split())[:80]}
+                for n, m in shown
+            ],
+            "total": total,
+            "omitted": total - len(shown),
+        }
+
+    attachments = None
+    if "chat_attachment_open_to_canvas" in names:
+        attachments = []
+        for n, att in list_thread_attachments(thread_id):
+            ext = att.original_filename.rsplit(".", 1)[-1] if "." in att.original_filename else ""
+            kind = kind_for_mime(att.content_type) or kind_for_extension(canonical_extension(ext)) or "file"
+            attachments.append({
+                "number": n,
+                "filename": att.original_filename,
+                "kind": kind,
+                "size_bytes": att.size_bytes,
+                "is_image": kind == KIND_IMAGE,
+            })
+
+    return pasteable_messages, attachments
+
+
 # ---------------------------------------------------------------------------
 # Email block rendering (for .docx export)
 # ---------------------------------------------------------------------------
