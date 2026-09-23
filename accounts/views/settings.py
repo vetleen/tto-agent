@@ -231,7 +231,7 @@ def preferences_feature_model_update(request):
 @org_admin_required
 def org_settings_page(request):
     from agent_skills.models import AgentSkill
-    from core.preferences import get_preferences, get_system_defaults
+    from core.preferences import get_system_defaults
     from llm.service.policies import get_allowed_models
     from llm.tools.registry import get_tool_registry
 
@@ -443,15 +443,6 @@ def org_settings_page(request):
     _SUBAGENT_MODEL_KEYS = ("subagent_mid", "subagent_top")
     subagent_model_rows = [r for r in org_features if r["key"] in _SUBAGENT_MODEL_KEYS]
     org_features = [r for r in org_features if r["key"] not in _SUBAGENT_MODEL_KEYS]
-    # Name the model "default" actually means (the org's resolved Mid / Primary
-    # tier model — the same cascade resolve_subagent_model falls back to).
-    _tier_prefs = get_preferences(request.user)
-    _tier_default = {
-        "mid": ("Mid model", _tier_prefs.mid_model),
-        "primary": ("Primary model", _tier_prefs.top_model),
-    }
-    for r in subagent_model_rows:
-        r["default_tier_label"], r["default_model"] = _tier_default[r["default_slot"]]
 
     # Full (allowed-independent) eligible model lists per tier and per feature.
     # The Model-defaults and Feature-override dropdowns are server-rendered only

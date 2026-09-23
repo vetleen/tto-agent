@@ -374,7 +374,7 @@
                 data-feature="{{ row.key }}"
                 class="org-feature-model-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
               >
-                <option value="">Default: {{ row.default_tier_label }}{% if row.default_model %} ({{ row.default_model }}){% endif %}</option>
+                <option value="">Use organization default {{ row.default_slot }} model (recommended)</option>
                 {% for model in row.eligible_models %}
                 <option value="{{ model }}" {% if row.current == model %}selected{% endif %}>{{ model }}</option>
                 {% endfor %}

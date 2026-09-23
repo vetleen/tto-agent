@@ -278,8 +278,11 @@ class OrgSettingsAccessTests(TestCase):
         self.assertEqual(response.status_code, 200)
         rows = {row["key"]: row for row in response.context["subagent_model_rows"]}
         self.assertEqual(set(rows), {"subagent_mid", "subagent_top"})
-        self.assertEqual(rows["subagent_mid"]["label"], "Mid")
-        self.assertEqual(rows["subagent_top"]["label"], "Standard")
+        self.assertEqual(rows["subagent_mid"]["label"], "Mid-tier sub-agents")
+        self.assertEqual(rows["subagent_top"]["label"], "Top-tier sub-agents")
+        # "No override" follows the org's mid / primary tier models.
+        self.assertEqual(rows["subagent_mid"]["default_slot"], "mid")
+        self.assertEqual(rows["subagent_top"]["default_slot"], "primary")
         # subagent_top's 3-star floor: sol (4*) qualifies, luna (2*) does not.
         self.assertIn("openai/gpt-5.6-sol", rows["subagent_top"]["eligible_models"])
         self.assertNotIn("openai/gpt-5.6-luna", rows["subagent_top"]["eligible_models"])
