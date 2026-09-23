@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
@@ -235,7 +238,10 @@ class LoadTemplateToCanvasInput(ReasonBaseModel):
     template_name: str = Field(description="Name of the resource to load into the canvas.")
     canvas_name: str = Field(
         default="",
-        description="Title for the canvas tab. If omitted, uses the resource name.",
+        description=(
+            "Title for the canvas tab (or, with target='deck' and a full-deck "
+            "resource, for the new deck). If omitted, uses the resource name."
+        ),
     )
     skill_slug: str = Field(
         default="",
@@ -243,6 +249,25 @@ class LoadTemplateToCanvasInput(ReasonBaseModel):
             "Optional: slug of the skill you are authoring, to load a resource "
             "from THAT skill. Omit to load from a skill attached to this thread."
         ),
+    )
+    target: Literal["canvas", "deck"] = Field(
+        default="canvas",
+        description=(
+            "'canvas' (default) loads the resource's text into a canvas. 'deck' "
+            "loads slide-deck JSON: a single slide is added to a deck, a full "
+            "deck becomes a NEW deck (existing decks are never overwritten)."
+        ),
+    )
+    deck_name: str = Field(
+        default="",
+        description=(
+            "target='deck' only: title of the deck to add a single slide to. "
+            "Empty = the active deck (a new deck is created if there is none)."
+        ),
+    )
+    position: int = Field(
+        default=-1,
+        description="target='deck' only: 0-based index to insert a single slide at; -1 appends.",
     )
 
 
@@ -1019,19 +1044,33 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
 
     name: str = "skill_resource_load"
     audience: str = "main"
-    start_label: str = "Loading template to canvas..."
+    start_label: str = "Loading template..."
     end_label: str = "Loaded template to canvas"
+
+    def end_label_for_result(self, result: dict) -> str | None:
+        if result.get("status") == "error":
+            return "Couldn't load template"
+        loaded_as = result.get("loaded_as")
+        if loaded_as == "slide":
+            return "Added a slide from template"
+        if loaded_as == "deck":
+            return "Created a deck from template"
+        return None
+
     description: str = (
         "Load a named text resource into the canvas as an editable starting "
         "point (replaces the current canvas content). Loads from a skill "
         "attached to this thread by default; pass skill_slug to load a resource "
-        "from the skill you are authoring."
+        "from the skill you are authoring. For slide JSON resources pass "
+        "target='deck': a single slide is added to the deck (active deck, or "
+        "deck_name), a full deck is created as a new deck."
     )
     args_schema: type[BaseModel] = LoadTemplateToCanvasInput
     section: str = "skills"
 
     def _run(self, template_name: str, canvas_name: str = "",
-             skill_slug: str = "", **kwargs) -> str:
+             skill_slug: str = "", target: str = "canvas", deck_name: str = "",
+             position: int = -1, **kwargs) -> str:
         from django.db import IntegrityError
 
         from chat.models import ChatCanvas
@@ -1060,6 +1099,12 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
                     "to view those)."
                 ),
             })
+
+        if target == "deck":
+            return self._load_to_deck(
+                thread_id, tmpl, note,
+                deck_name=deck_name, position=position, title=canvas_name,
+            )
 
         content = tmpl.content[:CANVAS_MAX_CHARS]
         title = canvas_name or tmpl.name
@@ -1100,6 +1145,124 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
         if note:
             result["note"] = note
         return json.dumps(result)
+
+    def _load_to_deck(self, thread_id, tmpl, note, *, deck_name: str,
+                      position: int, title: str) -> str:
+        """Add a slide resource to a deck, or create a new deck from a deck resource.
+
+        Never overwrites an existing deck: a single slide is inserted (under the
+        deck's row lock), a full deck always lands under a fresh, de-duplicated title.
+        """
+        from chat.slides import schema, service
+
+        try:
+            payload = json.loads(tmpl.content)
+        except ValueError as exc:
+            return _deck_unverified(tmpl.name, [{"path": "(root)", "message": f"Not valid JSON: {exc}"}])
+
+        kind, issues = schema.classify_slide_payload(payload)
+        if kind is None:
+            return _deck_unverified(tmpl.name, issues)
+
+        if kind == "slide":
+            # Drop the slide-level id: a resource slide was likely copied out of a
+            # deck, so its id would clash with the target deck's. Element ids are
+            # only unique within their slide, so they carry over as-is.
+            slide = copy.deepcopy(payload)
+            slide.pop("id", None)
+            deck, err = service.resolve_deck(thread_id, deck_name or None)
+            if err:
+                return json.dumps({"status": "error", **err})
+            if deck is None:
+                return self._create_deck(
+                    thread_id, {"version": 1, "size": {"w": 960, "h": 540}, "slides": [slide]},
+                    title=title or tmpl.name, note=note, loaded_as="slide",
+                )
+            deck, content, idx, issues = service.insert_slide(
+                deck.pk, slide, position=position,
+                description=f"Added a slide from template: {tmpl.name}",
+            )
+            if deck is None:
+                return json.dumps({"status": "error", "message": "The deck was deleted."})
+            if issues:
+                return json.dumps({
+                    "status": "error",
+                    "message": "Adding the slide made the deck invalid.",
+                    "issues": issues[:10],
+                })
+            service.activate_deck(thread_id, deck)
+
+            inserted = content["slides"][idx]
+            slide_ids = [s.get("id") for s in content["slides"]]
+            result = {
+                "status": "ok",
+                "loaded_as": "slide",
+                "deck_id": str(deck.pk),
+                "title": deck.title,
+                "slide_id": inserted.get("id"),
+                "position": idx,
+                "slide_json": schema.canonical_deck_text(inserted),
+                "slide_ids": slide_ids,
+                "changed_slide_ids": [inserted.get("id")],
+                "slide_count": len(slide_ids),
+            }
+            if note:
+                result["note"] = note
+            return json.dumps(result)
+
+        return self._create_deck(
+            thread_id, copy.deepcopy(payload),
+            title=title or tmpl.name, note=note, loaded_as="deck",
+        )
+
+    def _create_deck(self, thread_id, deck: dict, *, title: str, note, loaded_as: str) -> str:
+        from chat.slide_tools import _tool_org, _tool_user
+        from chat.slides import schema, service
+        from chat.slides import theme as theme_mod
+
+        schema.mint_ids(deck)
+        # Keep the resource's own theme; otherwise the new-deck default (user ->
+        # org -> Forest), exactly as slides_create_deck seeds it.
+        if not deck.get("theme"):
+            default = theme_mod.default_theme_for(_tool_user(self), _tool_org(self))
+            if default.get("id") != "forest":
+                deck["theme"] = theme_mod.theme_to_deck_override(default)
+
+        # A fresh title pins write_deck to its create path — it never overwrites.
+        try:
+            obj, _created, _old = service.write_deck(
+                thread_id, title=service.unique_deck_title(thread_id, title), content=deck,
+            )
+        except service.DeckLimitError as exc:
+            return json.dumps({"status": "error", "message": str(exc)})
+        service.activate_deck(thread_id, obj)
+
+        slide_ids = [s.get("id") for s in deck.get("slides", [])]
+        result = {
+            "status": "ok",
+            "loaded_as": loaded_as,
+            "deck_id": str(obj.pk),
+            "title": obj.title,
+            "slide_ids": slide_ids,
+            "changed_slide_ids": slide_ids,
+            "slide_count": len(slide_ids),
+            "deck_json": schema.canonical_deck_text(deck),
+        }
+        if note:
+            result["note"] = note
+        return json.dumps(result)
+
+
+def _deck_unverified(resource_name: str, issues: list[dict]) -> str:
+    return json.dumps({
+        "status": "error",
+        "message": (
+            f"The resource '{resource_name}' couldn't be verified as a valid slide "
+            "or deck, so the tool couldn't load it. You can still write the "
+            "resource to the deck manually with the edit tool (slide_canvas_edit)."
+        ),
+        "issues": issues[:20],
+    })
 
 
 class SkillResourceListTool(ContextAwareTool):

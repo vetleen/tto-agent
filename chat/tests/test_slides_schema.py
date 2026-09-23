@@ -40,6 +40,52 @@ def _valid_deck():
     }
 
 
+class ClassifySlidePayloadTests(SimpleTestCase):
+    def test_full_deck(self):
+        self.assertEqual(schema.classify_slide_payload(_valid_deck()), ("deck", []))
+
+    def test_single_slide(self):
+        slide = _valid_deck()["slides"][0]
+        self.assertEqual(schema.classify_slide_payload(slide), ("slide", []))
+
+    def test_slide_with_bad_id_still_a_slide(self):
+        # The slide-level id is dropped before insert, so it never blocks loading.
+        slide = dict(_valid_deck()["slides"][0], id="NOT VALID!")
+        self.assertEqual(schema.classify_slide_payload(slide)[0], "slide")
+
+    def test_slide_does_not_mutate_input(self):
+        slide = _valid_deck()["slides"][0]
+        schema.classify_slide_payload(slide)
+        self.assertEqual(slide["id"], "s1")
+
+    def test_invalid_slide_issue_paths_are_slide_relative(self):
+        slide = copy.deepcopy(_valid_deck()["slides"][0])
+        del slide["elements"][0]["x"]
+        kind, issues = schema.classify_slide_payload(slide)
+        self.assertIsNone(kind)
+        self.assertTrue(issues)
+        self.assertTrue(all(not i["path"].startswith("slides.") for i in issues))
+
+    def test_invalid_deck(self):
+        deck = _valid_deck()
+        deck["slides"][0]["elements"][0]["type"] = "nope"
+        kind, issues = schema.classify_slide_payload(deck)
+        self.assertIsNone(kind)
+        self.assertTrue(issues)
+
+    def test_empty_deck_rejected(self):
+        kind, issues = schema.classify_slide_payload({"version": 1, "slides": []})
+        self.assertIsNone(kind)
+        self.assertEqual(issues[0]["path"], "slides")
+
+    def test_neither(self):
+        for payload in ({"foo": 1}, {}, [], "text", 3, None):
+            with self.subTest(payload=payload):
+                kind, issues = schema.classify_slide_payload(payload)
+                self.assertIsNone(kind)
+                self.assertTrue(issues)
+
+
 class ValidateDeckTests(SimpleTestCase):
     def test_valid(self):
         self.assertEqual(schema.validate_deck(_valid_deck()), [])

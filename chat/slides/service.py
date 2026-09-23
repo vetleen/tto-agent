@@ -191,6 +191,54 @@ def save_deck_content(deck, content: dict):
     deck.save(update_fields=["content", "updated_at"])
 
 
+def insert_slide(deck_pk, slide: dict, *, position: int = -1, description: str = ""):
+    """Insert ``slide`` into a deck under its row lock, mint ids, validate, checkpoint.
+
+    Returns ``(deck, content, idx, issues)``. ``deck`` is ``None`` when the deck was
+    deleted in the race; non-empty ``issues`` means the insert would make the deck
+    invalid and nothing was saved. The slide should carry no slide-level id (or one
+    that is unique in the deck) — ``mint_ids`` only fills in missing ids.
+
+    Everything that reads and rewrites deck.content happens under the lock, against
+    content re-read inside it — a parallel insert in the same tool batch would
+    otherwise overwrite this call's slide (and vice versa).
+    """
+    with locked_deck(deck_pk) as deck:
+        if deck is None:
+            return None, None, None, []
+
+        content = copy.deepcopy(deck.content or {})
+        content.setdefault("version", 1)
+        content.setdefault("size", {"w": 960, "h": 540})
+        slides = content.setdefault("slides", [])
+        idx = len(slides) if position < 0 or position > len(slides) else position
+        slides.insert(idx, slide)
+        schema.mint_ids(content)
+
+        issues = schema.validate_deck(content)
+        if issues:
+            return deck, content, idx, issues
+
+        save_deck_content(deck, content)
+        create_deck_checkpoint(deck, source="ai_edit", description=description)
+    return deck, content, idx, []
+
+
+def unique_deck_title(thread_id, base: str, *, exclude_pk=None) -> str:
+    """``base``, or ``base (2)``, ``base (3)``… — the first title no live deck uses."""
+    base = (base or "Untitled deck")[:255]
+    live = SlideSet.objects.filter(thread_id=thread_id, deleted_at__isnull=True)
+    if exclude_pk is not None:
+        live = live.exclude(pk=exclude_pk)
+    if not live.filter(title=base).exists():
+        return base
+    stem = base[:245]  # leave room for the " (n)" suffix within the 255-char title
+    n = 2
+    while live.filter(title=f"{stem} ({n})").exists():
+        n += 1
+    return f"{stem} ({n})"
+
+
 def soft_delete_deck(thread_id, deck):
     was_active = deck.is_active
     deck.deleted_at = timezone.now()
@@ -214,17 +262,9 @@ def restore_deck(thread_id, deck):
     # A live deck may have taken this title while this one was deleted; the
     # partial-unique (thread,title) constraint would then reject the restore.
     # Disambiguate up front so Undo/restore degrades gracefully.
-    clash = (
-        SlideSet.objects.filter(thread_id=thread_id, title=deck.title, deleted_at__isnull=True)
-        .exclude(pk=deck.pk).exists()
-    )
-    if clash:
-        base, n = deck.title, 2
-        while SlideSet.objects.filter(
-            thread_id=thread_id, title=f"{base} ({n})", deleted_at__isnull=True
-        ).exists():
-            n += 1
-        deck.title = f"{base} ({n})"
+    title = unique_deck_title(thread_id, deck.title, exclude_pk=deck.pk)
+    if title != deck.title:
+        deck.title = title
         deck.save(update_fields=["deleted_at", "title"])
     else:
         deck.save(update_fields=["deleted_at"])

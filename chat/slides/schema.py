@@ -18,6 +18,7 @@ Pure Python (pydantic only) — unit-testable anywhere.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -395,6 +396,35 @@ class Deck(_Strict):
 
 
 # --- Validation -------------------------------------------------------------
+def classify_slide_payload(obj) -> tuple[str | None, list[dict]]:
+    """Decide whether parsed JSON is a full deck, a single slide, or neither.
+
+    Returns ``("deck" | "slide" | None, issues)``. A dict with a ``slides`` key is
+    judged as a deck, any other dict as a slide; ``issues`` explain a ``None``.
+    The slide-level ``id`` is ignored when judging a slide: callers drop it before
+    inserting (it would likely clash with the target deck's ids).
+    """
+    if not isinstance(obj, dict) or not obj:
+        return None, [{"path": "(root)", "message": "Expected a JSON object describing a slide or a deck."}]
+
+    if "slides" in obj:
+        issues = validate_deck(obj)
+        if not issues and not obj.get("slides"):
+            issues = [{"path": "slides", "message": "The deck has no slides."}]
+        return (None, issues) if issues else ("deck", [])
+
+    slide = copy.deepcopy(obj)
+    slide.pop("id", None)
+    issues = validate_deck({"version": 1, "slides": [slide]})
+    for issue in issues:
+        path = issue["path"]
+        if path.startswith("slides.0."):
+            issue["path"] = path[len("slides.0."):]
+        elif path == "slides.0":
+            issue["path"] = "(root)"
+    return (None, issues) if issues else ("slide", [])
+
+
 def validate_deck(deck: dict) -> list[dict]:
     """Validate a deck dict. Returns a list of ``{"path","message"}`` issues.
 

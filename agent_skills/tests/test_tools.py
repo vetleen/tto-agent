@@ -848,6 +848,196 @@ class LoadTemplateToCanvasToolTests(TestCase):
         self.assertIn("editable draft body", canvas.content)
 
 
+class LoadResourceToDeckTests(TestCase):
+    """skill_resource_load(target="deck"): a slide resource is added to a deck, a
+    deck resource becomes a NEW deck, anything else is refused — never overwrites."""
+
+    def setUp(self):
+        from chat.models import ChatThread, ChatThreadSkill
+        from chat.slides import layouts
+
+        AgentSkill.objects.all().delete()
+        self.user = User.objects.create_user(email="loaddeck@example.com", password="pass")
+        self.skill = AgentSkill.objects.create(
+            slug="deck-tmpl", name="Deck Tmpl", instructions="Inst.",
+            level="user", created_by=self.user,
+        )
+        self.slide = layouts.get_layout("bullets")
+        # A slide copied out of a real deck carries its old id.
+        stale = dict(self.slide, id="s1")
+        SkillTemplate.objects.create(skill=self.skill, name="One Slide", content=json.dumps(stale))
+        self.deck_json = {
+            "version": 1, "size": {"w": 960, "h": 540},
+            "slides": [layouts.get_layout("title"), layouts.get_layout("closing")],
+        }
+        SkillTemplate.objects.create(skill=self.skill, name="Full Deck", content=json.dumps(self.deck_json))
+        SkillTemplate.objects.create(skill=self.skill, name="Junk", content='{"foo": 1}')
+        SkillTemplate.objects.create(skill=self.skill, name="Not JSON", content="1. A method comprising")
+        SkillTemplate.objects.create(skill=self.skill, name="Array", content=json.dumps([self.slide]))
+
+        self.thread = ChatThread.objects.create(created_by=self.user)
+        ChatThreadSkill.objects.create(thread=self.thread, skill=self.skill)
+        self.tool = LoadTemplateToCanvasTool()
+        self.tool.context = _make_context(self.user, thread_id=str(self.thread.id))
+
+    def _make_deck(self, title="QA Deck", n=2, activate=True):
+        from chat.slides import layouts, schema, service
+
+        content = {
+            "version": 1, "size": {"w": 960, "h": 540},
+            "slides": [layouts.get_layout("bullets") for _ in range(n)],
+        }
+        schema.mint_ids(content)
+        deck, _, _ = service.write_deck(str(self.thread.id), title=title, content=content)
+        if activate:
+            service.activate_deck(str(self.thread.id), deck)
+        return deck
+
+    def _load(self, name, **kw):
+        return json.loads(self.tool._run(template_name=name, target="deck", **kw))
+
+    def test_slide_appended_to_active_deck(self):
+        deck = self._make_deck()
+        before = [s["id"] for s in deck.content["slides"]]
+        cp_count = deck.checkpoints.count()
+
+        result = self._load("One Slide")
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["loaded_as"], "slide")
+        self.assertEqual(result["deck_id"], str(deck.pk))
+        self.assertNotIn("canvas_id", result)
+        self.assertEqual(result["slide_count"], 3)
+        self.assertEqual(result["position"], 2)
+        deck.refresh_from_db()
+        ids = [s["id"] for s in deck.content["slides"]]
+        self.assertEqual(ids[:2], before)  # existing slides untouched
+        # The stale "s1" id clashed, so the new slide got a fresh one.
+        self.assertNotIn(ids[2], before)
+        self.assertEqual(result["slide_id"], ids[2])
+        self.assertEqual(result["changed_slide_ids"], [ids[2]])
+        self.assertEqual(deck.checkpoints.count(), cp_count + 1)
+
+        from chat.models import ChatCanvas
+        self.assertFalse(ChatCanvas.objects.filter(thread=self.thread).exists())
+
+    def test_slide_to_named_deck_at_position(self):
+        other = self._make_deck("Other", activate=False)
+        self._make_deck("Active")
+
+        result = self._load("One Slide", deck_name="Other", position=0)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["deck_id"], str(other.pk))
+        other.refresh_from_db()
+        self.assertEqual(other.content["slides"][0]["id"], result["slide_id"])
+        self.assertTrue(other.is_active)
+
+    def test_slide_unknown_deck_name(self):
+        self._make_deck()
+        result = self._load("One Slide", deck_name="Nope")
+        self.assertEqual(result["status"], "error")
+        self.assertIn("available_decks", result)
+
+    def test_slide_without_deck_creates_one(self):
+        from chat.models import SlideSet
+
+        result = self._load("One Slide")
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["loaded_as"], "slide")
+        deck = SlideSet.objects.get(thread=self.thread)
+        self.assertEqual(deck.title, "One Slide")
+        self.assertTrue(deck.is_active)
+        self.assertEqual(len(deck.content["slides"]), 1)
+
+    def test_slide_past_slide_cap_rejected(self):
+        from chat.slides import schema
+
+        deck = self._make_deck(n=schema.MAX_SLIDES_PER_DECK)
+        result = self._load("One Slide")
+        self.assertEqual(result["status"], "error")
+        deck.refresh_from_db()
+        self.assertEqual(len(deck.content["slides"]), schema.MAX_SLIDES_PER_DECK)
+
+    def test_deck_resource_creates_new_deck_never_overwrites(self):
+        from chat.models import SlideSet
+
+        existing = self._make_deck("Full Deck")
+        existing_content = existing.content
+
+        first = self._load("Full Deck")
+        second = self._load("Full Deck")
+
+        self.assertEqual(first["status"], "ok")
+        self.assertEqual(first["loaded_as"], "deck")
+        self.assertEqual(first["title"], "Full Deck (2)")
+        self.assertEqual(first["slide_count"], 2)
+        self.assertIn("deck_json", first)
+        self.assertEqual(second["title"], "Full Deck (3)")
+        existing.refresh_from_db()
+        self.assertEqual(existing.content, existing_content)
+        new = SlideSet.objects.get(pk=second["deck_id"])
+        self.assertTrue(new.is_active)
+        self.assertTrue(all(s.get("id") for s in new.content["slides"]))
+
+    def test_deck_resource_uses_canvas_name_as_title(self):
+        result = self._load("Full Deck", canvas_name="Pitch")
+        self.assertEqual(result["title"], "Pitch")
+
+    def test_deck_resource_keeps_own_theme(self):
+        from chat.models import SlideSet
+
+        themed = dict(self.deck_json, theme={"colors": {"accent1": "#B87333"}})
+        SkillTemplate.objects.create(skill=self.skill, name="Themed", content=json.dumps(themed))
+        result = self._load("Themed")
+        self.assertEqual(result["status"], "ok")
+        deck = SlideSet.objects.get(pk=result["deck_id"])
+        self.assertEqual(deck.content["theme"]["colors"]["accent1"], "#B87333")
+
+    def test_deck_resource_at_deck_limit(self):
+        from chat.slides import schema
+
+        for i in range(schema.MAX_SLIDE_SETS_PER_THREAD):
+            self._make_deck(f"D{i}")
+        result = self._load("Full Deck")
+        self.assertEqual(result["status"], "error")
+        self.assertIn("Maximum", result["message"])
+
+    def test_unverifiable_resources_refused(self):
+        from chat.models import SlideSet
+
+        deck = self._make_deck()
+        content = deck.content
+        for name in ("Junk", "Not JSON", "Array"):
+            with self.subTest(name=name):
+                result = self._load(name)
+                self.assertEqual(result["status"], "error")
+                self.assertIn("couldn't be verified as a valid slide or deck", result["message"])
+                self.assertIn("slide_canvas_edit", result["message"])
+                self.assertTrue(result["issues"])
+        deck.refresh_from_db()
+        self.assertEqual(deck.content, content)
+        self.assertEqual(SlideSet.objects.filter(thread=self.thread).count(), 1)
+
+    def test_default_target_still_loads_canvas(self):
+        from chat.models import ChatCanvas, SlideSet
+
+        result = json.loads(self.tool._run(template_name="One Slide"))
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("canvas_id", result)
+        self.assertTrue(ChatCanvas.objects.filter(thread=self.thread, title="One Slide").exists())
+        self.assertFalse(SlideSet.objects.filter(thread=self.thread).exists())
+
+    def test_end_labels(self):
+        self.assertEqual(self.tool.end_label_for_result({"status": "ok", "loaded_as": "slide"}),
+                         "Added a slide from template")
+        self.assertEqual(self.tool.end_label_for_result({"status": "ok", "loaded_as": "deck"}),
+                         "Created a deck from template")
+        self.assertIsNone(self.tool.end_label_for_result({"status": "ok", "canvas_id": "x"}))
+        self.assertEqual(self.tool.end_label_for_result({"status": "error"}), "Couldn't load template")
+
+
 class _ResourceToolTestBase(TestCase):
     """Shared fixture: a user-owned skill + an owned thread (so
     resolve_skill_for_thread_edit resolves the skill by slug for writes)."""

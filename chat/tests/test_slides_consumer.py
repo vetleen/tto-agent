@@ -17,8 +17,15 @@ class SlidesUpdatedToolsMembershipTests(SimpleTestCase):
         refreshes in the UI (mirror of the CANVAS_UPDATED_TOOLS assertion)."""
         from chat.consumers import SLIDES_UPDATED_TOOLS
 
-        for name in ("slides_create_deck", "slide_canvas_write", "slide_canvas_edit", "slides_add_slide"):
+        for name in ("slides_create_deck", "slide_canvas_write", "slide_canvas_edit", "slides_add_slide",
+                     "skill_resource_load"):
             self.assertIn(name, SLIDES_UPDATED_TOOLS)
+
+    def test_skill_resource_load_still_refreshes_canvases(self):
+        # target="canvas" returns canvas_id — it must stay a canvas-mutating tool too.
+        from chat.consumers import CANVAS_UPDATED_TOOLS
+
+        self.assertIn("skill_resource_load", CANVAS_UPDATED_TOOLS)
 
 
 class SkillWiringTests(SimpleTestCase):

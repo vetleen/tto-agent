@@ -12,7 +12,6 @@ but is wired to the worker render task in a later phase.
 from __future__ import annotations
 
 import base64
-import copy
 import json
 import time
 from io import BytesIO
@@ -551,27 +550,13 @@ class AddSlideTool(ContextAwareTool):
                 "available_layouts": [c["id"] for c in layouts.layout_catalog()],
             })
 
-        # Everything that reads and rewrites deck.content happens under the row lock,
-        # against content re-read inside it — a parallel slides_add_slide in the same
-        # tool batch would otherwise overwrite this call's slide (and vice versa).
-        with service.locked_deck(deck.pk) as deck:
-            if deck is None:
-                return json.dumps({"status": "error", "message": "The deck was deleted."})
-
-            content = copy.deepcopy(deck.content or {})
-            content.setdefault("version", 1)
-            content.setdefault("size", {"w": 960, "h": 540})
-            slides = content.setdefault("slides", [])
-            idx = len(slides) if position < 0 or position > len(slides) else position
-            slides.insert(idx, seed)
-            schema.mint_ids(content)
-
-            issues = schema.validate_deck(content)
-            if issues:
-                return json.dumps({"status": "error", "message": "Adding the slide made the deck invalid.", "issues": issues[:10]})
-
-            service.save_deck_content(deck, content)
-            service.create_deck_checkpoint(deck, source="ai_edit", description=f"Added a '{layout}' slide")
+        deck, content, idx, issues = service.insert_slide(
+            deck.pk, seed, position=position, description=f"Added a '{layout}' slide"
+        )
+        if deck is None:
+            return json.dumps({"status": "error", "message": "The deck was deleted."})
+        if issues:
+            return json.dumps({"status": "error", "message": "Adding the slide made the deck invalid.", "issues": issues[:10]})
 
         service.activate_deck(thread_id, deck)
 

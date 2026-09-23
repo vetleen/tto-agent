@@ -319,6 +319,10 @@ your own. Each sits under the usual headline (x=48 y=44 w=864 h=60).
   layout, and the numbers map to the layout ids as:
 
 __LAYOUT_CATALOGUE__
+- **Slide templates from other skills.** When an attached skill has a resource holding slide
+  JSON (one slide, or a full deck), load it with `skill_resource_load(target="deck")`: a single
+  slide is added to the active deck (or `deck_name`, at `position`), a full deck becomes a new
+  deck. Then fill in its text with `slide_canvas_edit`.
 - **Colours & fonts: prefer the theme, but literals are allowed.** Lean on the theme colour
   names (`dk1, lt1, dk2, lt2, accent1..accent6, success, warning, danger`) and text classes so a
   slide re-themes cleanly — but you *may* set a raw `#RRGGBB` colour on any run/shape, or a

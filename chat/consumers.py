@@ -105,7 +105,12 @@ CANVAS_UPDATED_TOOLS = (
 # panel (a lightweight slidedeck.updated; the rendered images arrive later via
 # slidedeck.rendered). Any deck-mutating tool MUST be listed here or its deck
 # never refreshes in the UI (asserted by chat/tests/test_slides_consumer.py).
-SLIDES_UPDATED_TOOLS = ("slides_create_deck", "slide_canvas_write", "slide_canvas_edit", "slides_add_slide")
+# skill_resource_load is in both lists: it returns canvas_id (text) OR deck_id
+# (target="deck"), and each branch below only fires on its own id.
+SLIDES_UPDATED_TOOLS = (
+    "slides_create_deck", "slide_canvas_write", "slide_canvas_edit", "slides_add_slide",
+    "skill_resource_load",
+)
 
 MAX_HISTORY_TOKENS = 20_000  # legacy default; overridden by dynamic budget when model is known
 OVERLAP_TOKENS = 2_000  # legacy default; overridden by dynamic budget when model is known
