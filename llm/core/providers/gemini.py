@@ -33,16 +33,19 @@ class GeminiChatModel(BaseLangChainChatModel):
             return info.supports_thinking
         return False
 
-    def _get_streaming_client(self, request: ChatRequest):
-        client = self._client
+    def _get_reasoning_client(self, request: ChatRequest):
         level = request.params.get("thinking_level")
-        if level is not None and self._supports_thinking():
-            client = create_variant_client(
-                self._api_model,
-                provider="google_genai",
-                thinking_level=level,
-                include_thoughts=True,
-            )
+        if level is None or not self._supports_thinking():
+            return self._client
+        return create_variant_client(
+            self._api_model,
+            provider="google_genai",
+            thinking_level=level,
+            include_thoughts=True,
+        )
+
+    def _get_streaming_client(self, request: ChatRequest):
+        client = self._get_reasoning_client(request)
         if request.tool_schemas:
             client = client.bind_tools(request.tool_schemas)
         return client

@@ -491,16 +491,31 @@ class BaseLangChainChatModel(ChatModel):
             config["run_name"] = f"{self._provider_label}/{self.name}"
         return config
 
-    def _get_streaming_client(self, request: ChatRequest):
-        """Return the LangChain client for streaming.
+    def _get_reasoning_client(self, request: ChatRequest):
+        """Return the LangChain client configured for the request's reasoning level.
 
-        Subclasses may override to return a differently-configured client
-        (e.g. with thinking/reasoning enabled) based on *request.params*.
+        Subclasses override to build a thinking/reasoning variant from
+        ``request.params["thinking_level"]``; the base has no reasoning controls.
         """
-        client = self._client
+        return self._client
+
+    def _get_streaming_client(self, request: ChatRequest):
+        """Return the LangChain client for streaming (reasoning variant + tools)."""
+        client = self._get_reasoning_client(request)
         if request.tool_schemas:
             client = client.bind_tools(request.tool_schemas)
         return client
+
+    def _structured_output_kwargs(self) -> dict:
+        """Extra ``with_structured_output`` kwargs for this provider."""
+        return {}
+
+    def structured_client(self, request: ChatRequest, schema):
+        """Return a ``with_structured_output(include_raw=True)`` client that honours
+        the request's reasoning level (for ``generate_structured``)."""
+        return self._get_reasoning_client(request).with_structured_output(
+            schema, include_raw=True, **self._structured_output_kwargs()
+        )
 
     def _parse_chunk(self, chunk) -> list[tuple[str, dict]]:
         """Extract ``(event_type, data)`` pairs from a single LangChain chunk.

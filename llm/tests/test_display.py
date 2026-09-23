@@ -110,6 +110,9 @@ class PickerRatingTests(SimpleTestCase):
         self.assertEqual(get_price_level("openai/gpt-5.6-terra"), 3)
         self.assertEqual(get_price_level("openai/gpt-5.6-sol"), 4)
         self.assertEqual(get_price_level("openai/gpt-6-astra"), 4)
+        self.assertEqual(get_price_level("openai/gpt-6-luna"), 1)
+        self.assertEqual(get_price_level("openai/gpt-6-sol"), 3)
+        self.assertEqual(get_price_level("anthropic/claude-opus-5-5"), 4)
         self.assertEqual(get_price_level("custom/unknown"), 0)
 
     def test_capability_buckets(self):
@@ -128,6 +131,10 @@ class PickerRatingTests(SimpleTestCase):
         self.assertEqual(get_capability_level("anthropic/claude-fable-5"), 5)
         self.assertEqual(get_capability_level("gemini/gemini-3.1-pro-preview"), 3)
         self.assertEqual(get_capability_level("gemini/gemini-3.8-flash"), 2)
+        self.assertEqual(get_capability_level("openai/gpt-6-sol"), 4)
+        self.assertEqual(get_capability_level("openai/gpt-6-luna"), 2)
+        # Held at 4 (not flagship) until it proves out against Fable.
+        self.assertEqual(get_capability_level("anthropic/claude-opus-5-5"), 4)
 
     def test_capability_falls_back_to_price_tier_without_manual_stars(self):
         unstarred = ModelInfo(

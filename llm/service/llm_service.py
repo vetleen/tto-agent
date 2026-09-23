@@ -152,6 +152,7 @@ class LLMService:
         """Run a non-streaming pipeline. Ensures context and model are set; delegates to pipeline."""
         self._ensure_context(request)
         request.model = self._resolve_model(request.model)
+        self._apply_default_reasoning(request)
         pipeline = self._get_pipeline_registry().get_pipeline(pipeline_id)
         if request.stream and not pipeline.capabilities.get("streaming", False):
             raise LLMPolicyDenied(f"Pipeline {pipeline_id} does not support streaming")
@@ -233,6 +234,7 @@ class LLMService:
         """Stream events from a pipeline. Ensures context and model; validates streaming capability."""
         self._ensure_context(request)
         request.model = self._resolve_model(request.model)
+        self._apply_default_reasoning(request)
         pipeline = self._get_pipeline_registry().get_pipeline(pipeline_id)
         if not pipeline.capabilities.get("streaming", False):
             raise LLMPolicyDenied(f"Pipeline {pipeline_id} does not support streaming")
@@ -383,6 +385,23 @@ class LLMService:
     def _ensure_context(request: ChatRequest) -> None:
         if request.context is None:
             request.context = RunContext.create()
+
+    @staticmethod
+    def _apply_default_reasoning(request: ChatRequest) -> None:
+        """Fill in the registry's default reasoning level when the caller set none.
+
+        Chat resolves its own level; every other caller (guardrails, PII,
+        descriptions, titles, sub-agents) gets the model's curated default
+        rather than whatever the provider would pick. An explicit level,
+        including "off"/"none", is left untouched.
+        """
+        if "thinking_level" in request.params:
+            return
+        from llm.model_registry import get_model_info
+
+        info = get_model_info(request.model or "")
+        if info is not None and info.default_reasoning_level:
+            request.params["thinking_level"] = info.default_reasoning_level
 
 
 _global_service: LLMService | None = None

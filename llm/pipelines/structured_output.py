@@ -60,9 +60,9 @@ class StructuredOutputPipeline(BasePipeline):
 
         model = create_chat_model(request.model)
         lc_messages = to_langchain_messages(request.messages)
-        structured_client = model._client.with_structured_output(
-            output_schema, include_raw=True
-        )
+        # Provider hook: honours request.params["thinking_level"] and picks a
+        # structured-output method the provider accepts with thinking on.
+        structured_client = model.structured_client(request, output_schema)
 
         schema_name = getattr(output_schema, "__name__", str(output_schema))
         parsed = None

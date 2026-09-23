@@ -24,12 +24,15 @@ from llm.model_registry import (
 
 EXPECTED_IDS = [
     "openai/gpt-6-astra",
+    "openai/gpt-6-sol",
+    "openai/gpt-6-luna",
     "openai/gpt-5.6-sol",
     "openai/gpt-5.6-terra",
     "openai/gpt-5.6-luna",
     "openai/gpt-5.4-nano",
     "anthropic/claude-fable-5-1",
     "anthropic/claude-fable-5",
+    "anthropic/claude-opus-5-5",
     "anthropic/claude-opus-5",
     "anthropic/claude-opus-4-8",
     "anthropic/claude-opus-4-6",
@@ -70,12 +73,15 @@ class RegistryTests(SimpleTestCase):
             "openai/gpt-6-astra": (("low", "medium", "high", "xhigh", "max"), "medium"),
             "openai/gpt-5.6-sol": (("none", "low", "medium", "high", "xhigh", "max"), "medium"),
             "openai/gpt-5.6-terra": (("none", "low", "medium", "high", "xhigh", "max"), "medium"),
-            "openai/gpt-5.6-luna": (("none", "low", "medium", "high", "xhigh", "max"), "medium"),
+            "openai/gpt-6-sol": (("none", "low", "medium", "high", "xhigh", "max"), "medium"),
+            "openai/gpt-6-luna": (("none", "low", "medium", "high", "xhigh", "max"), "xhigh"),
+            "openai/gpt-5.6-luna": (("none", "low", "medium", "high", "xhigh", "max"), "max"),
             "openai/gpt-5.4-nano": (("none", "low", "medium", "high", "xhigh"), "none"),
             "anthropic/claude-fable-5-1": (("low", "medium", "high", "xhigh", "max"), "high"),
             "anthropic/claude-fable-5": (("low", "medium", "high", "xhigh", "max"), "high"),
+            "anthropic/claude-opus-5-5": (("low", "medium", "high", "xhigh", "max"), "medium"),
             "anthropic/claude-opus-5": (("off", "low", "medium", "high", "xhigh", "max"), "high"),
-            "anthropic/claude-opus-4-8": (("off", "low", "medium", "high", "max"), "off"),
+            "anthropic/claude-opus-4-8": (("off", "low", "medium", "high", "xhigh", "max"), "off"),
             "anthropic/claude-opus-4-6": (("off", "low", "medium", "high", "max"), "off"),
             "anthropic/claude-sonnet-5": (("off", "low", "medium", "high", "xhigh", "max"), "high"),
             "anthropic/claude-haiku-4-5": (("off", "low", "medium", "high"), "off"),
@@ -205,11 +211,17 @@ class TierTests(SimpleTestCase):
     def test_tier_sets(self):
         self.assertEqual(
             get_models_by_tier(TIER_CHEAP),
-            ["openai/gpt-5.6-luna", "openai/gpt-5.4-nano", "gemini/gemini-3.5-flash-lite"],
+            [
+                "openai/gpt-6-luna",
+                "openai/gpt-5.6-luna",
+                "openai/gpt-5.4-nano",
+                "gemini/gemini-3.5-flash-lite",
+            ],
         )
         self.assertEqual(
             get_models_by_tier(TIER_MID),
             [
+                "openai/gpt-6-luna",
                 "openai/gpt-5.6-terra",
                 "openai/gpt-5.6-luna",
                 "anthropic/claude-sonnet-5",
@@ -222,7 +234,9 @@ class TierTests(SimpleTestCase):
         self.assertEqual(
             get_models_by_tier(TIER_STANDARD),
             [
+                "openai/gpt-6-sol",
                 "openai/gpt-5.6-sol",
+                "anthropic/claude-opus-5-5",
                 "anthropic/claude-opus-5",
                 "anthropic/claude-opus-4-8",
                 "anthropic/claude-opus-4-6",

@@ -34,16 +34,29 @@ class AnthropicChatModel(BaseLangChainChatModel):
 
     # -- Thinking / extended-thinking support --
 
-    def _get_streaming_client(self, request: ChatRequest):
-        client = self._client
+    def _get_reasoning_client(self, request: ChatRequest):
         level = request.params.get("thinking_level")
+        if level is None:
+            return self._client
+        if level == "off":
+            # Explicit, because several models (Opus 5, Sonnet 5) think by
+            # default when `thinking` is omitted.
+            return create_variant_client(
+                self._api_model, provider="anthropic", thinking={"type": "disabled"},
+            )
+        if self._uses_adaptive_thinking():
+            return self._get_adaptive_thinking_client(level)
+        if level in _ANTHROPIC_THINKING:
+            return self._get_extended_thinking_client(level)
+        return self._client
 
-        if level not in (None, "off"):
-            if self._uses_adaptive_thinking():
-                client = self._get_adaptive_thinking_client(level)
-            else:
-                if level in _ANTHROPIC_THINKING:
-                    client = self._get_extended_thinking_client(level)
+    def _structured_output_kwargs(self) -> dict:
+        # Native output_config.format instead of LangChain's default forced
+        # tool call, which always-thinking models (Opus 5.5) reject with a 400.
+        return {"method": "json_schema"}
+
+    def _get_streaming_client(self, request: ChatRequest):
+        client = self._get_reasoning_client(request)
 
         if request.tool_schemas:
             client = client.bind_tools(request.tool_schemas)

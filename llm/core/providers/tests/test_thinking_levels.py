@@ -22,12 +22,52 @@ def _request(level):
 
 
 class AnthropicReasoningTests(SimpleTestCase):
-    def test_off_uses_base_client(self):
+    @patch("llm.core.providers.anthropic.create_variant_client")
+    def test_off_explicitly_disables_thinking(self, create_variant):
+        # Opus 5 / Sonnet 5 think by default, so "off" must send disabled
+        # rather than omitting `thinking`.
+        variant = MagicMock()
+        create_variant.return_value = variant
+        model = AnthropicChatModel("anthropic/claude-opus-5", MagicMock())
+        result = model._get_streaming_client(_request("off"))
+        self.assertEqual(create_variant.call_args.kwargs["thinking"], {"type": "disabled"})
+        self.assertIs(result, variant.bind.return_value)
+        variant.bind.assert_called_once_with(cache_control={"type": "ephemeral"})
+
+    def test_missing_level_uses_base_client(self):
         client = MagicMock()
         model = AnthropicChatModel("anthropic/claude-opus-5", client)
-        result = model._get_streaming_client(_request("off"))
+        result = model._get_streaming_client(_request(None))
         self.assertIs(result, client.bind.return_value)
-        client.bind.assert_called_once_with(cache_control={"type": "ephemeral"})
+
+    @patch("llm.core.providers.anthropic.create_variant_client")
+    def test_opus_55_default_is_adaptive_medium(self, create_variant):
+        create_variant.return_value = MagicMock()
+        model = AnthropicChatModel("anthropic/claude-opus-5-5", MagicMock())
+        model._get_streaming_client(_request("medium"))
+        kwargs = create_variant.call_args.kwargs
+        self.assertEqual(kwargs["thinking"], {"type": "adaptive", "display": "summarized"})
+        self.assertEqual(kwargs["output_config"], {"effort": "medium"})
+
+    @patch("llm.core.providers.anthropic.create_variant_client")
+    def test_opus_48_xhigh_is_adaptive(self, create_variant):
+        create_variant.return_value = MagicMock()
+        model = AnthropicChatModel("anthropic/claude-opus-4-8", MagicMock())
+        model._get_streaming_client(_request("xhigh"))
+        self.assertEqual(create_variant.call_args.kwargs["output_config"], {"effort": "xhigh"})
+
+    @patch("llm.core.providers.anthropic.create_variant_client")
+    def test_structured_client_uses_native_json_schema_with_thinking(self, create_variant):
+        variant = MagicMock()
+        create_variant.return_value = variant
+        model = AnthropicChatModel("anthropic/claude-opus-5-5", MagicMock())
+        schema = object()
+        result = model.structured_client(_request("medium"), schema)
+        self.assertEqual(create_variant.call_args.kwargs["output_config"], {"effort": "medium"})
+        variant.with_structured_output.assert_called_once_with(
+            schema, include_raw=True, method="json_schema"
+        )
+        self.assertIs(result, variant.with_structured_output.return_value)
 
     @patch("llm.core.providers.anthropic.create_variant_client")
     def test_adaptive_effort_is_sent_in_output_config(self, create_variant):
@@ -84,6 +124,16 @@ class OpenAIReasoningTests(SimpleTestCase):
                 else:
                     self.assertEqual(reasoning["summary"], "auto")
 
+    @patch("llm.core.providers.openai.create_variant_client")
+    def test_structured_client_honours_reasoning_with_default_method(self, create_variant):
+        variant = MagicMock()
+        create_variant.return_value = variant
+        model = OpenAIChatModel("openai/gpt-5.6-luna", MagicMock())
+        schema = object()
+        model.structured_client(_request("max"), schema)
+        self.assertEqual(create_variant.call_args.kwargs["reasoning"]["effort"], "max")
+        variant.with_structured_output.assert_called_once_with(schema, include_raw=True)
+
     def test_reasoning_summary_is_parsed_from_responses_content(self):
         model = OpenAIChatModel("openai/gpt-5.6-terra", MagicMock())
         chunk = SimpleNamespace(
@@ -133,6 +183,16 @@ class GeminiReasoningTests(SimpleTestCase):
         model = GeminiChatModel("gemini/gemini-3.5-flash-lite", MagicMock())
         model._get_streaming_client(_request("minimal"))
         self.assertEqual(create_variant.call_args.kwargs["thinking_level"], "minimal")
+
+    @patch("llm.core.providers.gemini.create_variant_client")
+    def test_structured_client_honours_thinking_level(self, create_variant):
+        variant = MagicMock()
+        create_variant.return_value = variant
+        model = GeminiChatModel("gemini/gemini-3.8-flash", MagicMock())
+        schema = object()
+        model.structured_client(_request("medium"), schema)
+        self.assertEqual(create_variant.call_args.kwargs["thinking_level"], "medium")
+        variant.with_structured_output.assert_called_once_with(schema, include_raw=True)
 
     def test_function_call_thought_signature_is_preserved(self):
         key = "__gemini_function_call_thought_signatures__"

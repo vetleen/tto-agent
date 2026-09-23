@@ -22,6 +22,21 @@ class PricingLookupTests(SimpleTestCase):
             get_model_pricing("gpt-5.4-nano"),
             (Decimal("0.20"), Decimal("0.02"), Decimal("0.25"), Decimal("1.25")),
         )
+        self.assertEqual(
+            get_model_pricing("openai/gpt-6-sol"),
+            (Decimal("2.00"), Decimal("0.20"), Decimal("2.50"), Decimal("10.00")),
+        )
+        self.assertEqual(
+            get_model_pricing("openai/gpt-6-luna"),
+            (Decimal("0.10"), Decimal("0.01"), Decimal("0.125"), Decimal("0.50")),
+        )
+
+    def test_opus_55_prices(self):
+        # Cache reads are 0.05x input on Opus 5.5 (not the usual 0.1x).
+        self.assertEqual(
+            get_model_pricing("anthropic/claude-opus-5-5"),
+            (Decimal("4.00"), Decimal("0.20"), Decimal("5.00"), Decimal("20.00")),
+        )
 
     def test_long_context_pricing_applies_to_entire_request(self):
         self.assertEqual(
@@ -35,6 +50,14 @@ class PricingLookupTests(SimpleTestCase):
         self.assertEqual(
             get_model_pricing("gpt-6-astra", input_tokens=272_001),
             (Decimal("20.00"), Decimal("2.00"), Decimal("25.00"), Decimal("75.00")),
+        )
+        self.assertEqual(
+            get_model_pricing("gpt-6-sol", input_tokens=272_001),
+            (Decimal("4.00"), Decimal("0.40"), Decimal("5.00"), Decimal("15.00")),
+        )
+        self.assertEqual(
+            get_model_pricing("gpt-6-luna", input_tokens=272_001),
+            (Decimal("0.20"), Decimal("0.02"), Decimal("0.25"), Decimal("0.75")),
         )
         self.assertEqual(
             get_model_pricing("gemini-3.1-pro-preview", input_tokens=200_001),

@@ -63,6 +63,26 @@ class StructuredOutputPipelineTests(TestCase):
         self.assertEqual(response.usage.completion_tokens, 50)
         self.assertIn('"description"', response.message.content)
 
+    @patch("llm.pipelines.structured_output.create_chat_model")
+    def test_run_uses_provider_structured_client(self, mock_create):
+        # The provider hook (not the bare client) builds the structured client,
+        # so the request's reasoning level and provider method apply.
+        fake_parsed = _TestSchema(description="A.", document_type="B")
+        fake_model = MagicMock()
+        fake_model.generate_structured.return_value = (
+            {"raw": None, "parsed": fake_parsed, "parsing_error": None}, None,
+        )
+        mock_create.return_value = fake_model
+
+        request = self._make_request(params={"output_schema": _TestSchema, "thinking_level": "max"})
+        StructuredOutputPipeline().run(request)
+
+        fake_model.structured_client.assert_called_once_with(request, _TestSchema)
+        self.assertIs(
+            fake_model.generate_structured.call_args[0][0],
+            fake_model.structured_client.return_value,
+        )
+
     def test_run_missing_model_raises(self):
         pipeline = StructuredOutputPipeline()
         request = self._make_request(model=None)

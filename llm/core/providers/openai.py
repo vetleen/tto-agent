@@ -36,18 +36,21 @@ class OpenAIChatModel(BaseLangChainChatModel):
             return info.supports_thinking
         return any(self._api_model.lower().startswith(p) for p in _REASONING_PREFIXES)
 
-    def _get_streaming_client(self, request: ChatRequest):
-        client = self._client
+    def _get_reasoning_client(self, request: ChatRequest):
         level = request.params.get("thinking_level")
-        if level is not None and self._supports_reasoning():
-            reasoning = {"effort": level}
-            if level != "none":
-                reasoning["summary"] = "auto"
-            client = create_variant_client(
-                self._api_model,
-                provider="openai",
-                reasoning=reasoning,
-            )
+        if level is None or not self._supports_reasoning():
+            return self._client
+        reasoning = {"effort": level}
+        if level != "none":
+            reasoning["summary"] = "auto"
+        return create_variant_client(
+            self._api_model,
+            provider="openai",
+            reasoning=reasoning,
+        )
+
+    def _get_streaming_client(self, request: ChatRequest):
+        client = self._get_reasoning_client(request)
         if request.tool_schemas:
             client = client.bind_tools(request.tool_schemas)
         return client

@@ -576,6 +576,52 @@ class RunStructuredTests(TestCase):
         self.assertIsNone(usage)
 
 
+class DefaultReasoningLevelTests(TestCase):
+    """LLMService fills in the registry's default reasoning level."""
+
+    def _run(self, model, params=None):
+        fake_pipeline = MagicMock()
+        fake_pipeline.capabilities = {"streaming": True}
+        fake_pipeline.run.return_value = ChatResponse(
+            message=Message(role="assistant", content="Hi"), model=model, usage=None, metadata={},
+        )
+        service = _make_service(fake_pipeline)
+        request = ChatRequest(
+            messages=[Message(role="user", content="Hello")], stream=False, model=model,
+            context=RunContext.create(), params=params or {},
+        )
+        with patch("llm.service.logger.log_call"):
+            service.run("simple_chat", request)
+        return fake_pipeline.run.call_args[0][0].params
+
+    def test_missing_level_gets_registry_default(self):
+        self.assertEqual(self._run("openai/gpt-5.6-luna")["thinking_level"], "max")
+        self.assertEqual(self._run("openai/gpt-6-luna")["thinking_level"], "xhigh")
+        self.assertEqual(self._run("anthropic/claude-opus-5-5")["thinking_level"], "medium")
+
+    def test_explicit_level_is_kept(self):
+        params = self._run("openai/gpt-5.6-luna", {"thinking_level": "low"})
+        self.assertEqual(params["thinking_level"], "low")
+        params = self._run("anthropic/claude-sonnet-5", {"thinking_level": "off"})
+        self.assertEqual(params["thinking_level"], "off")
+
+    def test_unregistered_model_is_left_alone(self):
+        self.assertNotIn("thinking_level", self._run("gpt-4o-mini"))
+
+    def test_stream_gets_registry_default(self):
+        fake_pipeline = MagicMock()
+        fake_pipeline.capabilities = {"streaming": True}
+        fake_pipeline.stream.return_value = iter([])
+        service = _make_service(fake_pipeline)
+        request = ChatRequest(
+            messages=[Message(role="user", content="Hello")], stream=True,
+            model="anthropic/claude-opus-5-5", context=RunContext.create(),
+        )
+        with patch("llm.service.llm_service.log_stream"):
+            list(service.stream("simple_chat", request))
+        self.assertEqual(request.params["thinking_level"], "medium")
+
+
 class InterruptedStreamLoggingTests(TestCase):
     """Verify that interrupted/cancelled streams still get logged."""
 

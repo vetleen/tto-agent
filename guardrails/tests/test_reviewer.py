@@ -82,8 +82,11 @@ class ReviewerTest(TestCase):
         )
         self.assertEqual(result.action, "block")
 
-    @override_settings(LLM_DEFAULT_TOP_MODEL="")
-    def test_no_model_defaults_to_block(self):
+    # Patch the resolver: blanking LLM_DEFAULT_TOP_MODEL alone still falls back
+    # to LLM_DEFAULT_MODEL from .env and made a real (billed) reviewer call.
+    @patch("core.preferences.resolve_org_feature_model", return_value=None)
+    @patch("guardrails.reviewer._get_llm_service")
+    def test_no_model_defaults_to_block(self, mock_get_service, _mock_resolve):
         classifier_result = ClassifierResult(
             is_suspicious=True,
             concern_tags=["jailbreak"],
@@ -98,6 +101,7 @@ class ReviewerTest(TestCase):
             org_id=None,
         )
         self.assertEqual(result.action, "block")
+        mock_get_service.return_value.run_structured.assert_not_called()
 
     @override_settings(LLM_DEFAULT_TOP_MODEL="test-top-model")
     @patch("guardrails.reviewer._get_llm_service")

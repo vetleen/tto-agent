@@ -161,6 +161,35 @@ _MODELS: dict[str, ModelInfo] = {
         long_context_cache_write_price=Decimal("25.00"),
         long_context_output_price=Decimal("75.00"),
     ),
+    "openai/gpt-6-sol": ModelInfo(
+        display_name="GPT-6 Sol", provider="openai", api_model="gpt-6-sol",
+        stars=4,
+        reasoning_levels=_GPT56_LEVELS, default_reasoning_level="medium",
+        uses_responses_api=True, input_modalities=_MULTIMODAL,
+        context_window=1_050_000, max_output_tokens=128_000,
+        input_price=Decimal("2.00"), cached_input_price=Decimal("0.20"),
+        cache_write_price=Decimal("2.50"), output_price=Decimal("10.00"),
+        long_context_threshold=272_000,
+        long_context_input_price=Decimal("4.00"),
+        long_context_cached_input_price=Decimal("0.40"),
+        long_context_cache_write_price=Decimal("5.00"),
+        long_context_output_price=Decimal("15.00"),
+    ),
+    "openai/gpt-6-luna": ModelInfo(
+        display_name="GPT-6 Luna", provider="openai", api_model="gpt-6-luna",
+        stars=2,
+        # Product choice: second-highest effort (provider default is medium).
+        reasoning_levels=_GPT56_LEVELS, default_reasoning_level="xhigh",
+        uses_responses_api=True, input_modalities=_MULTIMODAL,
+        context_window=1_050_000, max_output_tokens=128_000,
+        input_price=Decimal("0.10"), cached_input_price=Decimal("0.01"),
+        cache_write_price=Decimal("0.125"), output_price=Decimal("0.50"),
+        long_context_threshold=272_000,
+        long_context_input_price=Decimal("0.20"),
+        long_context_cached_input_price=Decimal("0.02"),
+        long_context_cache_write_price=Decimal("0.25"),
+        long_context_output_price=Decimal("0.75"),
+    ),
     "openai/gpt-5.6-sol": ModelInfo(
         display_name="GPT-5.6 Sol", provider="openai", api_model="gpt-5.6-sol",
         stars=4,
@@ -194,7 +223,8 @@ _MODELS: dict[str, ModelInfo] = {
     "openai/gpt-5.6-luna": ModelInfo(
         display_name="GPT-5.6 Luna", provider="openai", api_model="gpt-5.6-luna",
         stars=2,
-        reasoning_levels=_GPT56_LEVELS, default_reasoning_level="medium",
+        # Product choice: highest effort (provider default is medium).
+        reasoning_levels=_GPT56_LEVELS, default_reasoning_level="max",
         uses_responses_api=True, input_modalities=_MULTIMODAL,
         context_window=1_050_000, max_output_tokens=128_000,
         input_price=Decimal("0.20"), cached_input_price=Decimal("0.02"),
@@ -237,6 +267,18 @@ _MODELS: dict[str, ModelInfo] = {
         cached_input_price=Decimal("1.00"), cache_write_price=Decimal("12.50"),
         cache_write_1h_price=Decimal("20.00"), output_price=Decimal("50.00"),
     ),
+    "anthropic/claude-opus-5-5": ModelInfo(
+        display_name="Claude Opus 5.5", provider="anthropic",
+        api_model="claude-opus-5-5", stars=4,
+        # Thinking is always on (no "off"); provider default effort is medium.
+        reasoning_levels=("low", "medium", "high", "xhigh", "max"),
+        default_reasoning_level="medium", thinking_mode="adaptive",
+        input_modalities=_MULTIMODAL, context_window=1_000_000,
+        max_output_tokens=128_000, input_price=Decimal("4.00"),
+        # Cache reads are 0.05x input, not the usual 0.1x.
+        cached_input_price=Decimal("0.20"), cache_write_price=Decimal("5.00"),
+        cache_write_1h_price=Decimal("8.00"), output_price=Decimal("20.00"),
+    ),
     "anthropic/claude-opus-5": ModelInfo(
         display_name="Claude Opus 5", provider="anthropic", api_model="claude-opus-5",
         stars=4,
@@ -250,7 +292,7 @@ _MODELS: dict[str, ModelInfo] = {
     "anthropic/claude-opus-4-8": ModelInfo(
         display_name="Claude Opus 4.8", provider="anthropic", api_model="claude-opus-4-8",
         stars=4,
-        reasoning_levels=("off", "low", "medium", "high", "max"),
+        reasoning_levels=("off", "low", "medium", "high", "xhigh", "max"),
         default_reasoning_level="off", thinking_mode="adaptive",
         input_modalities=_MULTIMODAL, context_window=1_000_000,
         max_output_tokens=128_000, input_price=Decimal("5.00"),
