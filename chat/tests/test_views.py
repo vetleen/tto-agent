@@ -465,12 +465,14 @@ class CanvasSaveToDataRoomTests(TestCase):
         thread.active_canvas_id = canvas.pk
         thread.save(update_fields=["active_canvas_id"])
         url = reverse("canvas_save_to_data_room", kwargs={"thread_id": thread.id})
-        response = self.client.post(
-            url,
-            json.dumps({"data_room_id": self.data_room.pk}),
-            content_type="application/json",
-        )
+        with patch("documents.tasks.process_document_version_task.delay"):
+            response = self.client.post(
+                url,
+                json.dumps({"data_room_id": self.data_room.pk}),
+                content_type="application/json",
+            )
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["verdict"], "queued")  # scanned async, polled
         self.assertTrue(DataRoomDocument.objects.filter(data_room=self.data_room).exists())
 
     def test_non_owner_cannot_save_canvas(self):

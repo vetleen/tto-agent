@@ -1515,17 +1515,17 @@ def canvas_save_to_data_room(request, thread_id, canvas_id=None):
         return JsonResponse({"error": "Access denied"}, status=403)
 
     from chat.services import save_canvas_to_data_room as save_canvas_to_data_room_service
-    from documents.services.sync_scan import scan_version_synchronously
+    from documents.views import _queued_payload
 
-    # Scan synchronously so the button reports the verdict (spinner → checkmark, or the
-    # block reason) instead of returning before the async scan finishes. A blocked save
-    # is KEPT as an accessible quarantined draft (the work isn't lost); the user sees the
-    # reason and can remediate it directly.
-    doc, version = save_canvas_to_data_room_service(canvas, data_room, request.user, enqueue=False)
-    verdict = scan_version_synchronously(version.id)
+    # Hand the version to the async pipeline and return at once: chunk → embed → scan
+    # routinely takes 25–45s, past Heroku's 30s router timeout (WILFRED-8R — the user
+    # saw a failure, retried, and got a duplicate document). The button polls
+    # ``verdict_url`` until the verdict is in. A blocked save is still KEPT as an
+    # accessible quarantined draft; the polled verdict carries the reason.
+    doc, version = save_canvas_to_data_room_service(canvas, data_room, request.user, enqueue=True)
 
     return JsonResponse({
-        **verdict.to_http_json(),
+        **_queued_payload(data_room, doc, version),
         "saved": True,
         "document_id": doc.id,
         "filename": doc.original_filename,

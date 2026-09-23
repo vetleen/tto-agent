@@ -5250,8 +5250,80 @@
 
   // -- Save to data room dropdown --
   if (canvasSaveToDrBtn && canvasSaveToDrDropdown) {
+    // One save at a time: the scan runs async (25–45s), and a second click used to
+    // create a duplicate document (WILFRED-8R).
+    var canvasSaveToDrInFlight = false;
+    var CANVAS_DR_POLL_MS = 3000;
+    var CANVAS_DR_POLL_MAX_TICKS = 300;  // ~15 min, matching the document modal
+    var CANVAS_DR_PENDING_LABEL = {
+      queued: "waiting in queue…",
+      uploaded: "starting…",
+      processing: "processing…",
+      scanning: "scanning…",
+      scan_retrying: "retrying scan…"
+    };
+
+    function setCanvasSaveStatus(text, clearAfterMs) {
+      if (!canvasSaveStatus) return;
+      canvasSaveStatus.textContent = text;
+      if (clearAfterMs) {
+        setTimeout(function() { if (canvasSaveStatus && canvasSaveStatus.textContent === text) canvasSaveStatus.textContent = ""; }, clearAfterMs);
+      }
+    }
+
+    function finishCanvasDrSave() {
+      canvasSaveToDrInFlight = false;
+    }
+
+    // Terminal verdict (clean / warn / blocked / scan_failed) → button + status text.
+    function handleCanvasDrVerdict(data, roomName) {
+      finishCanvasDrSave();
+      if (data.ok) {
+        flashCanvasBtnSuccess(canvasSaveToDrBtn);
+        setCanvasSaveStatus(data.verdict === "warn"
+          ? "Saved to " + roomName + " (some sections flagged & excluded)"
+          : "Saved to " + roomName, 4000);
+      } else if (data.verdict === "blocked") {
+        // Kept as an accessible quarantined draft — show why it isn't searchable.
+        flashCanvasBtnError(canvasSaveToDrBtn);
+        setCanvasSaveStatus("Saved as quarantined draft — " + (data.reviewer_finding || data.reason || "flagged content"), 7000);
+      } else {
+        flashCanvasBtnError(canvasSaveToDrBtn);
+        setCanvasSaveStatus(data.reason || data.error || "Couldn't save", 5000);
+      }
+    }
+
+    // Poll document_version_verdict until the queued save has a verdict. Fetch
+    // errors are transient (a dyno restart, a blip) — just try again next tick.
+    function pollCanvasDrVerdict(verdictUrl, roomName) {
+      var ticks = 0;
+      var timer = setInterval(function() {
+        ticks += 1;
+        if (ticks > CANVAS_DR_POLL_MAX_TICKS) {
+          clearInterval(timer);
+          finishCanvasDrSave();
+          setCanvasBtnState(canvasSaveToDrBtn, "idle");
+          setCanvasSaveStatus("Still processing — check " + roomName + " later.", 7000);
+          return;
+        }
+        fetch(verdictUrl, { credentials: "same-origin" })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(data) {
+            if (!data) return;
+            if (data.pending) {
+              setCanvasSaveStatus("Saving to " + roomName + " — " + (CANVAS_DR_PENDING_LABEL[data.status] || "working…"));
+              return;
+            }
+            clearInterval(timer);
+            handleCanvasDrVerdict(data, roomName);
+          })
+          .catch(function() {});
+      }, CANVAS_DR_POLL_MS);
+    }
+
     canvasSaveToDrBtn.addEventListener("click", function(e) {
       e.stopPropagation();
+      if (canvasSaveToDrInFlight) return;
       var isOpen = !canvasSaveToDrDropdown.classList.contains("hidden");
       canvasSaveToDrDropdown.classList.toggle("hidden");
       if (!isOpen) {
@@ -5295,7 +5367,8 @@
                 e.stopPropagation();
                 var roomId = parseInt(btn.getAttribute("data-room-id"));
                 canvasSaveToDrDropdown.classList.add("hidden");
-                if (!activeThreadId) return;
+                if (!activeThreadId || canvasSaveToDrInFlight) return;
+                canvasSaveToDrInFlight = true;
                 btn.disabled = true;
                 setCanvasBtnState(canvasSaveToDrBtn, "loading");
                 var saveToDrUrl = "/chat/api/threads/" + activeThreadId + "/canvas/" + (activeCanvasId ? activeCanvasId + "/" : "") + "save-to-data-room/";
@@ -5306,24 +5379,19 @@
                 })
                 .then(function(r) { return r.json(); })
                 .then(function(data) {
-                  if (data.ok) {
-                    flashCanvasBtnSuccess(canvasSaveToDrBtn);
-                    var okMsg = data.verdict === "warn"
-                      ? "Saved to " + data.data_room_name + " (some sections flagged & excluded)"
-                      : "Saved to " + data.data_room_name;
-                    if (canvasSaveStatus) { canvasSaveStatus.textContent = okMsg; setTimeout(function() { if (canvasSaveStatus) canvasSaveStatus.textContent = ""; }, 4000); }
-                  } else if (data.verdict === "blocked") {
-                    // Kept as an accessible quarantined draft — show why it isn't searchable.
-                    flashCanvasBtnError(canvasSaveToDrBtn);
-                    if (canvasSaveStatus) { canvasSaveStatus.textContent = "Saved as quarantined draft — " + (data.reviewer_finding || data.reason || "flagged content"); setTimeout(function() { if (canvasSaveStatus) canvasSaveStatus.textContent = ""; }, 7000); }
-                  } else {
-                    flashCanvasBtnError(canvasSaveToDrBtn);
-                    if (canvasSaveStatus) { canvasSaveStatus.textContent = data.reason || data.error || "Couldn't save"; setTimeout(function() { if (canvasSaveStatus) canvasSaveStatus.textContent = ""; }, 5000); }
+                  var roomName = data.data_room_name || "data room";
+                  if (data.verdict === "queued" && data.verdict_url) {
+                    // Saved; the scan runs async — keep spinning and poll for the verdict.
+                    setCanvasSaveStatus("Saving to " + roomName + " — " + CANVAS_DR_PENDING_LABEL.queued);
+                    pollCanvasDrVerdict(data.verdict_url, roomName);
+                    return;
                   }
+                  handleCanvasDrVerdict(data, roomName);
                 })
                 .catch(function() {
+                  finishCanvasDrSave();
                   flashCanvasBtnError(canvasSaveToDrBtn);
-                  if (canvasSaveStatus) { canvasSaveStatus.textContent = "Couldn't save"; setTimeout(function() { if (canvasSaveStatus) canvasSaveStatus.textContent = ""; }, 3000); }
+                  setCanvasSaveStatus("Couldn't save", 3000);
                 });
               });
             });

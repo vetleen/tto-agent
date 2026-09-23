@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
+from django.urls import reverse
 
 from chat.models import ChatCanvas, ChatThread
 from chat.tools import CanvasSaveToDocumentTool, EditDocumentTool, OpenDocumentToCanvasTool
@@ -189,32 +190,65 @@ class SaveToDataRoomEndpointTests(TestCase):
         self.thread = ChatThread.objects.create(created_by=self.user)
         self.canvas = ChatCanvas.objects.create(thread=self.thread, title="C", content="button body text")
 
-    def _post(self, verdict):
+    # The button hands the save to the async pipeline and polls the verdict: the inline
+    # scan took 25–45s, past Heroku's 30s router timeout (WILFRED-8R).
+    @patch("documents.tasks.process_document_version_task.delay")
+    def _post(self, mock_delay):
         url = f"/chat/api/threads/{self.thread.id}/canvas/{self.canvas.id}/save-to-data-room/"
-        with patch(_SYNC_SCAN, return_value=verdict):
+        with patch(_SYNC_SCAN) as scan:
             resp = self.client.post(url, data=json.dumps({"data_room_id": self.room.pk}),
                                     content_type="application/json")
-        return resp
+        scan.assert_not_called()  # nothing scans inline on the web dyno
+        return resp, mock_delay
 
-    def test_clean_save_is_ok(self):
-        resp = self._post(_verdict("clean"))
+    def _verdict_url(self, doc, version):
+        return reverse("document_version_verdict", kwargs={
+            "data_room_id": self.room.uuid, "document_id": doc.id, "version_id": version.id,
+        })
+
+    def test_save_is_queued_with_verdict_url(self):
+        before = DataRoomDocument.objects.filter(data_room=self.room).count()
+        resp, mock_delay = self._post()
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertTrue(data["ok"])
-        self.assertEqual(data["verdict"], "clean")
-
-    def test_blocked_save_kept_as_quarantined_draft_with_reason(self):
-        before = DataRoomDocument.objects.filter(data_room=self.room).count()
-        resp = self._post(_verdict("blocked"))
-        self.assertEqual(resp.status_code, 200)
-        data = resp.json()
-        self.assertFalse(data["ok"])
-        self.assertEqual(data["verdict"], "blocked")
-        self.assertIn("Article 9", data["reason"])
-        self.assertEqual(data["reviewer_finding"], "Row 3 states a named patient's diagnosis.")
         self.assertTrue(data["saved"])
-        # The draft persists (not discarded for the button path).
+        self.assertEqual(data["verdict"], "queued")
+        self.assertEqual(data["data_room_name"], "R")
         self.assertEqual(DataRoomDocument.objects.filter(data_room=self.room).count(), before + 1)
+        doc = DataRoomDocument.objects.get(pk=data["document_id"])
+        version = DataRoomDocumentVersion.objects.get(pk=data["version_id"])
+        self.assertEqual(version.document_id, doc.id)
+        self.assertEqual(version.origin, Origin.CANVAS_EXPORT)
+        # Joined the dispatch gate like an upload (mark_version_queued + safe_dispatch).
+        self.assertIsNotNone(version.queued_at)
+        mock_delay.assert_called_once_with(version.id)
+        self.assertEqual(data["verdict_url"], self._verdict_url(doc, version))
+
+    def test_verdict_url_reports_pending_then_clean(self):
+        data = self._post()[0].json()
+        url = data["verdict_url"]
+        self.assertTrue(self.client.get(url).json()["pending"])
+
+        DataRoomDocumentVersion.objects.filter(pk=data["version_id"]).update(status=Status.READY)
+        polled = self.client.get(url).json()
+        self.assertFalse(polled["pending"])
+        self.assertTrue(polled["ok"])
+        self.assertEqual(polled["verdict"], "clean")
+
+    def test_verdict_url_reports_blocked_draft_with_reason(self):
+        data = self._post()[0].json()
+        DataRoomDocumentVersion.objects.filter(pk=data["version_id"]).update(
+            status=Status.READY, is_quarantined=True,
+            quarantine_reason="Contains GDPR Article 9 (special category) personal data.",
+        )
+        polled = self.client.get(data["verdict_url"]).json()
+        self.assertFalse(polled["pending"])
+        self.assertFalse(polled["ok"])
+        self.assertEqual(polled["verdict"], "blocked")
+        self.assertIn("Article 9", polled["reason"])
+        # The draft persists (not discarded for the button path).
+        self.assertTrue(DataRoomDocument.objects.filter(pk=data["document_id"]).exists())
 
 
 class CanvasBroadcastRegressionTests(TestCase):
