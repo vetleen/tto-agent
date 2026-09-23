@@ -30,8 +30,8 @@ def _create_user(email="img@example.com"):
     LLM_DEFAULT_MODEL="openai/gpt-5.4",
     LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
     LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
-    IMAGE_ALLOWED_MODELS=["gemini/gemini-2.5-flash-image"],
-    IMAGE_DEFAULT_MODEL="gemini/gemini-2.5-flash-image",
+    IMAGE_ALLOWED_MODELS=["gemini/gemini-3.1-flash-lite-image"],
+    IMAGE_DEFAULT_MODEL="gemini/gemini-3.1-flash-lite-image",
 )
 class ImagePreferenceCascadeTests(TestCase):
     def setUp(self):
@@ -50,8 +50,8 @@ class ImagePreferenceCascadeTests(TestCase):
 
     def test_enabled_no_org(self):
         prefs = self._prefs(_create_user())
-        self.assertEqual(prefs.image_model, "gemini/gemini-2.5-flash-image")
-        self.assertEqual(prefs.allowed_image_models, ["gemini/gemini-2.5-flash-image"])
+        self.assertEqual(prefs.image_model, "gemini/gemini-3.1-flash-lite-image")
+        self.assertEqual(prefs.allowed_image_models, ["gemini/gemini-3.1-flash-lite-image"])
         # Skills-gated now — not an always-on tool even when image gen is enabled.
         self.assertNotIn("chat_generate_image", prefs.allowed_tools)
 
@@ -67,20 +67,20 @@ class ImagePreferenceCascadeTests(TestCase):
 
     def test_stored_user_override_is_ignored(self):
         with override_settings(
-            IMAGE_ALLOWED_MODELS=["gemini/gemini-2.5-flash-image", "gemini/gemini-3-pro-image"]
+            IMAGE_ALLOWED_MODELS=["gemini/gemini-3.1-flash-lite-image", "gemini/gemini-3.1-flash-image"]
         ):
             user = _create_user("img3@example.com")
             from accounts.services import update_user_preferences
 
             update_user_preferences(
-                user, lambda p: p.__setitem__("image_models", {"default": "gemini/gemini-3-pro-image"})
+                user, lambda p: p.__setitem__("image_models", {"default": "gemini/gemini-3.1-flash-image"})
             )
             prefs = self._prefs(user)
-            self.assertEqual(prefs.image_model, "gemini/gemini-2.5-flash-image")
+            self.assertEqual(prefs.image_model, "gemini/gemini-3.1-flash-lite-image")
 
     def test_org_default_applies(self):
         with override_settings(
-            IMAGE_ALLOWED_MODELS=["gemini/gemini-2.5-flash-image", "gemini/gemini-3-pro-image"]
+            IMAGE_ALLOWED_MODELS=["gemini/gemini-3.1-flash-lite-image", "gemini/gemini-3.1-flash-image"]
         ):
             user = _create_user("img-org@example.com")
             org = Organization.objects.create(
@@ -88,13 +88,43 @@ class ImagePreferenceCascadeTests(TestCase):
                 slug="image-org",
                 preferences={
                     "allowed_image_models": [
-                        "gemini/gemini-2.5-flash-image", "gemini/gemini-3-pro-image"
+                        "gemini/gemini-3.1-flash-lite-image", "gemini/gemini-3.1-flash-image"
                     ],
-                    "image_models": {"default": "gemini/gemini-3-pro-image"},
+                    "image_models": {"default": "gemini/gemini-3.1-flash-image"},
                 },
             )
             Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
-            self.assertEqual(self._prefs(user).image_model, "gemini/gemini-3-pro-image")
+            self.assertEqual(self._prefs(user).image_model, "gemini/gemini-3.1-flash-image")
+
+    def test_org_prefs_naming_retired_model_still_enabled(self):
+        # An org that saved the retired 2.5 ID must not silently lose image
+        # generation when the system list moves to its replacement.
+        with override_settings(
+            IMAGE_ALLOWED_MODELS=["gemini/gemini-3.1-flash-lite-image", "gemini/gemini-3.1-flash-image"]
+        ):
+            user = _create_user("img-retired@example.com")
+            org = Organization.objects.create(
+                name="Retired Org",
+                slug="retired-org",
+                preferences={
+                    "allowed_image_models": ["gemini/gemini-2.5-flash-image"],
+                    "image_models": {"default": "gemini/gemini-2.5-flash-image"},
+                },
+            )
+            Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
+            prefs = self._prefs(user)
+            self.assertEqual(prefs.image_model, "gemini/gemini-3.1-flash-lite-image")
+            self.assertEqual(prefs.allowed_image_models, ["gemini/gemini-3.1-flash-lite-image"])
+
+    def test_system_settings_naming_retired_model(self):
+        # Heroku config vars still pointing at the retired ID keep working.
+        with override_settings(
+            IMAGE_ALLOWED_MODELS=["gemini/gemini-2.5-flash-image"],
+            IMAGE_DEFAULT_MODEL="gemini/gemini-2.5-flash-image",
+        ):
+            prefs = self._prefs(_create_user("img-retired-sys@example.com"))
+            self.assertEqual(prefs.image_model, "gemini/gemini-3.1-flash-lite-image")
+            self.assertEqual(prefs.allowed_image_models, ["gemini/gemini-3.1-flash-lite-image"])
 
 
 @override_settings(

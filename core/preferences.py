@@ -370,21 +370,32 @@ def get_preferences(user) -> ResolvedPreferences:
     # --- Image generation model cascade ---
     # Mirrors transcription but single-kind (one "default"). Empty effective
     # allow-list (system unset, or org set an empty list) = capability disabled.
-    system_image_allowed = list(getattr(django_settings, "IMAGE_ALLOWED_MODELS", []))
-    system_image_default = getattr(django_settings, "IMAGE_DEFAULT_MODEL", "") or ""
+    # IDs are canonicalized (retired -> replacement) on every side so stored
+    # org prefs naming a retired model don't silently disable the capability.
+    from llm.image_generation_registry import (
+        canonical_image_model_id,
+        get_system_image_allowed_models,
+        get_system_image_default_model,
+        normalize_image_model_ids,
+    )
+
+    system_image_allowed = get_system_image_allowed_models()
+    system_image_default = get_system_image_default_model()
 
     org_image_allowed = org_prefs.get("allowed_image_models") if org_prefs else None
     org_image_models = org_prefs.get("image_models", {}) if org_prefs else {}
 
     if org_image_allowed is not None and isinstance(org_image_allowed, list):
-        effective_image_allowed = [m for m in org_image_allowed if m in system_image_allowed]
+        effective_image_allowed = [
+            m for m in normalize_image_model_ids(org_image_allowed) if m in system_image_allowed
+        ]
     else:
         effective_image_allowed = list(system_image_allowed)
 
     if effective_image_allowed:
         image_model = _resolve_tier(
             user_choice=None,
-            org_default=org_image_models.get("default"),
+            org_default=canonical_image_model_id(org_image_models.get("default")),
             system_default=system_image_default,
             effective_allowed=effective_image_allowed,
             system_allowed=system_image_allowed,

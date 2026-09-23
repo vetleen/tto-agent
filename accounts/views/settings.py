@@ -231,7 +231,7 @@ def preferences_feature_model_update(request):
 @org_admin_required
 def org_settings_page(request):
     from agent_skills.models import AgentSkill
-    from core.preferences import get_system_defaults
+    from core.preferences import get_preferences, get_system_defaults
     from llm.service.policies import get_allowed_models
     from llm.tools.registry import get_tool_registry
 
@@ -393,9 +393,18 @@ def org_settings_page(request):
     from core.languages import TRANSCRIPTION_LANGUAGE_CHOICES
     org_transcription_language = org_prefs.get("transcription_language", "")
 
-    from llm.image_generation_registry import get_image_generation_models
-    system_image_models = list(getattr(django_settings, "IMAGE_ALLOWED_MODELS", []))
+    from llm.image_generation_registry import (
+        canonical_image_model_id,
+        get_image_generation_models,
+        get_system_image_allowed_models,
+        normalize_image_model_ids,
+    )
+    # Canonicalized (retired -> replacement) so stored prefs naming a retired
+    # model still tick/select its replacement — mirrors core.preferences.
+    system_image_models = get_system_image_allowed_models()
     org_allowed_image = org_prefs.get("allowed_image_models")
+    if isinstance(org_allowed_image, list):
+        org_allowed_image = normalize_image_model_ids(org_allowed_image)
     org_image_models = org_prefs.get("image_models", {})
     effective_image_allowed = (
         [m for m in org_allowed_image if m in system_image_models]
@@ -405,6 +414,8 @@ def org_settings_page(request):
     image_model_display = {
         mid: info.display_name for mid, info in get_image_generation_models().items()
     }
+    image_model_choices = [(m, image_model_display.get(m, m)) for m in system_image_models]
+    effective_image_choices = [(m, image_model_display.get(m, m)) for m in effective_image_allowed]
 
     effective_org_allowed = [m for m in org_allowed if m in system_models] if org_allowed else list(system_models)
 
@@ -420,8 +431,8 @@ def org_settings_page(request):
         "skill_emoji": ("Skill emoji", "Picks an emoji for newly created skills."),
         "guardrail_chunk_scan": ("Chunk scan", "Scans document chunks for hidden adversarial content during file processing. Runs on every chunk, so a cheap, fast model keeps costs low."),
         "pii_scan": ("PII classification", "Classifies documents by GDPR personal data categories during processing. Uses a mid-tier model for accuracy."),
-        "subagent_mid": ("Mid", "Model for mid-tier sub-agents — most delegated work (research, summaries, lookups)."),
-        "subagent_top": ("Standard", f"Model for top-tier sub-agents — reserved for tasks that require exceptional intelligence. {django_settings.ASSISTANT_NAME} uses this tier rarely."),
+        "subagent_mid": ("Mid-tier sub-agents", "Handle most delegated work, such as web research, summaries and lookups."),
+        "subagent_top": ("Top-tier sub-agents", f"Used rarely, only for tasks that need exceptional intelligence. {django_settings.ASSISTANT_NAME} picks the tier for each sub-agent."),
     }
     org_features = build_feature_rows(
         "org", org_feature_models, effective_org_allowed, _ORG_FEATURE_META
@@ -432,6 +443,15 @@ def org_settings_page(request):
     _SUBAGENT_MODEL_KEYS = ("subagent_mid", "subagent_top")
     subagent_model_rows = [r for r in org_features if r["key"] in _SUBAGENT_MODEL_KEYS]
     org_features = [r for r in org_features if r["key"] not in _SUBAGENT_MODEL_KEYS]
+    # Name the model "default" actually means (the org's resolved Mid / Primary
+    # tier model — the same cascade resolve_subagent_model falls back to).
+    _tier_prefs = get_preferences(request.user)
+    _tier_default = {
+        "mid": ("Mid model", _tier_prefs.mid_model),
+        "primary": ("Primary model", _tier_prefs.top_model),
+    }
+    for r in subagent_model_rows:
+        r["default_tier_label"], r["default_model"] = _tier_default[r["default_slot"]]
 
     # Full (allowed-independent) eligible model lists per tier and per feature.
     # The Model-defaults and Feature-override dropdowns are server-rendered only
@@ -519,8 +539,11 @@ def org_settings_page(request):
         "transcription_model_display": transcription_model_display,
         "system_image_models": system_image_models,
         "org_allowed_image": org_allowed_image,
-        "org_image_default": org_image_models.get("default", ""),
+        "org_image_default": canonical_image_model_id(org_image_models.get("default")) or "",
         "image_model_display": image_model_display,
+        "image_model_choices": image_model_choices,
+        "effective_image_allowed": effective_image_allowed,
+        "effective_image_choices": effective_image_choices,
         "org_features": org_features,
         "subagent_model_rows": subagent_model_rows,
         "tiers": build_tier_rows(system_defaults, effective_org_allowed),
@@ -1196,10 +1219,17 @@ def org_allowed_image_models_update(request):
     if not isinstance(models, list) or not all(isinstance(m, str) for m in models):
         return JsonResponse({"error": "allowed_image_models must be a list of strings"}, status=400)
 
-    system_models = list(getattr(django_settings, "IMAGE_ALLOWED_MODELS", []))
-    invalid = [m for m in models if m not in system_models]
+    from llm.image_generation_registry import (
+        canonical_image_model_id,
+        get_system_image_allowed_models,
+        normalize_image_model_ids,
+    )
+
+    system_models = get_system_image_allowed_models()
+    invalid = [m for m in models if canonical_image_model_id(m) not in system_models]
     if invalid:
         return JsonResponse({"error": f"These models aren't available: {', '.join(invalid)}."}, status=400)
+    models = normalize_image_model_ids(models)
 
     def mutate(prefs):
         prefs["allowed_image_models"] = models
@@ -1222,9 +1252,20 @@ def org_image_model_update(request):
 
     model = (data.get("model") or "").strip() or None
     if model:
+        from llm.image_generation_registry import (
+            canonical_image_model_id,
+            get_system_image_allowed_models,
+            normalize_image_model_ids,
+        )
+
+        model = canonical_image_model_id(model) or model
         org_allowed = (membership.org.preferences or {}).get("allowed_image_models")
-        system_models = list(getattr(django_settings, "IMAGE_ALLOWED_MODELS", []))
-        effective = [m for m in org_allowed if m in system_models] if isinstance(org_allowed, list) else system_models
+        system_models = get_system_image_allowed_models()
+        effective = (
+            [m for m in normalize_image_model_ids(org_allowed) if m in system_models]
+            if isinstance(org_allowed, list)
+            else system_models
+        )
         if model not in effective:
             return JsonResponse({"error": "Model not in allowed list"}, status=400)
 

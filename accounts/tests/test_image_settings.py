@@ -22,7 +22,7 @@ def _verified(email):
 
 @override_settings(
     ALLOWED_HOSTS=["testserver"],
-    IMAGE_ALLOWED_MODELS=["gemini/gemini-2.5-flash-image", "gemini/gemini-3-pro-image"],
+    IMAGE_ALLOWED_MODELS=["gemini/gemini-3.1-flash-lite-image", "gemini/gemini-3.1-flash-image"],
 )
 class OrgAllowedImageModelsUpdateTests(TestCase):
     def setUp(self):
@@ -38,13 +38,13 @@ class OrgAllowedImageModelsUpdateTests(TestCase):
         self.client.login(email=self.admin_user.email, password=self.password)
         response = self.client.post(
             self.url,
-            json.dumps({"allowed_image_models": ["gemini/gemini-2.5-flash-image"]}),
+            json.dumps({"allowed_image_models": ["gemini/gemini-3.1-flash-lite-image"]}),
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 200)
         self.org.refresh_from_db()
         self.assertEqual(
-            self.org.preferences["allowed_image_models"], ["gemini/gemini-2.5-flash-image"]
+            self.org.preferences["allowed_image_models"], ["gemini/gemini-3.1-flash-lite-image"]
         )
 
     def test_reject_model_not_in_system(self):
@@ -78,10 +78,58 @@ class OrgAllowedImageModelsUpdateTests(TestCase):
         self.org.refresh_from_db()
         self.assertEqual(self.org.preferences["allowed_image_models"], [])
 
+    def test_retired_model_stored_as_replacement(self):
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"allowed_image_models": [
+                "gemini/gemini-2.5-flash-image", "gemini/gemini-3.1-flash-lite-image",
+            ]}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.org.refresh_from_db()
+        self.assertEqual(
+            self.org.preferences["allowed_image_models"], ["gemini/gemini-3.1-flash-lite-image"]
+        )
+
 
 @override_settings(
     ALLOWED_HOSTS=["testserver"],
-    IMAGE_ALLOWED_MODELS=["gemini/gemini-2.5-flash-image", "gemini/gemini-3-pro-image"],
+    IMAGE_ALLOWED_MODELS=["gemini/gemini-3.1-flash-lite-image", "gemini/gemini-3.1-flash-image"],
+)
+class OrgSettingsImageSectionTests(TestCase):
+    def setUp(self):
+        self.admin_user = _verified("imgpage-admin@example.com")
+        self.org = Organization.objects.create(
+            name="ImgPageOrg",
+            slug="imgpageorg",
+            preferences={
+                "allowed_image_models": ["gemini/gemini-2.5-flash-image"],
+                "image_models": {"default": "gemini/gemini-2.5-flash-image"},
+            },
+        )
+        Membership.objects.create(user=self.admin_user, org=self.org, role=Membership.Role.ADMIN)
+        self.client.login(email=self.admin_user.email, password="test-pass-123")
+
+    def test_context_canonicalizes_retired_prefs_and_populates_default_select(self):
+        response = self.client.get(reverse("accounts:org_settings"))
+        self.assertEqual(response.status_code, 200)
+        lite = "gemini/gemini-3.1-flash-lite-image"
+        self.assertEqual(response.context["org_allowed_image"], [lite])
+        self.assertEqual(response.context["effective_image_allowed"], [lite])
+        self.assertEqual(response.context["org_image_default"], lite)
+        # Default dropdown renders the display name, selected.
+        self.assertContains(
+            response,
+            f'<option value="{lite}" selected>Gemini 3.1 Flash Lite Image (Nano Banana 2 Lite)</option>',
+            html=True,
+        )
+
+
+@override_settings(
+    ALLOWED_HOSTS=["testserver"],
+    IMAGE_ALLOWED_MODELS=["gemini/gemini-3.1-flash-lite-image", "gemini/gemini-3.1-flash-image"],
 )
 class OrgImageModelUpdateTests(TestCase):
     def setUp(self):
@@ -95,26 +143,39 @@ class OrgImageModelUpdateTests(TestCase):
         self.client.login(email=self.admin_user.email, password=self.password)
         response = self.client.post(
             self.url,
+            json.dumps({"model": "gemini/gemini-3.1-flash-lite-image"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.org.refresh_from_db()
+        self.assertEqual(
+            self.org.preferences["image_models"]["default"], "gemini/gemini-3.1-flash-lite-image"
+        )
+
+    def test_reject_model_not_allowed(self):
+        # Narrow the org allow-list, then try to default to an excluded model.
+        self.org.preferences = {"allowed_image_models": ["gemini/gemini-3.1-flash-lite-image"]}
+        self.org.save(update_fields=["preferences"])
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"model": "gemini/gemini-3.1-flash-image"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_retired_default_stored_as_replacement(self):
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
             json.dumps({"model": "gemini/gemini-2.5-flash-image"}),
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 200)
         self.org.refresh_from_db()
         self.assertEqual(
-            self.org.preferences["image_models"]["default"], "gemini/gemini-2.5-flash-image"
+            self.org.preferences["image_models"]["default"], "gemini/gemini-3.1-flash-lite-image"
         )
-
-    def test_reject_model_not_allowed(self):
-        # Narrow the org allow-list, then try to default to an excluded model.
-        self.org.preferences = {"allowed_image_models": ["gemini/gemini-2.5-flash-image"]}
-        self.org.save(update_fields=["preferences"])
-        self.client.login(email=self.admin_user.email, password=self.password)
-        response = self.client.post(
-            self.url,
-            json.dumps({"model": "gemini/gemini-3-pro-image"}),
-            content_type="application/json",
-        )
-        self.assertEqual(response.status_code, 400)
 
     def test_admin_clears_default(self):
         self.client.login(email=self.admin_user.email, password=self.password)
@@ -128,7 +189,7 @@ class OrgImageModelUpdateTests(TestCase):
 
 @override_settings(
     ALLOWED_HOSTS=["testserver"],
-    IMAGE_ALLOWED_MODELS=["gemini/gemini-2.5-flash-image"],
+    IMAGE_ALLOWED_MODELS=["gemini/gemini-3.1-flash-lite-image"],
 )
 class UserImageModelUpdateTests(TestCase):
     def setUp(self):
@@ -139,26 +200,26 @@ class UserImageModelUpdateTests(TestCase):
     def test_rejects_persistent_image_model(self):
         settings_obj, _ = UserSettings.objects.get_or_create(user=self.user)
         settings_obj.preferences = {
-            "image_models": {"default": "gemini/gemini-3-pro-image"}
+            "image_models": {"default": "gemini/gemini-3.1-flash-image"}
         }
         settings_obj.save()
         self.client.login(email=self.user.email, password=self.password)
         response = self.client.post(
             self.url,
-            json.dumps({"model": "gemini/gemini-2.5-flash-image"}),
+            json.dumps({"model": "gemini/gemini-3.1-flash-lite-image"}),
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 403)
         settings_obj.refresh_from_db()
         self.assertEqual(
             settings_obj.preferences["image_models"]["default"],
-            "gemini/gemini-3-pro-image",
+            "gemini/gemini-3.1-flash-image",
         )
 
     def test_requires_login(self):
         response = self.client.post(
             self.url,
-            json.dumps({"model": "gemini/gemini-2.5-flash-image"}),
+            json.dumps({"model": "gemini/gemini-3.1-flash-lite-image"}),
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 302)

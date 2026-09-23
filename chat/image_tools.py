@@ -38,7 +38,8 @@ class ChatGenerateImageInput(ReasonBaseModel):
     )
     aspect_ratio: str | None = Field(
         default=None,
-        description="Optional aspect ratio, e.g. '1:1', '16:9', '4:3', '9:16', '3:4'.",
+        description="Optional aspect ratio. One of: '1:1', '2:3', '3:2', '3:4', '4:3', "
+        "'4:5', '5:4', '9:16', '16:9', '21:9', '1:4', '4:1', '1:8', '8:1'.",
     )
 
 
@@ -79,6 +80,7 @@ class ChatGenerateImageTool(ContextAwareTool):
         from chat.assets import image_token, store_thread_image
         from chat.models import ChatThread
         from core.preferences import get_preferences
+        from llm.image_generation_registry import get_image_generation_model_info
         from llm.service.image_generation_service import (
             ImageGenerationError,
             get_image_generation_service,
@@ -102,6 +104,28 @@ class ChatGenerateImageTool(ContextAwareTool):
         thread = _resolve_thread(context)
         if thread is None:
             return json.dumps({"status": "error", "message": "Could not resolve the conversation."})
+
+        # Validate against the configured model's capabilities up front so the
+        # agent gets an actionable error (and can retry) instead of a provider 400.
+        info = get_image_generation_model_info(model_id)
+        if info is not None:
+            aspect_ratio = (aspect_ratio or "").strip() or None
+            if aspect_ratio and aspect_ratio not in info.supported_aspect_ratios:
+                return json.dumps({
+                    "status": "error",
+                    "message": (
+                        f"Aspect ratio '{aspect_ratio}' isn't supported by the image model. "
+                        f"Supported: {', '.join(info.supported_aspect_ratios)}."
+                    ),
+                })
+            if len(input_images or []) > info.max_input_images:
+                return json.dumps({
+                    "status": "error",
+                    "message": (
+                        f"Too many input images ({len(input_images)}); the image model "
+                        f"accepts at most {info.max_input_images}."
+                    ),
+                })
 
         # Resolve any input images (edit / reference). Skip refs the user can't
         # access or that don't resolve, rather than failing the whole call.

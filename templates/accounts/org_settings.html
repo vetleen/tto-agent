@@ -256,7 +256,7 @@
           <div class="divide-y divide-default">
             <div class="px-5 py-4">
               <div id="allowed-image-models-list" class="space-y-2">
-                {% for model in system_image_models %}
+                {% for model, label in image_model_choices %}
                 <label class="flex items-center gap-3 rounded-base border border-default bg-neutral-primary p-3 cursor-pointer hover:bg-neutral-secondary-soft transition-colors">
                   <input
                     type="checkbox"
@@ -264,7 +264,7 @@
                     value="{{ model }}"
                     {% if org_allowed_image == None or model in org_allowed_image %}checked{% endif %}
                   >
-                  <span class="text-sm text-body">{{ model }}</span>
+                  <span class="text-sm text-body">{{ label }}</span>
                 </label>
                 {% empty %}
                 <p class="text-sm text-body italic">No image generation models are configured for this deployment.</p>
@@ -283,8 +283,8 @@
                 class="mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
               >
                 <option value="">Default (first allowed)</option>
-                {% for model in effective_image_allowed %}
-                <option value="{{ model }}" {% if org_image_default == model %}selected{% endif %}>{{ model }}</option>
+                {% for model, label in effective_image_choices %}
+                <option value="{{ model }}" {% if org_image_default == model %}selected{% endif %}>{{ label }}</option>
                 {% endfor %}
               </select>
             </div>
@@ -360,22 +360,26 @@
             </label>
           </div>
           {% if subagent_model_rows %}
-          <div class="border-t border-default px-5 py-4">
-            <h3 class="text-sm font-medium text-heading">Sub-agent models</h3>
-            <p class="text-xs text-body mt-0.5">Choose which model each sub-agent tier uses. Leave on the default to follow your organization's Mid and Standard tier models.</p>
+          <div class="border-t border-default px-5 pt-4">
+            <h3 class="text-sm font-semibold text-heading">Sub-agent models</h3>
+            <p class="mt-0.5 text-sm text-body">By default, mid-tier sub-agents use your Mid model and top-tier sub-agents use your Primary model (see Model defaults). Pick a model here to override that for sub-agents only.</p>
+          </div>
+          <div class="divide-y divide-default">
             {% for row in subagent_model_rows %}
-            <label class="block text-xs font-medium text-heading mt-3" for="subagent-model-{{ row.key }}">{{ row.label }}</label>
-            {% if row.desc %}<p class="text-xs text-body mt-0.5">{{ row.desc }}</p>{% endif %}
-            <select
-              id="subagent-model-{{ row.key }}"
-              data-feature="{{ row.key }}"
-              class="org-feature-model-select wf-mono mt-1 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
-            >
-              <option value="">Use organization default model (recommended)</option>
-              {% for model in row.eligible_models %}
-              <option value="{{ model }}" {% if row.current == model %}selected{% endif %}>{{ model }}</option>
-              {% endfor %}
-            </select>
+            <div class="px-5 py-4">
+              <label class="block text-sm font-medium text-heading" for="subagent-model-{{ row.key }}">{{ row.label }}</label>
+              {% if row.desc %}<p class="text-xs text-body mt-0.5">{{ row.desc }}</p>{% endif %}
+              <select
+                id="subagent-model-{{ row.key }}"
+                data-feature="{{ row.key }}"
+                class="org-feature-model-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+              >
+                <option value="">Default: {{ row.default_tier_label }}{% if row.default_model %} ({{ row.default_model }}){% endif %}</option>
+                {% for model in row.eligible_models %}
+                <option value="{{ model }}" {% if row.current == model %}selected{% endif %}>{{ model }}</option>
+                {% endfor %}
+              </select>
+            </div>
             {% endfor %}
           </div>
           {% endif %}

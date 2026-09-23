@@ -11,12 +11,17 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from llm.image_generation_registry import (
+    IMAGE_MODEL_REPLACEMENTS,
     ImageGenModelInfo,
+    canonical_image_model_id,
     get_image_generation_model_info,
     get_image_generation_models,
+    get_system_image_allowed_models,
+    get_system_image_default_model,
+    normalize_image_model_ids,
 )
 from llm.service.image_generation_service import (
     ImageGenerationError,
@@ -32,27 +37,93 @@ from llm.types.context import RunContext
 
 class RegistryTests(TestCase):
     def test_known_model(self):
-        info = get_image_generation_model_info("gemini/gemini-2.5-flash-image")
+        info = get_image_generation_model_info("gemini/gemini-3.1-flash-lite-image")
         self.assertIsNotNone(info)
         self.assertEqual(info.provider, "google_genai")
-        self.assertEqual(info.api_model, "gemini-2.5-flash-image")
+        self.assertEqual(info.api_model, "gemini-3.1-flash-lite-image")
         self.assertTrue(info.supports_editing)
 
     def test_unknown_model(self):
         self.assertIsNone(get_image_generation_model_info("nope/nope"))
 
     def test_registry_listing(self):
-        self.assertIn("gemini/gemini-2.5-flash-image", get_image_generation_models())
+        models = get_image_generation_models()
+        self.assertIn("gemini/gemini-3.1-flash-lite-image", models)
+        self.assertIn("gemini/gemini-3.1-flash-image", models)
+        self.assertNotIn("gemini/gemini-2.5-flash-image", models)
+
+    def test_gemini_31_capabilities(self):
+        for model_id in ("gemini/gemini-3.1-flash-lite-image", "gemini/gemini-3.1-flash-image"):
+            with self.subTest(model_id=model_id):
+                info = get_image_generation_model_info(model_id)
+                self.assertTrue(info.supports_editing)
+                self.assertEqual(info.max_input_images, 14)
+                self.assertIn("21:9", info.supported_aspect_ratios)
+                self.assertIn("1:8", info.supported_aspect_ratios)
+                self.assertEqual(len(info.supported_aspect_ratios), 14)
+
+    def test_retired_model_resolves_to_replacement(self):
+        info = get_image_generation_model_info("gemini/gemini-2.5-flash-image")
+        self.assertIsNotNone(info)
+        self.assertEqual(info.api_model, "gemini-3.1-flash-lite-image")
+
+
+class ReplacementTests(SimpleTestCase):
+    def test_replacement_targets_are_registered(self):
+        models = get_image_generation_models()
+        for old, new in IMAGE_MODEL_REPLACEMENTS.items():
+            with self.subTest(old=old):
+                self.assertNotIn(old, models)
+                self.assertIn(new, models)
+
+    def test_canonical_id(self):
+        expected = {
+            "gemini/gemini-2.5-flash-image": "gemini/gemini-3.1-flash-lite-image",
+            " gemini/gemini-3.1-flash-image ": "gemini/gemini-3.1-flash-image",
+            "nope/nope": None,
+            "": None,
+            None: None,
+        }
+        for raw, canonical in expected.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(canonical_image_model_id(raw), canonical)
+
+    def test_normalize_dedupes_and_drops_unknown(self):
+        self.assertEqual(
+            normalize_image_model_ids([
+                "gemini/gemini-2.5-flash-image",
+                "nope/nope",
+                "gemini/gemini-3.1-flash-lite-image",
+                "gemini/gemini-3.1-flash-image",
+            ]),
+            ["gemini/gemini-3.1-flash-lite-image", "gemini/gemini-3.1-flash-image"],
+        )
+
+    @override_settings(
+        IMAGE_ALLOWED_MODELS=["gemini/gemini-2.5-flash-image", "nope/nope"],
+        IMAGE_DEFAULT_MODEL="gemini/gemini-2.5-flash-image",
+    )
+    def test_system_settings_canonicalized(self):
+        self.assertEqual(get_system_image_allowed_models(), ["gemini/gemini-3.1-flash-lite-image"])
+        self.assertEqual(get_system_image_default_model(), "gemini/gemini-3.1-flash-lite-image")
 
 
 class CostTests(TestCase):
     def test_per_image_price(self):
-        cost = calculate_image_generation_cost("gemini/gemini-2.5-flash-image")
-        self.assertEqual(cost, Decimal("0.039"))
+        self.assertEqual(
+            calculate_image_generation_cost("gemini/gemini-3.1-flash-lite-image"), Decimal("0.035")
+        )
+        self.assertEqual(
+            calculate_image_generation_cost("gemini/gemini-3.1-flash-image"), Decimal("0.07")
+        )
 
     def test_per_image_multiple(self):
-        cost = calculate_image_generation_cost("gemini/gemini-2.5-flash-image", n_images=3)
-        self.assertEqual(cost, Decimal("0.117"))
+        cost = calculate_image_generation_cost("gemini/gemini-3.1-flash-lite-image", n_images=3)
+        self.assertEqual(cost, Decimal("0.105"))
+
+    def test_retired_model_priced_as_replacement(self):
+        cost = calculate_image_generation_cost("gemini/gemini-2.5-flash-image")
+        self.assertEqual(cost, Decimal("0.035"))
 
     def test_unknown_model_none(self):
         self.assertIsNone(calculate_image_generation_cost("nope/nope"))
@@ -122,15 +193,32 @@ class ServiceTests(TestCase):
             "_call_gemini",
             return_value=(b"PNGBYTES", "image/png", self._usage()),
         ):
-            result = svc.generate("a cat", "gemini/gemini-2.5-flash-image", context=ctx)
+            result = svc.generate("a cat", "gemini/gemini-3.1-flash-lite-image", context=ctx)
 
         self.assertEqual(result.media_type, "image/png")
-        self.assertEqual(result.cost_usd, Decimal("0.039"))
+        self.assertEqual(result.cost_usd, Decimal("0.035"))
         self.assertFalse(result.is_edit)
         log = LLMCallLog.objects.filter(run_id=ctx.run_id).first()
         self.assertIsNotNone(log)
         self.assertEqual(log.status, LLMCallLog.Status.SUCCESS)
-        self.assertEqual(log.cost_usd, Decimal("0.039"))
+        self.assertEqual(log.cost_usd, Decimal("0.035"))
+
+    def test_retired_model_logged_as_replacement(self):
+        from llm.models import LLMCallLog
+
+        svc = ImageGenerationService()
+        ctx = RunContext.create()
+        with patch.object(
+            ImageGenerationService,
+            "_call_gemini",
+            return_value=(b"PNGBYTES", "image/png", self._usage()),
+        ) as call:
+            result = svc.generate("a cat", "gemini/gemini-2.5-flash-image", context=ctx)
+
+        self.assertEqual(call.call_args.args[0].api_model, "gemini-3.1-flash-lite-image")
+        self.assertEqual(result.model, "gemini/gemini-3.1-flash-lite-image")
+        log = LLMCallLog.objects.get(run_id=ctx.run_id)
+        self.assertEqual(log.model, "gemini/gemini-3.1-flash-lite-image")
 
     def test_generate_edit_flag(self):
         svc = ImageGenerationService()
@@ -141,7 +229,7 @@ class ServiceTests(TestCase):
         ):
             result = svc.generate(
                 "make it blue",
-                "gemini/gemini-2.5-flash-image",
+                "gemini/gemini-3.1-flash-lite-image",
                 input_images=[InputImage(data=b"x", mime_type="image/png")],
             )
         self.assertTrue(result.is_edit)
@@ -157,7 +245,7 @@ class ServiceTests(TestCase):
             side_effect=ImageGenerationError("blocked by safety"),
         ):
             with self.assertRaises(ImageGenerationError):
-                svc.generate("bad prompt", "gemini/gemini-2.5-flash-image", context=ctx)
+                svc.generate("bad prompt", "gemini/gemini-3.1-flash-lite-image", context=ctx)
         log = LLMCallLog.objects.filter(run_id=ctx.run_id).first()
         self.assertIsNotNone(log)
         self.assertEqual(log.status, LLMCallLog.Status.ERROR)

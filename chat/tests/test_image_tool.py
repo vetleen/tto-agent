@@ -29,7 +29,11 @@ class _FakeService:
         self._exc = exc
 
     def generate(self, prompt, model_id, context=None, input_images=None, aspect_ratio=None):
-        self.calls.append({"prompt": prompt, "input_images": list(input_images or [])})
+        self.calls.append({
+            "prompt": prompt,
+            "input_images": list(input_images or []),
+            "aspect_ratio": aspect_ratio,
+        })
         if self._exc:
             raise self._exc
         return self._result or ImageGenerationResult(
@@ -44,8 +48,8 @@ class _FakeService:
 
 
 _ENABLED_PREFS = SimpleNamespace(
-    image_model="gemini/gemini-2.5-flash-image",
-    allowed_image_models=["gemini/gemini-2.5-flash-image"],
+    image_model="gemini/gemini-3.1-flash-lite-image",
+    allowed_image_models=["gemini/gemini-3.1-flash-lite-image"],
 )
 
 
@@ -116,6 +120,31 @@ class ChatGenerateImageToolTests(TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("blocked", result["message"].lower())
         self.assertEqual(Asset.objects.filter(thread=self.thread).count(), 0)
+
+    def test_new_aspect_ratio_passes_through(self):
+        fake = _FakeService()
+        with _patch_prefs(), _patch_service(fake):
+            result = self._invoke({"prompt": "a panorama", "aspect_ratio": "21:9"})
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(fake.calls[0]["aspect_ratio"], "21:9")
+
+    def test_unsupported_aspect_ratio_returns_error(self):
+        fake = _FakeService()
+        with _patch_prefs(), _patch_service(fake):
+            result = self._invoke({"prompt": "x", "aspect_ratio": "7:3"})
+        self.assertEqual(result["status"], "error")
+        self.assertIn("7:3", result["message"])
+        self.assertIn("21:9", result["message"])
+        self.assertEqual(fake.calls, [])
+
+    def test_too_many_input_images_returns_error(self):
+        fake = _FakeService()
+        refs = [f"[[image:00000000-0000-0000-0000-{i:012d}|]]" for i in range(15)]
+        with _patch_prefs(), _patch_service(fake):
+            result = self._invoke({"prompt": "x", "input_images": refs})
+        self.assertEqual(result["status"], "error")
+        self.assertIn("at most 14", result["message"])
+        self.assertEqual(fake.calls, [])
 
     def test_input_images_access_control(self):
         # One asset the user owns, one owned by someone else.

@@ -21,7 +21,10 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Optional
 
-from llm.image_generation_registry import get_image_generation_model_info
+from llm.image_generation_registry import (
+    canonical_image_model_id,
+    get_image_generation_model_info,
+)
 from llm.service.errors import LLMProviderError
 from llm.service.logger import log_image_generation, log_image_generation_error
 from llm.service.pricing import calculate_image_generation_cost
@@ -90,6 +93,8 @@ class ImageGenerationService:
         info = get_image_generation_model_info(model_id)
         if info is None:
             raise ValueError(f"Unknown image generation model: {model_id}")
+        # Log/price under the model actually called (retired IDs map to their replacement).
+        model_id = canonical_image_model_id(model_id)
         if info.provider != "google_genai":
             # v1 only wires Gemini. Other providers slot in here later.
             raise ValueError(f"Unsupported image generation provider: {info.provider}")

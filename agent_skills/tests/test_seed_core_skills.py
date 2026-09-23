@@ -78,8 +78,8 @@ class ImageGeneratorGateTest(TestCase):
         return entry["tool_names"]
 
     @override_settings(
-        IMAGE_ALLOWED_MODELS=["openai/gpt-image-1"],
-        IMAGE_DEFAULT_MODEL="openai/gpt-image-1",
+        IMAGE_ALLOWED_MODELS=["gemini/gemini-3.1-flash-lite-image"],
+        IMAGE_DEFAULT_MODEL="gemini/gemini-3.1-flash-lite-image",
     )
     def test_tool_present_when_image_model_resolves(self):
         prefs = get_preferences(self.user)
