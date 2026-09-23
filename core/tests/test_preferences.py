@@ -966,6 +966,90 @@ class FeatureModelOverrideTest(TestCase):
         self.assertEqual(prefs.feature_models["chat"], "openai/gpt-5.4")
 
     @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5.4",
+        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=[
+        "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
+    ])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_subagent_tiers_use_slot_defaults_when_no_override(self, mock_registry, mock_allowed):
+        # No override -> subagent_mid follows the mid slot, subagent_top the
+        # primary slot, i.e. identical to the historical resolve_subagent_model.
+        mock_registry.return_value.list_tools.return_value = {}
+
+        user = _create_user(email="subagent-tier-default@example.com")
+        prefs = get_preferences(user)
+        self.assertEqual(prefs.feature_models["subagent_mid"], "openai/gpt-5.4-mini")
+        self.assertEqual(prefs.feature_models["subagent_top"], "openai/gpt-5.4")
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5.4",
+        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=[
+        "openai/gpt-5.4", "openai/gpt-5.6-sol", "openai/gpt-5.6-luna", "openai/gpt-5.4-nano",
+    ])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_org_subagent_tier_overrides_resolve(self, mock_registry, mock_allowed):
+        mock_registry.return_value.list_tools.return_value = {}
+
+        user = _create_user(email="subagent-tier-override@example.com")
+        org = Organization.objects.create(
+            name="SA Override Org",
+            slug="sa-override-org",
+            preferences={
+                "allowed_models": [
+                    "openai/gpt-5.4", "openai/gpt-5.6-sol",
+                    "openai/gpt-5.6-luna", "openai/gpt-5.4-nano",
+                ],
+                # sol (4*) clears the top 3-star floor; luna (2*) clears mid's 2-star floor.
+                "feature_models": {
+                    "subagent_top": "openai/gpt-5.6-sol",
+                    "subagent_mid": "openai/gpt-5.6-luna",
+                },
+            },
+        )
+        Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
+
+        prefs = get_preferences(user)
+        self.assertEqual(prefs.feature_models["subagent_top"], "openai/gpt-5.6-sol")
+        self.assertEqual(prefs.feature_models["subagent_mid"], "openai/gpt-5.6-luna")
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5.4",
+        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=[
+        "openai/gpt-5.4", "openai/gpt-5.6-luna", "openai/gpt-5.4-nano",
+    ])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_subagent_top_override_below_min_stars_falls_back(self, mock_registry, mock_allowed):
+        # luna is 2 stars; subagent_top's floor is 3, so the override is rejected
+        # and the tier falls back to the org's primary (top) model.
+        mock_registry.return_value.list_tools.return_value = {}
+
+        user = _create_user(email="subagent-top-lowstar@example.com")
+        org = Organization.objects.create(
+            name="SA LowStar Org",
+            slug="sa-lowstar-org",
+            preferences={
+                "allowed_models": [
+                    "openai/gpt-5.4", "openai/gpt-5.6-luna", "openai/gpt-5.4-nano",
+                ],
+                "feature_models": {"subagent_top": "openai/gpt-5.6-luna"},
+            },
+        )
+        Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
+
+        prefs = get_preferences(user)
+        self.assertEqual(prefs.feature_models["subagent_top"], prefs.top_model)
+        self.assertEqual(prefs.feature_models["subagent_top"], "openai/gpt-5.4")
+
+    @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.6-sol",
         LLM_DEFAULT_MID_MODEL="gemini/gemini-3.7-flash",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",

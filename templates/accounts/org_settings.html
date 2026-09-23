@@ -359,6 +359,26 @@
               >
             </label>
           </div>
+          {% if subagent_model_rows %}
+          <div class="border-t border-default px-5 py-4">
+            <h3 class="text-sm font-medium text-heading">Sub-agent models</h3>
+            <p class="text-xs text-body mt-0.5">Choose which model each sub-agent tier uses. Leave on the default to follow your organization's Mid and Standard tier models.</p>
+            {% for row in subagent_model_rows %}
+            <label class="block text-xs font-medium text-heading mt-3" for="subagent-model-{{ row.key }}">{{ row.label }}</label>
+            {% if row.desc %}<p class="text-xs text-body mt-0.5">{{ row.desc }}</p>{% endif %}
+            <select
+              id="subagent-model-{{ row.key }}"
+              data-feature="{{ row.key }}"
+              class="org-feature-model-select wf-mono mt-1 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+            >
+              <option value="">Use organization default model (recommended)</option>
+              {% for model in row.eligible_models %}
+              <option value="{{ model }}" {% if row.current == model %}selected{% endif %}>{{ model }}</option>
+              {% endfor %}
+            </select>
+            {% endfor %}
+          </div>
+          {% endif %}
         </div>
       </section>
 

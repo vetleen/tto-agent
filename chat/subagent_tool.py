@@ -37,7 +37,7 @@ class CreateSubagentInput(ReasonBaseModel):
     )
     model_tier: str = Field(
         default="mid",
-        description='Model tier: "mid" (default) for research, "top" for deep analysis.',
+        description='Model tier: "mid" (default) for most tasks; "top" only for tasks that require exceptional intelligence (rarely relevant).',
     )
     timeout: int = Field(
         default=0,

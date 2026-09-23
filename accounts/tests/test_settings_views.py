@@ -265,6 +265,29 @@ class OrgSettingsAccessTests(TestCase):
         self.assertIn("openai/gpt-5.6-luna", chat_row["eligible_models"])
         self.assertContains(response, "The default model for new chats.")
 
+    @patch("llm.service.policies.get_allowed_models", return_value=[
+        "openai/gpt-5.6-sol", "openai/gpt-5.6-luna",
+    ])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_subagent_model_rows_rendered(self, mock_reg, mock_models):
+        mock_reg.return_value.list_tools.return_value = {}
+        self.client.login(email=self.admin_user.email, password=self.password)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, 200)
+        rows = {row["key"]: row for row in response.context["subagent_model_rows"]}
+        self.assertEqual(set(rows), {"subagent_mid", "subagent_top"})
+        self.assertEqual(rows["subagent_mid"]["label"], "Mid")
+        self.assertEqual(rows["subagent_top"]["label"], "Standard")
+        # subagent_top's 3-star floor: sol (4*) qualifies, luna (2*) does not.
+        self.assertIn("openai/gpt-5.6-sol", rows["subagent_top"]["eligible_models"])
+        self.assertNotIn("openai/gpt-5.6-luna", rows["subagent_top"]["eligible_models"])
+        # They render in the Sub-agents section, not the generic feature list.
+        feature_keys = {row["key"] for row in response.context["org_features"]}
+        self.assertNotIn("subagent_mid", feature_keys)
+        self.assertNotIn("subagent_top", feature_keys)
+
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
     @patch("llm.tools.registry.get_tool_registry")
     def test_skills_section_tools_excluded_from_tool_sections(self, mock_reg, mock_models):
@@ -1558,6 +1581,56 @@ class OrgFeatureModelUpdateTests(TestCase):
         self.assertEqual(
             self.org.preferences["feature_models"]["chat"], "openai/gpt-5.6-luna"
         )
+
+    @patch("llm.service.policies.get_allowed_models", return_value=[
+        "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
+        "openai/gpt-5.6-sol", "openai/gpt-5.6-luna",
+    ])
+    def test_sets_subagent_top_model(self, mock_models):
+        # subagent_top has a 3-star floor; sol (4 stars) clears it.
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"feature": "subagent_top", "model": "openai/gpt-5.6-sol"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.org.refresh_from_db()
+        self.assertEqual(
+            self.org.preferences["feature_models"]["subagent_top"], "openai/gpt-5.6-sol"
+        )
+
+    @patch("llm.service.policies.get_allowed_models", return_value=[
+        "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
+        "openai/gpt-5.6-sol", "openai/gpt-5.6-luna",
+    ])
+    def test_sets_subagent_mid_model(self, mock_models):
+        # subagent_mid has a 2-star floor; luna's curated 2 stars clear it.
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"feature": "subagent_mid", "model": "openai/gpt-5.6-luna"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.org.refresh_from_db()
+        self.assertEqual(
+            self.org.preferences["feature_models"]["subagent_mid"], "openai/gpt-5.6-luna"
+        )
+
+    @patch("llm.service.policies.get_allowed_models", return_value=[
+        "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
+        "openai/gpt-5.6-sol", "openai/gpt-5.6-luna",
+    ])
+    def test_rejects_too_low_tier_for_subagent_top(self, mock_models):
+        # subagent_top's floor is 3 stars; luna's 2 stars fall short.
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"feature": "subagent_top", "model": "openai/gpt-5.6-luna"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
 
     @patch("llm.service.policies.get_allowed_models", return_value=[
         "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",

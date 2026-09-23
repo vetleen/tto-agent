@@ -51,12 +51,21 @@ def is_retryable_subagent_error(exc: BaseException) -> bool:
 
 
 def resolve_subagent_model(tier: str, prefs: ResolvedPreferences) -> str:
-    """Map a tier name to the user's configured model for that tier."""
-    mapping = {
-        "mid": prefs.mid_model,
-        "top": prefs.top_model,
-    }
-    return mapping.get(tier, prefs.mid_model)
+    """Map a tier name to the model configured for that sub-agent tier.
+
+    Honors the org's per-tier override (the ``subagent_mid`` / ``subagent_top``
+    feature models), falling back to the tier's slot model (``mid_model`` /
+    ``top_model``) when no override is set — which is also what
+    ``feature_models`` resolves to by default, so behavior is unchanged unless an
+    org configures an override. The slot fallback also covers callers that build
+    a bare ``ResolvedPreferences`` without the subagent feature keys.
+    """
+    feature = {"mid": "subagent_mid", "top": "subagent_top"}.get(tier)
+    if feature:
+        model = prefs.feature_models.get(feature)
+        if model:
+            return model
+    return {"mid": prefs.mid_model, "top": prefs.top_model}.get(tier, prefs.mid_model)
 
 
 def resolve_subagent_tools(

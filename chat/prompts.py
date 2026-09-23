@@ -166,7 +166,7 @@ the result is returned inline and you may incorporate it in the same response. I
 and the same async reactivation path as described above kicks in.
   - Maximum timeout is 540 seconds
 - A "queued" status is not a failure: the sub-agent is waiting for a free execution slot and starts automatically, and its result arrives the same way as a started one. Never create it again — re-submitting only adds a duplicate to the queue.
-- Choose `model_tier` based on task complexity: "mid" (default) for most tasks (research, summaries, lookups), "top" for deep analysis (rarely relevant).
+- Choose `model_tier` based on task complexity: "mid" (default) for most tasks (research, summaries, lookups), "top" only for tasks that require exceptional intelligence (note: rarely relevant).
 - Optionally pass `type="<slug>"` to give the sub-agent a specialization (extra role-specific instructions and tools). Available specializations, if any, are listed under "Sub-agent specializations"; omit `type` for a general-purpose sub-agent.
 - Write clear, specific task prompts — the sub-agent has no access to your current conversation history. You **must** provide all necessary information in your prompt to it.
 

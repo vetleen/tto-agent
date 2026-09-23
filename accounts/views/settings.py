@@ -420,10 +420,18 @@ def org_settings_page(request):
         "skill_emoji": ("Skill emoji", "Picks an emoji for newly created skills."),
         "guardrail_chunk_scan": ("Chunk scan", "Scans document chunks for hidden adversarial content during file processing. Runs on every chunk, so a cheap, fast model keeps costs low."),
         "pii_scan": ("PII classification", "Classifies documents by GDPR personal data categories during processing. Uses a mid-tier model for accuracy."),
+        "subagent_mid": ("Mid", "Model for mid-tier sub-agents — most delegated work (research, summaries, lookups)."),
+        "subagent_top": ("Standard", f"Model for top-tier sub-agents — reserved for tasks that require exceptional intelligence. {django_settings.ASSISTANT_NAME} uses this tier rarely."),
     }
     org_features = build_feature_rows(
         "org", org_feature_models, effective_org_allowed, _ORG_FEATURE_META
     )
+    # The sub-agent per-tier model overrides render in the Sub-agents section, not
+    # the generic feature-override list, so split them out. They stay in
+    # model_options["features"] below, so the client's live re-populate still works.
+    _SUBAGENT_MODEL_KEYS = ("subagent_mid", "subagent_top")
+    subagent_model_rows = [r for r in org_features if r["key"] in _SUBAGENT_MODEL_KEYS]
+    org_features = [r for r in org_features if r["key"] not in _SUBAGENT_MODEL_KEYS]
 
     # Full (allowed-independent) eligible model lists per tier and per feature.
     # The Model-defaults and Feature-override dropdowns are server-rendered only
@@ -514,6 +522,7 @@ def org_settings_page(request):
         "org_image_default": org_image_models.get("default", ""),
         "image_model_display": image_model_display,
         "org_features": org_features,
+        "subagent_model_rows": subagent_model_rows,
         "tiers": build_tier_rows(system_defaults, effective_org_allowed),
         "model_options_json": json.dumps(model_options),
     })

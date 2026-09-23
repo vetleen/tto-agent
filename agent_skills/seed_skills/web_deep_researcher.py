@@ -96,8 +96,7 @@ sub-agents so the orchestrator's context stays lean — reserved for planning, \
 reviewing structured results, and synthesizing.
 
 Use `chat_subagent_create` proactively for breadth. Prefer multiple focused \
-sub-agents over one broad worker. Use `model_tier="mid"` unless there is a \
-clear reason to choose otherwise.
+sub-agents over one broad worker. Use `model_tier="mid"`.
 
 The orchestrator should scope the work, define subquestions, launch workers, \
 review returned evidence, update the plan, and synthesize. You can even use sub-agents to do direct \

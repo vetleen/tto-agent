@@ -155,6 +155,20 @@ class ResolveSubagentModelTests(TestCase):
         prefs = _prefs()
         self.assertEqual(resolve_subagent_model("invalid", prefs), "openai/gpt-5-mini")
 
+    def test_org_override_honored_for_top(self):
+        prefs = _prefs(feature_models={"subagent_top": "openai/gpt-5-custom-top"})
+        self.assertEqual(resolve_subagent_model("top", prefs), "openai/gpt-5-custom-top")
+
+    def test_org_override_honored_for_mid(self):
+        prefs = _prefs(feature_models={"subagent_mid": "openai/gpt-5-custom-mid"})
+        self.assertEqual(resolve_subagent_model("mid", prefs), "openai/gpt-5-custom-mid")
+
+    def test_no_subagent_override_falls_back_to_slot_model(self):
+        # feature_models present but without the sub-agent keys -> slot fallback.
+        prefs = _prefs(feature_models={"chat": "openai/gpt-5"})
+        self.assertEqual(resolve_subagent_model("top", prefs), "openai/gpt-5")
+        self.assertEqual(resolve_subagent_model("mid", prefs), "openai/gpt-5-mini")
+
 
 # ---------------------------------------------------------------------------
 # resolve_subagent_tools tests
@@ -1111,6 +1125,30 @@ class RunSubagentServiceTests(TestCase):
 
         request = mock_svc.return_value.run_via_stream.call_args[0][1]
         self.assertEqual(request.params.get("max_context_tokens"), MIN_CONTEXT_TOKENS)
+
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
+    def test_org_tier_model_override_sets_model_used(self, mock_prefs, mock_svc):
+        """An org sub-agent-tier model override (feature_models) wins over the
+        tier's slot model when resolving model_used."""
+        mock_prefs.return_value = _prefs(
+            feature_models={"subagent_mid": "openai/gpt-5-nano"},
+        )
+        mock_response = MagicMock()
+        mock_response.message.content = "Done"
+        mock_response.usage.total_tokens = 100
+        mock_response.usage.cost_usd = 0.0
+        mock_svc.return_value.run_via_stream.return_value = mock_response
+
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="task", model_tier="mid",
+        )
+
+        from chat.subagent_service import run_subagent
+        run_subagent(run.id)
+
+        run.refresh_from_db()
+        self.assertEqual(run.model_used, "openai/gpt-5-nano")
 
     @patch("llm.get_llm_service")
     @patch("core.preferences.get_preferences")

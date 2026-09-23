@@ -121,6 +121,13 @@ FEATURE_DEFAULTS: dict[str, FeatureDefault] = {
     # classifier-only.
     "pii_scan": FeatureDefault("cheap", 1, "org"),
     "pii_reviewer": FeatureDefault("primary", 3, "org"),
+    # Per-tier model for sub-agent runs, keyed to SubAgentRun.model_tier
+    # ("mid"/"top"). default_slot mid/primary means "no override" resolves to the
+    # org's mid_model / top_model — identical to the historical behavior in
+    # chat.subagent_service.resolve_subagent_model. Star floors match the mid /
+    # primary slots so the org's own tier models always qualify.
+    "subagent_mid": FeatureDefault("mid", 2, "org"),
+    "subagent_top": FeatureDefault("primary", 3, "org"),
 }
 
 _SLOT_TO_ATTR = {"primary": "top_model", "mid": "mid_model", "cheap": "cheap_model"}
