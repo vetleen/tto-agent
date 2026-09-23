@@ -302,6 +302,18 @@ class BuildSystemPromptTests(TestCase):
             prompt.index("Alpha reference"), prompt.index("Zeta template")
         )
 
+    def test_image_resource_explains_view_mints_token(self):
+        skill = self._make_skill("Brand", "Use the brand.")
+        skill.templates.all.return_value = [
+            self._resource("Logo", kind="reference", file_type="image"),
+        ]
+        prompt = build_system_prompt(skills=[skill])
+        self.assertIn(
+            "**Logo** — reference, image (view to get an embeddable token)", prompt
+        )
+        self.assertIn("also returns an `[[image:uuid]]` token", prompt)
+        self.assertIn("You must view the image first to get its token.", prompt)
+
     def test_quarantined_resource_excluded(self):
         skill = self._make_skill("IRL Assessor", "Assess IRL.")
         skill.templates.all.return_value = [

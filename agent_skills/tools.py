@@ -878,7 +878,10 @@ class ViewTemplateTool(ContextAwareTool):
     description: str = (
         "View the full content of a named resource. Text resources are returned "
         "as text; PDF and image resources are attached inline for you to read "
-        "directly. Reads from a skill attached to this thread by default; pass "
+        "directly. Viewing an IMAGE resource also gives you an [[image:uuid]] "
+        "token — paste that token to use the image in your reply, a canvas, or a "
+        "slide (image token / bg_image); you must view the image to get it. "
+        "Reads from a skill attached to this thread by default; pass "
         "skill_slug to read a resource on the skill you are authoring. Use this "
         "to consult bundled reference material or a template before generating."
     )
@@ -913,19 +916,41 @@ class ViewTemplateTool(ContextAwareTool):
         if resource.file_type in (
             SkillResource.FileType.PDF, SkillResource.FileType.IMAGE
         ) and self.context is not None:
-            if self._add_native_asset(resource, pages):
-                stub = (
-                    f"{begin}\nThe {resource.file_type} file is attached below "
-                    f"for you to view directly.\n{end}"
-                )
+            is_image = resource.file_type == SkillResource.FileType.IMAGE
+            # Images also get a thread-owned Asset so the model can embed them
+            # (reply / canvas / slide) — minted before the budget-gated attach so
+            # the token survives an exhausted attachment budget.
+            token = self._mint_image_token(resource) if is_image else None
+            attached = self._add_native_asset(resource, pages, token=token)
+            if attached or token:
+                if attached:
+                    body = (
+                        f"The {resource.file_type} file is attached below "
+                        "for you to view directly."
+                    )
+                else:
+                    body = (
+                        "The image could not be attached for viewing (attachment "
+                        "budget exhausted this turn), but you can still embed it."
+                    )
+                if token:
+                    body += (
+                        " To USE this image in your reply, a canvas, or a slide "
+                        "(image element `token` / slide `bg_image`), paste this token "
+                        f"exactly: {token} — a filename or resource name will NOT "
+                        "display it. You may add a caption between the | and ]]."
+                    )
                 result = {
                     "status": "ok", "resource_name": resource.name,
-                    "file_type": resource.file_type, "content": stub,
+                    "file_type": resource.file_type,
+                    "content": f"{begin}\n{body}\n{end}",
                 }
+                if token:
+                    result["image_token"] = token
                 if note:
                     result["note"] = note
                 return json.dumps(result)
-            if resource.file_type == SkillResource.FileType.IMAGE:
+            if is_image:
                 return json.dumps({
                     "status": "error",
                     "message": (
@@ -958,7 +983,64 @@ class ViewTemplateTool(ContextAwareTool):
             result["note"] = " ".join(notes)
         return json.dumps(result)
 
-    def _add_native_asset(self, resource, pages: str | None = None) -> bool:
+    def _mint_image_token(self, resource) -> str | None:
+        """Copy an image resource into a thread-owned Asset and return its
+        ``[[image:uuid|]]`` token (None when there's no thread or it fails).
+
+        A copy, not a reference, so the token keeps working if the skill is later
+        edited or deleted; access follows the thread (``user_can_access_asset``).
+        Stores the pristine ``original_file`` (slides/exports want full
+        resolution). Dedupes on ``content_sha256`` — for images that's the
+        original bytes' hash — so a re-view reuses the asset without a read.
+        """
+        import logging
+        import os
+
+        from chat.assets import image_token, store_thread_image
+        from chat.image_tools import _resolve_thread, _resolve_user
+        from chat.models import Asset
+        from core import file_types as ft
+
+        if not resource.original_file:
+            return None
+        try:
+            thread = _resolve_thread(self.context)
+            if thread is None:
+                return None
+            if resource.content_sha256:
+                existing = Asset.objects.filter(
+                    thread=thread, sha256=resource.content_sha256
+                ).first()
+                if existing is not None:
+                    return image_token(existing.id, "")
+            with resource.original_file.open("rb") as fh:
+                data = fh.read()
+            # Not resource.media_type: processing overwrites it with the
+            # optimized derivative's mime.
+            ext = os.path.splitext(
+                resource.original_filename or resource.original_file.name or ""
+            )[1].lstrip(".").lower()
+            content_type = ft.canonical_mime_for_extension(ext) or "image/png"
+            asset = store_thread_image(
+                thread,
+                img_bytes=data,
+                content_type=content_type,
+                description=(
+                    f"Image resource '{resource.name}' from skill "
+                    f"'{resource.skill.name}'"
+                ),
+                created_by=_resolve_user(self.context),
+            )
+            return image_token(asset.id, "")
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "skill_resource_view: could not mint image token for resource %s",
+                resource.pk,
+            )
+            return None
+
+    def _add_native_asset(self, resource, pages: str | None = None,
+                          token: str | None = None) -> bool:
         """Queue a PDF/image resource's bytes for inline injection by the
         pipeline. Reads the vision-optimized derivative (``optimized_file``) when
         present, else the pristine ``original_file``. For PDFs, an optional
@@ -1029,7 +1111,7 @@ class ViewTemplateTool(ContextAwareTool):
         else:
             b64 = base64.b64encode(data).decode("ascii")
             item = {
-                "kind": "image", "b64": b64,
+                "kind": "image", "b64": b64, "asset_id": token or "",
                 "media_type": resource.media_type or "image/png",
                 "description": (
                     f"Image resource '{resource.name}' from skill "

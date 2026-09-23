@@ -321,11 +321,18 @@ def _render_one_skill(skill: Any, attached_by: str | None = None) -> str:
             "attached for you to view directly). Any text-bearing resource can be "
             "loaded into the canvas as a starting point with `skill_resource_load` "
             "— the *template* kind is a hint that it's meant to be filled in, but "
-            "you can load a *reference* resource too when it's a useful draft."
+            "you can load a *reference* resource too when it's a useful draft. "
+            "Viewing an **image** resource with `skill_resource_view` also returns "
+            "an `[[image:uuid]]` token — that token is how you use the image: paste "
+            "it into your reply, a canvas, or a slide (image element / `bg_image`). "
+            "You must view the image first to get its token."
             "\n\n"
         )
         for r in resources:
-            block += f"- **{r.name}** — {r.kind}, {r.file_type}\n"
+            block += f"- **{r.name}** — {r.kind}, {r.file_type}"
+            if r.file_type == "image":
+                block += " (view to get an embeddable token)"
+            block += "\n"
     return block
 
 

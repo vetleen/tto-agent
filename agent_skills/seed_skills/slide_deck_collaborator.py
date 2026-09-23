@@ -138,6 +138,8 @@ built-in elements you can place on a slide (all 15 `shape` values and all 6 them
    image** (a logo / figure the user uploaded) surfaced by the document tools. A data-room
    image renders in the deck only if that data room is **attached to this thread** — so if
    the user uploaded a logo, make sure its room is attached before promising it will show.
+   It can also be an **image resource on an attached skill** (e.g. a brand logo): call
+   `skill_resource_view` on it — that returns its `[[image:UUID]]` token to use here.
    `fit` is `contain`/`cover`/`stretch`; `opacity` 0–1 fades it.
    **Reserve a slot** for a logo / screenshot / headshot / mockup the user will drop in: use a
    descriptive placeholder token like `"[[image:product-mockup]]"` (any slug, not a real id) — it

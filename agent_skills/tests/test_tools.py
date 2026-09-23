@@ -655,18 +655,30 @@ class ViewTemplateToolTests(TestCase):
         self.assertNotIn("truncated", result)
         self.assertNotIn("note", result)
 
-    def test_view_image_resource_attaches_inline(self):
+    def _image_resource(self, name="Diagram", data=b"\x89PNG-fake-bytes",
+                        filename="d.png", skill=None, optimized=None):
+        import hashlib
+
         from django.core.files.base import ContentFile
 
         from agent_skills.models import SkillResource
 
         res = SkillResource(
-            skill=self.skill, name="Diagram", kind="reference",
-            file_type="image", original_filename="d.png",
+            skill=skill or self.skill, name=name, kind="reference",
+            file_type="image", original_filename=filename,
             media_type="image/png", status="ready",
+            content_sha256=hashlib.sha256(data).hexdigest(),
         )
-        res.original_file.save("d.png", ContentFile(b"\x89PNG-fake-bytes"), save=False)
+        res.original_file.save(filename, ContentFile(data), save=False)
+        if optimized is not None:
+            # Processing swaps media_type to the derivative's mime.
+            res.optimized_file.save("d.jpg", ContentFile(optimized), save=False)
+            res.media_type = "image/jpeg"
         res.save()
+        return res
+
+    def test_view_image_resource_attaches_inline(self):
+        self._image_resource()
 
         result = json.loads(self.tool._run(template_name="Diagram"))
         self.assertEqual(result["status"], "ok")
@@ -677,22 +689,122 @@ class ViewTemplateToolTests(TestCase):
         self.assertEqual(len(self.tool.context.pending_native_assets), 1)
         self.assertEqual(self.tool.context.pending_native_assets[0]["kind"], "image")
 
-    def test_oversized_asset_not_read_when_budget_exhausted(self):
-        """When the run's native-asset budget can't fit the file, the tool bails
-        on S3 metadata alone — the bytes are never opened/read into memory."""
-        from unittest.mock import patch
+    def test_view_image_resource_mints_embeddable_token(self):
+        import hashlib
+        import re
 
+        from chat.models import Asset
+
+        data = b"\x89PNG-fake-bytes"
+        self._image_resource(data=data)
+
+        result = json.loads(self.tool._run(template_name="Diagram"))
+        token = result["image_token"]
+        m = re.fullmatch(r"\[\[image:([0-9a-f-]{36})\|\]\]", token)
+        self.assertIsNotNone(m)
+        # The model is told, in the result itself, how to use the token.
+        self.assertIn(token, result["content"])
+        self.assertIn("paste this token", result["content"])
+
+        asset = Asset.objects.get(pk=m.group(1))
+        self.assertEqual(asset.thread_id, self.thread.id)
+        self.assertEqual(asset.content_type, "image/png")
+        self.assertEqual(asset.sha256, hashlib.sha256(data).hexdigest())
+        with asset.blob.open("rb") as fh:
+            self.assertEqual(fh.read(), data)
+        self.assertEqual(
+            self.tool.context.pending_native_assets[0]["asset_id"], token
+        )
+
+    def test_view_image_twice_reuses_same_asset(self):
+        from chat.models import Asset
+
+        self._image_resource()
+        first = json.loads(self.tool._run(template_name="Diagram"))["image_token"]
+        second = json.loads(self.tool._run(template_name="Diagram"))["image_token"]
+        self.assertEqual(first, second)
+        self.assertEqual(Asset.objects.filter(thread=self.thread).count(), 1)
+
+    def test_token_asset_holds_original_not_optimized(self):
+        from chat.models import Asset
+
+        self._image_resource(data=b"ORIGINAL-PNG", optimized=b"small-jpg")
+        self.tool._run(template_name="Diagram")
+        asset = Asset.objects.get(thread=self.thread)
+        self.assertEqual(asset.content_type, "image/png")
+        with asset.blob.open("rb") as fh:
+            self.assertEqual(fh.read(), b"ORIGINAL-PNG")
+        # The model still views the optimized derivative.
+        self.assertEqual(
+            self.tool.context.pending_native_assets[0]["media_type"], "image/jpeg"
+        )
+
+    def test_token_asset_access_follows_thread_owner(self):
+        from chat.assets import user_can_access_asset
+        from chat.models import Asset
+
+        self._image_resource()
+        self.tool._run(template_name="Diagram")
+        asset = Asset.objects.get(thread=self.thread)
+        other = User.objects.create_user(email="other-vt@example.com", password="pass")
+        self.assertTrue(user_can_access_asset(self.user, asset))
+        self.assertFalse(user_can_access_asset(other, asset))
+
+    def test_authoring_path_also_mints_token(self):
+        authoring = AgentSkill.objects.create(
+            slug="vt-authoring", name="VT Authoring", instructions="Inst.",
+            level="user", created_by=self.user,
+        )
+        self._image_resource(name="Logo", skill=authoring)
+        result = json.loads(
+            self.tool._run(template_name="Logo", skill_slug="vt-authoring")
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["image_token"].startswith("[[image:"))
+
+    def test_pdf_resource_has_no_image_token(self):
         from django.core.files.base import ContentFile
 
         from agent_skills.models import SkillResource
 
         res = SkillResource(
-            skill=self.skill, name="BigPic", kind="reference",
-            file_type="image", original_filename="big.png",
-            media_type="image/png", status="ready",
+            skill=self.skill, name="Doc", kind="reference", file_type="pdf",
+            original_filename="d.pdf", media_type="application/pdf",
+            status="ready", content="Extracted PDF text.",
         )
-        res.original_file.save("big.png", ContentFile(b"x" * 100), save=False)
+        res.original_file.save("d.pdf", ContentFile(b"not-a-real-pdf"), save=False)
         res.save()
+        result = json.loads(self.tool._run(template_name="Doc"))
+        self.assertEqual(result["status"], "ok")
+        self.assertNotIn("image_token", result)
+
+    def test_budget_exhausted_image_still_returns_token(self):
+        """An exhausted attachment budget no longer blocks use: the image isn't
+        shown to the model, but its embeddable token still comes back."""
+        from unittest.mock import patch
+
+        self._image_resource(name="BigPic", data=b"x" * 100, filename="big.png")
+
+        with patch.object(RunContext, "native_asset_budget_remaining", return_value=1):
+            result = json.loads(self.tool._run(template_name="BigPic"))
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["image_token"].startswith("[[image:"))
+        self.assertIn("budget", result["content"])
+        self.assertEqual(self.tool.context.pending_native_assets, [])
+
+    def test_oversized_asset_not_read_when_budget_exhausted(self):
+        """When the run's native-asset budget can't fit the file and the token
+        asset already exists (sha dedupe), the bytes are never opened."""
+        from unittest.mock import patch
+
+        from chat.assets import store_thread_image
+
+        data = b"x" * 100
+        self._image_resource(name="BigPic", data=data, filename="big.png")
+        existing = store_thread_image(
+            self.thread, img_bytes=data, content_type="image/png",
+        )
 
         with patch.object(
             RunContext, "native_asset_budget_remaining", return_value=1
@@ -701,8 +813,8 @@ class ViewTemplateToolTests(TestCase):
         ) as m_open:
             result = json.loads(self.tool._run(template_name="BigPic"))
 
-        self.assertEqual(result["status"], "error")
-        self.assertIn("budget", result["message"])
+        self.assertEqual(result["status"], "ok")
+        self.assertIn(str(existing.id), result["image_token"])
         self.assertEqual(self.tool.context.pending_native_assets, [])
         m_open.assert_not_called()  # never pulled the bytes into memory
 
