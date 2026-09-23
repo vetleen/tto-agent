@@ -370,10 +370,10 @@ def _scan_text_guardrail(text, user, org_id, label) -> tuple[str, str, list]:
     """
     from guardrails.classifier import (
         GuardrailModelUnavailableError,
-        classify_web_content_sync,
+        classify_skill_content_sync,
     )
     from guardrails.heuristics import heuristic_scan
-    from guardrails.reviewer import review_flagged_chunk
+    from guardrails.reviewer import review_flagged_skill_content
     from guardrails.service import _create_event_sync
 
     detail = "Contains content flagged as adversarial (possible prompt injection)."
@@ -390,7 +390,7 @@ def _scan_text_guardrail(text, user, org_id, label) -> tuple[str, str, list]:
             return "quarantine", detail, list(hres.tags)
 
         try:
-            cres = classify_web_content_sync(window, uid, org_id)
+            cres = classify_skill_content_sync(window, uid, org_id)
         except GuardrailModelUnavailableError:
             logger.warning(
                 "skill guardrail: no classifier model for org_id=%s; skipping", org_id,
@@ -399,9 +399,8 @@ def _scan_text_guardrail(text, user, org_id, label) -> tuple[str, str, list]:
         if not cres.is_suspicious:
             continue
 
-        decision = review_flagged_chunk(
-            window, cres, document_title=label, neighbor_context="",
-            org_id=org_id, user_id=uid,
+        decision = review_flagged_skill_content(
+            window, cres, label, org_id=org_id, user_id=uid,
         )
         if decision is None:
             quarantine = cres.confidence >= 0.9
