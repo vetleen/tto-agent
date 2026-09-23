@@ -121,17 +121,42 @@ class OrgUsagePageTests(TestCase):
         self.client.login(email=self.admin.email, password=self.password)
         response = self.client.get(self.url)
         breakdown = response.context["provider_breakdown"]
+        providers = breakdown["providers"]
 
-        self.assertEqual([p["name"] for p in breakdown], ["Anthropic", "OpenAI"])
-        anthropic, openai = breakdown
+        self.assertEqual([p["name"] for p in providers], ["Anthropic", "OpenAI"])
+        anthropic, openai = providers
         self.assertEqual(anthropic["cost"], Decimal("0.50"))
         self.assertEqual(anthropic["calls"], 2)
+        self.assertEqual(anthropic["share"], {"pct": 62.5, "label": "62%"})
         # Prefixed and bare ids for the same model merge into one row.
         self.assertEqual(len(anthropic["models"]), 1)
         self.assertEqual(anthropic["models"][0]["cost"], Decimal("0.50"))
         self.assertEqual(openai["cost"], Decimal("0.30"))
         self.assertEqual([m["cost"] for m in openai["models"]], [Decimal("0.20"), Decimal("0.10")])
+
+        # The flat model list sorts by cost across providers and keeps each
+        # model's provider + stable color slot.
+        models = breakdown["models"]
+        self.assertEqual([m["cost"] for m in models], [Decimal("0.50"), Decimal("0.20"), Decimal("0.10")])
+        self.assertEqual([m["provider"] for m in models], ["Anthropic", "OpenAI", "OpenAI"])
+        self.assertEqual([m["series"] for m in models], [2, 3, 3])
         self.assertContains(response, "By provider and model")
+        self.assertContains(response, 'class="wf-series-2" style="width: 62.5%"')
+
+    def test_member_rows_carry_share_of_spend(self):
+        _create_log(self.admin, cost="0.75")
+        _create_log(self.member, cost="0.25")
+        self.client.login(email=self.admin.email, password=self.password)
+        response = self.client.get(self.url)
+        shares = [row["share"]["label"] for row in response.context["user_breakdown"]]
+        self.assertEqual(shares, ["75%", "25%"])
+
+    def test_spend_share_edges(self):
+        from accounts.views.usage import spend_share
+
+        self.assertEqual(spend_share(Decimal("1"), Decimal("0")), {"pct": 0.0, "label": "0%"})
+        self.assertEqual(spend_share(Decimal("0"), Decimal("5")), {"pct": 0.0, "label": "0%"})
+        self.assertEqual(spend_share(Decimal("0.004"), Decimal("1"))["label"], "<1%")
 
     def test_provider_breakdown_excludes_non_members_and_unknown_provider(self):
         outsider = _make_user("outsider@example.com")
@@ -139,9 +164,11 @@ class OrgUsagePageTests(TestCase):
         _create_log(self.admin, model="mystery-model", cost="0.01")
         self.client.login(email=self.admin.email, password=self.password)
         response = self.client.get(self.url)
-        breakdown = response.context["provider_breakdown"]
-        self.assertEqual([p["name"] for p in breakdown], ["Other"])
-        self.assertEqual(breakdown[0]["cost"], Decimal("0.01"))
+        providers = response.context["provider_breakdown"]["providers"]
+        self.assertEqual([p["name"] for p in providers], ["Other"])
+        self.assertEqual(providers[0]["cost"], Decimal("0.01"))
+        self.assertEqual(providers[0]["series"], 4)
+        self.assertEqual(providers[0]["share"]["label"], "100%")
 
     def test_custom_date_range(self):
         now = timezone.now()

@@ -129,11 +129,29 @@ def _provider_label(model: str) -> str:
     return "Other"
 
 
-def build_provider_breakdown(qs) -> list[dict]:
+# Stable color slot per provider (``wf-series-N`` in input.css) so a
+# provider keeps its color across periods; anything else shares the last slot.
+_PROVIDER_SERIES = {"Google": 1, "Anthropic": 2, "OpenAI": 3}
+_OTHER_SERIES = 4
+
+
+def spend_share(cost, total) -> dict:
+    """Share of *total* spend as a bar width (percent) and a rounded label."""
+    if not total or not cost:
+        return {"pct": 0.0, "label": "0%"}
+    pct = float(cost / total * 100)
+    label = "<1%" if pct < 1 else f"{round(pct)}%"
+    return {"pct": round(pct, 1), "label": label}
+
+
+def build_provider_breakdown(qs, total_cost) -> dict:
     """Group per-model spend under its provider.
 
-    Providers sort by total cost descending; models within each provider
-    likewise. Model strings that normalise to the same display name (e.g.
+    Returns ``{"providers": [...], "models": [...]}``: providers sorted by
+    total cost descending (each with its models, likewise sorted), and a flat
+    list of every model sorted by cost across providers. Every entry carries
+    its ``share`` of *total_cost* and its provider's ``series`` color slot.
+    Model strings that normalise to the same display name (e.g.
     ``anthropic/claude-x`` vs bare ``claude-x``) are merged.
     """
     from llm.display import get_display_name
@@ -148,14 +166,15 @@ def build_provider_breakdown(qs) -> list[dict]:
     providers: dict[str, dict] = {}
     for row in rows:
         label = _provider_label(row["model"])
+        series = _PROVIDER_SERIES.get(label, _OTHER_SERIES)
         provider = providers.setdefault(label, {
-            "name": label, "cost": Decimal("0"), "calls": 0,
+            "name": label, "series": series, "cost": Decimal("0"), "calls": 0,
             "input_tokens": 0, "output_tokens": 0, "models": {},
         })
         display = get_display_name(row["model"])
         model = provider["models"].setdefault(display, {
-            "name": display, "cost": Decimal("0"), "calls": 0,
-            "input_tokens": 0, "output_tokens": 0,
+            "name": display, "provider": label, "series": series,
+            "cost": Decimal("0"), "calls": 0, "input_tokens": 0, "output_tokens": 0,
         })
         for bucket in (provider, model):
             bucket["cost"] += row["cost"]
@@ -163,12 +182,19 @@ def build_provider_breakdown(qs) -> list[dict]:
             bucket["input_tokens"] += row["input_tokens"]
             bucket["output_tokens"] += row["output_tokens"]
 
-    result = sorted(providers.values(), key=lambda p: (-p["cost"], p["name"]))
-    for provider in result:
-        provider["models"] = sorted(
-            provider["models"].values(), key=lambda m: (-m["cost"], m["name"])
-        )
-    return result
+    def by_cost(entry):
+        return (-entry["cost"], entry["name"])
+
+    sorted_providers = sorted(providers.values(), key=by_cost)
+    for provider in sorted_providers:
+        provider["share"] = spend_share(provider["cost"], total_cost)
+        provider["models"] = sorted(provider["models"].values(), key=by_cost)
+        for model in provider["models"]:
+            model["share"] = spend_share(model["cost"], total_cost)
+    models = sorted(
+        (m for p in sorted_providers for m in p["models"]), key=by_cost
+    )
+    return {"providers": sorted_providers, "models": models}
 
 
 def _window_context(window: UsageWindow) -> dict:
@@ -245,11 +271,16 @@ def org_usage_page(request):
         )
         .order_by("-cost")
     )
+    totals = aggregate_usage_totals(qs)
+    user_breakdown = [
+        {**row, "share": spend_share(row["cost"], totals["total_cost"])}
+        for row in user_breakdown
+    ]
 
     return render(request, "accounts/org_usage.html", {
         **_window_context(window),
         "org": org,
-        "totals": aggregate_usage_totals(qs),
+        "totals": totals,
         "user_breakdown": user_breakdown,
-        "provider_breakdown": build_provider_breakdown(qs),
+        "provider_breakdown": build_provider_breakdown(qs, totals["total_cost"]),
     })

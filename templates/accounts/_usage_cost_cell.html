@@ -1,0 +1,7 @@
+{% load humanize %}
+<td class="px-4 py-3">
+  <div class="flex items-center justify-end gap-2.5" title="{{ share.label }} of total spend">
+    <span class="flex h-1 w-14 shrink-0 overflow-hidden rounded-full bg-neutral-tertiary" aria-hidden="true"><span class="{% if series %}wf-series-{{ series }}{% else %}bg-brand{% endif %}" style="width: {{ share.pct|stringformat:'.1f' }}%"></span></span>
+    <span class="wf-mono min-w-11 text-right font-semibold text-heading">${{ cost|floatformat:2|intcomma }}</span>
+  </div>
+</td>

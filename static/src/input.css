@@ -458,6 +458,18 @@
   }
   .tnum { font-variant-numeric: tabular-nums; }
 
+  /* Categorical series fills (usage provider split). Stable per provider,
+     so a provider keeps its color month to month. Dark swaps to
+     lighter stops that stay legible on the forest card. */
+  .wf-series-1 { background-color: var(--color-forest-800); }
+  .wf-series-2 { background-color: var(--color-forest-400); }
+  .wf-series-3 { background-color: var(--color-copper-500); }
+  .wf-series-4 { background-color: var(--color-paper-400); }
+  .dark .wf-series-1 { background-color: var(--color-forest-300); }
+  .dark .wf-series-2 { background-color: var(--color-copper-400); }
+  .dark .wf-series-3 { background-color: var(--color-forest-400); }
+  .dark .wf-series-4 { background-color: #5E7567; }
+
   /* White-inset form field — a clean field cut into the paper, not a gray well.
      Owns background, hairline, inset shadow and focus; templates keep only
      layout/typography utilities (w-full, px-*, text-*, rounded-*, placeholder:*). */

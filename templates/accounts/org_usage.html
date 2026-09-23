@@ -78,9 +78,10 @@
   <section class="mt-8">
     <h2 class="text-base font-semibold text-heading">By member</h2>
     {% if user_breakdown %}
-    <div class="mt-3 overflow-x-auto rounded-base border border-default">
-      <table class="w-full text-sm text-left">
-        <thead class="bg-neutral-secondary-soft text-body uppercase text-xs">
+    <div class="mt-3 overflow-x-auto rounded-base border border-default bg-neutral-primary-soft">
+      <table class="w-full min-w-[40rem] table-fixed text-sm text-left">
+        {% include "accounts/_usage_colgroup.html" %}
+        <thead class="bg-neutral-secondary-soft text-body uppercase text-xs font-semibold tracking-[0.02em] whitespace-nowrap">
           <tr>
             <th class="px-4 py-3">Member</th>
             <th class="px-4 py-3 text-right">Calls</th>
@@ -89,21 +90,21 @@
             <th class="px-4 py-3 text-right">Cost</th>
           </tr>
         </thead>
-        <tbody class="divide-y divide-default bg-neutral-primary-soft">
+        <tbody class="divide-y divide-default">
           {% for row in user_breakdown %}
           <tr>
-            <td class="px-4 py-3">
+            <td class="px-4 py-3 truncate">
               {% if row.user__first_name or row.user__last_name %}
-              <p class="text-heading font-medium">{{ row.user__first_name }} {{ row.user__last_name }}</p>
-              <p class="text-body text-xs">{{ row.user__email }}</p>
+              <p class="text-heading font-medium truncate">{{ row.user__first_name }} {{ row.user__last_name }}</p>
+              <p class="text-body-subtle text-xs truncate">{{ row.user__email }}</p>
               {% else %}
-              <p class="text-heading font-medium">{{ row.user__email }}</p>
+              <p class="text-heading font-medium truncate">{{ row.user__email }}</p>
               {% endif %}
             </td>
             <td class="px-4 py-3 text-right text-body wf-mono">{{ row.calls|default:0|intcomma }}</td>
             <td class="px-4 py-3 text-right text-body wf-mono">{{ row.input_tokens|default:"0"|intcomma }}</td>
             <td class="px-4 py-3 text-right text-body wf-mono">{{ row.output_tokens|default:"0"|intcomma }}</td>
-            <td class="px-4 py-3 text-right text-heading wf-mono">${{ row.cost|floatformat:2|intcomma }}</td>
+            {% include "accounts/_usage_cost_cell.html" with cost=row.cost share=row.share series=None %}
           </tr>
           {% endfor %}
         </tbody>
@@ -117,38 +118,53 @@
   <!-- Per-provider / per-model breakdown -->
   <section class="mt-8">
     <h2 class="text-base font-semibold text-heading">By provider and model</h2>
-    {% if provider_breakdown %}
-    <div class="mt-3 overflow-x-auto rounded-base border border-default">
-      <table class="w-full text-sm text-left">
-        <thead class="bg-neutral-secondary-soft text-body uppercase text-xs">
+    {% if provider_breakdown.models %}
+    <!-- Provider split: stacked share bar + legend -->
+    <div class="mt-3 rounded-base border border-default bg-neutral-primary-soft p-4">
+      <div class="flex h-2 gap-0.5 overflow-hidden rounded-full" aria-hidden="true">
+        {% for provider in provider_breakdown.providers %}{% if provider.share.pct %}
+        <span class="wf-series-{{ provider.series }}" style="width: {{ provider.share.pct|stringformat:'.1f' }}%"></span>
+        {% endif %}{% endfor %}
+      </div>
+      <ul class="mt-3 flex flex-wrap gap-x-7 gap-y-2 text-[13px]">
+        {% for provider in provider_breakdown.providers %}
+        <li class="flex items-center gap-2">
+          <span class="size-2 rounded-[2px] wf-series-{{ provider.series }}" aria-hidden="true"></span>
+          <span class="font-semibold text-heading">{{ provider.name }}</span>
+          <span class="wf-mono text-body">${{ provider.cost|floatformat:2|intcomma }}</span>
+          <span class="wf-mono text-body-subtle">{{ provider.share.label }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+
+    <!-- Flat model table, sorted by cost across providers -->
+    <div class="mt-3 overflow-x-auto rounded-base border border-default bg-neutral-primary-soft">
+      <table class="w-full min-w-[40rem] table-fixed text-sm text-left">
+        {% include "accounts/_usage_colgroup.html" %}
+        <thead class="bg-neutral-secondary-soft text-body uppercase text-xs font-semibold tracking-[0.02em] whitespace-nowrap">
           <tr>
-            <th class="px-4 py-3">Provider / model</th>
+            <th class="px-4 py-3">Model</th>
             <th class="px-4 py-3 text-right">Calls</th>
             <th class="px-4 py-3 text-right">Input tokens</th>
             <th class="px-4 py-3 text-right">Output tokens</th>
             <th class="px-4 py-3 text-right">Cost</th>
           </tr>
         </thead>
-        {% for provider in provider_breakdown %}
-        <tbody class="divide-y divide-default bg-neutral-primary-soft border-t border-default">
-          <tr class="bg-neutral-secondary-soft">
-            <th scope="rowgroup" class="px-4 py-3 text-heading font-semibold">{{ provider.name }}</th>
-            <td class="px-4 py-3 text-right text-heading font-semibold wf-mono">{{ provider.calls|intcomma }}</td>
-            <td class="px-4 py-3 text-right text-heading font-semibold wf-mono">{{ provider.input_tokens|intcomma }}</td>
-            <td class="px-4 py-3 text-right text-heading font-semibold wf-mono">{{ provider.output_tokens|intcomma }}</td>
-            <td class="px-4 py-3 text-right text-heading font-semibold wf-mono">${{ provider.cost|floatformat:2|intcomma }}</td>
-          </tr>
-          {% for model in provider.models %}
+        <tbody class="divide-y divide-default">
+          {% for model in provider_breakdown.models %}
           <tr>
-            <td class="py-3 pr-4 pl-8 text-heading">{{ model.name }}</td>
+            <td class="px-4 py-3">
+              <p class="text-heading font-medium truncate">{{ model.name }}</p>
+              <p class="flex items-center gap-1.5 text-xs text-body-subtle"><span class="size-1.5 shrink-0 rounded-[2px] wf-series-{{ model.series }}" aria-hidden="true"></span>{{ model.provider }}</p>
+            </td>
             <td class="px-4 py-3 text-right text-body wf-mono">{{ model.calls|intcomma }}</td>
             <td class="px-4 py-3 text-right text-body wf-mono">{{ model.input_tokens|intcomma }}</td>
             <td class="px-4 py-3 text-right text-body wf-mono">{{ model.output_tokens|intcomma }}</td>
-            <td class="px-4 py-3 text-right text-heading wf-mono">${{ model.cost|floatformat:2|intcomma }}</td>
+            {% include "accounts/_usage_cost_cell.html" with cost=model.cost share=model.share series=model.series %}
           </tr>
           {% endfor %}
         </tbody>
-        {% endfor %}
       </table>
     </div>
     {% else %}
