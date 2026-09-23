@@ -113,5 +113,47 @@
     <p class="mt-3 text-sm text-body">No usage to show for this period yet.</p>
     {% endif %}
   </section>
+
+  <!-- Per-provider / per-model breakdown -->
+  <section class="mt-8">
+    <h2 class="text-base font-semibold text-heading">By provider and model</h2>
+    {% if provider_breakdown %}
+    <div class="mt-3 overflow-x-auto rounded-base border border-default">
+      <table class="w-full text-sm text-left">
+        <thead class="bg-neutral-secondary-soft text-body uppercase text-xs">
+          <tr>
+            <th class="px-4 py-3">Provider / model</th>
+            <th class="px-4 py-3 text-right">Calls</th>
+            <th class="px-4 py-3 text-right">Input tokens</th>
+            <th class="px-4 py-3 text-right">Output tokens</th>
+            <th class="px-4 py-3 text-right">Cost</th>
+          </tr>
+        </thead>
+        {% for provider in provider_breakdown %}
+        <tbody class="divide-y divide-default bg-neutral-primary-soft border-t border-default">
+          <tr class="bg-neutral-secondary-soft">
+            <th scope="rowgroup" class="px-4 py-3 text-heading font-semibold">{{ provider.name }}</th>
+            <td class="px-4 py-3 text-right text-heading font-semibold wf-mono">{{ provider.calls|intcomma }}</td>
+            <td class="px-4 py-3 text-right text-heading font-semibold wf-mono">{{ provider.input_tokens|intcomma }}</td>
+            <td class="px-4 py-3 text-right text-heading font-semibold wf-mono">{{ provider.output_tokens|intcomma }}</td>
+            <td class="px-4 py-3 text-right text-heading font-semibold wf-mono">${{ provider.cost|floatformat:2|intcomma }}</td>
+          </tr>
+          {% for model in provider.models %}
+          <tr>
+            <td class="py-3 pr-4 pl-8 text-heading">{{ model.name }}</td>
+            <td class="px-4 py-3 text-right text-body wf-mono">{{ model.calls|intcomma }}</td>
+            <td class="px-4 py-3 text-right text-body wf-mono">{{ model.input_tokens|intcomma }}</td>
+            <td class="px-4 py-3 text-right text-body wf-mono">{{ model.output_tokens|intcomma }}</td>
+            <td class="px-4 py-3 text-right text-heading wf-mono">${{ model.cost|floatformat:2|intcomma }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        {% endfor %}
+      </table>
+    </div>
+    {% else %}
+    <p class="mt-3 text-sm text-body">No usage to show for this period yet.</p>
+    {% endif %}
+  </section>
 </main>
 {% endblock content %}

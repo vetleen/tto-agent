@@ -110,6 +110,67 @@ def aggregate_usage_totals(qs) -> dict:
     return totals
 
 
+_PROVIDER_LABELS = {
+    "anthropic": "Anthropic",
+    "openai": "OpenAI",
+    "google_genai": "Google",
+}
+
+
+def _provider_label(model: str) -> str:
+    """Human label for the provider behind a logged model string."""
+    from llm.core.model_factory import detect_provider
+
+    provider = detect_provider(model)
+    if provider:
+        return _PROVIDER_LABELS.get(provider, provider.replace("_", " ").title())
+    if "/" in model:
+        return model.split("/", 1)[0].title()
+    return "Other"
+
+
+def build_provider_breakdown(qs) -> list[dict]:
+    """Group per-model spend under its provider.
+
+    Providers sort by total cost descending; models within each provider
+    likewise. Model strings that normalise to the same display name (e.g.
+    ``anthropic/claude-x`` vs bare ``claude-x``) are merged.
+    """
+    from llm.display import get_display_name
+
+    rows = qs.values("model").annotate(
+        cost=Coalesce(Sum("cost_usd"), Decimal("0")),
+        calls=Count("id"),
+        input_tokens=Coalesce(Sum("input_tokens"), 0),
+        output_tokens=Coalesce(Sum("output_tokens"), 0),
+    )
+
+    providers: dict[str, dict] = {}
+    for row in rows:
+        label = _provider_label(row["model"])
+        provider = providers.setdefault(label, {
+            "name": label, "cost": Decimal("0"), "calls": 0,
+            "input_tokens": 0, "output_tokens": 0, "models": {},
+        })
+        display = get_display_name(row["model"])
+        model = provider["models"].setdefault(display, {
+            "name": display, "cost": Decimal("0"), "calls": 0,
+            "input_tokens": 0, "output_tokens": 0,
+        })
+        for bucket in (provider, model):
+            bucket["cost"] += row["cost"]
+            bucket["calls"] += row["calls"]
+            bucket["input_tokens"] += row["input_tokens"]
+            bucket["output_tokens"] += row["output_tokens"]
+
+    result = sorted(providers.values(), key=lambda p: (-p["cost"], p["name"]))
+    for provider in result:
+        provider["models"] = sorted(
+            provider["models"].values(), key=lambda m: (-m["cost"], m["name"])
+        )
+    return result
+
+
 def _window_context(window: UsageWindow) -> dict:
     today = timezone.now().date()
     return {
@@ -190,4 +251,5 @@ def org_usage_page(request):
         "org": org,
         "totals": aggregate_usage_totals(qs),
         "user_breakdown": user_breakdown,
+        "provider_breakdown": build_provider_breakdown(qs),
     })

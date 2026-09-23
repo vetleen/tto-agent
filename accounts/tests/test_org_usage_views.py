@@ -112,6 +112,37 @@ class OrgUsagePageTests(TestCase):
         self.assertContains(response, "$0.10")
         self.assertNotContains(response, "$0.50")
 
+    def test_provider_breakdown_groups_and_sorts(self):
+        # OpenAI total 0.30 (two models), Anthropic total 0.50 (one model).
+        _create_log(self.admin, model="openai/gpt-4o", cost="0.10")
+        _create_log(self.member, model="openai/gpt-5-mini", cost="0.20")
+        _create_log(self.admin, model="anthropic/claude-sonnet-4-5", cost="0.20")
+        _create_log(self.member, model="claude-sonnet-4-5", cost="0.30")
+        self.client.login(email=self.admin.email, password=self.password)
+        response = self.client.get(self.url)
+        breakdown = response.context["provider_breakdown"]
+
+        self.assertEqual([p["name"] for p in breakdown], ["Anthropic", "OpenAI"])
+        anthropic, openai = breakdown
+        self.assertEqual(anthropic["cost"], Decimal("0.50"))
+        self.assertEqual(anthropic["calls"], 2)
+        # Prefixed and bare ids for the same model merge into one row.
+        self.assertEqual(len(anthropic["models"]), 1)
+        self.assertEqual(anthropic["models"][0]["cost"], Decimal("0.50"))
+        self.assertEqual(openai["cost"], Decimal("0.30"))
+        self.assertEqual([m["cost"] for m in openai["models"]], [Decimal("0.20"), Decimal("0.10")])
+        self.assertContains(response, "By provider and model")
+
+    def test_provider_breakdown_excludes_non_members_and_unknown_provider(self):
+        outsider = _make_user("outsider@example.com")
+        _create_log(outsider, model="openai/gpt-4o", cost="9.99")
+        _create_log(self.admin, model="mystery-model", cost="0.01")
+        self.client.login(email=self.admin.email, password=self.password)
+        response = self.client.get(self.url)
+        breakdown = response.context["provider_breakdown"]
+        self.assertEqual([p["name"] for p in breakdown], ["Other"])
+        self.assertEqual(breakdown[0]["cost"], Decimal("0.01"))
+
     def test_custom_date_range(self):
         now = timezone.now()
         last_month = now - timedelta(days=40)
