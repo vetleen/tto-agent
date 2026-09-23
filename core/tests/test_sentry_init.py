@@ -44,8 +44,22 @@ _SHELL_PROBE = (
 )
 
 
-def _probe_sentry(env_overrides: dict) -> str:
-    """Import ``config.settings`` in a fresh process; return ``'ACTIVE'``/``'INACTIVE'``."""
+# Import settings (running its ignore_logger calls), then print the names from a
+# fixed list that sentry's logging EventHandler would still turn into events.
+_IGNORED_LOGGERS_PROBE = (
+    "import logging; "
+    "from config import settings; "  # noqa: F401 — import triggers the gate
+    "from sentry_sdk.integrations.logging import EventHandler; "
+    "h = EventHandler(); "
+    "names = ['pypdf', 'pypdf._reader', 'pypdf.generic._data_structures', "
+    "'weasyprint', 'weasyprint.css', 'fontTools', 'fontTools.subset', 'chat.views']; "
+    "print('RECORDED:' + ','.join(n for n in names if h._can_record("
+    "logging.LogRecord(n, logging.WARNING, 'probe.py', 0, 'm', None, None))))"
+)
+
+
+def _probe_sentry(env_overrides: dict, probe: str = _PROBE) -> str:
+    """Import ``config.settings`` in a fresh process; return the probe's last stdout line."""
     env = {**os.environ, **env_overrides}
     # Minimal env so the module imports cleanly before/after the Sentry block:
     # a secret key (required when DEBUG=False) and a safe email backend (avoids
@@ -56,7 +70,7 @@ def _probe_sentry(env_overrides: dict) -> str:
     # without real AWS creds (settings raises otherwise).
     env.setdefault("MEDIA_ALLOW_EPHEMERAL", "true")
     result = subprocess.run(
-        [sys.executable, "-c", _PROBE],
+        [sys.executable, "-c", probe],
         env=env,
         cwd=str(settings.BASE_DIR),
         capture_output=True,
@@ -133,3 +147,18 @@ class SentryInitGatingTests(SimpleTestCase):
             _probe_sentry_shell({"DJANGO_DEBUG": "False", "SENTRY_DSN": _FAKE_DSN}),
             "INACTIVE",
         )
+
+
+class SentryIgnoredLoggersTests(SimpleTestCase):
+    """Noisy library loggers stay out of Sentry's event stream — child loggers too.
+
+    sentry_sdk fnmatch-es the full logger name, so ``ignore_logger("pypdf")`` alone
+    let ``pypdf._reader`` / ``pypdf.generic._data_structures`` through (WILFRED-8Q).
+    """
+
+    def test_library_child_loggers_are_ignored(self) -> None:
+        out = _probe_sentry(
+            {"DJANGO_DEBUG": "False", "SENTRY_DSN": _FAKE_DSN}, probe=_IGNORED_LOGGERS_PROBE,
+        )
+        # Only our own logger still records; every pypdf/weasyprint/fontTools name is dropped.
+        self.assertEqual(out, "RECORDED:chat.views")
