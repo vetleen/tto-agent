@@ -288,6 +288,32 @@ class LoadHistoryTests(TransactionTestCase):
         self.assertIn("[Sub-agent failed: aaa11111]", user_msgs[0]["content"])
         self.assertIn("[Sub-agent result: bbb22222]", user_msgs[0]["content"])
 
+    async def test_user_dicts_carry_message_id(self):
+        msg = await self._make_msg("Hello")
+        await self._make_msg("Hi", role="assistant")
+        result = await self.consumer._load_history(self.thread)
+        user = [m for m in result["messages"] if m["role"] == "user"][0]
+        assistant = [m for m in result["messages"] if m["role"] == "assistant"][0]
+        self.assertEqual(user["message_id"], str(msg.id))
+        self.assertNotIn("message_id", assistant)
+
+    async def test_merge_keeps_attachment_ids_of_both_messages(self):
+        await self._make_msg("[Sub-agent result: aaa11111]\nResult A")
+        upload = await self._make_msg("See file")
+
+        @database_sync_to_async
+        def _set_meta():
+            ChatMessage.objects.filter(pk=upload.pk).update(
+                metadata={"attachment_ids": ["att-1"]}
+            )
+
+        await _set_meta()
+        result = await self.consumer._load_history(self.thread)
+        user_msgs = [m for m in result["messages"] if m["role"] == "user"]
+        self.assertEqual(len(user_msgs), 1)
+        self.assertEqual(user_msgs[0]["attachment_ids"], ["att-1"])
+        self.assertEqual(user_msgs[0]["message_id"], str(upload.id))
+
     @database_sync_to_async
     def _make_subagent_msg(self, content):
         return ChatMessage.objects.create(

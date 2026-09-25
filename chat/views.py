@@ -321,6 +321,7 @@ def reattach_attachment(request, thread_id, attachment_id):
         original_filename=old.original_filename,
         content_type=old.content_type,
         size_bytes=old.size_bytes,
+        page_count=old.page_count,
     )
     new.file.save(old.original_filename[:255] or "file", ContentFile(data), save=True)
     return JsonResponse({
@@ -1454,7 +1455,8 @@ def thread_branch(request, thread_id):
         # Files on the copied messages: byte-copy to a fresh storage path (the
         # reattach_attachment pattern). Branch is exempt from the per-thread cap —
         # it copies a subset of an already-compliant thread.
-        for att in ChatAttachment.objects.filter(message_id__in=id_map.keys()):
+        copied_att_ids: dict = {}  # copied message -> {source att id: copy att id}
+        for att in ChatAttachment.objects.filter(message_id__in=id_map.keys()).order_by("created_at"):
             try:
                 with att.file.open("rb") as fh:
                     data = fh.read()
@@ -1472,8 +1474,22 @@ def thread_branch(request, thread_id):
                 content_type=att.content_type,
                 size_bytes=att.size_bytes,
                 extracted_content=att.extracted_content,
+                page_count=att.page_count,
             )
             copy.file.save(att.original_filename[:255] or "file", ContentFile(data), save=True)
+            copied_att_ids.setdefault(copy.message_id, {})[str(att.id)] = str(copy.id)
+
+        # Point the copied messages' metadata at the copies (not the source
+        # thread's rows), so enrichment and markers resolve on the branch.
+        for copy_msg in copies:
+            mapping = copied_att_ids.get(copy_msg.id)
+            ids = (copy_msg.metadata or {}).get("attachment_ids")
+            if mapping and ids:
+                new_meta = {
+                    **copy_msg.metadata,
+                    "attachment_ids": [mapping.get(str(i), str(i)) for i in ids],
+                }
+                ChatMessage.objects.filter(pk=copy_msg.pk).update(metadata=new_meta)
 
         # Chunk-usage analytics up to the branch point.
         usage_filter = (

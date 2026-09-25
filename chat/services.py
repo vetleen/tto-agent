@@ -1141,13 +1141,52 @@ def list_pasteable_user_messages(thread_id):
 
 
 def list_thread_attachments(thread_id):
-    """Return ``[(number, ChatAttachment), ...]`` for the thread, 1..N by upload order."""
+    """Return ``[(number, ChatAttachment), ...]`` for the thread, 1..N by upload order.
+
+    The single numbering shared by the ``# Attachments`` manifest, the
+    ``[Attached: #N …]`` history markers and the attachment tools — includes
+    drafts and attachments on redacted messages so numbers never shift.
+    """
     from chat.models import ChatAttachment
 
     atts = list(
-        ChatAttachment.objects.filter(thread_id=thread_id).order_by("created_at")
+        ChatAttachment.objects.filter(thread_id=thread_id)
+        .select_related("message")
+        .order_by("created_at")
     )
     return list(enumerate(atts, start=1))
+
+
+_ATTACHMENT_KIND_LABELS = {
+    "image": "image",
+    "pdf": "PDF",
+    "docx": "Word document",
+    "text": "text file",
+}
+
+
+def attachment_kind(att) -> str:
+    """The core.file_types kind of a chat attachment ("image", "pdf", …, or "file")."""
+    from core.file_types import canonical_extension, kind_for_extension, kind_for_mime
+
+    name = att.original_filename or ""
+    ext = name.rsplit(".", 1)[-1] if "." in name else ""
+    return kind_for_mime(att.content_type) or kind_for_extension(canonical_extension(ext)) or "file"
+
+
+def attachment_kind_label(att, kind: str | None = None) -> str:
+    """Human label for an attachment's type, with the page count for PDFs when known."""
+    kind = kind or attachment_kind(att)
+    label = _ATTACHMENT_KIND_LABELS.get(kind, "file")
+    pages = getattr(att, "page_count", None)
+    if kind == "pdf" and pages:
+        label += f", {pages} page{'' if pages == 1 else 's'}"
+    return label
+
+
+def attachment_marker(number: int, att) -> str:
+    """The in-history marker for a file the user attached to a message."""
+    return f"[Attached: #{number} {att.original_filename} ({attachment_kind_label(att)})]"
 
 
 def build_canvas_ingress_manifests(thread_id, selected_tool_names, *, message_limit=20):
@@ -1157,14 +1196,11 @@ def build_canvas_ingress_manifests(thread_id, selected_tool_names, *, message_li
     they cost no tokens when the Canvas Collaborator skill isn't attached.
     ``selected_tool_names`` must be the set of tool-NAME strings for the turn (what
     ``_resolve_selected_tools`` returns) — gating on tool objects here was the bug
-    that silently dropped both manifests. Returns ``(pasteable_messages, attachments)``.
+    that silently dropped both manifests. Returns ``(pasteable_messages, attachments)``;
+    ``attachments`` is ``{"items": [...], "can_view", "can_open_to_canvas"}`` and is
+    shown when either attachment tool is available.
     """
-    from core.file_types import (
-        KIND_IMAGE,
-        canonical_extension,
-        kind_for_extension,
-        kind_for_mime,
-    )
+    from core.file_types import KIND_IMAGE
 
     names = set(selected_tool_names or ())
 
@@ -1183,18 +1219,23 @@ def build_canvas_ingress_manifests(thread_id, selected_tool_names, *, message_li
         }
 
     attachments = None
-    if "chat_attachment_open_to_canvas" in names:
-        attachments = []
+    can_view = "chat_attachment_view" in names
+    can_open = "chat_attachment_open_to_canvas" in names
+    if can_view or can_open:
+        items = []
         for n, att in list_thread_attachments(thread_id):
-            ext = att.original_filename.rsplit(".", 1)[-1] if "." in att.original_filename else ""
-            kind = kind_for_mime(att.content_type) or kind_for_extension(canonical_extension(ext)) or "file"
-            attachments.append({
+            kind = attachment_kind(att)
+            items.append({
                 "number": n,
                 "filename": att.original_filename,
                 "kind": kind,
+                "kind_label": attachment_kind_label(att, kind),
                 "size_bytes": att.size_bytes,
                 "is_image": kind == KIND_IMAGE,
+                "is_sent": att.message_id is not None,
+                "is_redacted": bool(att.message_id and att.message.is_redacted),
             })
+        attachments = {"items": items, "can_view": can_view, "can_open_to_canvas": can_open}
 
     return pasteable_messages, attachments
 

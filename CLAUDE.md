@@ -157,6 +157,15 @@ summarized**, and is **never shown to the user** (deliberately absent from
 findings that would otherwise be lost when tool results are stubbed — the near-threshold
 Runtime nudge tells the model to use it.
 
+**Native files (images/PDFs)**: chat attachments are sent to the model natively only on
+the turn they were uploaded (`ChatConsumer._enrich_with_attachments`: user entries after the
+last assistant entry); older messages carry `[Attached: #N …]` markers and the agent
+re-views files with `chat_attachment_view` (numbers from `list_thread_attachments`). Tool
+views (`document_view_native`, `skill_resource_view`, `chat_attachment_view`) queue bytes via
+`RunContext.try_add_native_asset` and are visible only within the current reply. Any tool
+that shows a PDF natively must use `chat.pdf_attach.attach_pdf_to_context` (pages slice →
+page cap → compress → first-N page images → text).
+
 **Observability**: each turn's `LLMCallLog` row carries `tool_call_count`, `prune_count`
 (mid-turn compactions), `tool_result_tokens` (raw tool-output volume), and
 `estimated_input_tokens` (our pre-send estimate, summed per round — compare against the

@@ -340,6 +340,9 @@ class ChatAttachment(models.Model):
     # attachment is enriched into an LLM request — so per-turn replay reuses it
     # instead of re-extracting and recreating assets. Empty for images/text.
     extracted_content = models.TextField(blank=True, default="")
+    # PDF page count, filled lazily wherever the bytes are already read (turn
+    # enrichment, chat_attachment_view). Null = unknown / not a PDF.
+    page_count = models.PositiveIntegerField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

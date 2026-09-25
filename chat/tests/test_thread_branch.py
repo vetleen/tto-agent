@@ -194,6 +194,23 @@ class ThreadBranchTests(TestCase):
         with copy.file.open("rb") as fh:
             self.assertEqual(fh.read(), b"in-range-bytes")
 
+    def test_copied_message_metadata_points_at_copied_attachments(self):
+        att = ChatAttachment.objects.create(
+            thread=self.thread, message=self.m_q2, uploaded_by=self.user,
+            file=SimpleUploadedFile("deck.pdf", b"%PDF", content_type="application/pdf"),
+            original_filename="deck.pdf", content_type="application/pdf", size_bytes=4,
+            page_count=7,
+        )
+        self.m_q2.metadata = {"attachment_ids": [str(att.id)], "other": 1}
+        self.m_q2.save(update_fields=["metadata"])
+
+        new = self._new_thread(self._branch(self.m_a2.id))
+        copy = ChatAttachment.objects.get(thread=new)
+        self.assertEqual(copy.page_count, 7)
+        copied_msg = new.messages.get(content="Q2")
+        self.assertEqual(copied_msg.metadata["attachment_ids"], [str(copy.id)])
+        self.assertEqual(copied_msg.metadata["other"], 1)
+
     def test_chunk_usage_copied_up_to_cutoff(self):
         room = DataRoom.objects.create(name="R", slug="r", created_by=self.user)
         from documents.tests._helpers import make_document

@@ -232,6 +232,12 @@ class BuildSystemPromptTests(TestCase):
         self.assertGreater(skill_pos, instructions_pos)
         self.assertLess(skill_pos, data_rooms_pos)
 
+    def test_data_room_section_explains_extracted_text(self):
+        prompt = build_system_prompt(data_rooms=[self.data_room])
+        self.assertIn("## What you actually see of data room files", prompt)
+        self.assertIn("return that extracted text, not the original file", prompt)
+        self.assertIn("use `document_view_native`", prompt)
+
     def test_skill_headers_deepened(self):
         skill = self._make_skill(
             "Deep Skill",
@@ -296,6 +302,7 @@ class BuildSystemPromptTests(TestCase):
         ]
         prompt = build_system_prompt(skills=[skill])
         self.assertIn("## Skill resources", prompt)
+        self.assertIn("Image and PDF resources are shown to you natively.", prompt)
         self.assertIn("**Alpha reference** — reference, pdf", prompt)
         self.assertIn("**Zeta template** — template, text", prompt)
         self.assertLess(

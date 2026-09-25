@@ -189,9 +189,37 @@ class BuildCanvasIngressManifestsTests(TestCase):
         )
         self.assertEqual(pasteable["messages"], [{"number": 1, "preview": "hello there"}])
         self.assertEqual(
-            [(a["number"], a["filename"], a["is_image"]) for a in attachments],
+            [(a["number"], a["filename"], a["is_image"]) for a in attachments["items"]],
             [(1, "deck.pdf", False), (2, "pic.png", True)],
         )
+        self.assertTrue(attachments["can_open_to_canvas"])
+        self.assertFalse(attachments["can_view"])
+
+    def test_attachment_manifest_gated_on_view_tool_too(self):
+        _, attachments = build_canvas_ingress_manifests(
+            str(self.thread.id), {"chat_attachment_view"},
+        )
+        self.assertTrue(attachments["can_view"])
+        self.assertFalse(attachments["can_open_to_canvas"])
+        self.assertEqual(attachments["items"][0]["kind_label"], "PDF")
+        self.assertEqual(attachments["items"][1]["kind_label"], "image")
+
+    def test_draft_and_redacted_flags(self):
+        # Both setUp attachments are unsent drafts (message=NULL).
+        _, attachments = build_canvas_ingress_manifests(
+            str(self.thread.id), {"chat_attachment_view"},
+        )
+        self.assertFalse(attachments["items"][0]["is_sent"])
+        redacted = ChatMessage.objects.create(
+            thread=self.thread, role="user", content="x", is_redacted=True,
+        )
+        ChatAttachment.objects.filter(original_filename="deck.pdf").update(message=redacted)
+        _, attachments = build_canvas_ingress_manifests(
+            str(self.thread.id), {"chat_attachment_view"},
+        )
+        self.assertTrue(attachments["items"][0]["is_sent"])
+        self.assertTrue(attachments["items"][0]["is_redacted"])
+        self.assertFalse(attachments["items"][1]["is_redacted"])
 
     def test_no_manifests_when_tools_absent(self):
         pasteable, attachments = build_canvas_ingress_manifests(
@@ -349,16 +377,29 @@ class DynamicContextManifestTests(TestCase):
                 "messages": [{"number": 1, "preview": "hello there"}],
                 "total": 1, "omitted": 0,
             },
-            attachments=[
-                {"number": 1, "filename": "a.pdf", "kind": "pdf", "size_bytes": 2048, "is_image": False},
-                {"number": 2, "filename": "p.png", "kind": "image", "size_bytes": 1024, "is_image": True},
-            ],
+            attachments={
+                "items": [
+                    {"number": 1, "filename": "a.pdf", "kind": "pdf", "kind_label": "PDF, 3 pages",
+                     "size_bytes": 2048, "is_image": False, "is_sent": True, "is_redacted": False},
+                    {"number": 2, "filename": "p.png", "kind": "image", "kind_label": "image",
+                     "size_bytes": 1024, "is_image": True, "is_sent": False, "is_redacted": False},
+                    {"number": 3, "filename": "gone.txt", "kind": "text", "kind_label": "text file",
+                     "size_bytes": 10, "is_image": False, "is_sent": True, "is_redacted": True},
+                ],
+                "can_view": True,
+                "can_open_to_canvas": False,
+            },
         )
         self.assertIn("# Your messages", out)
         self.assertIn("canvas_paste_user_text", out)
         self.assertIn("# Attachments", out)
-        self.assertIn("a.pdf", out)
-        self.assertIn("[[image:uuid]]", out)
+        self.assertIn("Files attached to the current message are shown to you automatically", out)
+        self.assertIn("1. a.pdf (PDF, 3 pages, 2 KB)", out)
+        self.assertIn("2. p.png (image, 1 KB) — not yet sent", out)
+        self.assertIn("3. gone.txt (text file, 0 KB) — removed", out)
+        self.assertIn("chat_attachment_view", out)
+        self.assertNotIn("chat_attachment_open_to_canvas", out)
+        self.assertNotIn("[[image:uuid]]", out)
 
     def test_manifests_absent_when_none(self):
         from chat.prompts import build_dynamic_context

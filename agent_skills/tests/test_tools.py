@@ -778,6 +778,36 @@ class ViewTemplateToolTests(TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertNotIn("image_token", result)
 
+    def test_pdf_over_page_cap_attaches_first_pages_as_images(self):
+        """Over the page cap the shared chain renders the first pages as images
+        (a truncated view) instead of attaching nothing."""
+        from unittest.mock import patch
+
+        from django.core.files.base import ContentFile
+
+        from agent_skills.models import SkillResource
+
+        res = SkillResource(
+            skill=self.skill, name="Big", kind="reference", file_type="pdf",
+            original_filename="big.pdf", media_type="application/pdf",
+            status="ready", content="Extracted big text.",
+        )
+        res.original_file.save("big.pdf", ContentFile(b"%PDF-fake"), save=False)
+        res.save()
+        with patch("chat.pdf_attach.pdf_page_count", return_value=500), \
+             patch("chat.pdf_attach.render_pdf_pages_to_jpegs",
+                   return_value=([b"jpeg1", b"jpeg2"], 500)):
+            result = json.loads(self.tool._run(template_name="Big"))
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("first 2 of 500 pages", result["content"])
+        self.assertIn("Extracted big text.", result["content"])
+        pending = self.tool.context.pending_native_assets
+        self.assertEqual([p["kind"] for p in pending], ["image", "image"])
+        self.assertTrue(all(p["_pathway"] == "skill" for p in pending))
+
+    def test_description_states_native_view_lifetime(self):
+        self.assertIn("only visible to you during the reply", self.tool.description)
+
     def test_budget_exhausted_image_still_returns_token(self):
         """An exhausted attachment budget no longer blocks use: the image isn't
         shown to the model, but its embeddable token still comes back."""

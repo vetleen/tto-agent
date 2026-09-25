@@ -2516,7 +2516,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         )
         scratchpad = getattr(thread, "scratchpad", "") or ""
         tools, selected_tool_schemas = await self._resolve_selected_tools(
-            is_loop_turn=is_loop_turn
+            is_loop_turn=is_loop_turn, thread_id=str(thread.id)
         )
 
         # Canvas-ingress manifests (# Your messages / # Attachments) — gated inside
@@ -2714,11 +2714,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 reserved_tokens=meta.get("reserved_overhead_tokens"),
             )
 
-    async def _resolve_selected_tools(self, *, is_loop_turn: bool):
+    async def _resolve_selected_tools(self, *, is_loop_turn: bool, thread_id=None):
         """Resolve ``(tool_names, tool_schema_objects)`` for this turn.
 
         History- and model-independent (inputs: resolved prefs, data-room state,
-        active skills, ``is_loop_turn``). Extracted from ``_stream_response`` so
+        whether the thread has sent attachments, active skills, ``is_loop_turn``).
+        Extracted from ``_stream_response`` so
         tools resolve ONCE per turn — the same ``ContextAwareTool`` objects feed
         both the turn-start overhead measurement (``_assemble_turn_inputs``) and
         the outgoing request. Returns the name list (for ``ChatRequest(tools=…)``)
@@ -2735,6 +2736,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
             tools = list(all_tools)
         else:
             tools = [t for t in all_tools if t not in DATA_ROOM_TOOL_NAMES]
+
+        # chat_attachment_view only when the thread has a sent attachment to view.
+        if (
+            "chat_attachment_view" in tools
+            and thread_id
+            and not await self._thread_has_sent_attachments(thread_id)
+        ):
+            tools = [t for t in tools if t != "chat_attachment_view"]
 
         # Extend with skill-specific tools, unioned across every attached skill
         # (filtered through prefs.allowed_skills). Whenever prefs exist, trust
@@ -2837,9 +2846,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
         )
         context.max_context_tokens = self.resolved_prefs.max_context_tokens if self.resolved_prefs else None
 
-        # Enrich user messages that have image/PDF attachments with multimodal
-        # content blocks, metering each against the run's native-asset budget.
-        await self._enrich_with_attachments(messages, history, resolved_model, context)
+        # Mark user messages that carried attachments and expand the current
+        # turn's files into multimodal content blocks, metering each against the
+        # run's native-asset budget. Earlier files are re-viewed on demand.
+        await self._enrich_with_attachments(
+            messages, history, resolved_model, context, thread_id=str(thread.id)
+        )
 
         # Deduplicate tool results from prior turns to reduce token waste
         from chat.dedup import deduplicate_tool_results
@@ -2866,6 +2878,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             else:
                 model = resolve_thread_model(thread.model, prefs) if prefs else None
         thinking_level = _resolve_reasoning_level(model, thinking_level)
+        # Lets chat_attachment_view report whether the model can take the file natively.
+        context.model_id = model
 
         # Tools are normally resolved once at turn assembly (_assemble_turn_inputs)
         # and passed in, so the same schema objects drive both the overhead
@@ -2873,7 +2887,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # direct callers (e.g. tests) that don't pre-resolve.
         if tools is None or selected_tool_schemas is None:
             tools, selected_tool_schemas = await self._resolve_selected_tools(
-                is_loop_turn=is_loop_turn
+                is_loop_turn=is_loop_turn, thread_id=str(thread.id)
             )
         messages = _messages_with_turn_context(
             messages,
@@ -4497,9 +4511,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
             message__isnull=True,
         ).update(message=message)
 
-    async def _enrich_with_attachments(self, messages, history, model, context=None):
-        """Replace plain-text content with multimodal content blocks for messages
-        with attachments.
+    async def _enrich_with_attachments(self, messages, history, model, context=None, *, thread_id=None):
+        """Mark user messages that carried attachments, and send the files of
+        the CURRENT turn only.
+
+        Every user message with attachments gets one ``[Attached: #N name (kind)]``
+        marker per file (numbers from ``list_thread_attachments`` — the same ones
+        ``chat_attachment_view`` resolves). Only user entries after the last
+        assistant entry (the message just sent; for the minutes seed turn, the
+        disclaimer message) are expanded into multimodal content blocks; older
+        messages keep just the markers and the agent re-views files on demand.
 
         When ``context`` is provided, each native (image/PDF) block is metered
         against the run's native-asset budget (pathway ``"attachment"``) and
@@ -4517,6 +4538,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             SUPPORTED_IMAGE_TYPES,
             SUPPORTED_PDF_TYPES,
             SUPPORTED_TEXT_TYPES,
+            attachment_marker,
             build_image_content_block,
             build_pdf_content_block,
             build_text_content_block,
@@ -4536,40 +4558,67 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 block["_wf_est_tokens"] = int(est_tokens)
             return block
 
-        # Collect all attachment IDs from history
-        all_ids = []
-        for msg in history:
-            ids = msg.get("attachment_ids") or []
-            all_ids.extend(ids)
-        if not all_ids:
+        if not any(m.get("attachment_ids") or m.get("message_id") for m in history):
+            return
+        if thread_id is None and context is not None:
+            thread_id = context.conversation_id
+        if not thread_id:
             return
 
-        # Load attachment records
-        attachments_by_id = await self._load_attachments(all_ids)
-        if not attachments_by_id:
+        index = await self._load_thread_attachment_index(thread_id)
+        if not index:
             return
+        by_id = {str(a.id): (n, a) for n, a in index}
+        by_message: dict = {}
+        for n, a in index:
+            if a.message_id:
+                by_message.setdefault(str(a.message_id), []).append((n, a))
 
         # Determine provider from model
         provider = detect_provider(model or "")
 
+        last_assistant = max(
+            (i for i, m in enumerate(history) if m.get("role") == "assistant"), default=-1
+        )
+
         # messages[0] is system prompt, so history[i] corresponds to messages[i+1]
         for i, msg in enumerate(history):
-            ids = msg.get("attachment_ids") or []
-            if not ids:
+            if msg.get("role") != "user":
+                continue
+            # Metadata ids resolve to this thread's rows; a branched thread's
+            # copied metadata points at the source thread, so fall back to the
+            # rows linked to this message.
+            atts: list = []
+            seen: set = set()
+            for att_id in msg.get("attachment_ids") or []:
+                hit = by_id.get(str(att_id))
+                if hit and hit[1].id not in seen:
+                    seen.add(hit[1].id)
+                    atts.append(hit)
+            for hit in by_message.get(str(msg.get("message_id") or ""), []):
+                if hit[1].id not in seen:
+                    seen.add(hit[1].id)
+                    atts.append(hit)
+            # Same ownership rule as before: only the requesting user's uploads.
+            atts = [(n, a) for n, a in atts if a.uploaded_by_id == self.user.pk]
+            if not atts:
                 continue
             message_obj = messages[i + 1]  # offset by system message
             if message_obj.role != "user":
                 continue
 
-            content_blocks = []
             text = message_obj.content if isinstance(message_obj.content, str) else ""
-            if text:
-                content_blocks.append({"type": "text", "text": text})
+            markers = "\n".join(attachment_marker(n, a) for n, a in atts)
+            header = f"{text}\n\n{markers}" if text else markers
+            if i <= last_assistant:
+                # An earlier turn: the files were shown on their own turn; now
+                # only the markers remain (the agent can re-view by number).
+                message_obj.content = header
+                continue
 
-            for att_id in ids:
-                att = attachments_by_id.get(str(att_id))
-                if not att:
-                    continue
+            content_blocks = [{"type": "text", "text": header}]
+            for _n, att in atts:
+                att_id = att.id
                 try:
                     file_bytes = await self._read_attachment_file(att)
                     ct = att.content_type
@@ -4612,6 +4661,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
                             # oversized native PDFs 400ing at the provider.
                             page_cap = getattr(settings, "NATIVE_REQUEST_MAX_PDF_PAGES", 100)
                             n_pages = pdf_page_count(file_bytes)
+                            if n_pages and att.page_count != n_pages:
+                                await self._save_attachment_page_count(att, n_pages)
                             ceiling = provider_native_b64_ceiling(provider)
                             est_b64 = (len(file_bytes) + 2) // 3 * 4
                             if (0 < page_cap < n_pages) or est_b64 > ceiling:
@@ -4643,26 +4694,32 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 except Exception:
                     logger.exception("Failed to read attachment %s", att_id)
 
-            # Rewrite to multimodal blocks whenever at least one attachment block
-            # was added — including a message with only an attachment and no text
-            # (otherwise the attachment is silently dropped before the LLM sees it).
-            if len(content_blocks) > (1 if text else 0):
-                message_obj.content = content_blocks
+            # Re-render the markers: a PDF's page count may have just been learned.
+            content_blocks[0]["text"] = (
+                f"{text}\n\n" if text else ""
+            ) + "\n".join(attachment_marker(n, a) for n, a in atts)
+            message_obj.content = content_blocks
 
     @database_sync_to_async
-    def _load_attachments(self, attachment_ids):
+    def _load_thread_attachment_index(self, thread_id):
+        """``[(number, ChatAttachment)]`` for the thread — the numbering the
+        attachment tools and the ``# Attachments`` manifest share."""
+        from chat.services import list_thread_attachments
+
+        return list_thread_attachments(thread_id)
+
+    @database_sync_to_async
+    def _thread_has_sent_attachments(self, thread_id) -> bool:
         from chat.models import ChatAttachment
 
-        # Drop any malformed ids so replaying a thread whose history already holds
-        # a bad attachment_id can't raise ValidationError and brick every turn.
-        attachment_ids = _valid_uuids(attachment_ids)
-        if not attachment_ids:
-            return {}
-        atts = ChatAttachment.objects.filter(
-            id__in=attachment_ids,
-            uploaded_by=self.user,
-        )
-        return {str(a.id): a for a in atts}
+        return ChatAttachment.objects.filter(
+            thread_id=thread_id, message__isnull=False
+        ).exists()
+
+    @database_sync_to_async
+    def _save_attachment_page_count(self, att, n_pages):
+        att.page_count = n_pages
+        att.save(update_fields=["page_count"])
 
     @database_sync_to_async
     def _read_attachment_file(self, attachment):
@@ -4932,6 +4989,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 msg_dict["tool_calls"] = m.metadata["tool_calls"]
             if m.metadata and m.metadata.get("attachment_ids"):
                 msg_dict["attachment_ids"] = m.metadata["attachment_ids"]
+            if m.role == "user":
+                # Lets attachment enrichment find the files linked to this message
+                # (branched threads carry the source thread's ids in metadata).
+                msg_dict["message_id"] = str(m.id)
             messages.append(msg_dict)
 
         # 5. Strip orphan tool results whose tool_call_id doesn't match any
@@ -4967,7 +5028,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     or msg["content"].startswith(_SA_PREFIXES)
                 )
             ):
-                merged[-1] = {**merged[-1], "content": merged[-1]["content"] + "\n\n---\n\n" + msg["content"]}
+                prev = merged[-1]
+                combined = {**prev, "content": prev["content"] + "\n\n---\n\n" + msg["content"]}
+                # Keep both messages' attachments; the message_id follows whichever
+                # side carried files (for enrichment's linked-rows fallback).
+                ids = list(prev.get("attachment_ids") or []) + list(msg.get("attachment_ids") or [])
+                if ids:
+                    combined["attachment_ids"] = ids
+                if msg.get("attachment_ids") and not prev.get("attachment_ids") and msg.get("message_id"):
+                    combined["message_id"] = msg["message_id"]
+                merged[-1] = combined
             else:
                 merged.append(msg)
         messages = merged

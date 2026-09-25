@@ -1135,8 +1135,8 @@ class AttachmentOpenToCanvasTool(ContextAwareTool):
         "Load a file the user attached to this chat into a canvas as editable text "
         "(Word, PDF, or a text file), so you can work on its exact content without "
         "retyping it. Pick the file by its number from the '# Attachments' list in "
-        "your context. Note that Images can't be loaded with this tool. For images, embed the [[image:uuid]] "
-        "token for the image instead."
+        "your context. Images can't be loaded with this tool — look at one with "
+        "`chat_attachment_view` instead."
     )
     args_schema: type[BaseModel] = AttachmentOpenToCanvasInput
 
@@ -1183,7 +1183,7 @@ class AttachmentOpenToCanvasTool(ContextAwareTool):
 
         if kind == KIND_IMAGE:
             return json.dumps({
-                "error": "Images can't be loaded as text. Embed the [[image:uuid]] token for the image instead.",
+                "error": "Images can't be loaded as text. View the image with chat_attachment_view instead.",
             })
         if kind not in (KIND_PDF, KIND_DOCX, KIND_TEXT):
             return json.dumps({"error": f"Can't load '{att.original_filename}' as text."})
@@ -1574,10 +1574,12 @@ class DocumentViewNativeTool(ContextAwareTool):
     end_label: str = "Viewed document"
     description: str = (
         "View document(s) from an attached data room by index, in the richest form supported. "
-        "HandlesSupported files are attached to "
-        "the conversation so you can SEE them natively; any other file "
-        "type comes back as its extracted TEXT inline. Use this to actually "
-        "look at an image or a PDF, or to pull a document's text."
+        "Images and PDFs are attached to the conversation so you can SEE them natively "
+        "(layout, charts, visuals); any other file type (e.g. PPTX, DOCX) comes back as its "
+        "extracted TEXT inline, without its visual design. Use this to actually look at an "
+        "image or a PDF, or to pull a document's text. A native view is only visible to you "
+        "during the reply in which you requested it — view it again in a later reply if you "
+        "need it."
     )
     args_schema: type[BaseModel] = DocumentViewNativeInput
 
@@ -1635,81 +1637,32 @@ class DocumentViewNativeTool(ContextAwareTool):
                     results.append(f"Document #{idx} ('{doc.original_filename}'): the original PDF is unavailable.")
                     continue
 
-                from chat.pdf_attach import (
-                    compress_pdf_lossless,
-                    extract_pdf_pages,
-                    parse_page_ranges,
-                    pdf_page_count,
-                    render_pdf_pages_to_jpegs,
+                from chat.pdf_attach import attach_pdf_to_context
+
+                outcome = attach_pdf_to_context(
+                    context, data,
+                    pathway="dataroom",
+                    filename=doc.original_filename or "document.pdf",
+                    description=doc.description or "",
+                    extracted_text=_version_text(version, self._TEXT_CAP),
+                    pages=pages,
                 )
-                from django.conf import settings as dj_settings
-
-                # Page selection: slice to a smaller native sub-PDF up front, so
-                # both the native attach and the rasterize fallback operate on
-                # just the requested pages (text preserved, context saved).
-                page_note = ""
-                if pages:
-                    indices = parse_page_ranges(pages, pdf_page_count(data))
-                    if indices:
-                        data = extract_pdf_pages(data, indices)
-                        page_note = f" (pages {pages})"
-
-                def _try_attach_pdf(pdf_bytes: bytes) -> bool:
-                    return context.try_add_native_asset({
-                        "kind": "pdf",
-                        "b64": base64.b64encode(pdf_bytes).decode("ascii"),
-                        "filename": doc.original_filename or "document.pdf",
-                        "description": doc.description or "",
-                        "extracted_text": _version_text(version, self._TEXT_CAP),
-                    }, pathway="dataroom")
-
-                # A native PDF sends every page to the provider; over the page cap
-                # it would blow the request/context, so skip straight to the
-                # first-N-pages render degrade (itself capped at ~20 pages).
-                page_cap = getattr(dj_settings, "NATIVE_REQUEST_MAX_PDF_PAGES", 100)
-                n_pages = pdf_page_count(data)
-                over_page_cap = 0 < page_cap < n_pages
-
+                name = doc.original_filename
                 msg = None
-                if not over_page_cap:
-                    if _try_attach_pdf(data):
-                        msg = f"Document #{idx} ('{doc.original_filename}'): attached the PDF{page_note} for you to view."
-                    else:
-                        compressed = compress_pdf_lossless(data)
-                        if len(compressed) < len(data) and _try_attach_pdf(compressed):
-                            msg = (
-                                f"Document #{idx} ('{doc.original_filename}'): attached the PDF{page_note} "
-                                "for you to view (losslessly compressed to fit)."
-                            )
-                if msg is None:
-                    jpeg_pages, total_pages = render_pdf_pages_to_jpegs(
-                        data, b64_budget=context.native_asset_budget_remaining("dataroom"),
-                    )
-                    pages_attached = 0
-                    for p, jpeg in enumerate(jpeg_pages, start=1):
-                        if not context.try_add_native_asset({
-                            "kind": "image",
-                            "asset_id": "",
-                            "b64": base64.b64encode(jpeg).decode("ascii"),
-                            "media_type": "image/jpeg",
-                            "description": (
-                                f"'{doc.original_filename}'{page_note} page {p} of {total_pages} "
-                                "(truncated view)"
-                            ),
-                        }, pathway="dataroom"):
-                            break
-                        pages_attached += 1
-                    if pages_attached:
-                        reason = (
-                            f"has too many pages ({total_pages}) to attach in full"
-                            if over_page_cap else "too large to attach in full"
-                        )
+                if outcome.representation == "native":
+                    msg = f"Document #{idx} ('{name}'): attached the PDF{outcome.page_note} for you to view."
+                    if outcome.compressed:
                         msg = (
-                            f"Document #{idx} ('{doc.original_filename}'): PDF {reason} — "
-                            f"attached the first {pages_attached} of {total_pages} pages as "
-                            "images. NOTE: you are seeing a TRUNCATED view; the extracted "
-                            f"text follows:\n\n{_version_text(version, self._TEXT_CAP)}"
+                            f"Document #{idx} ('{name}'): attached the PDF{outcome.page_note} "
+                            "for you to view (losslessly compressed to fit)."
                         )
+                elif outcome.representation == "native_pages_as_images":
+                    msg = (
+                        f"Document #{idx} ('{name}'): PDF {outcome.reason} — "
+                        f"attached the first {outcome.pages_attached} of {outcome.total_pages} pages as "
+                        "images. NOTE: you are seeing a TRUNCATED view; the extracted "
+                        f"text follows:\n\n{_version_text(version, self._TEXT_CAP)}"
+                    )
                 if msg is None:
                     # Floor: no attachment fits — inline the extracted text.
                     text = _version_text(version, self._TEXT_CAP)

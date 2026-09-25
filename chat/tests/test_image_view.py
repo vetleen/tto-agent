@@ -226,6 +226,9 @@ class PdfAttachChainTests(TestCase):
         pending = tool.context.pending_native_assets
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0]["kind"], "pdf")
+        # Queued PDFs carry a page count so the drain estimates real token cost.
+        self.assertIn("pages", pending[0])
+        self.assertGreaterEqual(pending[0]["pages"], 1)
 
     def test_render_stage_attaches_page_images_with_truncation_note(self):
         from unittest.mock import patch

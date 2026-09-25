@@ -16,8 +16,10 @@ caller degrades to extracted text only.
 
 from __future__ import annotations
 
+import base64
 import io
 import logging
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -197,7 +199,161 @@ def extract_pdf_pages(pdf_bytes: bytes, indices: list[int]) -> bytes:
         return pdf_bytes
 
 
+def extract_pdf_pages_text(pdf_bytes: bytes, indices: list[int]) -> list[tuple[int, str]]:
+    """Return ``[(human_page_no, text)]`` for the 0-based ``indices`` of a PDF.
+
+    Page-scoped text for callers whose cached extraction has no page boundaries.
+    Plain pypdf text only (no embedded-image descriptions). Any failure returns
+    ``[]``; a single unreadable page yields empty text for that page.
+    """
+    if not indices:
+        return []
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        n = len(reader.pages)
+    except Exception:
+        logger.info("Could not open PDF for page text extraction", exc_info=True)
+        return []
+    out: list[tuple[int, str]] = []
+    for i in indices:
+        if not 0 <= i < n:
+            continue
+        try:
+            text = reader.pages[i].extract_text() or ""
+        except Exception:
+            logger.info("PDF page %d text extraction failed", i + 1, exc_info=True)
+            text = ""
+        out.append((i + 1, text))
+    return out
+
+
+@dataclass
+class PdfAttachOutcome:
+    """What :func:`attach_pdf_to_context` managed to queue for the model."""
+
+    representation: str  # "native" | "native_pages_as_images" | "text"
+    total_pages: int = 0  # pages in the (page-sliced) document; 0 if unknown
+    pages_attached: int = 0  # native: total_pages; images: pages queued; text: 0
+    compressed: bool = False  # lossless recompression is what made it fit
+    over_page_cap: bool = False
+    reason: str = ""  # why it isn't a full native attach ("" when native)
+    page_note: str = ""  # " (pages 3-5)" when a page selection applied
+
+
+def attach_pdf_to_context(
+    context,
+    pdf_bytes: bytes,
+    *,
+    pathway: str,
+    filename: str,
+    description: str,
+    extracted_text: str,
+    pages: str | None = None,
+    allow_render: bool = True,
+    always_compress: bool = False,
+) -> PdfAttachOutcome:
+    """Queue a PDF for the model's next request via the staged degrade chain.
+
+    Shared by every tool that shows a PDF natively (``document_view_native``,
+    ``skill_resource_view``, ``chat_attachment_view``):
+
+    1. ``pages`` → slice to a smaller sub-PDF up front, so every later stage
+       works on just the requested pages;
+    2. ``always_compress`` → lossless recompression before the first attempt;
+    3. over ``NATIVE_REQUEST_MAX_PDF_PAGES`` → skip the native attach entirely;
+    4. attach as-is, then (unless already compressed) retry losslessly
+       compressed;
+    5. ``allow_render`` → first-N pages as JPEG images within the remaining
+       budget (a truncated view — the caller should inline the extracted text);
+    6. otherwise ``representation="text"`` and nothing is queued.
+
+    All queuing goes through ``context.try_add_native_asset(..., pathway)``.
+    Queued PDF items carry ``pages`` so the drain can estimate their real token
+    cost. Callers map the outcome onto their own result strings.
+    """
+    from django.conf import settings as dj_settings
+
+    data = pdf_bytes
+    page_note = ""
+    if pages:
+        indices = parse_page_ranges(pages, pdf_page_count(data))
+        if indices:
+            data = extract_pdf_pages(data, indices)
+            page_note = f" (pages {pages})"
+
+    compressed = False
+    if always_compress:
+        data = compress_pdf_lossless(data)
+
+    page_cap = getattr(dj_settings, "NATIVE_REQUEST_MAX_PDF_PAGES", 100)
+    n_pages = pdf_page_count(data)
+    over_page_cap = 0 < page_cap < n_pages
+
+    def _try_attach(pdf: bytes) -> bool:
+        return context.try_add_native_asset({
+            "kind": "pdf",
+            "b64": base64.b64encode(pdf).decode("ascii"),
+            "filename": filename,
+            "description": description,
+            "extracted_text": extracted_text,
+            "pages": n_pages or 1,
+        }, pathway=pathway)
+
+    if not over_page_cap:
+        if _try_attach(data):
+            return PdfAttachOutcome(
+                "native", total_pages=n_pages, pages_attached=n_pages,
+                compressed=always_compress, page_note=page_note,
+            )
+        if not always_compress:
+            smaller = compress_pdf_lossless(data)
+            if len(smaller) < len(data) and _try_attach(smaller):
+                compressed = True
+                return PdfAttachOutcome(
+                    "native", total_pages=n_pages, pages_attached=n_pages,
+                    compressed=compressed, page_note=page_note,
+                )
+
+    reason = (
+        f"has too many pages ({n_pages}) to attach in full"
+        if over_page_cap else "too large to attach in full"
+    )
+    if allow_render:
+        jpeg_pages, total_pages = render_pdf_pages_to_jpegs(
+            data, b64_budget=context.native_asset_budget_remaining(pathway),
+        )
+        attached = 0
+        for p, jpeg in enumerate(jpeg_pages, start=1):
+            if not context.try_add_native_asset({
+                "kind": "image",
+                "asset_id": "",
+                "b64": base64.b64encode(jpeg).decode("ascii"),
+                "media_type": "image/jpeg",
+                "description": f"'{filename}'{page_note} page {p} of {total_pages} (truncated view)",
+            }, pathway=pathway):
+                break
+            attached += 1
+        if attached:
+            if over_page_cap:
+                reason = f"has too many pages ({total_pages}) to attach in full"
+            return PdfAttachOutcome(
+                "native_pages_as_images", total_pages=total_pages, pages_attached=attached,
+                over_page_cap=over_page_cap, reason=reason, page_note=page_note,
+            )
+
+    return PdfAttachOutcome(
+        "text", total_pages=n_pages, over_page_cap=over_page_cap,
+        reason="attachment budget exhausted" if not over_page_cap else reason,
+        page_note=page_note,
+    )
+
+
 __all__ = [
+    "attach_pdf_to_context",
+    "extract_pdf_pages_text",
+    "PdfAttachOutcome",
     "pdf_page_count",
     "compress_pdf_lossless",
     "render_pdf_pages_to_jpegs",

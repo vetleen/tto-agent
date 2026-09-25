@@ -18,3 +18,4 @@ class ChatConfig(AppConfig):
         import chat.web_image_tools  # noqa: F401 — register web_image_view tool on startup
         import chat.slide_tools  # noqa: F401 — register slide-deck tools on startup
         import chat.scratchpad_tools  # noqa: F401 — register the agent scratchpad tool on startup
+        import chat.attachment_tools  # noqa: F401 — register chat_attachment_view on startup

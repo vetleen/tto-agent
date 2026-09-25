@@ -71,6 +71,10 @@ class RunContext(BaseModel):
     # mid-turn skill attach respects the same aim-relative skill budget as the UI
     # (agent_skills.resources.attach_token_budget). None → the fixed budget.
     max_context_tokens: Optional[int] = None
+    # The resolved chat model id for this run (set by the chat consumer), so a
+    # tool can tell whether the model accepts images/PDFs natively and report the
+    # representation truthfully. None → assume native input; the drain degrades.
+    model_id: Optional[str] = None
     # Sub-agent private scratchpad (subagent_scratchpad_append). Held in memory so
     # the tool loop can re-inject it into the system prompt every iteration without
     # a DB read; the durable copy lives on SubAgentRun.scratchpad. Empty for the
@@ -81,7 +85,7 @@ class RunContext(BaseModel):
     # native content blocks when the model supports the modality, else a text
     # fallback. Each item is a dict keyed by "kind" ("image" default, or "pdf"):
     #   image: {"asset_id", "b64", "media_type", "description"}
-    #   pdf:   {"kind": "pdf", "b64", "filename", "description", "extracted_text"}
+    #   pdf:   {"kind": "pdf", "b64", "filename", "description", "extracted_text", "pages"}
     pending_native_assets: list = Field(default_factory=list)
     # Skill activation the agent triggered mid-turn (via chat_skill_attach).
     # The chat pipeline drains these each tool-loop iteration so a skill the

@@ -883,7 +883,9 @@ class ViewTemplateTool(ContextAwareTool):
         "slide (image token / bg_image); you must view the image to get it. "
         "Reads from a skill attached to this thread by default; pass "
         "skill_slug to read a resource on the skill you are authoring. Use this "
-        "to consult bundled reference material or a template before generating."
+        "to consult bundled reference material or a template before generating. "
+        "A native view is only visible to you during the reply in which you "
+        "requested it — view it again in a later reply if you need it."
     )
     args_schema: type[BaseModel] = ViewTemplateInput
     section: str = "skills"
@@ -922,6 +924,22 @@ class ViewTemplateTool(ContextAwareTool):
             # the token survives an exhausted attachment budget.
             token = self._mint_image_token(resource) if is_image else None
             attached = self._add_native_asset(resource, pages, token=token)
+            as_images = getattr(attached, "representation", "") == "native_pages_as_images"
+            if as_images:
+                text = (resource.content or "")[:MAX_RESOURCE_CHARS]
+                body = (
+                    f"The PDF is {attached.reason}; the first {attached.pages_attached} of "
+                    f"{attached.total_pages} pages are attached below as images (a "
+                    "TRUNCATED view). Its extracted text follows:\n\n" + text
+                )
+                result = {
+                    "status": "ok", "resource_name": resource.name,
+                    "file_type": resource.file_type,
+                    "content": f"{begin}\n{body}\n{end}",
+                }
+                if note:
+                    result["note"] = note
+                return json.dumps(result)
             if attached or token:
                 if attached:
                     body = (
@@ -1040,13 +1058,13 @@ class ViewTemplateTool(ContextAwareTool):
             return None
 
     def _add_native_asset(self, resource, pages: str | None = None,
-                          token: str | None = None) -> bool:
+                          token: str | None = None):
         """Queue a PDF/image resource's bytes for inline injection by the
         pipeline. Reads the vision-optimized derivative (``optimized_file``) when
-        present, else the pristine ``original_file``. For PDFs, an optional
-        ``pages`` selection is sliced into a smaller native sub-PDF and the whole
-        thing is losslessly compressed. Returns False when there are no bytes or
-        the per-turn native-asset budget is exhausted."""
+        present, else the pristine ``original_file``. PDFs go through the shared
+        ``attach_pdf_to_context`` chain and return its ``PdfAttachOutcome``
+        (native, or first pages as images); images return True. Returns False
+        when there are no bytes or nothing fit the per-turn native-asset budget."""
         import base64
         import logging
 
@@ -1080,44 +1098,37 @@ class ViewTemplateTool(ContextAwareTool):
             return False
 
         if is_pdf:
-            from chat.pdf_attach import (
-                compress_pdf_lossless,
-                extract_pdf_pages,
-                parse_page_ranges,
-                pdf_page_count,
-            )
-            from django.conf import settings as dj_settings
+            from chat.pdf_attach import attach_pdf_to_context
 
-            if pages:
-                data = extract_pdf_pages(data, parse_page_ranges(pages, pdf_page_count(data)))
-            data = compress_pdf_lossless(data)
-            # Over the per-PDF page cap the native attach would blow the request;
-            # returning False makes the caller fall back to the extracted text.
-            page_cap = getattr(dj_settings, "NATIVE_REQUEST_MAX_PDF_PAGES", 100)
-            n_pages = pdf_page_count(data)
-            if 0 < page_cap < n_pages:
-                return False
-            b64 = base64.b64encode(data).decode("ascii")
-            item = {
-                "kind": "pdf", "b64": b64,
-                "filename": resource.original_filename or resource.name,
-                "description": (
+            # Shared degrade chain: pages slice → lossless compress → native
+            # attach (under the page cap) → first-N pages as images → nothing
+            # (caller falls back to the extracted text).
+            outcome = attach_pdf_to_context(
+                self.context, data,
+                pathway="skill",
+                filename=resource.original_filename or resource.name,
+                description=(
                     f"PDF resource '{resource.name}' from skill "
                     f"'{resource.skill.name}'"
                     + (f" (pages {pages})" if pages else "")
                 ),
-                "extracted_text": resource.content or "",
-            }
-        else:
-            b64 = base64.b64encode(data).decode("ascii")
-            item = {
-                "kind": "image", "b64": b64, "asset_id": token or "",
-                "media_type": resource.media_type or "image/png",
-                "description": (
-                    f"Image resource '{resource.name}' from skill "
-                    f"'{resource.skill.name}'"
-                ),
-            }
+                extracted_text=resource.content or "",
+                pages=pages,
+                always_compress=True,
+            )
+            if outcome.representation == "text":
+                return False
+            return outcome
+
+        b64 = base64.b64encode(data).decode("ascii")
+        item = {
+            "kind": "image", "b64": b64, "asset_id": token or "",
+            "media_type": resource.media_type or "image/png",
+            "description": (
+                f"Image resource '{resource.name}' from skill "
+                f"'{resource.skill.name}'"
+            ),
+        }
         return bool(self.context.try_add_native_asset(item, pathway="skill"))
 
 

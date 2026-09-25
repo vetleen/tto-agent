@@ -1477,7 +1477,7 @@ class PayloadDataRoomValidationTests(TransactionTestCase):
     },
 )
 class LoadAttachmentsAccessTests(TransactionTestCase):
-    """Test that _load_attachments only returns the user's own attachments."""
+    """Attachment enrichment only ever reads the thread's own, user-uploaded files."""
 
     def setUp(self):
         self.user = User.objects.create_user(email="att-owner@example.com", password="pass")
@@ -1517,10 +1517,25 @@ class LoadAttachmentsAccessTests(TransactionTestCase):
             size_bytes=6,
         )
 
+        from llm.types.messages import Message
+
         consumer = self._make_consumer(self.user)
-        result = await consumer._load_attachments([str(own_att.id), str(other_att.id)])
-        self.assertIn(str(own_att.id), result)
-        self.assertNotIn(str(other_att.id), result)
+        # Enrichment resolves ids only against the thread's own rows, so another
+        # user's attachment id smuggled into metadata is never read.
+        history = [{
+            "role": "user", "content": "hi",
+            "attachment_ids": [str(own_att.id), str(other_att.id)],
+        }]
+        messages = [Message(role="system", content="sys"), Message(role="user", content="hi")]
+        await consumer._enrich_with_attachments(
+            messages, history, "", None, thread_id=str(own_thread.id)
+        )
+        text = "".join(
+            b.get("text", "") for b in messages[1].content if isinstance(b, dict)
+        )
+        self.assertIn("mine.txt", text)
+        self.assertIn("my data", text)
+        self.assertNotIn("secret", text)
 
 
 @override_settings(

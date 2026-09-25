@@ -317,8 +317,9 @@ def _render_one_skill(skill: Any, attached_by: str | None = None) -> str:
         block += (
             "\n## Skill resources\n\n"
             "This skill bundles the resources below. Read one on demand with "
-            "`skill_resource_view` (text is returned inline; PDFs and images are "
-            "attached for you to view directly). Any text-bearing resource can be "
+            "`skill_resource_view`. Image and PDF resources are shown to you "
+            "natively. Other file types (e.g. DOCX, PPTX) come back as extracted "
+            "text, without their visual design. Any text-bearing resource can be "
             "loaded into the canvas as a starting point with `skill_resource_load` "
             "— the *template* kind is a hint that it's meant to be filled in, but "
             "you can load a *reference* resource too when it's a useful draft. "
@@ -510,6 +511,13 @@ def build_semi_static_prompt(
             "\nData room documents are versioned and you can edit, save, delete and "
             "otherwise manage them using tools. The tools are available through the "
             "**data_room_tools** skill.\n"
+            "\n## What you actually see of data room files\n\n"
+            "Data room files are processed at upload: their text is extracted, split into "
+            "chunks and indexed for search. `document_search` and `document_read` return "
+            "that extracted text, not the original file. Design choices like layout, "
+            "formatting, slide design or charts are lost. Images appear as an AI-generated "
+            "description plus an `[[image:<uuid>|]]` token. To see how a file actually "
+            "looks, use `document_view_native`.\n"
             "\n## Images\n"
             "To show an image from an attached data room — in a canvas or directly in "
             "your chat reply — paste its image token where you want the image to appear "
@@ -598,7 +606,7 @@ def build_dynamic_context(
     runtime_stats: RuntimeStats | None = None,
     scratchpad: str | None = None,
     pasteable_messages: dict[str, Any] | None = None,
-    attachments: list[dict[str, Any]] | None = None,
+    attachments: dict[str, Any] | None = None,
 ) -> str:
     """Build per-turn dynamic context to inject into the last user message.
 
@@ -760,23 +768,33 @@ def build_dynamic_context(
             lines.append(f"(+{omitted} older message(s) not shown.)")
         parts.append("\n".join(lines))
 
-    # -- Attachments (targets for chat_attachment_open_to_canvas) --
-    if attachments:
+    # -- Attachments (targets for chat_attachment_view / chat_attachment_open_to_canvas) --
+    if attachments and attachments.get("items"):
         lines = [
             "# Attachments",
-            "Files the user attached to this chat. Load one into a canvas as editable "
-            "text with `chat_attachment_open_to_canvas` (reference by number):",
+            "Files the user attached to this chat, numbered below. Attachments can be "
+            "shown natively (as they actually look) or as extracted text only. The tool "
+            "result tells you which form you received. Files attached to the current "
+            "message are shown to you automatically; earlier ones must be viewed anew "
+            "each turn.",
         ]
-        for a in attachments:
+        if attachments.get("can_view"):
+            lines.append("View one with `chat_attachment_view` (reference by number).")
+        if attachments.get("can_open_to_canvas"):
+            lines.append(
+                "Load a non-image one into a canvas as editable text with "
+                "`chat_attachment_open_to_canvas` (reference by number)."
+            )
+        lines.append("")
+        for a in attachments["items"]:
             size_kb = (a.get("size_bytes") or 0) / 1024
             size = f"{size_kb / 1024:.1f} MB" if size_kb >= 1024 else f"{size_kb:.0f} KB"
-            if a.get("is_image"):
-                lines.append(
-                    f'{a["number"]}. {a["filename"]} '
-                    "(image — use its [[image:uuid]] token; can't be loaded as text)"
-                )
-            else:
-                lines.append(f'{a["number"]}. {a["filename"]} ({a.get("kind", "file")}, {size})')
+            line = f'{a["number"]}. {a["filename"]} ({a.get("kind_label") or a.get("kind", "file")}, {size})'
+            if a.get("is_redacted"):
+                line += " — removed"
+            elif not a.get("is_sent", True):
+                line += " — not yet sent"
+            lines.append(line)
         parts.append("\n".join(lines))
 
     # -- Scratchpad (agent-only private notes; survives pruning; user never sees it) --
