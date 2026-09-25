@@ -79,3 +79,6 @@ secrets/
 
 # Playwright MCP scratch output
 .playwright-mcp/
+
+# Local render smoke-test inputs/outputs (real customer decks — never commit)
+smoke-test/

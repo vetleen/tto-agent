@@ -134,6 +134,43 @@
       "value": "1",
       "required": false
     },
+    "DOCUMENT_RENDER_SERVICE_URL": {
+      "description": "Base URL of the Gotenberg render app (deploy/gotenberg) that turns uploaded .pptx slides into images. Empty = slide rendering off.",
+      "required": false
+    },
+    "DOCUMENT_RENDER_SERVICE_USER": {
+      "description": "Basic-auth username for the render app (its GOTENBERG_API_BASIC_AUTH_USERNAME).",
+      "required": false
+    },
+    "DOCUMENT_RENDER_SERVICE_PASSWORD": {
+      "description": "Basic-auth secret for the render app (its GOTENBERG_API_BASIC_AUTH_PASSWORD).",
+      "required": false
+    },
+    "DOCUMENT_RENDER_BATCH_SIZE": {
+      "description": "Slides per conversion request sent to the render app. Default 8.",
+      "value": "8",
+      "required": false
+    },
+    "DOCUMENT_RENDER_MAX_SLIDES": {
+      "description": "Decks with more slides are marked skipped and never rendered. Default 200.",
+      "value": "200",
+      "required": false
+    },
+    "DOCUMENT_RENDER_HTTP_TIMEOUT": {
+      "description": "Read timeout in seconds for one conversion request (Heroku's router answers at 30 s regardless). Default 60.",
+      "value": "60",
+      "required": false
+    },
+    "DOCUMENT_RENDER_VIEW_DEFAULT_SLIDES": {
+      "description": "Slides document_view_native attaches when the model passes no pages=. Default 8.",
+      "value": "8",
+      "required": false
+    },
+    "DOCUMENT_RENDER_VIEW_MAX_SLIDES": {
+      "description": "Cap on slides attached per document_view_native call. Default 12.",
+      "value": "12",
+      "required": false
+    },
     "SENTRY_DSN": {
       "description": "Optional: error tracking. Disabled if unset.",
       "required": false

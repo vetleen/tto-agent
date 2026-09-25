@@ -169,6 +169,19 @@ pages holding a sizeable raster, so for OpenAI models pages with vector graphics
 raster are also sent as rendered images (`pages_with_unrendered_vectors`,
 `PDF_VECTOR_MIN_AREA_PT2` / `PDF_RASTER_RENDER_TRIGGER_PT2`); Claude/Gemini render every page.
 
+**Document page renders**: a data-room `.pptx` version gets one JPEG per slide, stored as
+`chat.Asset` rows with `role=page_render` + `page_number` (owned by the version), rendered by the
+external Gotenberg app (`deploy/gotenberg/`, `DOCUMENT_RENDER_SERVICE_URL`; empty = off) from
+`documents/services/page_render.py` after the version reaches READY (never for quarantined
+versions; never blocks searchability). Invariants: page renders are **never tokenized**
+(`[[image:…]]`), **never shown to users**, and excluded from `_collect_doc_images`; the model
+sees them only through `document_view_native` (`pages` selects slides; first
+`DOCUMENT_RENDER_VIEW_DEFAULT_SLIDES` otherwise) with `asset_id: ""`. State lives on
+`DataRoomDocumentVersion.page_render_state` (`none`/`pending`/`partial`/`ready`/`skipped`/`failed`)
+plus `page_count`, `page_render_attempts`, `page_render_error`. Uploads to the render service use
+opaque names (`<version_id>-<batch>.pptx`), one conversion is in flight per worker (render slot),
+and chunks carry `source_page_start/end` = slide number (pptx) or page (PDF) so search cites them.
+
 **Observability**: each turn's `LLMCallLog` row carries `tool_call_count`, `prune_count`
 (mid-turn compactions), `tool_result_tokens` (raw tool-output volume), and
 `estimated_input_tokens` (our pre-send estimate, summed per round — compare against the

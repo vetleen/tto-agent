@@ -184,6 +184,35 @@ Fidelity note: the preview is Pillow rendering our JSON with the metric-compatib
 (Carlito≈Calibri, Caladea≈Cambria), tuned to match PowerPoint's layout. Ground truth for the
 downloaded file is still PowerPoint opening the `.pptx`; the fonts keep them close.
 
+### Document render service (Gotenberg)
+
+Uploaded data-room `.pptx` files get one JPEG per slide so the assistant can *see* decks
+(`document_view_native` with `pages=`). The rendering (LibreOffice) runs in a separate, stateless
+Heroku container app — **`wilfred-render`**, EU, Basic dyno, shared by staging and production —
+built from `deploy/gotenberg/` (Dockerfile + heroku.yml; full create/deploy/config/rotate guide in
+`deploy/gotenberg/README.md`). The worker (`documents/services/page_render.py`,
+task `render_document_pages`) optimizes the deck once, splits it into batches of
+`DOCUMENT_RENDER_BATCH_SIZE` slides with python-pptx, POSTs each batch, rasterizes the returned
+PDF, and stores `chat.Asset` rows (`role=page_render`). Rendering starts when a version reaches
+READY and never blocks searchability; state lives in `DataRoomDocumentVersion.page_render_state`.
+
+- **Deploy the render app:** `git subtree push --prefix deploy/gotenberg heroku-render main`
+  (Heroku builds the image; no local Docker). First time: `heroku apps:create wilfred-render
+  --region eu --stack container`, set `GOTENBERG_API_BASIC_AUTH_USERNAME/PASSWORD`, `heroku ps:scale
+  web=1:basic`. Health: `curl https://<host>/health`.
+- **Enable on a main app:** set `DOCUMENT_RENDER_SERVICE_URL`, `DOCUMENT_RENDER_SERVICE_USER`,
+  `DOCUMENT_RENDER_SERVICE_PASSWORD` via `heroku api PATCH` (config:set is broken on the dev
+  machine) and restart the worker. Empty URL = feature off (tool falls back to extracted text).
+  Production config changes are **user-gated** (see CLAUDE.md).
+- **Zero retention / security:** nothing persisted on the render app, no addons, no log drains,
+  opaque upload names, basic auth over TLS with a long secret (no IP allowlisting exists on the
+  common runtime). Rotate by PATCHing the render app, then the consumers, then restarting workers.
+- **Limits:** Heroku's router cuts requests at 30 s (H12 → 503) and Gotenberg answers 503 when its
+  queue is full; the worker retries with backoff and falls back to single-slide batches. Decks over
+  `DOCUMENT_RENDER_MAX_SLIDES` are marked `skipped`. Stuck `pending` renders are re-dispatched by
+  `requeue_stale_documents` after 30 min (max 3 attempts → `failed`). Watch
+  `heroku logs -a wilfred-render` for `R14` before considering a bigger dyno.
+
 ### Rollback
 
 ```bash
@@ -203,6 +232,7 @@ If the release included a migration, rolling back the code without reversing the
 | `scan_document_chunks` | guardrails | 3 | 600s hard / 570s soft | Adversarial content scanning (heuristic + LLM) |
 | `transcribe_meeting_chunk_task` | meetings | default | 600s hard / 540s soft | Transcribe a live-meeting audio chunk |
 | `transcribe_uploaded_audio_task` | meetings | default | 1800s hard / 1740s soft | Transcribe an uploaded audio file (may be long) |
+| `render_document_pages` | documents | 3 | 1800s hard / 1740s soft | Render a READY data-room pptx version's slides to JPEGs via the Gotenberg render service (batches of 8, one conversion in flight per worker; retries busy/unavailable with 30 s → 600 s backoff) |
 
 Tasks use exponential backoff on retry, except `run_subagent_task`, which retries after a fixed 30 s: a retrying run keeps holding its sub-agent execution slot, so it must not sit idle for long.
 
@@ -461,6 +491,14 @@ See `.env.example` for the full list with comments. Key production variables:
 | `NATIVE_ASSET_SKILL_FRACTION` | No | Fraction of that budget a skill asset may occupy (default: `0.5`) |
 | `NATIVE_REQUEST_MAX_B64_BYTES_ANTHROPIC` | No | Per-request native ceiling for Anthropic, base64 bytes (default: 32 MB) |
 | `NATIVE_REQUEST_MAX_PDF_PAGES` | No | Per-PDF page cap for native attach (default: 100; Anthropic allows 600 @1M ctx) |
+| `DOCUMENT_RENDER_SERVICE_URL` | No | Base URL of the Gotenberg render app (`https://<wilfred-render host>`). Empty = slide rendering off (default). See *Document render service*. |
+| `DOCUMENT_RENDER_SERVICE_USER` | No | Basic-auth username for the render app (matches its `GOTENBERG_API_BASIC_AUTH_USERNAME`) |
+| `DOCUMENT_RENDER_SERVICE_PASSWORD` | No | Basic-auth secret for the render app (matches its `GOTENBERG_API_BASIC_AUTH_PASSWORD`) |
+| `DOCUMENT_RENDER_BATCH_SIZE` | No | Slides per conversion request (default: 8; ~350 MB peak on the render dyno, well under the 30 s router cut) |
+| `DOCUMENT_RENDER_MAX_SLIDES` | No | Decks with more slides are marked `skipped` and never rendered (default: 200) |
+| `DOCUMENT_RENDER_HTTP_TIMEOUT` | No | Read timeout in seconds for one conversion request (default: 60; the router answers at 30 s regardless) |
+| `DOCUMENT_RENDER_VIEW_DEFAULT_SLIDES` | No | Slides `document_view_native` attaches when the model passes no `pages` (default: 8) |
+| `DOCUMENT_RENDER_VIEW_MAX_SLIDES` | No | Cap on slides attached per `document_view_native` call (default: 12) |
 
 ### Production security (automatic when `DEBUG=False`)
 
