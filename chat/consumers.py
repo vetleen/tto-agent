@@ -4558,6 +4558,36 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 block["_wf_est_tokens"] = int(est_tokens)
             return block
 
+        async def _vector_page_blocks(att, pdf_bytes) -> list:
+            """Rendered images of the PDF's vector-graphic pages, for models whose
+            native PDF input would miss them, followed by a one-line note."""
+            import asyncio
+
+            from chat.pdf_attach import page_list, render_unrendered_vector_pages
+
+            budget = context.native_asset_budget_remaining("attachment") if context is not None else None
+            rendered = await asyncio.to_thread(
+                render_unrendered_vector_pages, pdf_bytes, model, b64_budget=budget,
+            )
+            blocks: list = []
+            included: list = []
+            for page_no, jpeg in rendered:
+                img_b64 = base64.b64encode(jpeg).decode("ascii")
+                if context is not None and not context.reserve_native_asset(len(img_b64), "attachment"):
+                    break
+                blocks.append(_tag(
+                    build_image_content_block(img_b64, "image/jpeg", provider),
+                    len(img_b64), f"{att.original_filename} page {page_no}",
+                    est_tokens=getattr(settings, "VISION_IMAGE_TOKENS", 1_600),
+                ))
+                included.append(page_no)
+            if included:
+                blocks.append({
+                    "type": "text",
+                    "text": f"[{att.original_filename}: rendered images of {page_list(included)} included]",
+                })
+            return blocks
+
         if not any(m.get("attachment_ids") or m.get("message_id") for m in history):
             return
         if thread_id is None and context is not None:
@@ -4619,6 +4649,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             content_blocks = [{"type": "text", "text": header}]
             for _n, att in atts:
                 att_id = att.id
+                extra_blocks: list = []
                 try:
                     file_bytes = await self._read_attachment_file(att)
                     ct = att.content_type
@@ -4679,6 +4710,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                                         len(b64), att.original_filename,
                                         est_tokens=max(1, n_pages) * getattr(settings, "PDF_PAGE_TOKENS", 2_300),
                                     )
+                                    extra_blocks = await _vector_page_blocks(att, file_bytes)
                         else:
                             block = build_text_content_block(extracted, att.original_filename)
                     elif ct in SUPPORTED_DOCX_TYPES:
@@ -4691,6 +4723,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                         continue
 
                     content_blocks.append(block)
+                    content_blocks.extend(extra_blocks)
                 except Exception:
                     logger.exception("Failed to read attachment %s", att_id)
 

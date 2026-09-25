@@ -176,6 +176,14 @@ class SimpleChatPipeline(BasePipeline):
             return int(override)
         return self.max_tool_iterations
 
+    @staticmethod
+    def _seed_model_id(request: ChatRequest) -> None:
+        """Expose the run's model to tools (e.g. PDF attach decides whether to add
+        rendered page images). Callers that already set it keep their value."""
+        ctx = request.context
+        if ctx is not None and not getattr(ctx, "model_id", None) and request.model:
+            ctx.model_id = request.model
+
     def run(self, request: ChatRequest) -> ChatResponse:
         tool_names = request.tools or []
         if not tool_names:
@@ -183,6 +191,7 @@ class SimpleChatPipeline(BasePipeline):
 
         if not request.model:
             raise ValueError("request.model must be set by the service before calling pipeline")
+        self._seed_model_id(request)
         tools = self._resolve_tools(tool_names, request.context)
         req = request.model_copy(update={"tool_schemas": tools})
 
@@ -200,6 +209,7 @@ class SimpleChatPipeline(BasePipeline):
 
         if not request.model:
             raise ValueError("request.model must be set by the service before calling pipeline")
+        self._seed_model_id(request)
         tools = self._resolve_tools(tool_names, request.context)
         req = request.model_copy(update={"tool_schemas": tools})
 

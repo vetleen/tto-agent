@@ -229,6 +229,165 @@ def extract_pdf_pages_text(pdf_bytes: bytes, indices: list[int]) -> list[tuple[i
     return out
 
 
+_THIN_PT = 3.0  # vector objects thinner than this: rules, underlines, borders
+_BACKGROUND_FRACTION = 0.85  # one object covering this much of the page: a background
+
+
+def _is_plain_rect(obj, raw) -> bool:
+    """A path made only of ≤4 straight segments (a box: cell fill, band, frame)."""
+    n = raw.FPDFPath_CountSegments(obj.raw)
+    if n < 0 or n > 6:
+        return False
+    lines = 0
+    for i in range(n):
+        seg_type = raw.FPDFPathSegment_GetType(raw.FPDFPath_GetPathSegment(obj.raw, i))
+        if seg_type == raw.FPDF_SEGMENT_BEZIERTO:
+            return False
+        if seg_type == raw.FPDF_SEGMENT_LINETO:
+            lines += 1
+    return lines <= 4
+
+
+def pages_with_unrendered_vectors(
+    pdf_bytes: bytes, page_indices: list[int] | None = None
+) -> list[int]:
+    """0-based pages whose vector graphics a provider that only images
+    raster-bearing pages would miss.
+
+    A page qualifies when it has no raster image of at least
+    ``PDF_RASTER_RENDER_TRIGGER_PT2`` (displayed area) and its vector graphics
+    cover at least ``PDF_VECTOR_MIN_AREA_PT2`` (summed bounding boxes). Vector
+    graphics exclude thin rules/borders, page-sized backgrounds, and plain
+    rectangles sitting behind text (cell fills, heading bands). An object census
+    only — nothing is rendered. Any failure returns ``[]``.
+    """
+    from django.conf import settings as dj_settings
+
+    try:
+        import pypdfium2 as pdfium
+        import pypdfium2.raw as raw
+    except ImportError:
+        return []
+    raster_trigger = getattr(dj_settings, "PDF_RASTER_RENDER_TRIGGER_PT2", 3_300)
+    vector_min = getattr(dj_settings, "PDF_VECTOR_MIN_AREA_PT2", 8_000)
+    try:
+        doc = pdfium.PdfDocument(pdf_bytes)
+    except Exception:
+        return []
+    flagged: list[int] = []
+    try:
+        targets = range(len(doc)) if page_indices is None else page_indices
+        for i in targets:
+            if not 0 <= i < len(doc):
+                continue
+            page = doc[i]
+            try:
+                pw, ph = page.get_size()
+                objs = list(page.get_objects(max_depth=15))
+                text_centres = []
+                for o in objs:
+                    if o.type == raw.FPDF_PAGEOBJ_TEXT:
+                        left, bottom, right, top = o.get_pos()
+                        text_centres.append(((left + right) / 2, (bottom + top) / 2))
+                largest_raster = 0.0
+                vector_area = 0.0
+                for o in objs:
+                    if o.type not in (raw.FPDF_PAGEOBJ_IMAGE, raw.FPDF_PAGEOBJ_PATH,
+                                      raw.FPDF_PAGEOBJ_SHADING):
+                        continue
+                    left, bottom, right, top = o.get_pos()
+                    w, h = max(0.0, right - left), max(0.0, top - bottom)
+                    if o.type == raw.FPDF_PAGEOBJ_IMAGE:
+                        largest_raster = max(largest_raster, w * h)
+                        continue
+                    if w < _THIN_PT or h < _THIN_PT or w * h >= _BACKGROUND_FRACTION * pw * ph:
+                        continue
+                    if (
+                        o.type == raw.FPDF_PAGEOBJ_PATH
+                        and _is_plain_rect(o, raw)
+                        and any(left <= x <= right and bottom <= y <= top for x, y in text_centres)
+                    ):
+                        continue
+                    vector_area += w * h
+                if largest_raster < raster_trigger and vector_area >= vector_min:
+                    flagged.append(i)
+            finally:
+                page.close()
+    except Exception:
+        logger.info("PDF vector census failed", exc_info=True)
+        return []
+    finally:
+        doc.close()
+    return flagged
+
+
+def pdf_input_misses_vectors(model_id: str | None) -> bool:
+    """Whether this model's native PDF input drops vector-only page visuals
+    (OpenAI images a page only when it holds a sizeable raster), so pages with
+    vector graphics should be rendered and sent alongside the PDF."""
+    if not model_id:
+        return False
+    from llm.core.model_factory import detect_provider
+    from llm.display import supports_modality
+
+    return detect_provider(model_id) == "openai" and supports_modality(model_id, "image")
+
+
+def render_unrendered_vector_pages(
+    pdf_bytes: bytes,
+    model_id: str | None,
+    *,
+    b64_budget: int | None = None,
+    doc_indices: list[int] | None = None,
+) -> list[tuple[int, bytes]]:
+    """``[(1-based document page, jpeg)]`` for pages whose vector graphics this
+    model's PDF input would miss (see :func:`pdf_input_misses_vectors`), rendered
+    whole-page and capped at ``PDF_ATTACH_MAX_RENDER_PAGES`` / ``b64_budget``.
+
+    ``doc_indices`` maps positions in a page-sliced PDF back to the document's
+    0-based pages. Returns ``[]`` for models that see vector graphics natively.
+    """
+    if not pdf_input_misses_vectors(model_id):
+        return []
+    idx = pages_with_unrendered_vectors(pdf_bytes)[:PDF_ATTACH_MAX_RENDER_PAGES]
+    if not idx:
+        return []
+    jpegs, _ = render_pdf_pages_to_jpegs(pdf_bytes, page_indices=idx, b64_budget=b64_budget)
+    out = []
+    for i, jpeg in zip(idx, jpegs):
+        doc_page = doc_indices[i] if doc_indices and i < len(doc_indices) else i
+        out.append((doc_page + 1, jpeg))
+    return out
+
+
+def page_list(pages: list[int]) -> str:
+    """'page 3' / 'pages 2, 3' — for result wording."""
+    return f"page{'s' if len(pages) > 1 else ''} {', '.join(str(p) for p in pages)}"
+
+
+def _attach_vector_page_images(context, pdf_bytes, *, pathway, filename, doc_indices) -> list[int]:
+    """Queue rendered images of the PDF's vector-graphic pages (models whose PDF
+    input misses them only); returns the 1-based document pages queued."""
+    rendered = render_unrendered_vector_pages(
+        pdf_bytes,
+        getattr(context, "model_id", None),
+        b64_budget=context.native_asset_budget_remaining(pathway),
+        doc_indices=doc_indices,
+    )
+    queued: list[int] = []
+    for page_no, jpeg in rendered:
+        if not context.try_add_native_asset({
+            "kind": "image",
+            "asset_id": "",
+            "b64": base64.b64encode(jpeg).decode("ascii"),
+            "media_type": "image/jpeg",
+            "description": f"'{filename}' page {page_no} (rendered)",
+        }, pathway=pathway):
+            break
+        queued.append(page_no)
+    return queued
+
+
 @dataclass
 class PdfAttachOutcome:
     """What :func:`attach_pdf_to_context` managed to queue for the model."""
@@ -240,6 +399,11 @@ class PdfAttachOutcome:
     over_page_cap: bool = False
     reason: str = ""  # why it isn't a full native attach ("" when native)
     page_note: str = ""  # " (pages 3-5)" when a page selection applied
+    rendered_pages: list = None  # 1-based document pages also sent as rendered images
+
+    def __post_init__(self):
+        if self.rendered_pages is None:
+            self.rendered_pages = []
 
 
 def attach_pdf_to_context(
@@ -269,6 +433,11 @@ def attach_pdf_to_context(
        budget (a truncated view — the caller should inline the extracted text);
     6. otherwise ``representation="text"`` and nothing is queued.
 
+    On a native attach for a model whose PDF input misses vector-only visuals
+    (``pdf_input_misses_vectors(context.model_id)``), pages with sizeable vector
+    graphics and no big raster are also queued as rendered images
+    (``outcome.rendered_pages``).
+
     All queuing goes through ``context.try_add_native_asset(..., pathway)``.
     Queued PDF items carry ``pages`` so the drain can estimate their real token
     cost. Callers map the outcome onto their own result strings.
@@ -277,13 +446,14 @@ def attach_pdf_to_context(
 
     data = pdf_bytes
     page_note = ""
+    doc_indices: list[int] | None = None  # slice position -> 0-based document page
     if pages:
         indices = parse_page_ranges(pages, pdf_page_count(data))
         if indices:
             data = extract_pdf_pages(data, indices)
             page_note = f" (pages {pages})"
+            doc_indices = indices
 
-    compressed = False
     if always_compress:
         data = compress_pdf_lossless(data)
 
@@ -301,20 +471,22 @@ def attach_pdf_to_context(
             "pages": n_pages or 1,
         }, pathway=pathway)
 
+    def _native(compressed_flag: bool) -> PdfAttachOutcome:
+        return PdfAttachOutcome(
+            "native", total_pages=n_pages, pages_attached=n_pages,
+            compressed=compressed_flag, page_note=page_note,
+            rendered_pages=_attach_vector_page_images(
+                context, data, pathway=pathway, filename=filename, doc_indices=doc_indices,
+            ),
+        )
+
     if not over_page_cap:
         if _try_attach(data):
-            return PdfAttachOutcome(
-                "native", total_pages=n_pages, pages_attached=n_pages,
-                compressed=always_compress, page_note=page_note,
-            )
+            return _native(always_compress)
         if not always_compress:
             smaller = compress_pdf_lossless(data)
             if len(smaller) < len(data) and _try_attach(smaller):
-                compressed = True
-                return PdfAttachOutcome(
-                    "native", total_pages=n_pages, pages_attached=n_pages,
-                    compressed=compressed, page_note=page_note,
-                )
+                return _native(True)
 
     reason = (
         f"has too many pages ({n_pages}) to attach in full"
@@ -352,6 +524,9 @@ def attach_pdf_to_context(
 
 __all__ = [
     "attach_pdf_to_context",
+    "pages_with_unrendered_vectors",
+    "pdf_input_misses_vectors",
+    "render_unrendered_vector_pages",
     "extract_pdf_pages_text",
     "PdfAttachOutcome",
     "pdf_page_count",

@@ -291,3 +291,42 @@ class AttachmentViewGatingTests(TransactionTestCase):
             is_loop_turn=False, thread_id=str(self.thread.id)
         )
         self.assertIn("chat_attachment_view", tools)
+
+
+@_IN_MEMORY_STORAGE
+class AttachmentViewVectorPagesTests(TestCase):
+    """OpenAI models also get rendered images of vector-graphic pages."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="vecview@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+        msg = ChatMessage.objects.create(thread=self.thread, role="user", content="here")
+        from weasyprint import HTML
+
+        chart = "".join(f'<rect x="{40 + i * 60}" y="40" width="40" height="160" fill="#36c"/>' for i in range(4))
+        data = HTML(string=f"<html><body><h1>Sales</h1><svg width='320' height='240'>{chart}</svg></body></html>").write_pdf()
+        ChatAttachment.objects.create(
+            thread=self.thread, uploaded_by=self.user, message=msg,
+            file=SimpleUploadedFile("chart.pdf", data), original_filename="chart.pdf",
+            content_type="application/pdf", size_bytes=len(data), extracted_content="Sales",
+        )
+
+    def _view(self, model_id):
+        ctx = RunContext.create(user_id=self.user.pk, conversation_id=str(self.thread.id))
+        ctx.model_id = model_id
+        tool = AttachmentViewTool()
+        tool.set_context(ctx)
+        return json.loads(tool.invoke({"attachment_number": 1})), ctx
+
+    def test_openai_result_lists_page_images(self):
+        result, ctx = self._view("openai/gpt-6-luna")
+        self.assertEqual(result["representation"], "native")
+        self.assertEqual(result["page_images"], [1])
+        self.assertEqual(result["note"], "The PDF and rendered images of page 1 are attached below for you to view.")
+        self.assertEqual([i["kind"] for i in ctx.pending_native_assets], ["pdf", "image"])
+
+    def test_anthropic_result_has_no_page_images(self):
+        result, ctx = self._view("anthropic/claude-haiku-4-5")
+        self.assertNotIn("page_images", result)
+        self.assertEqual(result["note"], "The PDF is attached below for you to view.")
+        self.assertEqual([i["kind"] for i in ctx.pending_native_assets], ["pdf"])

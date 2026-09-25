@@ -1612,3 +1612,30 @@ class MidturnPruningTests(TestCase):
     def test_record_outbound_estimate_no_context_is_safe(self):
         req = self._req([Message(role="user", content="hi")])
         SimpleChatPipeline._record_outbound_estimate(None, req)
+
+
+class SeedModelIdTests(TestCase):
+    """The pipeline exposes the run's model to tools via RunContext.model_id."""
+
+    def _req(self, ctx):
+        from llm.types import ChatRequest, Message
+
+        return ChatRequest(messages=[Message(role="user", content="hi")], model="openai/gpt-6-luna",
+                           stream=False, tools=[], context=ctx)
+
+    def test_seeds_when_unset(self):
+        from llm.pipelines.simple_chat import SimpleChatPipeline
+        from llm.types.context import RunContext
+
+        ctx = RunContext.create()
+        SimpleChatPipeline._seed_model_id(self._req(ctx))
+        self.assertEqual(ctx.model_id, "openai/gpt-6-luna")
+
+    def test_keeps_existing_value(self):
+        from llm.pipelines.simple_chat import SimpleChatPipeline
+        from llm.types.context import RunContext
+
+        ctx = RunContext.create()
+        ctx.model_id = "anthropic/claude-haiku-4-5"
+        SimpleChatPipeline._seed_model_id(self._req(ctx))
+        self.assertEqual(ctx.model_id, "anthropic/claude-haiku-4-5")
