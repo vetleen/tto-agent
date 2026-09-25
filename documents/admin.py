@@ -56,12 +56,15 @@ class DataRoomDocumentAdmin(admin.ModelAdmin):
 
 @admin.register(DataRoomDocumentVersion)
 class DataRoomDocumentVersionAdmin(admin.ModelAdmin):
-    list_display = ("document", "version_index", "origin", "status", "parser_type", "is_searchable", "is_quarantined", "token_count", "created_by", "created_at", "processed_at")
-    list_filter = ("origin", "status", "parser_type", "is_searchable", "is_quarantined")
+    list_display = ("document", "version_index", "origin", "status", "parser_type", "is_searchable", "is_quarantined", "page_render_state", "token_count", "created_by", "created_at", "processed_at")
+    list_filter = ("origin", "status", "parser_type", "is_searchable", "is_quarantined", "page_render_state")
     search_fields = ("document__original_filename", "document__name")
     raw_id_fields = ("document", "created_by")
     inlines = [DataRoomDocumentTagInline, DataRoomDocumentChunkInline]
-    readonly_fields = ("created_at", "processed_at", "updated_at", "processing_metadata_pretty")
+    readonly_fields = (
+        "created_at", "processed_at", "updated_at", "processing_metadata_pretty",
+        "page_render_state", "page_count", "page_render_attempts", "page_render_error",
+    )
     # Derived artefact (e.g. the spreadsheet manifest: mesh geometry + paid
     # vision results) — display it, never let it be hand-edited.
     exclude = ("processing_metadata",)

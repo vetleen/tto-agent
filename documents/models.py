@@ -243,6 +243,16 @@ class DataRoomDocumentVersion(models.Model):
         RESTORE = "restore", "Restore"
         USER_EDITED = "user_edited", "User edited"
 
+    class PageRenderState(models.TextChoices):
+        """Lifecycle of the per-page/slide image renders (documents.services.page_render)."""
+
+        NONE = "none", "Not rendered"
+        PENDING = "pending", "Rendering"
+        PARTIAL = "partial", "Partially rendered"
+        READY = "ready", "Rendered"
+        SKIPPED = "skipped", "Skipped"
+        FAILED = "failed", "Failed"
+
     document = models.ForeignKey(
         DataRoomDocument,
         on_delete=models.CASCADE,
@@ -304,6 +314,21 @@ class DataRoomDocumentVersion(models.Model):
     # descriptions, which must never be recomputed); other parsers leave it
     # null. See documents/services/spreadsheets/manifest.py.
     processing_metadata = models.JSONField(null=True, blank=True)
+
+    # Per-page/slide image renders (pptx today), produced after READY by the
+    # external render service and stored as ``chat.Asset`` rows with
+    # ``role=page_render``. Never blocks searchability. ``page_count`` is the
+    # total pages/slides counted at render time; ``page_render_attempts`` bounds
+    # sweeper re-dispatches of a render stuck in PENDING.
+    page_render_state = models.CharField(
+        max_length=10,
+        choices=PageRenderState.choices,
+        default=PageRenderState.NONE,
+        db_index=True,
+    )
+    page_count = models.PositiveIntegerField(null=True, blank=True)
+    page_render_attempts = models.PositiveSmallIntegerField(default=0)
+    page_render_error = models.TextField(blank=True, default="")
 
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,

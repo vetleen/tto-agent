@@ -771,6 +771,13 @@ class Asset(models.Model):
     KIND_IMAGE = "image"
     KIND_FILE = "file"
 
+    # What a version-owned image *is*: a picture embedded in the document (the
+    # default — tokenized as ``[[image:uuid]]`` in chunk text, shown to users)
+    # or a rendered page/slide of the document (``page_render``: agent-only,
+    # never tokenized, served to the model by document_view_native).
+    ROLE_EMBEDDED = "embedded"
+    ROLE_PAGE_RENDER = "page_render"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
     # Exactly one owner is set (see Meta.constraints).
@@ -810,10 +817,12 @@ class Asset(models.Model):
         related_name="assets",
     )
 
-    # Empty for a *reference* asset (version-owned): the bytes live on the
-    # data-room version's native file (native_blob / the document's
-    # original_file) and are resolved on serve — see image_asset_source /
-    # file_asset_source.
+    # Empty for a *reference* asset (version-owned, ``role=embedded`` with no
+    # bytes of its own): the bytes live on the data-room version's native file
+    # (native_blob / the document's original_file) and are resolved on serve —
+    # see image_asset_source / file_asset_source. Version-owned assets that DO
+    # carry a blob are extracted embedded pictures and rendered pages
+    # (``role=page_render``).
     blob = models.FileField(upload_to="image_assets/%Y/%m/", max_length=500, blank=True)
     content_type = models.CharField(max_length=100)
     # Render/serve mode, only meaningful for reference assets: an inline image
@@ -826,6 +835,16 @@ class Asset(models.Model):
         default=KIND_IMAGE,
         db_index=True,
     )
+    role = models.CharField(
+        max_length=16,
+        choices=[(ROLE_EMBEDDED, ROLE_EMBEDDED), (ROLE_PAGE_RENDER, ROLE_PAGE_RENDER)],
+        default=ROLE_EMBEDDED,
+        db_index=True,
+    )
+    # 1-based page/slide number; set only for ``role=page_render`` (unique per
+    # version, see Meta.constraints — the render task relies on that for
+    # idempotent resumes).
+    page_number = models.PositiveIntegerField(null=True, blank=True)
     size_bytes = models.PositiveIntegerField(default=0)
     width = models.PositiveIntegerField(null=True, blank=True)
     height = models.PositiveIntegerField(null=True, blank=True)
@@ -866,6 +885,11 @@ class Asset(models.Model):
                     | models.Q(version__isnull=True, canvas__isnull=True, message__isnull=True, thread__isnull=False, slide_set__isnull=True)
                     | models.Q(version__isnull=True, canvas__isnull=True, message__isnull=True, thread__isnull=True, slide_set__isnull=False)
                 ),
+            ),
+            models.UniqueConstraint(
+                fields=["version", "page_number"],
+                condition=models.Q(role="page_render"),
+                name="asset_unique_page_render_per_version",
             ),
         ]
 
