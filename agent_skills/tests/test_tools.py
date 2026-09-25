@@ -1441,27 +1441,3 @@ class SkillResourceAttachToolTests(_ResourceToolTestBase):
             skill_slug="res-skill", source=str(uuid.uuid4()),
         ))
         self.assertEqual(result["status"], "error")
-
-
-class ViewTemplateVectorPagesWordingTests(TestCase):
-    """skill_resource_view names the rendered page images it included."""
-
-    def test_body_names_rendered_pages(self):
-        from unittest.mock import patch
-
-        from chat.pdf_attach import PdfAttachOutcome
-
-        tool = ViewTemplateTool()
-        resource = type("R", (), {})()
-        outcome = PdfAttachOutcome("native", total_pages=3, pages_attached=3, rendered_pages=[2])
-        with patch.object(ViewTemplateTool, "_add_native_asset", return_value=outcome), \
-             patch("agent_skills.tools._resolve_thread_template") as resolve:
-            resource.name, resource.file_type = "Deck", "pdf"
-            resource.skill = type("S", (), {"name": "Skill"})()
-            resolve.return_value = (resource, "")
-            tool.context = RunContext.create(conversation_id="t1")
-            result = json.loads(tool._run(template_name="Deck"))
-        self.assertIn(
-            "The pdf file and rendered images of page 2 are attached below for you to view directly.",
-            result["content"],
-        )

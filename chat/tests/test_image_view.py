@@ -230,17 +230,6 @@ class PdfAttachChainTests(TestCase):
         self.assertIn("pages", pending[0])
         self.assertGreaterEqual(pending[0]["pages"], 1)
 
-    def test_native_result_names_rendered_page_images(self):
-        from unittest.mock import patch
-
-        from chat.pdf_attach import PdfAttachOutcome
-
-        tool = self._tool(remaining_budget=10_000_000)
-        outcome = PdfAttachOutcome("native", total_pages=4, pages_attached=4, rendered_pages=[2, 3])
-        with patch("chat.pdf_attach.attach_pdf_to_context", return_value=outcome):
-            result = tool._run([1])
-        self.assertIn("attached the PDF and rendered images of pages 2, 3 for you to view.", result)
-
     def test_render_stage_attaches_page_images_with_truncation_note(self):
         from unittest.mock import patch
 

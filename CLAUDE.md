@@ -164,10 +164,7 @@ re-views files with `chat_attachment_view` (numbers from `list_thread_attachment
 views (`document_view_native`, `skill_resource_view`, `chat_attachment_view`) queue bytes via
 `RunContext.try_add_native_asset` and are visible only within the current reply. Any tool
 that shows a PDF natively must use `chat.pdf_attach.attach_pdf_to_context` (pages slice →
-page cap → compress → first-N page images → text). OpenAI's native PDF input only images
-pages holding a sizeable raster, so for OpenAI models pages with vector graphics and no big
-raster are also sent as rendered images (`pages_with_unrendered_vectors`,
-`PDF_VECTOR_MIN_AREA_PT2` / `PDF_RASTER_RENDER_TRIGGER_PT2`); Claude/Gemini render every page.
+page cap → compress → first-N page images → text).
 
 **Document page renders**: a data-room `.pptx` version gets one JPEG per slide, stored as
 `chat.Asset` rows with `role=page_render` + `page_number` (owned by the version), rendered by the

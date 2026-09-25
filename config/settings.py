@@ -638,12 +638,6 @@ NATIVE_REQUEST_MAX_B64_BYTES_ANTHROPIC = _env_int("NATIVE_REQUEST_MAX_B64_BYTES_
 # Per-PDF page cap (enforced at ingest). Anthropic allows 600 pages on 1M-context
 # models (100 under 1M); this conservative floor is safe across providers.
 NATIVE_REQUEST_MAX_PDF_PAGES = _env_int("NATIVE_REQUEST_MAX_PDF_PAGES", "100")
-# OpenAI's PDF input only includes a page image when the page holds a raster at
-# least roughly this big (displayed area, pt²); vector-only graphics otherwise
-# reach the model as text. For OpenAI models we render such pages ourselves when
-# their vector graphics cover at least PDF_VECTOR_MIN_AREA_PT2 (chat/pdf_attach.py).
-PDF_RASTER_RENDER_TRIGGER_PT2 = _env_int("PDF_RASTER_RENDER_TRIGGER_PT2", "3_300")
-PDF_VECTOR_MIN_AREA_PT2 = _env_int("PDF_VECTOR_MIN_AREA_PT2", "8_000")
 # Vision-image optimization at ingest: uploaded images are downscaled to at most
 # this long edge AND this pixel area, then re-encoded, before storage/sending —
 # so we never ship resolution the models discard (Anthropic ≤1568px/~1.15MP;

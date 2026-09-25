@@ -942,19 +942,10 @@ class ViewTemplateTool(ContextAwareTool):
                 return json.dumps(result)
             if attached or token:
                 if attached:
-                    rendered = getattr(attached, "rendered_pages", None)
-                    if rendered:
-                        from chat.pdf_attach import page_list
-
-                        body = (
-                            f"The {resource.file_type} file and rendered images of "
-                            f"{page_list(rendered)} are attached below for you to view directly."
-                        )
-                    else:
-                        body = (
-                            f"The {resource.file_type} file is attached below "
-                            "for you to view directly."
-                        )
+                    body = (
+                        f"The {resource.file_type} file is attached below "
+                        "for you to view directly."
+                    )
                 else:
                     body = (
                         "The image could not be attached for viewing (attachment "

@@ -216,7 +216,7 @@ class AttachmentViewTool(ContextAwareTool):
         return json.dumps(result)
 
     def _view_pdf(self, att, file_bytes, base, mode, pages, char_offset, model_id) -> str:
-        from chat.pdf_attach import attach_pdf_to_context, page_list, pdf_page_count
+        from chat.pdf_attach import attach_pdf_to_context, pdf_page_count
         from chat.services import get_or_extract_attachment_text
 
         n_pages = pdf_page_count(file_bytes)
@@ -248,14 +248,9 @@ class AttachmentViewTool(ContextAwareTool):
                 }
                 if outcome.page_note:
                     result["pages"] = pages
-                what = "The PDF is"
-                if outcome.rendered_pages:
-                    result["page_images"] = outcome.rendered_pages
-                    what = f"The PDF and rendered images of {page_list(outcome.rendered_pages)} are"
-                suffix = " (losslessly compressed to fit)" if outcome.compressed else ""
                 if outcome.compressed:
                     result["compressed"] = True
-                result["note"] = f"{what} attached below for you to view{suffix}."
+                    result["note"] = "The PDF is attached below for you to view (losslessly compressed to fit)."
                 return json.dumps(result)
             if outcome.representation == "native_pages_as_images":
                 text, _ = self._pdf_text(att, file_bytes, pages)

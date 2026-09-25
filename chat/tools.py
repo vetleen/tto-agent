@@ -1638,7 +1638,6 @@ class DocumentViewNativeTool(ContextAwareTool):
                     continue
 
                 from chat.pdf_attach import attach_pdf_to_context
-                from chat.pdf_attach import page_list as _page_list
 
                 outcome = attach_pdf_to_context(
                     context, data,
@@ -1651,13 +1650,10 @@ class DocumentViewNativeTool(ContextAwareTool):
                 name = doc.original_filename
                 msg = None
                 if outcome.representation == "native":
-                    what = f"the PDF{outcome.page_note}"
-                    if outcome.rendered_pages:
-                        what += f" and rendered images of {_page_list(outcome.rendered_pages)}"
-                    msg = f"Document #{idx} ('{name}'): attached {what} for you to view."
+                    msg = f"Document #{idx} ('{name}'): attached the PDF{outcome.page_note} for you to view."
                     if outcome.compressed:
                         msg = (
-                            f"Document #{idx} ('{name}'): attached {what} "
+                            f"Document #{idx} ('{name}'): attached the PDF{outcome.page_note} "
                             "for you to view (losslessly compressed to fit)."
                         )
                 elif outcome.representation == "native_pages_as_images":
