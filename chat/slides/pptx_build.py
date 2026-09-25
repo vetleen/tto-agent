@@ -34,6 +34,29 @@ logger = logging.getLogger(__name__)
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 TEMPLATE_DIR = ASSETS_DIR / "templates"
 
+# Raster formats python-pptx can embed (pptx.parts.image.Image.ext); anything
+# else (WEBP, AVIF, ...) is transcoded to PNG before add_picture.
+_PPTX_IMAGE_FORMATS = frozenset({"BMP", "GIF", "JPEG", "PNG", "TIFF"})
+
+
+def _pptx_image_stream(data: bytes) -> BytesIO:
+    """Image bytes -> a stream ``add_picture`` accepts. Formats python-pptx can't
+    embed (WebP uploads/logos, WILFRED-8S) are re-encoded as PNG, keeping alpha.
+    Bytes Pillow can't identify (e.g. WMF) pass through unchanged."""
+    from PIL import Image
+
+    try:
+        with Image.open(BytesIO(data)) as im:
+            if (im.format or "").upper() in _PPTX_IMAGE_FORMATS:
+                return BytesIO(data)
+            has_alpha = im.mode in ("RGBA", "LA", "PA") or "transparency" in im.info
+            out = BytesIO()
+            im.convert("RGBA" if has_alpha else "RGB").save(out, format="PNG")
+            out.seek(0)
+            return out
+    except Exception:  # noqa: BLE001
+        return BytesIO(data)
+
 # Shape vocabulary (friendly name -> MSO_SHAPE): exactly chat.slides.schema's
 # SHAPE_NAMES + SHAPE_ALIASES minus ``harvey`` (rasterised, see _add_harvey).
 # Every name here has a matching Pillow polygon so the preview and the download
@@ -403,7 +426,7 @@ def _add_image(slide, el, theme, resolver, warnings):
         tf.paragraphs[0].alignment = PP_ALIGN.CENTER
         return
     img_bytes, _ct = data
-    stream = BytesIO(img_bytes)
+    stream = _pptx_image_stream(img_bytes)
     fit = el.get("fit", "contain")
     if fit == "stretch":
         pic = slide.shapes.add_picture(stream, x, y, width=w, height=h)
@@ -1347,7 +1370,7 @@ def _apply_bg_image(slide, sdict, theme, resolver, prs, warnings):
         data = resolver(tok)
         if data:
             try:
-                pic = slide.shapes.add_picture(BytesIO(data[0]), 0, 0)
+                pic = slide.shapes.add_picture(_pptx_image_stream(data[0]), 0, 0)
                 nw, nh = pic.width, pic.height
                 if nw and nh:
                     scale = max(W / nw, H / nh)
@@ -1410,7 +1433,9 @@ def _footer_logo_pic(slide, logo_bytes, x, w, y0, band_h, align, logo_height=Non
 
     lh_pt, top_pt = theme_mod.footer_logo_box(logo_height, y0, band_h)
     try:
-        pic = slide.shapes.add_picture(BytesIO(logo_bytes), Pt(x), Pt(top_pt), height=Pt(lh_pt))
+        pic = slide.shapes.add_picture(
+            _pptx_image_stream(logo_bytes), Pt(x), Pt(top_pt), height=Pt(lh_pt)
+        )
     except Exception:  # noqa: BLE001
         logger.warning("footer logo failed", exc_info=True)
         return

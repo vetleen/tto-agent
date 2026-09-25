@@ -501,3 +501,65 @@ class DeadImageTests(SimpleTestCase):
         self.assertTrue(any("image unavailable" in w for w in warnings))
         # deck still builds
         self.assertTrue(len(data) > 0)
+
+
+def _webp(mode="RGB", size=(40, 20)):
+    from PIL import Image
+
+    buf = io.BytesIO()
+    color = (200, 60, 30, 128) if mode == "RGBA" else (200, 60, 30)
+    Image.new(mode, size, color).save(buf, format="WEBP")
+    return buf.getvalue()
+
+
+class WebpImageTests(SimpleTestCase):
+    """WILFRED-8S: python-pptx can't embed WebP, so the export silently dropped
+    the image. Unsupported formats are now transcoded to PNG."""
+
+    TOK = "[[image:11111111-1111-1111-1111-111111111111]]"
+
+    def _media(self, data):
+        z = zipfile.ZipFile(io.BytesIO(data))
+        return [n for n in z.namelist() if n.startswith("ppt/media/")]
+
+    def test_webp_image_elements_embed_as_png(self):
+        webp = _webp()
+        deck = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [{"id": "s1",
+            "bg_image": self.TOK, "elements": [
+                {"id": f"i{fit}", "type": "image", "x": 40, "y": 40, "w": 200, "h": 120,
+                 "token": self.TOK, "fit": fit}
+                for fit in ("cover", "contain", "stretch")
+            ]}]}
+        data, warns = build_deck_pptx(deck, image_resolver=lambda t: (webp, "image/webp"))
+        self.assertEqual(warns, [])
+        media = self._media(data)
+        self.assertTrue(media)
+        self.assertTrue(all(n.endswith(".png") for n in media), media)
+        xml = zipfile.ZipFile(io.BytesIO(data)).read("ppt/slides/slide1.xml").decode()
+        self.assertEqual(xml.count("<p:pic>"), 4)  # 3 elements + background
+
+    def test_helper_keeps_supported_bytes_and_alpha(self):
+        from PIL import Image
+
+        from chat.slides.pptx_build import _pptx_image_stream
+
+        self.assertEqual(_pptx_image_stream(_PNG).getvalue(), _PNG)
+        junk = b"not an image"
+        self.assertEqual(_pptx_image_stream(junk).getvalue(), junk)
+        out = Image.open(_pptx_image_stream(_webp("RGBA")))
+        self.assertEqual((out.format, out.mode), ("PNG", "RGBA"))
+        out = Image.open(_pptx_image_stream(_webp("RGB")))
+        self.assertEqual((out.format, out.mode), ("PNG", "RGB"))
+
+    def test_webp_footer_logo_embeds(self):
+        from pptx import Presentation
+
+        from chat.slides.pptx_build import _footer_logo_pic
+
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        with self.assertNoLogs("chat.slides.pptx_build", level="WARNING"):
+            _footer_logo_pic(slide, _webp(), 20, 200, 500, 40, "left")
+        pics = [s for s in slide.shapes if s.shape_type == 13]  # MSO_SHAPE_TYPE.PICTURE
+        self.assertEqual(len(pics), 1)
+        self.assertEqual(pics[0].image.ext, "png")
