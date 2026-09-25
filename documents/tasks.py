@@ -7,9 +7,49 @@ import logging
 from celery import shared_task
 
 from documents.services.dispatch import DocumentPipelineTask, safe_dispatch
+from documents.services.page_render import RenderBusy, RenderUnavailable
 from documents.services.process_document import process_document, process_document_version
 
 logger = logging.getLogger(__name__)
+
+
+@shared_task(
+    bind=True,
+    autoretry_for=(RenderBusy, RenderUnavailable),
+    retry_backoff=30,
+    retry_backoff_max=600,
+    retry_jitter=True,
+    retry_kwargs={"max_retries": 3},
+    time_limit=1800,
+    soft_time_limit=1740,
+)
+def render_document_pages(self, version_id: int) -> str:
+    """Render a released pptx version's slides to images (documents.services.page_render).
+
+    Not a ``DocumentPipelineTask``: the version is already READY and holds no
+    ``DOCUMENT_WORKER_SLOTS`` claim. Busy/unavailable render-service errors
+    retry with backoff; the version stays PENDING and resumes at the first
+    missing slide. The attempt counter is only bumped on the first delivery.
+    """
+    from documents.services.page_render import render_version_pages
+
+    return render_version_pages(version_id, count_attempt=(self.request.retries == 0))
+
+
+def _maybe_enqueue_page_render(version_id: int) -> None:
+    """Best-effort kick-off of slide renders for a just-released, clean version."""
+    try:
+        from documents.models import DataRoomDocumentVersion
+        from documents.services.page_render import enqueue_page_render, should_render
+
+        version = DataRoomDocumentVersion.objects.select_related("document").get(pk=version_id)
+        if should_render(version):
+            enqueue_page_render(version_id)
+    except Exception:  # noqa: BLE001 — never let a render dispatch break finalize
+        logger.warning(
+            "finalize_document_metadata: version_id=%s page-render dispatch skipped",
+            version_id, exc_info=True,
+        )
 
 
 @shared_task(
@@ -43,6 +83,12 @@ def process_document_version_task(version_id: int) -> None:
 STALE_UPLOADED_MINUTES = 15
 STALE_SCANNING_MINUTES = 60
 MAX_REQUEUES = 3
+# Slide renders (page_render_state=PENDING) heartbeat updated_at per batch and
+# while queued for the render slot, so a PENDING row this quiet was interrupted
+# (worker restart, lost dispatch). Re-dispatched up to MAX_PAGE_RENDER_ATTEMPTS.
+STALE_PAGE_RENDER_MINUTES = 30
+MAX_PAGE_RENDER_ATTEMPTS = 3
+PAGE_RENDER_INTERRUPTED_MESSAGE = "Slide rendering was interrupted repeatedly and has been stopped."
 
 
 @shared_task(time_limit=60)
@@ -274,6 +320,47 @@ def requeue_stale_documents() -> int:
                 "requeue_stale_documents: version_id=%s scan re-dispatched", version_id,
             )
             handled += 1
+
+        # Slide renders stuck in PENDING (worker restart mid-render, lost dispatch).
+        from documents.services.page_render import enqueue_page_render
+
+        RenderState = DataRoomDocumentVersion.PageRenderState
+        stale_render = Q(
+            page_render_state=RenderState.PENDING,
+            updated_at__lt=now - timedelta(minutes=STALE_PAGE_RENDER_MINUTES),
+        )
+        exhausted_render_ids = list(
+            DataRoomDocumentVersion.objects.filter(
+                stale_render, page_render_attempts__gte=MAX_PAGE_RENDER_ATTEMPTS,
+            ).values_list("pk", flat=True)
+        )
+        if exhausted_render_ids:
+            DataRoomDocumentVersion.objects.filter(pk__in=exhausted_render_ids).update(
+                page_render_state=RenderState.FAILED,
+                page_render_error=PAGE_RENDER_INTERRUPTED_MESSAGE,
+                updated_at=now,
+            )
+            logger.warning(
+                "requeue_stale_documents: %s slide render(s) exceeded %s attempts, marked failed",
+                len(exhausted_render_ids), MAX_PAGE_RENDER_ATTEMPTS,
+            )
+            handled += len(exhausted_render_ids)
+        retry_render_ids = list(
+            DataRoomDocumentVersion.objects.filter(
+                stale_render, page_render_attempts__lt=MAX_PAGE_RENDER_ATTEMPTS,
+            ).values_list("pk", flat=True)
+        )
+        for version_id in retry_render_ids:
+            # Claim by touching updated_at (guards a concurrent sweep); the task
+            # bumps page_render_attempts itself on delivery.
+            claimed = DataRoomDocumentVersion.objects.filter(
+                stale_render, pk=version_id, page_render_attempts__lt=MAX_PAGE_RENDER_ATTEMPTS,
+            ).update(updated_at=now)
+            if not claimed:
+                continue
+            if enqueue_page_render(version_id):
+                logger.info("requeue_stale_documents: version_id=%s slide render re-dispatched", version_id)
+                handled += 1
     except (OperationalError, InterfaceError):
         logger.info(
             "Skipping stale document sweep: database temporarily unavailable; "
@@ -403,6 +490,7 @@ def finalize_version(version_id: int, *, eager: bool = False, on_pii_retry=None)
         ).first()
         if not is_q:
             advance_active_to(document_id, version)
+            _maybe_enqueue_page_render(version_id)
         else:
             # Quarantined: do not advance active. For a fresh upload (no prior active
             # version) mark the document READY so the UI shows processing finished;

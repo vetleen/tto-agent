@@ -646,6 +646,27 @@ VISION_IMAGE_MAX_EDGE = _env_int("VISION_IMAGE_MAX_EDGE", "1568")
 VISION_IMAGE_MAX_PIXELS = _env_int("VISION_IMAGE_MAX_PIXELS", "1_150_000")
 VISION_IMAGE_JPEG_QUALITY = _env_int("VISION_IMAGE_JPEG_QUALITY", "82")
 
+# Document page renders (documents/services/page_render.py): data-room pptx
+# versions are rendered slide-by-slide to JPEGs by the external Gotenberg
+# (LibreOffice) app — see deploy/gotenberg/. An EMPTY URL turns the feature off
+# (nothing is dispatched; document_view_native keeps returning extracted text).
+# Distinct from the SLIDE_RENDER_* family, which belongs to AI-authored decks.
+DOCUMENT_RENDER_SERVICE_URL = os.environ.get("DOCUMENT_RENDER_SERVICE_URL", "").strip().rstrip("/")
+DOCUMENT_RENDER_SERVICE_USER = os.environ.get("DOCUMENT_RENDER_SERVICE_USER", "")
+DOCUMENT_RENDER_SERVICE_PASSWORD = os.environ.get("DOCUMENT_RENDER_SERVICE_PASSWORD", "")
+# Slides per conversion request. Bounds LibreOffice's memory on the render dyno
+# (it scales with the slides it loads) and keeps every request well under
+# Heroku's 30 s router limit: 8 slides ≈ 5–10 s, ~350 MB on a 512 MB dyno.
+DOCUMENT_RENDER_BATCH_SIZE = _env_int("DOCUMENT_RENDER_BATCH_SIZE", "8")
+# Decks with more slides than this are marked "skipped" and never rendered.
+DOCUMENT_RENDER_MAX_SLIDES = _env_int("DOCUMENT_RENDER_MAX_SLIDES", "200")
+# Read timeout (seconds) per conversion request; the router cuts at 30 s anyway.
+DOCUMENT_RENDER_HTTP_TIMEOUT = _env_int("DOCUMENT_RENDER_HTTP_TIMEOUT", "60")
+# document_view_native: slides shown when the model gives no selection, and the
+# most it may attach per call (each slide ≈ 1,600 vision tokens).
+DOCUMENT_RENDER_VIEW_DEFAULT_SLIDES = _env_int("DOCUMENT_RENDER_VIEW_DEFAULT_SLIDES", "8")
+DOCUMENT_RENDER_VIEW_MAX_SLIDES = _env_int("DOCUMENT_RENDER_VIEW_MAX_SLIDES", "12")
+
 # Context token budget (llm/context_budget.py). max_context_tokens is the aim;
 # these carve the model window into output reservation + input overhead + history.
 CONTEXT_SAFETY_MARGIN_TOKENS = _env_int("CONTEXT_SAFETY_MARGIN_TOKENS", "8_000")

@@ -807,21 +807,68 @@ class ScanGateTransitionTests(TestCase):
         self.user = User.objects.create_user(email="scangate@example.com", password="testpass")
         self.data_room = DataRoom.objects.create(name="ScanGate", slug="scan-gate", created_by=self.user)
 
-    def _scanning_doc(self, description=""):
+    def _scanning_doc(self, description="", filename="scan.txt", parser_type=""):
+        from documents.models import DataRoomDocumentVersion
         from documents.tests._helpers import make_version
         doc = DataRoomDocument.objects.create(
             data_room=self.data_room,
             uploaded_by=self.user,
-            original_filename="scan.txt",
+            original_filename=filename,
             status=DataRoomDocument.Status.SCANNING,
             description=description,
             token_count=10,
         )
-        make_version(
+        version = make_version(
             doc, status=DataRoomDocument.Status.SCANNING, make_active=False,
             chunks=[{"text": "text", "token_count": 10}],
         )
+        if parser_type:
+            DataRoomDocumentVersion.objects.filter(pk=version.pk).update(parser_type=parser_type)
         return doc
+
+    def _finalize(self, doc, *, pii=None):
+        from documents.tasks import finalize_document_metadata
+
+        with patch("documents.services.description.generate_description_and_tags_from_text",
+                   return_value=self._DESC), \
+             patch("documents.services.pii_scan.scan_pii_categories_for_version",
+                   return_value=pii if pii is not None else _pii()), \
+             patch("documents.tasks.render_document_pages.delay") as render_delay:
+            finalize_document_metadata(doc.current_version_id)
+        return render_delay
+
+    def _render_state(self, doc):
+        from documents.models import DataRoomDocumentVersion
+        return DataRoomDocumentVersion.objects.get(pk=doc.current_version_id).page_render_state
+
+    @override_settings(**_MODELS, DOCUMENT_RENDER_SERVICE_URL="http://render.test")
+    def test_clean_pptx_release_dispatches_slide_render(self):
+        doc = self._scanning_doc(filename="deck.pptx", parser_type="pptx")
+        render_delay = self._finalize(doc)
+        render_delay.assert_called_once_with(doc.current_version_id)
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, DataRoomDocument.Status.READY)
+        self.assertEqual(self._render_state(doc), "pending")
+
+    @override_settings(**_MODELS, DOCUMENT_RENDER_SERVICE_URL="http://render.test")
+    def test_slide_render_not_dispatched_for_text_or_quarantined(self):
+        text_doc = self._scanning_doc()
+        self._finalize(text_doc).assert_not_called()
+        self.assertEqual(self._render_state(text_doc), "none")
+
+        quarantined = self._scanning_doc(filename="deck.pptx", parser_type="pptx")
+        self._finalize(quarantined, pii=_pii({"pii_special_category": True})).assert_not_called()
+        quarantined.refresh_from_db()
+        self.assertTrue(quarantined.is_quarantined)
+        self.assertEqual(self._render_state(quarantined), "none")
+
+    @override_settings(**_MODELS, DOCUMENT_RENDER_SERVICE_URL="")
+    def test_slide_render_not_dispatched_when_service_unconfigured(self):
+        doc = self._scanning_doc(filename="deck.pptx", parser_type="pptx")
+        self._finalize(doc).assert_not_called()
+        doc.refresh_from_db()
+        self.assertEqual(doc.status, DataRoomDocument.Status.READY)
+        self.assertEqual(self._render_state(doc), "none")
 
     @override_settings(**_MODELS)
     def test_clean_scan_releases_to_ready(self):

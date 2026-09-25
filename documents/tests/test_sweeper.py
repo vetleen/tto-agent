@@ -455,3 +455,58 @@ class FinalizeRecoveryKickTests(TestCase):
         cache.clear()
         # A broker blip on the recovery kick must not propagate out of finalize.
         finalize_document_metadata(1)
+
+
+@override_settings(DOCUMENT_RENDER_SERVICE_URL="http://render.test")
+class StalePageRenderTests(_SweeperTestCase):
+    """Slide renders stuck in PENDING are re-dispatched, bounded by page_render_attempts."""
+
+    def _render_doc(self, minutes_old, attempts=0, state="pending"):
+        doc = self._make(DataRoomDocument.Status.READY, minutes_old=minutes_old)
+        DataRoomDocumentVersion.objects.filter(pk=doc.current_version_id).update(
+            parser_type="pptx",
+            page_render_state=state,
+            page_render_attempts=attempts,
+            updated_at=timezone.now() - timedelta(minutes=minutes_old),
+        )
+        return doc
+
+    @patch("documents.tasks.render_document_pages.delay")
+    def test_stale_pending_render_is_redispatched(self, mock_delay):
+        doc = self._render_doc(minutes_old=40, attempts=1)
+
+        handled = requeue_stale_documents()
+
+        self.assertEqual(handled, 1)
+        mock_delay.assert_called_once_with(doc.current_version_id)
+        version = self._version(doc)
+        self.assertEqual(version.page_render_state, "pending")
+        # The claim refreshed updated_at; the task itself spends the attempt.
+        self.assertGreater(version.updated_at, timezone.now() - timedelta(minutes=1))
+        self.assertEqual(version.page_render_attempts, 1)
+
+    @patch("documents.tasks.render_document_pages.delay")
+    def test_exhausted_attempts_mark_failed(self, mock_delay):
+        from documents.tasks import MAX_PAGE_RENDER_ATTEMPTS, PAGE_RENDER_INTERRUPTED_MESSAGE
+
+        doc = self._render_doc(minutes_old=40, attempts=MAX_PAGE_RENDER_ATTEMPTS)
+
+        handled = requeue_stale_documents()
+
+        self.assertEqual(handled, 1)
+        mock_delay.assert_not_called()
+        version = self._version(doc)
+        self.assertEqual(version.page_render_state, "failed")
+        self.assertEqual(version.page_render_error, PAGE_RENDER_INTERRUPTED_MESSAGE)
+
+    @patch("documents.tasks.render_document_pages.delay")
+    def test_recent_pending_and_settled_renders_are_left_alone(self, mock_delay):
+        recent = self._render_doc(minutes_old=5, attempts=1)
+        ready = self._render_doc(minutes_old=90, attempts=1, state="ready")
+
+        handled = requeue_stale_documents()
+
+        self.assertEqual(handled, 0)
+        mock_delay.assert_not_called()
+        self.assertEqual(self._version(recent).page_render_state, "pending")
+        self.assertEqual(self._version(ready).page_render_state, "ready")

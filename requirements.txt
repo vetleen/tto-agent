@@ -60,6 +60,9 @@ weasyprint==69.0
 # deps — avoids a poppler apt dependency and PyMuPDF's AGPL).
 python-pptx==1.0.2
 pypdfium2==4.30.0
+# Already in the slug transitively (tiktoken/langchain); declared because the
+# document render client (documents/services/page_render.py) imports it directly.
+requests>=2.31
 # The Pillow slide renderer builds arbitrary-angle gradient fills with numpy;
 # it's already in the slug transitively (pgvector/langchain), declared here
 # because pillow_render imports it directly. Floor pin avoids resolver fights.
