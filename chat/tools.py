@@ -524,14 +524,19 @@ class SearchDocumentsTool(ContextAwareTool):
             else:
                 chunk_label = ""
 
-            # Cite source page numbers so the model can pass pages=… to
-            # document_view_native to view just the relevant pages of a PDF.
+            # Cite source page/slide numbers so the model can pass pages=… to
+            # document_view_native to view just the relevant pages of a PDF or
+            # slides of a deck.
             page_start = window.get("page_start")
             page_end = window.get("page_end")
             if page_start:
+                from core.file_types import KIND_PPTX, kind_for_extension
+
+                _ext = filename.rsplit(".", 1)[-1] if "." in filename else ""
+                unit = "slide" if kind_for_extension(_ext) == KIND_PPTX else "page"
                 pages_txt = (
-                    f"page {page_start}" if (not page_end or page_end == page_start)
-                    else f"pages {page_start}–{page_end}"
+                    f"{unit} {page_start}" if (not page_end or page_end == page_start)
+                    else f"{unit}s {page_start}–{page_end}"
                 )
                 chunk_label = f"{chunk_label} · {pages_txt}" if chunk_label else pages_txt.capitalize()
 
@@ -1483,11 +1488,12 @@ class DocumentViewNativeInput(ReasonBaseModel):
     pages: Optional[str] = Field(
         default=None,
         description=(
-            "Optional 1-based page selection for PDF documents, e.g. '3-5,12'. "
-            "Only those pages are attached (as a smaller PDF), saving context — "
-            "search results cite the page numbers of relevant chunks. Applies to "
-            "every doc_index in this call, so paginate one document at a time. "
-            "Omit to view the whole PDF."
+            "Optional 1-based page selection for PDF documents, or slide selection "
+            "for PowerPoint decks, e.g. '3-5,12'. Only those pages/slides are "
+            "attached, saving context — search results cite the page or slide "
+            "numbers of relevant chunks. Applies to every doc_index in this call, so "
+            "paginate one document at a time. Omit to view the whole PDF, or the "
+            "first slides of a deck (at most 12 slides per call)."
         ),
     )
 
@@ -1523,7 +1529,13 @@ def _collect_doc_images(doc, max_images: int = 4):
 
         # Spreadsheet tiles are version-owned Assets too, but they belong to
         # document_view_sheet — attaching arbitrary tiles here would be noise.
-        for asset in Asset.objects.filter(version=version).exclude(alt_text=TILE_ALT_MARKER):
+        # Rendered slides (role=page_render) are served by the pptx branch of
+        # document_view_native, selected by slide number, never as "embedded images".
+        for asset in (
+            Asset.objects.filter(version=version)
+            .exclude(alt_text=TILE_ALT_MARKER)
+            .exclude(role=Asset.ROLE_PAGE_RENDER)
+        ):
             if asset.content_type in SUPPORTED_IMAGE_TYPES and asset.blob:
                 with asset.blob.open("rb") as f:
                     out.append((f.read(), asset.content_type, asset.description))
@@ -1575,16 +1587,144 @@ class DocumentViewNativeTool(ContextAwareTool):
     description: str = (
         "View document(s) from an attached data room by index, in the richest form supported. "
         "Images and PDFs are attached to the conversation so you can SEE them natively "
-        "(layout, charts, visuals); any other file type (e.g. PPTX, DOCX) comes back as its "
-        "extracted TEXT inline, without its visual design. Use this to actually look at an "
-        "image or a PDF, or to pull a document's text. A native view is only visible to you "
-        "during the reply in which you requested it — view it again in a later reply if you "
-        "need it."
+        "(layout, charts, visuals). PowerPoint decks are shown as rendered slide images: the "
+        "first slides by default, or the slides you pick with `pages` (e.g. '3-5,12'; at most "
+        "12 per call; search results cite slide numbers). Any other file type (e.g. DOCX) "
+        "comes back as its extracted TEXT inline, without its visual design. Use this to "
+        "actually look at an image, a PDF or a deck, or to pull a document's text. A native "
+        "view is only visible to you during the reply in which you requested it — view it "
+        "again in a later reply if you need it."
     )
     args_schema: type[BaseModel] = DocumentViewNativeInput
 
     _MAX_ATTACHMENTS: int = 4
     _TEXT_CAP: int = 24_000
+
+    def end_label_for_result(self, result: dict) -> str | None:
+        if not result:
+            return None
+        views = [v for v in (result.get("views") or []) if isinstance(v, dict)]
+        if result.get("status") != "ok":
+            return "Couldn't view document"
+        if not views:
+            return None
+        if len(views) > 1:
+            return f"Viewed {len(views)} documents"
+        view = views[0]
+        name = view.get("filename") or "document"
+        kind = view.get("kind")
+        if kind == "slides":
+            slides = [int(n) for n in (view.get("slides") or [])]
+            noun = "slide" if len(slides) == 1 else "slides"
+            return f"Viewed {noun} {_format_numbers(slides)} of {view.get('total')} ('{name}')"
+        if kind == "pdf":
+            pages = view.get("pages")
+            page_part = f", p. {str(pages).replace('-', '–')}" if pages else ""
+            if view.get("representation") == "native_pages_as_images":
+                return (
+                    f"Viewed '{name}' (first {view.get('pages_attached')} of "
+                    f"{view.get('total_pages')} pages as images)"
+                )
+            return f"Viewed '{name}' (native{page_part})"
+        if kind == "image":
+            return f"Viewed '{name}'"
+        if kind == "text":
+            return f"Read '{name}' (extracted text)"
+        return None
+
+    def _attach_slides(self, context, idx: int, doc, version, pages: str | None) -> dict | None:
+        """Queue rendered slide images for a pptx version.
+
+        Returns ``{"message", "view"}`` when at least one slide was attached,
+        ``{"message"}`` alone when the run's attachment budget blocked every slide,
+        or ``None`` when nothing could be shown (caller falls back to text).
+        """
+        import base64
+
+        from django.conf import settings as dj_settings
+
+        from chat.models import Asset
+        from chat.pdf_attach import parse_page_ranges
+
+        name = doc.original_filename or "presentation.pptx"
+        total = int(version.page_count or 0)
+        if total <= 0:
+            return None
+        default_n = max(1, int(getattr(dj_settings, "DOCUMENT_RENDER_VIEW_DEFAULT_SLIDES", 8)))
+        max_n = max(1, int(getattr(dj_settings, "DOCUMENT_RENDER_VIEW_MAX_SLIDES", 12)))
+        selection_note = ""
+        wanted: list[int] = []
+        if pages:
+            wanted = [i + 1 for i in parse_page_ranges(pages, total)]
+            if not wanted:
+                selection_note = f" (no slides matched pages='{pages}', so the first slides are shown)"
+        if not wanted:
+            wanted = list(range(1, min(total, default_n) + 1))
+        truncated = len(wanted) > max_n
+        wanted = wanted[:max_n]
+
+        assets = {
+            a.page_number: a
+            for a in Asset.objects.filter(
+                version=version, role=Asset.ROLE_PAGE_RENDER, page_number__in=wanted,
+            )
+        }
+        shown: list[int] = []
+        missing: list[int] = []
+        budget_hit = False
+        for n in wanted:
+            asset = assets.get(n)
+            if asset is None or not asset.blob:
+                missing.append(n)
+                continue
+            try:
+                with asset.blob.open("rb") as fh:
+                    data = fh.read()
+            except Exception:
+                logger.exception("document_view_native: failed to read slide render for doc %s", doc.id)
+                missing.append(n)
+                continue
+            # No asset_id: rendered slides are agent-only and never get an embed token.
+            if not context.try_add_native_asset({
+                "kind": "image",
+                "asset_id": "",
+                "b64": base64.b64encode(data).decode("ascii"),
+                "media_type": asset.content_type or "image/jpeg",
+                "description": f"'{name}' slide {n} of {total}",
+            }, pathway="dataroom"):
+                budget_hit = True
+                break
+            shown.append(n)
+
+        if not shown:
+            if budget_hit:
+                return {
+                    "message": (
+                        f"Document #{idx} ('{name}'): the attachment budget for this run is "
+                        "exhausted, so no slides could be attached — use document_read for the text instead."
+                    ),
+                }
+            return None
+
+        noun = "slide" if len(shown) == 1 else "slides"
+        msg = f"Document #{idx} ('{name}'): attached {noun} {_format_numbers(shown)} of {total} as images{selection_note}."
+        if missing:
+            msg += (
+                f" Slide{'s' if len(missing) != 1 else ''} {_format_numbers(missing)} "
+                f"{'have' if len(missing) != 1 else 'has'} no preview."
+            )
+        if budget_hit:
+            msg += f" The attachment budget for this run is exhausted after slide {shown[-1]}."
+        if truncated:
+            msg += f" At most {max_n} slides are shown per call."
+        last = max(shown)
+        if last < total and not budget_hit:
+            hint_end = min(total, last + default_n)
+            msg += f" Pass pages='{last + 1}-{hint_end}' to view more."
+        return {
+            "message": msg,
+            "view": {"doc_index": idx, "filename": name, "kind": "slides", "slides": shown, "total": total},
+        }
 
     def _run(self, doc_indices: list[int], data_room_id: int | None = None,
              pages: str | None = None, **kwargs) -> str:
@@ -1592,13 +1732,17 @@ class DocumentViewNativeTool(ContextAwareTool):
         from pathlib import Path
 
         from chat.assets import file_token_for_document, get_or_create_version_image_token
-        from core.file_types import KIND_PDF, kind_for_extension
-        from documents.models import DataRoomDocument
+        from core.file_types import KIND_PDF, KIND_PPTX, kind_for_extension
+        from documents.models import DataRoomDocument, DataRoomDocumentVersion
+
+        RenderState = DataRoomDocumentVersion.PageRenderState
 
         if not doc_indices or not isinstance(doc_indices, list):
             raise ValueError("document_view_native requires a non-empty 'doc_indices' list")
         context = self.context
         results: list[str] = []
+        # One entry per document that yielded something (drives the end label).
+        views: list[dict] = []
         attached = 0
 
         for idx in doc_indices:
@@ -1671,12 +1815,48 @@ class DocumentViewNativeTool(ContextAwareTool):
                         "attach and the attachment budget for this run is exhausted. "
                         f"Extracted text:\n\n{text}"
                     )
+                    views.append({"doc_index": idx, "filename": name, "kind": "text"})
                     continue
                 attached += 1
                 file_tok = file_token_for_document(doc)
                 if file_tok:
                     msg += f" To offer the original file as a download, paste this token: {file_tok}"
                 results.append(msg)
+                views.append({
+                    "doc_index": idx, "filename": name, "kind": "pdf", "pages": pages or None,
+                    "representation": outcome.representation,
+                    "pages_attached": getattr(outcome, "pages_attached", None),
+                    "total_pages": getattr(outcome, "total_pages", None),
+                })
+                continue
+
+            # --- PPTX with rendered slides: attach the selected slides as images. ---
+            is_pptx = kind_for_extension(ext) == KIND_PPTX
+            render_state = getattr(version, "page_render_state", RenderState.NONE)
+            if is_pptx and render_state in (RenderState.READY, RenderState.PARTIAL):
+                if remaining <= 0:
+                    results.append(f"Document #{idx} ('{doc.original_filename}'): attachment limit reached; call again to view it.")
+                    continue
+                outcome = self._attach_slides(context, idx, doc, version, pages)
+                if outcome is not None:
+                    msg = outcome["message"]
+                    if "view" in outcome:
+                        attached += 1
+                        views.append(outcome["view"])
+                        file_tok = file_token_for_document(doc)
+                        if file_tok:
+                            msg += f" To offer the original file as a download, paste this token: {file_tok}"
+                    results.append(msg)
+                    continue
+                # No slide could be shown (renders missing) — fall through to text.
+            elif is_pptx and render_state == RenderState.PENDING:
+                text = _version_text(version, self._TEXT_CAP)
+                results.append(
+                    f"Document #{idx} ('{doc.original_filename}'): slide previews are still being "
+                    "prepared — call document_view_native again shortly to see the slides. "
+                    f"Extracted text:\n\n{text}"
+                )
+                views.append({"doc_index": idx, "filename": doc.original_filename, "kind": "text"})
                 continue
 
             # --- Image (native image, or a doc's embedded image assets). ---
@@ -1715,6 +1895,8 @@ class DocumentViewNativeTool(ContextAwareTool):
                         f"want the image (optionally add a caption between the | and ]]): {token}"
                     )
                 results.append(msg)
+                if attached_here:
+                    views.append({"doc_index": idx, "filename": doc.original_filename, "kind": "image"})
                 continue
 
             # --- Everything else: not natively viewable — return extracted text. ---
@@ -1727,10 +1909,26 @@ class DocumentViewNativeTool(ContextAwareTool):
                 f"natively; its extracted text follows (use document_read to page through more):"
                 f"\n\n{text}"
             )
+            views.append({"doc_index": idx, "filename": doc.original_filename, "kind": "text"})
 
-        if attached == 0:
-            return "\n".join(results) or "No documents were attached."
-        return "\n".join(results) + "\n\n(The attached image(s)/PDF(s) are now visible to you below.)"
+        message = "\n".join(results) or "No documents were attached."
+        if attached:
+            message += "\n\n(The attached image(s)/PDF(s) are now visible to you below.)"
+        return json.dumps({
+            "status": "ok" if views else "error",
+            "message": message,
+            "views": views,
+        })
+
+
+def _format_numbers(numbers: list[int]) -> str:
+    """``[3, 4, 5]`` → ``3–5``; ``[1, 4, 7]`` → ``1, 4, 7``; ``[]`` → ``''``."""
+    if not numbers:
+        return ""
+    ordered = sorted(set(int(n) for n in numbers))
+    if len(ordered) > 1 and ordered[-1] - ordered[0] == len(ordered) - 1:
+        return f"{ordered[0]}–{ordered[-1]}"
+    return ", ".join(str(n) for n in ordered)
 
 
 _registry = get_tool_registry()

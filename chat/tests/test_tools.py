@@ -165,6 +165,35 @@ class SearchDocumentsToolTests(TestCase):
 
     @patch("documents.services.retrieval.similarity_search_chunks")
     @patch("documents.services.retrieval.get_merged_context_windows")
+    def test_page_labels_say_slide_for_decks_and_page_otherwise(self, mock_windows, mock_search):
+        """Chunk labels cite slide numbers for pptx and page numbers for everything else."""
+        deck = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="deck.pptx", status=DataRoomDocument.Status.READY, doc_index=1,
+        )
+        deck_chunk = _doc_chunk(deck, chunk_index=2, text="Market size", token_count=2, heading="Slide 3: Market")
+        report = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="report.pdf", status=DataRoomDocument.Status.READY, doc_index=2,
+        )
+        report_chunk = _doc_chunk(report, chunk_index=4, text="Findings", token_count=1, heading="Findings")
+
+        mock_search.return_value = [MagicMock(metadata={"chunk_id": deck_chunk.id}),
+                                    MagicMock(metadata={"chunk_id": report_chunk.id})]
+        mock_windows.return_value = [
+            {"chunk_ids": [deck_chunk.id], "document_id": deck.pk, "context_text": "Market size",
+             "context_token_count": 2, "chunks_included": [2], "page_start": 3, "page_end": 3},
+            {"chunk_ids": [report_chunk.id], "document_id": report.pk, "context_text": "Findings",
+             "context_token_count": 1, "chunks_included": [4], "page_start": 2, "page_end": 4},
+        ]
+
+        result = self._invoke({"query": "market"}, self._ctx())
+        self.assertIn("slide 3", result)
+        self.assertIn("pages 2–4", result)
+        self.assertNotIn("page 3", result)
+
+    @patch("documents.services.retrieval.similarity_search_chunks")
+    @patch("documents.services.retrieval.get_merged_context_windows")
     def test_includes_data_room_context(self, mock_windows, mock_search):
         """Should include data room name and description at the bottom."""
         doc = DataRoomDocument.objects.create(
