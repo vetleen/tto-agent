@@ -35,6 +35,23 @@ PDF_MIN_IMAGE_BYTES = 1024
 # are dropped (logged once) — described-image caps live in the sinks themselves.
 PDF_MAX_EMBEDDED_IMAGES = 200
 
+# Opt-in page boundary markers (``pdf_to_text(..., page_markers=True)``): each
+# page's text is prefixed with ``page_marker(n)``, e.g. "3" for page
+# 3, on its own line. The delimiters are Unicode private-use characters — not
+# whitespace, not ``\w`` — so ``str.strip()``, whitespace collapsing and the
+# text cleaners leave them alone until the data-room chunker turns them into
+# ``source_page_start``/``source_page_end`` and strips them
+# (documents.services.chunking.assign_pdf_page_numbers). Default output is
+# unchanged; chat attachments and canvas imports never see a marker.
+PAGE_MARK_START = ""
+PAGE_MARK_END = ""
+
+
+def page_marker(page_no: int) -> str:
+    """The boundary marker for 1-based page ``page_no``."""
+    return f"{PAGE_MARK_START}{page_no}{PAGE_MARK_END}"
+
+
 # Extension -> MIME fallback when PIL can't report a format.
 _EXT_MIME = {
     "png": "image/png",
@@ -136,7 +153,9 @@ def _release_decoded_streams(page, image_refs) -> None:
             obj.decoded_self = None
 
 
-def pdf_to_text(file, *, image_sink: Callable[[object, int], str]) -> str:
+def pdf_to_text(
+    file, *, image_sink: Callable[[object, int], str], page_markers: bool = False,
+) -> str:
     """Extract a PDF to text. ``file`` may be a path, bytes, or a binary
     file-like. For each page: ``page.extract_text()`` followed by the inline
     tokens ``image_sink`` returns for that page's embedded images.
@@ -144,6 +163,10 @@ def pdf_to_text(file, *, image_sink: Callable[[object, int], str]) -> str:
     Images repeated across pages (logos, headers) are deduplicated by sha256 —
     the sink is invoked once and its token reused, so a recurring logo doesn't
     become N assets or N vision calls.
+
+    ``page_markers=True`` prefixes every page — including pages with no text and
+    no images, which are otherwise dropped — with ``page_marker(n)`` so a caller
+    can recover page numbers after the text has been cleaned and chunked.
     """
     from django.conf import settings
     from pypdf import PdfReader
@@ -169,7 +192,7 @@ def pdf_to_text(file, *, image_sink: Callable[[object, int], str]) -> str:
     pages_out: list[str] = []
 
     try:
-        for page in reader.pages:
+        for page_no, page in enumerate(reader.pages, start=1):
             try:
                 text = (page.extract_text() or "").replace("\x00", "")
             except Exception:
@@ -235,7 +258,11 @@ def pdf_to_text(file, *, image_sink: Callable[[object, int], str]) -> str:
                 page_str = (text + "\n\n" + "\n\n".join(tokens)).strip() if text else "\n\n".join(tokens)
             else:
                 page_str = text
-            if page_str:
+            if page_markers:
+                # Every page gets a marker, so an empty page still advances the
+                # numbering instead of silently shifting later pages.
+                pages_out.append(page_marker(page_no) + ("\n\n" + page_str if page_str else ""))
+            elif page_str:
                 pages_out.append(page_str)
 
             # Free this page's decoded rasters before moving on — otherwise pypdf

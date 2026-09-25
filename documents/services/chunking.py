@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from core.pdf import PAGE_MARK_END, PAGE_MARK_START
 from core.tokens import count_tokens as _count_tokens
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,73 @@ def clean_extracted_text(text: str) -> str:
     text = _RE_EXCESS_INLINE_WS.sub(" ", text)
     text = _RE_EXCESS_BLANK_LINES.sub("\n\n", text)
     return text.strip()
+
+
+# ---------------------------------------------------------------------------
+# Chunk page/slide numbers (source_page_start / source_page_end)
+# ---------------------------------------------------------------------------
+# pptx: the extractor writes one ``## Slide N[: title]`` heading per slide and
+# structure_aware_chunk starts a new section at every ATX heading, so a chunk
+# never spans slides and its ``heading`` begins with "Slide N". A slide whose
+# body contains its own ``#`` lines yields extra sections with other headings;
+# those inherit the running slide number.
+_RE_SLIDE_HEADING = re.compile(r"^Slide (\d+)\b")
+# pdf: core.pdf emits ``page_marker(n)`` at the start of every page when asked
+# (``page_markers=True``); the markers ride through cleaning and chunking and
+# are resolved + stripped here.
+_RE_PAGE_MARK = re.compile(re.escape(PAGE_MARK_START) + r"(\d+)" + re.escape(PAGE_MARK_END))
+
+
+def assign_pptx_slide_numbers(chunks: list[dict]) -> None:
+    """Set ``source_page_start``/``source_page_end`` on pptx chunk dicts, in place.
+
+    Chunks are visited in order; a heading matching ``Slide N`` sets the running
+    slide, and every chunk (including ones with a different or empty heading)
+    gets the running slide. Chunks before the first slide heading stay ``None``.
+    """
+    current: int | None = None
+    for chunk in chunks:
+        match = _RE_SLIDE_HEADING.match((chunk.get("heading") or "").strip())
+        if match:
+            current = int(match.group(1))
+        chunk["source_page_start"] = current
+        chunk["source_page_end"] = current
+
+
+def assign_pdf_page_numbers(chunks: list[dict]) -> list[dict]:
+    """Resolve the page markers in PDF chunk dicts into page ranges and strip them.
+
+    Per chunk, in order: the start page is the marker's number when the chunk's
+    text begins with a marker, else the running page (the last page reached by
+    the previous chunk); the end page is the last marker in the chunk, else the
+    start page. Markers are removed from the text; chunks left empty (a page
+    boundary that landed in a section of its own) are dropped, so ``chunk_index``
+    is renumbered and ``token_count`` is recomputed for every chunk whose text
+    changed. Chunks without markers are returned untouched.
+    """
+    out: list[dict] = []
+    running: int | None = None
+    for chunk in chunks:
+        text = chunk.get("text") or ""
+        marks = [int(m) for m in _RE_PAGE_MARK.findall(text)]
+        leading = _RE_PAGE_MARK.match(text.lstrip())
+        start = int(leading.group(1)) if leading else running
+        end = marks[-1] if marks else start
+        if end is not None:
+            running = end
+        if marks:
+            cleaned = _RE_PAGE_MARK.sub("", text)
+            cleaned = _RE_EXCESS_INLINE_WS.sub(" ", cleaned)
+            cleaned = _RE_EXCESS_BLANK_LINES.sub("\n\n", cleaned).strip()
+            if not cleaned:
+                continue
+            chunk = dict(chunk, text=cleaned, token_count=_count_tokens(cleaned))
+        chunk["source_page_start"] = start
+        chunk["source_page_end"] = end
+        out.append(chunk)
+    for index, chunk in enumerate(out):
+        chunk["chunk_index"] = index
+    return out
 
 
 # Lazy imports to avoid loading LangChain at module import when not needed
@@ -399,7 +467,7 @@ def _pptx_table_to_markdown(table) -> str:
     return "\n".join(lines)
 
 
-def _load_pdf_as_documents(path: Path, *, image_sink=None) -> list[Any]:
+def _load_pdf_as_documents(path: Path, *, image_sink=None, page_markers: bool = False) -> list[Any]:
     """Extract PDF content as text using the shared core.pdf converter.
 
     Page text is extracted per page; embedded images are rendered inline via
@@ -408,13 +476,17 @@ def _load_pdf_as_documents(path: Path, *, image_sink=None) -> list[Any]:
     sink so images are preserved (see
     documents.services.image_assets.image_asset_sink). core.pdf already strips
     NUL bytes from page text, so no separate _strip_nul_bytes pass is needed.
+    ``page_markers`` (data-room ingest only) asks core.pdf for page boundary
+    markers, resolved into chunk page numbers by ``assign_pdf_page_numbers``.
     """
     from langchain_core.documents import Document
 
     from core.docx import placeholder_image_sink
     from core.pdf import pdf_to_text
 
-    content = pdf_to_text(path, image_sink=image_sink or placeholder_image_sink)
+    content = pdf_to_text(
+        path, image_sink=image_sink or placeholder_image_sink, page_markers=page_markers,
+    )
     return [Document(page_content=content.strip())]
 
 
@@ -573,12 +645,15 @@ def _load_eml_as_markdown(path: Path, *, _depth: int = 0, image_sink=None) -> li
     return [Document(page_content=content)]
 
 
-def load_documents(file_path: str | Path, file_extension: str, *, image_sink=None) -> list[Any]:
+def load_documents(
+    file_path: str | Path, file_extension: str, *, image_sink=None, page_markers: bool = False,
+) -> list[Any]:
     """
     Load a file into a list of LangChain Document objects.
     file_extension should be lowercased (e.g. 'pdf', 'txt', 'md', 'html').
     ``image_sink`` (docx/pdf/pptx, and email attachments of those types)
-    controls how embedded images are rendered.
+    controls how embedded images are rendered. ``page_markers`` applies to PDFs
+    only (see ``_load_pdf_as_documents``); email-nested PDFs never set it.
     """
     path = Path(file_path)
     if not path.exists():
@@ -592,7 +667,7 @@ def load_documents(file_path: str | Path, file_extension: str, *, image_sink=Non
     # NOTE: never log document content here (even at DEBUG) — these are
     # confidential uploads; counts and sizes only.
     if ext == "pdf":
-        docs = _load_pdf_as_documents(path, image_sink=image_sink)
+        docs = _load_pdf_as_documents(path, image_sink=image_sink, page_markers=page_markers)
         logger.debug("load_documents: ext=%s docs=%d", ext, len(docs))
         return docs
     if ext == "docx":

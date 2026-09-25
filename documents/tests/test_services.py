@@ -17,6 +17,8 @@ from documents.services.chunking import (
     _load_eml_as_markdown,
     _load_msg_as_markdown,
     _strip_nul_bytes,
+    assign_pdf_page_numbers,
+    assign_pptx_slide_numbers,
     clean_extracted_text,
     load_documents,
     structure_aware_chunk,
@@ -1780,6 +1782,174 @@ class StructureAwareChunkTests(TestCase):
         headings = [c.get("heading") for c in chunks if c.get("heading")]
         self.assertIn("My Title", headings)
         self.assertIn("Subsection", headings)
+
+
+class ChunkPageNumberTests(TestCase):
+    """source_page_start/end on chunks: pptx slides from headings, PDF pages from
+    the opt-in core.pdf markers."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="pages@example.com", password="testpass")
+        self.data_room = DataRoom.objects.create(name="PagesProject", slug="pages-project", created_by=self.user)
+
+    # --- pptx -------------------------------------------------------------
+
+    def test_pptx_headings_set_slide_numbers_and_other_headings_inherit(self):
+        chunks = [
+            {"text": "preamble", "heading": None, "token_count": 1, "chunk_index": 0},
+            {"text": "a", "heading": "Slide 1: Intro", "token_count": 1, "chunk_index": 1},
+            {"text": "b", "heading": "Slide 2", "token_count": 1, "chunk_index": 2},
+            {"text": "c", "heading": "Key results", "token_count": 1, "chunk_index": 3},
+            {"text": "d", "heading": "", "token_count": 1, "chunk_index": 4},
+            {"text": "e", "heading": "Slide 10: Ten", "token_count": 1, "chunk_index": 5},
+        ]
+        assign_pptx_slide_numbers(chunks)
+        got = [(c["source_page_start"], c["source_page_end"]) for c in chunks]
+        self.assertEqual(got, [(None, None), (1, 1), (2, 2), (2, 2), (2, 2), (10, 10)])
+        # Text, headings and indexes are untouched.
+        self.assertEqual([c["chunk_index"] for c in chunks], [0, 1, 2, 3, 4, 5])
+        self.assertEqual(chunks[1]["heading"], "Slide 1: Intro")
+
+    def test_pptx_slidelike_heading_without_number_does_not_match(self):
+        chunks = [{"text": "x", "heading": "Slides overview", "token_count": 1, "chunk_index": 0}]
+        assign_pptx_slide_numbers(chunks)
+        self.assertIsNone(chunks[0]["source_page_start"])
+
+    # --- pdf --------------------------------------------------------------
+
+    def test_pdf_markers_resolve_to_page_ranges_and_are_stripped(self):
+        from core.pdf import PAGE_MARK_END, PAGE_MARK_START, page_marker as pm
+
+        untouched = {"text": "Epsilon tail.", "heading": None, "token_count": 999, "chunk_index": 3}
+        chunks = [
+            {"text": f"{pm(1)}\n\nAlpha text.", "heading": None, "token_count": 0, "chunk_index": 0},
+            {
+                "text": f"Beta continues.\n\n{pm(2)}\n\nGamma on two.\n\n{pm(3)}\n\nDelta on three.",
+                "heading": "Section", "token_count": 0, "chunk_index": 1,
+            },
+            {"text": pm(4), "heading": None, "token_count": 0, "chunk_index": 2},  # marker-only
+            untouched,
+        ]
+        out = assign_pdf_page_numbers(chunks)
+
+        self.assertEqual(len(out), 3)  # the marker-only chunk is dropped
+        self.assertEqual([c["chunk_index"] for c in out], [0, 1, 2])
+        self.assertEqual(
+            [(c["source_page_start"], c["source_page_end"]) for c in out],
+            [(1, 1), (1, 3), (4, 4)],  # running page advanced by the dropped marker
+        )
+        self.assertEqual(out[0]["text"], "Alpha text.")
+        self.assertEqual(out[1]["text"], "Beta continues.\n\nGamma on two.\n\nDelta on three.")
+        self.assertEqual(out[1]["heading"], "Section")
+        for c in out:
+            self.assertNotIn(PAGE_MARK_START, c["text"])
+            self.assertNotIn(PAGE_MARK_END, c["text"])
+        # token_count recomputed for chunks whose text changed...
+        self.assertEqual(out[0]["token_count"], _count_tokens("Alpha text."))
+        self.assertEqual(out[1]["token_count"], _count_tokens(out[1]["text"]))
+        # ...and an untouched chunk keeps its text and count verbatim.
+        self.assertIs(out[2], untouched)
+        self.assertEqual(out[2]["token_count"], 999)
+
+    def test_pdf_chunks_before_any_marker_stay_unnumbered(self):
+        out = assign_pdf_page_numbers([{"text": "No markers here.", "heading": None, "token_count": 3, "chunk_index": 0}])
+        self.assertEqual(len(out), 1)
+        self.assertIsNone(out[0]["source_page_start"])
+        self.assertIsNone(out[0]["source_page_end"])
+
+    def test_pdf_inline_marker_does_not_leave_double_spaces(self):
+        from core.pdf import page_marker as pm
+
+        out = assign_pdf_page_numbers([{"text": f"ends here. {pm(2)} starts here.", "heading": None, "token_count": 0, "chunk_index": 0}])
+        self.assertEqual(out[0]["text"], "ends here. starts here.")
+        self.assertEqual((out[0]["source_page_start"], out[0]["source_page_end"]), (None, 2))
+
+    # --- end to end -------------------------------------------------------
+
+    @override_settings(PGVECTOR_CONNECTION="")
+    @unittest.skipIf(not LANGCHAIN_AVAILABLE, "langchain not installed")
+    def test_process_document_pptx_chunks_carry_slide_numbers(self):
+        import io
+
+        from django.core.files.base import ContentFile
+        from pptx import Presentation
+        from pptx.util import Inches
+
+        from documents.services.process_document import process_document
+
+        prs = Presentation()
+        for n in range(1, 4):
+            slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank
+            box = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(4), Inches(1))
+            box.text_frame.text = f"Body text of slide number {n} about topic {n}."
+        buf = io.BytesIO()
+        prs.save(buf)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = DataRoomDocument(
+                    data_room=self.data_room,
+                    uploaded_by=self.user,
+                    original_filename="deck.pptx",
+                    mime_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    status=DataRoomDocument.Status.UPLOADED,
+                )
+                doc.original_file.save("deck.pptx", ContentFile(buf.getvalue()), save=True)
+                with patch("guardrails.tasks.scan_document_version.delay"):
+                    process_document(doc.id)
+
+                doc.refresh_from_db()
+                chunks = list(doc.current_version.chunks.order_by("chunk_index"))
+                self.assertGreaterEqual(len(chunks), 3)
+                by_slide = {}
+                for c in chunks:
+                    self.assertEqual(c.source_page_start, c.source_page_end)
+                    by_slide.setdefault(c.source_page_start, []).append(c.text)
+                self.assertEqual(sorted(by_slide), [1, 2, 3])
+                for n in (1, 2, 3):
+                    self.assertTrue(any(f"slide number {n}" in t for t in by_slide[n]))
+
+    @override_settings(PGVECTOR_CONNECTION="")
+    @unittest.skipIf(not LANGCHAIN_AVAILABLE, "langchain not installed")
+    def test_process_document_pdf_chunks_carry_page_numbers(self):
+        from django.core.files.base import ContentFile
+
+        from core.pdf import PAGE_MARK_END, PAGE_MARK_START
+        from core.tests.test_pdf import _blank_pdf, _merge, _text_pdf
+        from documents.services.process_document import process_document
+
+        pdf_bytes = _merge(_text_pdf("Alpha words on page one"), _blank_pdf(), _text_pdf("Gamma words on page three"))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(MEDIA_ROOT=tmpdir):
+                doc = DataRoomDocument(
+                    data_room=self.data_room,
+                    uploaded_by=self.user,
+                    original_filename="report.pdf",
+                    mime_type="application/pdf",
+                    status=DataRoomDocument.Status.UPLOADED,
+                )
+                doc.original_file.save("report.pdf", ContentFile(pdf_bytes), save=True)
+                with patch("guardrails.tasks.scan_document_version.delay"):
+                    process_document(doc.id)
+
+                doc.refresh_from_db()
+                version = doc.current_version
+                self.assertEqual(version.parser_type, "pypdf")
+                chunks = list(version.chunks.order_by("chunk_index"))
+                self.assertTrue(chunks)
+                self.assertEqual([c.chunk_index for c in chunks], list(range(len(chunks))))
+                for c in chunks:
+                    self.assertNotIn(PAGE_MARK_START, c.text)
+                    self.assertNotIn(PAGE_MARK_END, c.text)
+                    self.assertIsNotNone(c.source_page_start)
+                # Both short pages land in one chunk spanning pages 1-3, or in
+                # per-page chunks; either way the page numbers are right.
+                first = next(c for c in chunks if "Alpha words" in c.text)
+                last = next(c for c in chunks if "Gamma words" in c.text)
+                self.assertEqual(first.source_page_start, 1)
+                self.assertEqual(last.source_page_end, 3)
+                self.assertEqual(version.token_count, sum(c.token_count for c in chunks))
 
 
 class RerankTests(TestCase):

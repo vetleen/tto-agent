@@ -37,7 +37,15 @@ from documents.models import (
     DataRoomDocumentChunk,
     DataRoomDocumentVersion,
 )
-from documents.services.chunking import clean_extracted_text, extract_file_metadata_date, load_documents, semantic_chunk, structure_aware_chunk
+from documents.services.chunking import (
+    assign_pdf_page_numbers,
+    assign_pptx_slide_numbers,
+    clean_extracted_text,
+    extract_file_metadata_date,
+    load_documents,
+    semantic_chunk,
+    structure_aware_chunk,
+)
 from documents.services.progress import bump_progress, clear as clear_progress, set_stage
 from documents.services.storage_utils import local_copy
 
@@ -303,7 +311,13 @@ def _extract_native(version, doc):
                 # per attachment.
                 from documents.services.image_assets import EmbeddedImageDescriber
                 describer = EmbeddedImageDescriber(version, doc)
-            docs = load_documents(file_path, ext, image_sink=describer.sink if describer else None)
+            # PDFs carry page boundary markers through cleaning + chunking so the
+            # chunks get page numbers (assign_pdf_page_numbers strips them again).
+            docs = load_documents(
+                file_path, ext,
+                image_sink=describer.sink if describer else None,
+                page_markers=(ext == "pdf"),
+            )
             combined = "\n\n".join(getattr(d, "page_content", "") or "" for d in docs)
             del docs
             # Phase 2/3: describe the embedded images concurrently (I/O-bound), then
@@ -409,6 +423,13 @@ def process_document_version(version_id: int, *, dispatch_scan: bool = True) -> 
                 else:
                     chunks_data = semantic_chunk(cleaned)
                     version.chunking_strategy = "semantic"
+                # Slide / page numbers: search cites them and the model passes
+                # them to document_view_native. Markdown edits (parser_type
+                # "markdown") and other formats leave them null.
+                if version.parser_type == "pptx":
+                    assign_pptx_slide_numbers(chunks_data)
+                elif version.parser_type == "pypdf":
+                    chunks_data = assign_pdf_page_numbers(chunks_data)
             chunk_count = len(chunks_data)
             del cleaned, prechunked
         logger.info("process_document_version: version_id=%s stage=chunked count=%s", version_id, chunk_count)

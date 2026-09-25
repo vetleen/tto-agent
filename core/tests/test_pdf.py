@@ -10,7 +10,18 @@ import io
 
 from django.test import SimpleTestCase, override_settings
 
-from core.pdf import pdf_to_text
+from core.pdf import PAGE_MARK_END, PAGE_MARK_START, page_marker, pdf_to_text
+
+
+def _blank_pdf() -> bytes:
+    """A single-page PDF with no text and no images (pypdf blank page)."""
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=300, height=200)
+    buf = io.BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
 
 
 def _text_pdf(text: str) -> bytes:
@@ -75,6 +86,44 @@ def _recording_sink():
         return f"[[image:fake-{idx}|Image {idx}: desc]]"
 
     return sink, calls
+
+
+class PdfPageMarkerTests(SimpleTestCase):
+    """``page_markers=True`` prefixes every page with ``page_marker(n)``; the
+    default output never contains one."""
+
+    def _three_pages(self) -> bytes:
+        # text / blank / text — the blank page is what the default path drops.
+        return _merge(_text_pdf("Page one words"), _blank_pdf(), _text_pdf("Page three words"))
+
+    def test_default_output_has_no_markers_and_drops_empty_pages(self):
+        sink, _ = _recording_sink()
+        out = pdf_to_text(self._three_pages(), image_sink=sink)
+        self.assertNotIn(PAGE_MARK_START, out)
+        self.assertNotIn(PAGE_MARK_END, out)
+        self.assertIn("Page one words", out)
+        self.assertIn("Page three words", out)
+
+    def test_markers_for_every_page_including_empty_ones(self):
+        sink, _ = _recording_sink()
+        out = pdf_to_text(self._three_pages(), image_sink=sink, page_markers=True)
+        self.assertTrue(out.startswith(page_marker(1)))
+        self.assertEqual(out.count(PAGE_MARK_START), 3)
+        # Markers appear in page order; the empty page 2 is marker-only.
+        self.assertLess(out.index(page_marker(1)), out.index(page_marker(2)))
+        self.assertLess(out.index(page_marker(2)), out.index(page_marker(3)))
+        between = out[out.index(page_marker(2)) + len(page_marker(2)):out.index(page_marker(3))]
+        self.assertEqual(between.strip(), "")
+        # Page text follows its own marker.
+        self.assertLess(out.index(page_marker(1)), out.index("Page one words"))
+        self.assertLess(out.index(page_marker(3)), out.index("Page three words"))
+        self.assertLess(out.index("Page one words"), out.index(page_marker(2)))
+
+    def test_image_page_marker_precedes_its_token(self):
+        sink, calls = _recording_sink()
+        out = pdf_to_text(_merge(_text_pdf("Words"), _image_pdf(_img(120, 80))), image_sink=sink, page_markers=True)
+        self.assertEqual(len(calls), 1)
+        self.assertLess(out.index(page_marker(2)), out.index("[[image:fake-1|"))
 
 
 class PdfToTextTests(SimpleTestCase):
