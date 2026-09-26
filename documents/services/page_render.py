@@ -30,8 +30,15 @@ version stays ``pending`` and the stale sweeper bounds the attempts.
 
 Only one conversion is in flight per worker process (``_render_slot``); the render
 app's own queue limit (503 when full) is the cross-dyno backstop. Uploads use
-opaque names (``<version_id>-<batch>.pptx``) — the render service's logs never see
+opaque names (``<trace_id>-<batch>.pptx``) — the render service's logs never see
 a document name. Nothing here logs document names or text either.
+
+Owners: the orchestrator (``render_pages``) is owner-agnostic and talks to a small
+``RenderTarget`` interface — where the bytes come from, which Asset owner arm the
+renders land on, and where the state/page-count are written. ``VersionTarget`` (here)
+wraps a data-room version; ``chat.attachment_render.AttachmentTarget`` wraps a chat
+attachment. ``render_version_pages`` is the version-specific entry point the Celery
+task calls.
 """
 from __future__ import annotations
 
@@ -42,6 +49,8 @@ import logging
 import threading
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Protocol
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from django.conf import settings
@@ -78,6 +87,15 @@ _BUSY_RETRY_DELAYS_S = (5, 15, 30)
 _SLOT_WAIT_HEARTBEAT_S = 60.0
 
 _render_semaphore = threading.BoundedSemaphore(1)
+
+# Render states, shared by every owner. Identical strings to
+# ``DataRoomDocumentVersion.PageRenderState`` and ``ChatAttachment.PageRenderState``.
+STATE_NONE = "none"
+STATE_PENDING = "pending"
+STATE_PARTIAL = "partial"
+STATE_READY = "ready"
+STATE_SKIPPED = "skipped"
+STATE_FAILED = "failed"
 
 
 class RenderError(RuntimeError):
@@ -405,14 +423,18 @@ def existing_page_numbers(version) -> set[int]:
     )
 
 
-def store_page_render(version, page_number: int, jpeg: bytes):
-    """Persist one slide image as a version-owned ``page_render`` Asset (idempotent)."""
+def store_render_asset(owner: dict, page_number: int, jpeg: bytes):
+    """Persist one slide image as a ``page_render`` Asset on ``owner`` (idempotent).
+
+    ``owner`` is the single Asset owner arm as a keyword dict, e.g.
+    ``{"version": version}`` or ``{"attachment": attachment}``.
+    """
     from django.core.files.base import ContentFile
 
     from chat.models import Asset
 
     existing = Asset.objects.filter(
-        version=version, role=Asset.ROLE_PAGE_RENDER, page_number=page_number,
+        **owner, role=Asset.ROLE_PAGE_RENDER, page_number=page_number,
     ).first()
     if existing is not None:
         return existing
@@ -427,7 +449,7 @@ def store_page_render(version, page_number: int, jpeg: bytes):
         pass
 
     asset = Asset(
-        version=version,
+        **owner,
         kind=Asset.KIND_IMAGE,
         role=Asset.ROLE_PAGE_RENDER,
         page_number=page_number,
@@ -441,14 +463,19 @@ def store_page_render(version, page_number: int, jpeg: bytes):
     try:
         asset.blob.save(f"{asset.id}.jpg", ContentFile(jpeg), save=True)
     except IntegrityError:
-        # Lost a race with another worker rendering the same version: keep theirs
+        # Lost a race with another worker rendering the same owner: keep theirs
         # and drop the file we just wrote (the row insert failed after the upload).
         try:
             asset.blob.storage.delete(asset.blob.name)
         except Exception:  # noqa: BLE001
             logger.debug("page_render: could not remove the orphaned blob after a race", exc_info=True)
-        return Asset.objects.get(version=version, role=Asset.ROLE_PAGE_RENDER, page_number=page_number)
+        return Asset.objects.get(**owner, role=Asset.ROLE_PAGE_RENDER, page_number=page_number)
     return asset
+
+
+def store_page_render(version, page_number: int, jpeg: bytes):
+    """Persist one slide image as a version-owned ``page_render`` Asset (idempotent)."""
+    return store_render_asset({"version": version}, page_number, jpeg)
 
 
 # --------------------------------------------------------------------------- state
@@ -505,13 +532,13 @@ def _touch_version(version_id: int) -> None:
 
 
 @contextmanager
-def _render_slot(version_id: int):
+def _render_slot(target: RenderTarget):
     """Hold the single per-process conversion slot; heartbeat while queued."""
     waited = 0.0
     while not _render_semaphore.acquire(timeout=_SLOT_WAIT_HEARTBEAT_S):
         waited += _SLOT_WAIT_HEARTBEAT_S
-        _touch_version(version_id)
-        logger.info("page_render: version_id=%s waiting for the render slot (%.0fs)", version_id, waited)
+        target.touch()
+        logger.info("page_render: %s waiting for the render slot (%.0fs)", target.label, waited)
     try:
         yield
     finally:
@@ -530,83 +557,143 @@ def _read_native_bytes(version) -> bytes | None:
         return None
 
 
+# --------------------------------------------------------------------------- targets
+
+
+class RenderTarget(Protocol):
+    """What the orchestrator needs from an owner of slide renders.
+
+    ``label`` is for log lines only (ids, never names); ``trace_id`` becomes the
+    Gotenberg trace header and the opaque upload name stem (``<trace_id>-<batch>``).
+    """
+
+    label: str
+    trace_id: str
+    max_slides: int
+
+    def bump_attempt(self) -> None: ...
+    def qualifies(self) -> bool: ...
+    def read_bytes(self) -> bytes | None: ...
+    def existing_pages(self) -> set[int]: ...
+    def store(self, page_number: int, jpeg: bytes) -> None: ...
+    def set_state(self, state: str, *, error: str | None = None, page_count: int | None = None) -> None: ...
+    def touch(self) -> None: ...
+
+
+@dataclass
+class VersionTarget:
+    """A data-room version (loaded with ``select_related("document")``)."""
+
+    version: DataRoomDocumentVersion
+
+    @property
+    def label(self) -> str:
+        return f"version_id={self.version.pk}"
+
+    @property
+    def trace_id(self) -> str:
+        return str(self.version.pk)
+
+    @property
+    def max_slides(self) -> int:
+        return _int_setting("DOCUMENT_RENDER_MAX_SLIDES", 200)
+
+    def bump_attempt(self) -> None:
+        DataRoomDocumentVersion.objects.filter(pk=self.version.pk).update(
+            page_render_attempts=F("page_render_attempts") + 1,
+        )
+
+    def qualifies(self) -> bool:
+        return should_render(self.version)
+
+    def read_bytes(self) -> bytes | None:
+        return _read_native_bytes(self.version)
+
+    def existing_pages(self) -> set[int]:
+        return existing_page_numbers(self.version)
+
+    def store(self, page_number: int, jpeg: bytes) -> None:
+        store_page_render(self.version, page_number, jpeg)
+
+    def set_state(self, state: str, *, error: str | None = None, page_count: int | None = None) -> None:
+        _set_state(self.version.pk, state, error=error, page_count=page_count)
+
+    def touch(self) -> None:
+        _touch_version(self.version.pk)
+
+
 # --------------------------------------------------------------------------- orchestrator
 
 
-def _convert_slides(client: GotenbergClient, data: bytes, slide_numbers: list[int], version_id: int, upload_stem: str) -> list[bytes]:
+def _convert_slides(
+    client: GotenbergClient, data: bytes, slide_numbers: list[int], *, trace: str, upload_stem: str, touch,
+) -> list[bytes]:
     """Subset → convert (busy retried in place) → rasterize. Raises RenderError."""
     subset = split_pptx(data, slide_numbers)
     for attempt, delay in enumerate((*_BUSY_RETRY_DELAYS_S, None)):
         try:
-            pdf = client.convert(subset, upload_name=f"{upload_stem}.pptx", trace=str(version_id))
+            pdf = client.convert(subset, upload_name=f"{upload_stem}.pptx", trace=trace)
             break
         except RenderBusy:
             if delay is None:
                 raise
             logger.info(
-                "page_render: version_id=%s render service busy; retrying in %ss (attempt %s)",
-                version_id, delay, attempt + 1,
+                "page_render: trace=%s render service busy; retrying in %ss (attempt %s)",
+                trace, delay, attempt + 1,
             )
             time.sleep(delay)
-            _touch_version(version_id)
+            touch()
     return rasterize_pdf(pdf, len(slide_numbers))
 
 
-def render_version_pages(version_id: int, *, count_attempt: bool = True) -> str:
-    """Render every missing slide of a pptx version; returns the final state.
+def render_pages(target: RenderTarget, *, count_attempt: bool = True) -> str:
+    """Render every missing slide of ``target``; returns the final state string.
 
     Raises ``RenderBusy`` / ``RenderUnavailable`` (after in-place busy retries) so
-    the Celery task can retry with backoff — the version then stays PENDING and
+    the Celery task can retry with backoff — the owner then stays PENDING and
     resumes at the first missing slide.
     """
     from celery.exceptions import SoftTimeLimitExceeded
 
-    State = DataRoomDocumentVersion.PageRenderState
     started = time.monotonic()
-    try:
-        version = DataRoomDocumentVersion.objects.select_related("document").get(pk=version_id)
-    except DataRoomDocumentVersion.DoesNotExist:
-        logger.info("page_render: version_id=%s not found (deleted before render)", version_id)
-        return State.NONE
+    label = target.label
 
     if count_attempt:
-        DataRoomDocumentVersion.objects.filter(pk=version_id).update(
-            page_render_attempts=F("page_render_attempts") + 1,
-        )
+        target.bump_attempt()
     if not is_enabled():
-        _set_state(version_id, State.FAILED, error="Document render service is not configured.")
-        return State.FAILED
-    if not should_render(version):
-        _set_state(version_id, State.SKIPPED, error="Not a renderable presentation version.")
-        return State.SKIPPED
+        target.set_state(STATE_FAILED, error="Document render service is not configured.")
+        return STATE_FAILED
+    if not target.qualifies():
+        target.set_state(STATE_SKIPPED, error="Not a renderable presentation version.")
+        return STATE_SKIPPED
 
-    raw = _read_native_bytes(version)
+    raw = target.read_bytes()
     if not raw:
-        _set_state(version_id, State.FAILED, error="The original file is unavailable.")
-        return State.FAILED
+        target.set_state(STATE_FAILED, error="The original file is unavailable.")
+        return STATE_FAILED
     try:
         total = count_slides(raw)
     except Exception:  # noqa: BLE001
-        logger.warning("page_render: version_id=%s could not open the presentation", version_id, exc_info=True)
-        _set_state(version_id, State.FAILED, error="The presentation could not be opened.")
-        return State.FAILED
+        logger.warning("page_render: %s could not open the presentation", label, exc_info=True)
+        target.set_state(STATE_FAILED, error="The presentation could not be opened.")
+        return STATE_FAILED
     if total <= 0:
-        _set_state(version_id, State.FAILED, page_count=0, error="The presentation has no slides.")
-        return State.FAILED
-    max_slides = _int_setting("DOCUMENT_RENDER_MAX_SLIDES", 200)
+        target.set_state(STATE_FAILED, page_count=0, error="The presentation has no slides.")
+        return STATE_FAILED
+    max_slides = target.max_slides
     if total > max_slides:
-        _set_state(
-            version_id, State.SKIPPED, page_count=total,
+        target.set_state(
+            STATE_SKIPPED, page_count=total,
             error=f"The deck has {total} slides; slide previews are only rendered for decks up to {max_slides}.",
         )
-        return State.SKIPPED
-    _set_state(version_id, State.PENDING, page_count=total)
+        return STATE_SKIPPED
+    target.set_state(STATE_PENDING, page_count=total)
 
-    already = existing_page_numbers(version)
+    already = target.existing_pages()
     todo = [n for n in range(1, total + 1) if n not in already]
     if not todo:
-        _set_state(version_id, State.READY, error="")
-        return State.READY
+        target.set_state(STATE_READY, error="")
+        return STATE_READY
 
     data = optimize_pptx(raw)
     del raw
@@ -615,73 +702,91 @@ def render_version_pages(version_id: int, *, count_attempt: bool = True) -> str:
     batches = [todo[i:i + batch_size] for i in range(0, len(todo), batch_size)]
     rendered: list[int] = []
     failed: list[int] = []
+    trace = target.trace_id
 
     try:
-        with _render_slot(version_id):
+        with _render_slot(target):
             for batch_no, batch in enumerate(batches, start=1):
                 batch_started = time.monotonic()
                 try:
-                    jpegs = _convert_slides(client, data, batch, version_id, f"{version_id}-{batch_no}")
+                    jpegs = _convert_slides(
+                        client, data, batch, trace=trace, upload_stem=f"{trace}-{batch_no}", touch=target.touch,
+                    )
                 except (RenderRejected, RenderTimeout) as exc:
                     logger.warning(
-                        "page_render: version_id=%s batch %s/%s (%s slides) failed with %s; retrying slide by slide",
-                        version_id, batch_no, len(batches), len(batch), exc.__class__.__name__,
+                        "page_render: %s batch %s/%s (%s slides) failed with %s; retrying slide by slide",
+                        label, batch_no, len(batches), len(batch), exc.__class__.__name__,
                     )
                     jpegs = None
                 if jpegs is not None:
                     for slide_no, jpeg in zip(batch, jpegs):
-                        store_page_render(version, slide_no, jpeg)
+                        target.store(slide_no, jpeg)
                         rendered.append(slide_no)
                 else:
                     for slide_no in batch:
                         try:
                             (jpeg,) = _convert_slides(
-                                client, data, [slide_no], version_id, f"{version_id}-{batch_no}-{slide_no}",
+                                client, data, [slide_no],
+                                trace=trace, upload_stem=f"{trace}-{batch_no}-{slide_no}", touch=target.touch,
                             )
                         except (RenderRejected, RenderTimeout) as exc:
                             logger.warning(
-                                "page_render: version_id=%s slide %s could not be rendered (%s)",
-                                version_id, slide_no, exc.__class__.__name__,
+                                "page_render: %s slide %s could not be rendered (%s)",
+                                label, slide_no, exc.__class__.__name__,
                             )
                             failed.append(slide_no)
                             continue
-                        store_page_render(version, slide_no, jpeg)
+                        target.store(slide_no, jpeg)
                         rendered.append(slide_no)
-                _touch_version(version_id)
+                target.touch()
                 logger.info(
-                    "page_render: version_id=%s batch %s/%s slides=%s done in %.1fs",
-                    version_id, batch_no, len(batches), len(batch), time.monotonic() - batch_started,
+                    "page_render: %s batch %s/%s slides=%s done in %.1fs",
+                    label, batch_no, len(batches), len(batch), time.monotonic() - batch_started,
                 )
     except SoftTimeLimitExceeded:
         remaining = [n for n in todo if n not in rendered and n not in failed]
         logger.warning(
-            "page_render: version_id=%s hit the soft time limit with %s slide(s) left; finalising",
-            version_id, len(remaining),
+            "page_render: %s hit the soft time limit with %s slide(s) left; finalising",
+            label, len(remaining),
         )
         failed.extend(remaining)
     except (RenderBusy, RenderUnavailable) as exc:
         logger.warning(
-            "page_render: version_id=%s paused after %s new slide(s): %s; Celery will retry",
-            version_id, len(rendered), exc.__class__.__name__,
+            "page_render: %s paused after %s new slide(s): %s; Celery will retry",
+            label, len(rendered), exc.__class__.__name__,
         )
         raise
 
     have = already | set(rendered)
     if failed and have:
-        state = State.PARTIAL
+        state = STATE_PARTIAL
         error = "Slides " + ", ".join(str(n) for n in sorted(failed)) + " could not be rendered."
     elif failed:
-        state = State.FAILED
+        state = STATE_FAILED
         error = "No slides could be rendered."
     else:
-        state = State.READY
+        state = STATE_READY
         error = ""
-    _set_state(version_id, state, error=error)
+    target.set_state(state, error=error)
     logger.info(
-        "page_render: version_id=%s state=%s slides=%s batches=%s rendered=%s failed=%s in %.1fs",
-        version_id, state, total, len(batches), len(rendered), len(failed), time.monotonic() - started,
+        "page_render: %s state=%s slides=%s batches=%s rendered=%s failed=%s in %.1fs",
+        label, state, total, len(batches), len(rendered), len(failed), time.monotonic() - started,
     )
     return state
+
+
+def render_version_pages(version_id: int, *, count_attempt: bool = True) -> str:
+    """Render every missing slide of a data-room pptx version; returns the final state.
+
+    Thin wrapper: loads the version and runs :func:`render_pages` on a
+    :class:`VersionTarget`. See ``render_pages`` for the retry contract.
+    """
+    try:
+        version = DataRoomDocumentVersion.objects.select_related("document").get(pk=version_id)
+    except DataRoomDocumentVersion.DoesNotExist:
+        logger.info("page_render: version_id=%s not found (deleted before render)", version_id)
+        return STATE_NONE
+    return render_pages(VersionTarget(version), count_attempt=count_attempt)
 
 
 __all__ = [
@@ -689,8 +794,16 @@ __all__ = [
     "RenderBusy",
     "RenderError",
     "RenderRejected",
+    "RenderTarget",
     "RenderTimeout",
     "RenderUnavailable",
+    "STATE_FAILED",
+    "STATE_NONE",
+    "STATE_PARTIAL",
+    "STATE_PENDING",
+    "STATE_READY",
+    "STATE_SKIPPED",
+    "VersionTarget",
     "client_from_settings",
     "count_slides",
     "enqueue_page_render",
@@ -699,8 +812,10 @@ __all__ = [
     "literalize_slide_numbers",
     "optimize_pptx",
     "rasterize_pdf",
+    "render_pages",
     "render_version_pages",
     "should_render",
     "split_pptx",
     "store_page_render",
+    "store_render_asset",
 ]
