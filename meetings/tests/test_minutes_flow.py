@@ -428,10 +428,23 @@ class CreateMinutesThreadAttachmentTests(TestCase):
         # it the file content never reaches the LLM.
         self.assertIn(str(ca.id), ca.message.metadata.get("attachment_ids", []))
 
+    def test_copied_pdf_is_pending_and_dispatches_processing(self):
+        self._add_attachment("slides.pdf", b"%PDF-1.4 fake body", "application/pdf")
+        self._add_attachment("photo.png", b"\x89PNG fake", "image/png")
+        with patch("chat.tasks.process_chat_attachment.delay") as delay, \
+             self.captureOnCommitCallbacks(execute=True):
+            thread, err = create_minutes_thread(self.user, self.meeting)
+        self.assertIsNone(err)
+        pdf = ChatAttachment.objects.get(thread=thread, original_filename="slides.pdf")
+        png = ChatAttachment.objects.get(thread=thread, original_filename="photo.png")
+        self.assertEqual(pdf.processing_state, "pending")
+        self.assertEqual(png.processing_state, "ready")
+        delay.assert_called_once_with(str(pdf.id))
+
     def test_pdf_attachment_embedded_images_persist_via_chat_path(self):
         """A meeting PDF with an embedded image gets the same persistent
-        message-scoped Asset treatment as a chat attachment (meetings
-        inherits the chat enrichment path)."""
+        attachment-owned Asset treatment as a chat attachment (meetings
+        inherits the chat processing path)."""
         import io
         from unittest.mock import patch
 
@@ -456,7 +469,7 @@ class CreateMinutesThreadAttachmentTests(TestCase):
         with patch("chat.services.describe_image", return_value="A blue rectangle"):
             text = get_or_extract_attachment_text(att, data, user=self.user)
 
-        assets = list(Asset.objects.filter(message=att.message))
+        assets = list(Asset.objects.filter(attachment=att))
         self.assertEqual(len(assets), 1)
         self.assertEqual(assets[0].description, "A blue rectangle")
         self.assertIn(f"[[image:{assets[0].id}|", text)

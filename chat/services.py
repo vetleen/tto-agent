@@ -12,6 +12,7 @@ from core.file_types import (
     KIND_DOCX,
     KIND_IMAGE,
     KIND_PDF,
+    KIND_PPTX,
     KIND_TEXT,
     canonical_mimes_for_kinds,
 )
@@ -634,6 +635,7 @@ SUPPORTED_IMAGE_TYPES = frozenset(canonical_mimes_for_kinds({KIND_IMAGE}))
 SUPPORTED_PDF_TYPES = frozenset(canonical_mimes_for_kinds({KIND_PDF}))
 SUPPORTED_TEXT_TYPES = frozenset(canonical_mimes_for_kinds({KIND_TEXT}))
 SUPPORTED_DOCX_TYPES = frozenset(canonical_mimes_for_kinds({KIND_DOCX}))
+SUPPORTED_PPTX_TYPES = frozenset(canonical_mimes_for_kinds({KIND_PPTX}))
 SUPPORTED_ATTACHMENT_TYPES = frozenset(canonical_mimes_for_kinds(CHAT_KINDS))
 
 # Text/docx cap (these are NOT downscaled, so their bytes reach the model as-is).
@@ -660,6 +662,10 @@ def max_size_for_content_type(content_type: str) -> int:
         return getattr(settings, "CHAT_ATTACHMENT_PDF_MAX_SIZE_BYTES", MAX_PDF_ATTACHMENT_SIZE)
     if content_type in SUPPORTED_IMAGE_TYPES:
         return getattr(settings, "CHAT_ATTACHMENT_IMAGE_MAX_SIZE_BYTES", 26_214_400)
+    if content_type in SUPPORTED_PPTX_TYPES:
+        # Decks are rendered slide-by-slide on the worker (never sent as-is), so
+        # they get the PDF-sized cap rather than the tight text/docx one.
+        return getattr(settings, "CHAT_ATTACHMENT_PPTX_MAX_SIZE_BYTES", MAX_PDF_ATTACHMENT_SIZE)
     return MAX_ATTACHMENT_SIZE
 
 
@@ -753,29 +759,40 @@ def extract_pdf_text(file_bytes: bytes) -> str:
     return "\n\n".join((page.extract_text() or "") for page in reader.pages).strip()
 
 
-def extract_attachment_text(att, file_bytes: bytes, *, user) -> str:
-    """Extract a docx/pdf chat attachment to text with inline ``[[image:uuid|...]]``
-    tokens, persisting embedded images as message-scoped Assets.
+def pptx_to_markdown(file_bytes: bytes, *, image_sink=None) -> str:
+    """Slide-by-slide Markdown for a pptx attachment (``## Slide N`` sections,
+    tables/charts as Markdown tables, notes as blockquotes); embedded pictures go
+    through ``image_sink``. Thin bytes wrapper over the data-room extractor."""
+    import io
 
-    The chat/meeting counterpart of the data-room image_asset_sink path: when the
-    attachment is linked to a message, embedded images become viewable
-    Assets owned by that message; otherwise (defensive) they fall back to
-    transient ``[Image N: desc]`` descriptions. Caller is responsible for caching
-    the result on ``att.extracted_content``.
+    from documents.services.chunking import pptx_to_markdown as _pptx_to_markdown
+
+    return _pptx_to_markdown(io.BytesIO(file_bytes), image_sink=image_sink)
+
+
+def extract_attachment_text(att, file_bytes: bytes, *, user) -> str:
+    """Extract a docx/pdf/pptx chat attachment to text with inline
+    ``[[image:uuid|...]]`` tokens, persisting embedded images as
+    attachment-owned Assets.
+
+    The chat/meeting counterpart of the data-room image_asset_sink path. The
+    attachment owns its embedded pictures (not the message): processing runs on
+    the worker right after upload, before the file is linked to any message, and
+    the same owner later holds the pptx slide renders. Caller is responsible for
+    caching the result on ``att.extracted_content``.
     """
+    from chat.assets import attachment_image_asset_sink
     from core.file_types import KIND_PDF, kind_for_mime
 
-    if att.message_id:
-        from chat.assets import message_image_asset_sink
+    sink = attachment_image_asset_sink(att, user, max_described=CHAT_MAX_DESCRIBED_IMAGES)
 
-        sink = message_image_asset_sink(att.message, user, max_described=CHAT_MAX_DESCRIBED_IMAGES)
-    else:
-        sink = describe_image_sink(user, max_described=CHAT_MAX_DESCRIBED_IMAGES)
-
-    if kind_for_mime(att.content_type) == KIND_PDF:
+    kind = kind_for_mime(att.content_type)
+    if kind == KIND_PDF:
         from core.pdf import pdf_to_text
 
         return pdf_to_text(file_bytes, image_sink=sink)
+    if kind == KIND_PPTX:
+        return pptx_to_markdown(file_bytes, image_sink=sink)
     from core.docx import docx_to_markdown
 
     return docx_to_markdown(file_bytes, image_sink=sink)
@@ -1161,6 +1178,7 @@ _ATTACHMENT_KIND_LABELS = {
     "image": "image",
     "pdf": "PDF",
     "docx": "Word document",
+    "pptx": "presentation",
     "text": "text file",
 }
 
@@ -1175,18 +1193,29 @@ def attachment_kind(att) -> str:
 
 
 def attachment_kind_label(att, kind: str | None = None) -> str:
-    """Human label for an attachment's type, with the page count for PDFs when known."""
+    """Human label for an attachment's type, with the page count for PDFs and the
+    slide count for presentations when known."""
     kind = kind or attachment_kind(att)
     label = _ATTACHMENT_KIND_LABELS.get(kind, "file")
     pages = getattr(att, "page_count", None)
     if kind == "pdf" and pages:
         label += f", {pages} page{'' if pages == 1 else 's'}"
+    elif kind == "pptx" and pages:
+        label += f", {pages} slide{'' if pages == 1 else 's'}"
     return label
 
 
-def attachment_marker(number: int, att) -> str:
-    """The in-history marker for a file the user attached to a message."""
-    return f"[Attached: #{number} {att.original_filename} ({attachment_kind_label(att)})]"
+def attachment_marker(number: int, att, *, still_processing: bool = False) -> str:
+    """The in-history marker for a file the user attached to a message.
+
+    ``still_processing`` flags a file whose worker-side processing had not
+    finished when the turn started (the hold timed out), so the model knows it
+    is seeing extracted text at best and can re-view the file later.
+    """
+    label = attachment_kind_label(att)
+    if still_processing:
+        label += "; still processing"
+    return f"[Attached: #{number} {att.original_filename} ({label})]"
 
 
 def build_canvas_ingress_manifests(thread_id, selected_tool_names, *, message_limit=20):

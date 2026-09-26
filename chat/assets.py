@@ -362,6 +362,66 @@ def store_message_image(
     return asset
 
 
+def store_attachment_image(
+    attachment, *, img_bytes, content_type, description="", alt_text="", created_by=None, dedupe=True
+):
+    """Persist *img_bytes* as an ``role=embedded`` Asset owned by a chat
+    attachment; return the asset.
+
+    Used for pictures extracted from an uploaded docx/pdf/pptx by the worker-side
+    processing task, which runs before the attachment is linked to any message —
+    so the attachment (not a message) owns them, alongside its slide renders.
+    Access follows the thread's creator (see user_can_access_asset). With
+    *dedupe*, an existing asset with the same bytes on this attachment is reused.
+    """
+    from django.core.files.base import ContentFile
+
+    from chat.models import Asset
+
+    ct = content_type or "application/octet-stream"
+    sha = hashlib.sha256(img_bytes).hexdigest()
+    if dedupe:
+        existing = Asset.objects.filter(
+            attachment=attachment, role=Asset.ROLE_EMBEDDED, sha256=sha,
+        ).first()
+        if existing is not None:
+            return existing
+
+    asset = Asset(
+        attachment=attachment,
+        role=Asset.ROLE_EMBEDDED,
+        content_type=ct,
+        size_bytes=len(img_bytes),
+        sha256=sha,
+        description=description or "",
+        alt_text=(alt_text or "")[:1024],
+        created_by=created_by,
+    )
+    asset.blob.save(f"{asset.id}.{_ext_for(ct)}", ContentFile(img_bytes), save=True)
+    return asset
+
+
+def attachment_image_asset_sink(attachment, user, *, max_described: int = 10, model=None):
+    """Return a docx/pdf/pptx image_sink that stores each embedded image as an
+    Asset owned by *attachment* and emits a ``[[image:uuid|Image N: desc]]``
+    token. Descriptions are capped at *max_described*."""
+
+    def store(img_bytes, ct, description, alt_text):
+        return store_attachment_image(
+            attachment,
+            img_bytes=img_bytes,
+            content_type=ct,
+            description=description,
+            alt_text=alt_text,
+            created_by=user,
+            # core.pdf/core.docx/pptx already dedupe within a document; keep this
+            # on so a re-processed attachment can't double-store.
+            dedupe=True,
+        )
+
+    return _describe_and_store_sink(store, user, max_described=max_described, model=model)
+
+
 def _describe_and_store_sink(store, user, *, max_described, model=None):
     """Shared body for the canvas/message asset sinks: describe (capped) then
     persist via *store*, a ``(img_bytes, content_type, description, alt_text)``

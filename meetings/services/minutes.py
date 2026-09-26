@@ -158,6 +158,7 @@ def _copy_meeting_attachments_to_thread(meeting, thread, user):
     ``(original_filename, reason)`` tuples.
     """
     from django.core.files import File
+    from chat.attachment_processing import dispatch_after_commit, initial_processing_state
     from chat.models import ChatAttachment
     from chat.services import (
         SUPPORTED_ATTACHMENT_TYPES,
@@ -196,7 +197,11 @@ def _copy_meeting_attachments_to_thread(meeting, thread, user):
                     original_filename=(ma.original_filename or "")[:255],
                     content_type=ct,
                     size_bytes=ma.size_bytes or 0,
+                    processing_state=initial_processing_state(ct),
                 )
+            # pdf/docx/pptx are extracted (and decks rendered) on the worker; the
+            # seed turn holds until they are READY (chat/consumers.py).
+            dispatch_after_commit(att)
             accepted.append(att)
         except Exception:
             logger.exception(

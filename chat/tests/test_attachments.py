@@ -211,6 +211,42 @@ class UploadAttachmentTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["attachments"][0]["content_type"], "application/pdf")
 
+    def test_upload_pdf_is_pending_and_dispatches_processing(self):
+        from unittest.mock import patch
+
+        f = SimpleUploadedFile("test.pdf", b"%PDF-1.4 test", content_type="application/pdf")
+        with patch("chat.tasks.process_chat_attachment.delay") as delay, \
+             self.captureOnCommitCallbacks(execute=True):
+            resp = self.client.post(self.url, {"files": f})
+        self.assertEqual(resp.status_code, 200)
+        att = resp.json()["attachments"][0]
+        self.assertEqual(att["processing_state"], "pending")
+        self.assertEqual(ChatAttachment.objects.get(id=att["id"]).processing_state, "pending")
+        delay.assert_called_once_with(att["id"])
+
+    def test_upload_image_is_ready_without_processing(self):
+        from unittest.mock import patch
+
+        f = SimpleUploadedFile("test.png", _tiny_png(), content_type="image/png")
+        with patch("chat.tasks.process_chat_attachment.delay") as delay, \
+             self.captureOnCommitCallbacks(execute=True):
+            resp = self.client.post(self.url, {"files": f})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["attachments"][0]["processing_state"], "ready")
+        delay.assert_not_called()
+
+    def test_upload_pptx_rejected_until_presentations_are_enabled(self):
+        # Guard against the octet-stream fallback letting an unsupported kind through.
+        f = SimpleUploadedFile("deck.pptx", b"PK fake", content_type="application/octet-stream")
+        resp = self.client.post(self.url, {"files": f})
+        from core.file_types import CHAT_KINDS, KIND_PPTX
+
+        if KIND_PPTX in CHAT_KINDS:
+            self.assertEqual(resp.status_code, 200)
+        else:
+            self.assertEqual(resp.status_code, 400)
+            self.assertIn("Unsupported file type", resp.json()["error"])
+
     def test_upload_valid_text_file(self):
         f = SimpleUploadedFile("readme.txt", b"Hello world", content_type="text/plain")
         resp = self.client.post(self.url, {"files": f})
@@ -534,7 +570,7 @@ _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.doc
 
 class PersistentAttachmentExtractionTests(TestCase):
     """Chat/meeting docx+pdf attachments persist embedded images as
-    message-scoped Assets and cache the extracted text+tokens once."""
+    attachment-owned Assets and cache the extracted text+tokens once."""
 
     def setUp(self):
         import tempfile
@@ -561,7 +597,7 @@ class PersistentAttachmentExtractionTests(TestCase):
             size_bytes=len(data),
         )
 
-    def test_pdf_embedded_image_becomes_message_scoped_asset(self):
+    def test_pdf_embedded_image_becomes_attachment_owned_asset(self):
         from unittest.mock import patch
 
         from chat.models import Asset
@@ -572,7 +608,7 @@ class PersistentAttachmentExtractionTests(TestCase):
         with patch("chat.services.describe_image", return_value="A red rectangle"):
             text = get_or_extract_attachment_text(att, data, user=self.user)
 
-        assets = list(Asset.objects.filter(message=self.message))
+        assets = list(Asset.objects.filter(attachment=att))
         self.assertEqual(len(assets), 1)
         self.assertEqual(assets[0].description, "A red rectangle")
         self.assertTrue(assets[0].blob)  # bytes persisted, viewable
@@ -581,7 +617,7 @@ class PersistentAttachmentExtractionTests(TestCase):
         att.refresh_from_db()
         self.assertEqual(att.extracted_content, text)
 
-    def test_docx_embedded_image_becomes_message_scoped_asset(self):
+    def test_docx_embedded_image_becomes_attachment_owned_asset(self):
         """docx is unified with pdf: chat docx images now persist too."""
         from unittest.mock import patch
 
@@ -593,7 +629,7 @@ class PersistentAttachmentExtractionTests(TestCase):
         with patch("chat.services.describe_image", return_value="A chart"):
             text = get_or_extract_attachment_text(att, data, user=self.user)
 
-        assets = list(Asset.objects.filter(message=self.message))
+        assets = list(Asset.objects.filter(attachment=att))
         self.assertEqual(len(assets), 1)
         self.assertIn(f"[[image:{assets[0].id}|", text)
 
@@ -615,7 +651,7 @@ class PersistentAttachmentExtractionTests(TestCase):
 
         self.assertEqual(first, second)
         self.assertEqual(m.call_count, 1, "cached extraction must not re-describe")
-        self.assertEqual(Asset.objects.filter(message=self.message).count(), 1)
+        self.assertEqual(Asset.objects.filter(attachment=att).count(), 1)
 
     def test_multiline_description_yields_single_line_token(self):
         """A multi-paragraph vision description must collapse to a single line —
@@ -635,9 +671,10 @@ class PersistentAttachmentExtractionTests(TestCase):
         self.assertNotIn("\n", text, "token (and its label) must be single-line")
         self.assertIn("A man in an office. He wears a grey suit. His watch is dark.", text)
 
-    def test_unlinked_attachment_falls_back_to_transient(self):
-        """With no linked message, extraction is transient: no Assets, a
-        plain [Image N: desc] placeholder instead of a token."""
+    def test_unlinked_attachment_persists_assets_too(self):
+        """Processing runs before the attachment is linked to a message (worker
+        task right after upload), so the attachment itself owns the assets and
+        the token is minted regardless of the link."""
         from unittest.mock import patch
 
         from chat.models import Asset
@@ -648,6 +685,7 @@ class PersistentAttachmentExtractionTests(TestCase):
         with patch("chat.services.describe_image", return_value="A red rectangle"):
             text = extract_attachment_text(att, data, user=self.user)
 
-        self.assertEqual(Asset.objects.count(), 0)
-        self.assertNotIn("[[image:", text)
-        self.assertIn("[Image 1: A red rectangle]", text)
+        assets = list(Asset.objects.filter(attachment=att))
+        self.assertEqual(len(assets), 1)
+        self.assertIsNone(assets[0].message_id)
+        self.assertIn(f"[[image:{assets[0].id}|Image 1: A red rectangle]]", text)

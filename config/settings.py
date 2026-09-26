@@ -624,6 +624,20 @@ SKILL_IMPORT_MAX_SIZE_BYTES = _env_int("SKILL_IMPORT_MAX_SIZE_BYTES", "55_000_00
 # text/docx keep the tighter chat.services.MAX_ATTACHMENT_SIZE (10 MB, not downscaled).
 CHAT_ATTACHMENT_IMAGE_MAX_SIZE_BYTES = _env_int("CHAT_ATTACHMENT_IMAGE_MAX_SIZE_BYTES", "26_214_400")  # 25 MB
 CHAT_ATTACHMENT_PDF_MAX_SIZE_BYTES = _env_int("CHAT_ATTACHMENT_PDF_MAX_SIZE_BYTES", "31_457_280")  # 30 MB
+# Decks are rendered slide-by-slide on the worker, never sent as-is: PDF-sized cap.
+CHAT_ATTACHMENT_PPTX_MAX_SIZE_BYTES = _env_int("CHAT_ATTACHMENT_PPTX_MAX_SIZE_BYTES", "31_457_280")  # 30 MB
+# Chat attachment processing (chat/attachment_processing.py): pdf/docx/pptx
+# uploads are extracted — and pptx decks rendered slide-by-slide via the document
+# render service — on the worker right after upload. A turn is HELD until the
+# attachments on its message are processed, for at most this many seconds; on
+# timeout it proceeds with in-turn extraction / text only. 0 disables the hold.
+CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS = _env_int("CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS", "180")
+# Decks above this many slides get text only (no renders); attachments are not
+# gated by a PII scan, so this only bounds render time and storage.
+CHAT_ATTACHMENT_RENDER_MAX_SLIDES = _env_int("CHAT_ATTACHMENT_RENDER_MAX_SLIDES", "50")
+# Slides shown natively on the upload turn (per user message, across its decks);
+# the rest are viewed on demand via chat_attachment_view(pages=…).
+CHAT_ATTACHMENT_INITIAL_SLIDES = _env_int("CHAT_ATTACHMENT_INITIAL_SLIDES", "20")
 
 # Native-asset (PDF/image) context budget, measured on base64 length — the shared
 # ceiling on how much file data any one LLM request carries across all three

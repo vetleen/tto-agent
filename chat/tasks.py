@@ -10,6 +10,7 @@ from celery import Task, shared_task
 from django.db.utils import OperationalError
 
 from core.redis_errors import log_broadcast_failure
+from documents.services.page_render import RenderBusy, RenderUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -294,6 +295,59 @@ def render_deck_task(self, run_id: str) -> None:
     from chat.slides.render_service import execute_render_run
 
     execute_render_run(str(run_id))
+
+
+class _AttachmentProcessingTask(Task):
+    """Settle a ChatAttachment's processing_state after the retries are exhausted.
+
+    A render-only failure (extraction already cached) leaves the file usable as
+    text: READY + page_render_state FAILED. Anything else leaves it FAILED so the
+    consumer stops holding the turn and falls back to lazy extraction.
+    """
+
+    def on_failure(self, exc, task_id, args, kwargs, einfo):
+        from chat.models import ChatAttachment
+
+        attachment_id = args[0] if args else kwargs.get("attachment_id")
+        if not attachment_id:
+            return
+        State = ChatAttachment.ProcessingState
+        Render = ChatAttachment.PageRenderState
+        error = str(exc)[:2000]
+        try:
+            att = ChatAttachment.objects.filter(pk=attachment_id).only("extracted_content").first()
+            if att is None:
+                return
+            if att.extracted_content:
+                ChatAttachment.objects.filter(pk=attachment_id).exclude(processing_state=State.FAILED).update(
+                    processing_state=State.READY, page_render_state=Render.FAILED, processing_error=error,
+                )
+            else:
+                ChatAttachment.objects.filter(pk=attachment_id, processing_state=State.PENDING).update(
+                    processing_state=State.FAILED, processing_error=error,
+                )
+        except Exception:
+            logger.exception("Failed to settle attachment %s after processing failure", attachment_id)
+
+
+@shared_task(
+    base=_AttachmentProcessingTask,
+    bind=True,
+    autoretry_for=(RenderBusy, RenderUnavailable, OperationalError),
+    retry_backoff=30,
+    retry_backoff_max=300,
+    retry_jitter=True,
+    retry_kwargs={"max_retries": 3},
+    time_limit=900,
+    soft_time_limit=840,
+)
+def process_chat_attachment(self, attachment_id: str) -> str:
+    """Extract text / count pages / render pptx slides for a chat attachment
+    (chat/attachment_processing.py). Busy or unreachable render service → retry
+    with backoff; the row stays PENDING and the retry resumes."""
+    from chat.attachment_processing import process_attachment
+
+    return process_attachment(str(attachment_id), first_delivery=self.request.retries == 0)
 
 
 @shared_task(time_limit=60)

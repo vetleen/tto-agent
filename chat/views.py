@@ -300,7 +300,7 @@ def reattach_attachment(request, thread_id, attachment_id):
     """
     from django.core.files.base import ContentFile
 
-    from chat.services import MAX_THREAD_ATTACHMENT_BYTES
+    from chat.services import MAX_THREAD_ATTACHMENT_BYTES, SUPPORTED_PPTX_TYPES
 
     thread = get_object_or_404(ChatThread, id=thread_id, created_by=request.user)
     old = get_object_or_404(ChatAttachment, id=attachment_id, thread=thread)
@@ -322,13 +322,21 @@ def reattach_attachment(request, thread_id, attachment_id):
         content_type=old.content_type,
         size_bytes=old.size_bytes,
         page_count=old.page_count,
+        # The cached extraction (with its [[image:]] tokens) is reused; only a
+        # deck's slide renders have to be produced again for the copy.
+        extracted_content=old.extracted_content,
     )
     new.file.save(old.original_filename[:255] or "file", ContentFile(data), save=True)
+    if old.content_type in SUPPORTED_PPTX_TYPES:
+        from chat.attachment_processing import mark_for_reprocessing
+
+        mark_for_reprocessing(new)
     return JsonResponse({
         "id": str(new.id),
         "filename": new.original_filename,
         "content_type": new.content_type,
         "size_bytes": new.size_bytes,
+        "processing_state": new.processing_state,
     })
 
 
@@ -1477,6 +1485,11 @@ def thread_branch(request, thread_id):
                 page_count=att.page_count,
             )
             copy.file.save(att.original_filename[:255] or "file", ContentFile(data), save=True)
+            if att.page_render_state != ChatAttachment.PageRenderState.NONE:
+                # A deck's slide renders belong to the source row; re-render for the copy.
+                from chat.attachment_processing import mark_for_reprocessing
+
+                mark_for_reprocessing(copy)
             copied_att_ids.setdefault(copy.message_id, {})[str(att.id)] = str(copy.id)
 
         # Point the copied messages' metadata at the copies (not the source
@@ -1585,6 +1598,7 @@ def upload_attachments(request, thread_id):
     """
     from django.core.files.base import ContentFile
 
+    from chat.attachment_processing import dispatch_after_commit, initial_processing_state
     from chat.services import (
         MAX_THREAD_ATTACHMENT_BYTES,
         SUPPORTED_ATTACHMENT_TYPES,
@@ -1603,14 +1617,14 @@ def upload_attachments(request, thread_id):
     results = []
     for f in files:
         ct = f.content_type
-        # Browsers sometimes report .docx/.dotx as application/octet-stream
+        # Browsers sometimes report .docx/.dotx/.pptx as application/octet-stream
         if ct not in SUPPORTED_ATTACHMENT_TYPES:
-            if f.name and f.name.lower().endswith((".docx", ".dotx")):
+            if f.name and f.name.lower().endswith((".docx", ".dotx", ".pptx")):
                 from core.file_types import canonical_mime_for_extension
 
                 ct = canonical_mime_for_extension(f.name.rsplit(".", 1)[-1]) or next(iter(SUPPORTED_DOCX_TYPES))
                 f.content_type = ct
-            else:
+            if ct not in SUPPORTED_ATTACHMENT_TYPES:
                 return JsonResponse(
                     {"error": f"Unsupported file type: {ct}"},
                     status=400,
@@ -1663,8 +1677,11 @@ def upload_attachments(request, thread_id):
                 "filename": att.original_filename,
                 "content_type": att.content_type,
                 "size_bytes": att.size_bytes,
+                "processing_state": att.processing_state,
             })
             continue
+        # pdf/docx/pptx are processed on the worker (text extraction, page count,
+        # slide renders); the consumer holds the next turn until they are READY.
         att = ChatAttachment.objects.create(
             thread=thread,
             uploaded_by=request.user,
@@ -1672,15 +1689,36 @@ def upload_attachments(request, thread_id):
             original_filename=f.name[:255],
             content_type=f.content_type,
             size_bytes=f.size,
+            processing_state=initial_processing_state(f.content_type),
         )
+        dispatch_after_commit(att)
         results.append({
             "id": str(att.id),
             "filename": att.original_filename,
             "content_type": att.content_type,
             "size_bytes": att.size_bytes,
+            "processing_state": att.processing_state,
         })
 
     return JsonResponse({"attachments": results})
+
+
+@login_required
+@require_http_methods(["GET"])
+def attachment_status(request, attachment_id):
+    """Processing state of one attachment (polled by the composer's pills)."""
+    att = get_object_or_404(
+        ChatAttachment.objects.select_related("thread"),
+        id=attachment_id,
+        thread__created_by=request.user,
+    )
+    return JsonResponse({
+        "id": str(att.id),
+        "processing_state": att.processing_state,
+        "page_render_state": att.page_render_state,
+        "page_count": att.page_count,
+        "error": att.processing_error or "",
+    })
 
 
 @login_required

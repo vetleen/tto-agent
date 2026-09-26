@@ -359,13 +359,22 @@ def _pptx_chart_to_markdown(chart) -> str:
 
 
 def _load_pptx_as_markdown(path: Path, *, image_sink=None) -> list[Any]:
+    """Data-room loader: :func:`pptx_to_markdown` wrapped in a single Document."""
+    from langchain_core.documents import Document
+
+    return [Document(page_content=pptx_to_markdown(path, image_sink=image_sink))]
+
+
+def pptx_to_markdown(source, *, image_sink=None) -> str:
     """Extract PPTX (PowerPoint) slide content as Markdown.
 
-    Each slide becomes a ``## Slide N`` section (title folded into the heading
-    when present) so the structure-aware chunker splits on slide boundaries.
-    Body text frames become bullet lines, tables and native charts become
-    Markdown tables, and speaker notes are appended as a blockquote. Grouped
-    shapes are walked recursively so text nested in groups is not lost.
+    ``source`` is a path or a binary file-like (chat attachments pass bytes via
+    ``io.BytesIO``). Each slide becomes a ``## Slide N`` section (title folded
+    into the heading when present) so the structure-aware chunker splits on
+    slide boundaries. Body text frames become bullet lines, tables and native
+    charts become Markdown tables, and speaker notes are appended as a
+    blockquote. Grouped shapes are walked recursively so text nested in groups
+    is not lost.
 
     Embedded pictures are rendered inline via ``image_sink`` (see
     documents.services.image_assets.image_asset_sink) — bytes preserved as an
@@ -374,13 +383,12 @@ def _load_pptx_as_markdown(path: Path, *, image_sink=None) -> list[Any]:
     transcribed directly (no vision needed); a chart pasted as an image is a
     picture and goes through the image path.
     """
-    from langchain_core.documents import Document
     from pptx import Presentation
 
     from core.docx import placeholder_image_sink
 
     sink = image_sink or placeholder_image_sink
-    prs = Presentation(str(path))
+    prs = Presentation(source if hasattr(source, "read") else str(source))
     parts: list[str] = []
     img_idx = {"n": 0}  # per-document picture counter (the sink may override it)
 
@@ -447,8 +455,7 @@ def _load_pptx_as_markdown(path: Path, *, image_sink=None) -> list[Any]:
 
         parts.append("")  # blank line between slides
 
-    content = "\n\n".join(p for p in parts if p is not None).strip()
-    return [Document(page_content=content)]
+    return "\n\n".join(p for p in parts if p is not None).strip()
 
 
 def _pptx_table_to_markdown(table) -> str:

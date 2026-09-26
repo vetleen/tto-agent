@@ -940,7 +940,7 @@ def meeting_upload_attachment(request, meeting_uuid):
     if ext not in allowed_extensions(MEETING_ATTACHMENT_KINDS):
         messages.error(
             request,
-            "Unsupported attachment type. Allowed: images, PDFs, Word documents, and text files.",
+            "Unsupported attachment type. Allowed: images, PDFs, Word documents, presentations, and text files.",
         )
         return redirect("meeting_detail", meeting_uuid=meeting.uuid)
 
