@@ -39,6 +39,17 @@ class _TurnState:
     # prompt; the final assistant message is then tagged subagent_response so
     # the unreported-claim logic counts this turn as the report.
     history_has_subagent_results: bool = False
+    # Attachments the user sent with this message (str ids). The streaming task
+    # holds the turn until their worker-side processing finishes
+    # (_wait_for_attachments); ids still PENDING when the hold times out land in
+    # attachments_not_ready so their markers say "still processing".
+    attachment_ids: list = field(default_factory=list)
+    attachments_not_ready: set = field(default_factory=set)
+
+
+# Seconds between processing-state polls while a turn waits for its attachments
+# (patched to ~0 in tests).
+_ATTACHMENT_POLL_INTERVAL_S = 1.0
 
 
 def _valid_uuids(values):
@@ -2047,6 +2058,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 cancel_event=threading.Event(),
                 stream_finished=asyncio.Event(),
                 user_message_id=user_message.pk if user_message else None,
+                attachment_ids=[] if seed_mode else [str(a) for a in attachment_ids],
             )
             self._turn = turn
             self._cancel_event = turn.cancel_event
@@ -2188,6 +2200,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
         Title generation and summarization run after the slot is released, so a
         turn whose answer already looks finished never holds a slot away from
         another tab.
+
+        Before the slot is even requested the turn waits for the message's
+        attachments to finish worker-side processing (``_wait_for_attachments``,
+        bounded by ``CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS``) — deliberately
+        outside the gate so a slow render never occupies one of the system
+        slots. The gate keeps its own timeout, so the two waits never add up
+        inside the sub-agent report lease.
         """
         meta: dict = {}
         queue_hb: asyncio.Task | None = None
@@ -2203,7 +2222,24 @@ class ChatConsumer(AsyncWebsocketConsumer):
             if self._sink.wants_heartbeats and queue_hb is None:
                 queue_hb = asyncio.create_task(self._send_heartbeats())
 
+        async def _on_waiting(names):
+            nonlocal queue_hb
+            await self._sink.send_event({
+                "event_type": "turn.waiting_for_attachments",
+                "data": {"names": names, "count": len(names)},
+            })
+            if self._sink.wants_heartbeats and queue_hb is None:
+                queue_hb = asyncio.create_task(self._send_heartbeats())
+
         try:
+            if not await self._wait_for_attachments(
+                thread, turn, seed_mode=seed_mode, on_waiting=_on_waiting,
+            ):
+                # Stopped or superseded while waiting: same exit as below.
+                if self._turn is turn:
+                    self._cancel_event = None
+                return
+
             async with turn_gate.slot(self.user.pk, on_queued=_on_queued):
                 if queue_hb is not None:
                     queue_hb.cancel()
@@ -2850,7 +2886,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # turn's files into multimodal content blocks, metering each against the
         # run's native-asset budget. Earlier files are re-viewed on demand.
         await self._enrich_with_attachments(
-            messages, history, resolved_model, context, thread_id=str(thread.id)
+            messages, history, resolved_model, context, thread_id=str(thread.id),
+            not_ready_ids=getattr(turn, "attachments_not_ready", None),
         )
 
         # Deduplicate tool results from prior turns to reduce token waste
@@ -4511,9 +4548,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
             message__isnull=True,
         ).update(message=message)
 
-    async def _enrich_with_attachments(self, messages, history, model, context=None, *, thread_id=None):
+    async def _enrich_with_attachments(
+        self, messages, history, model, context=None, *, thread_id=None, not_ready_ids=None,
+    ):
         """Mark user messages that carried attachments, and send the files of
         the CURRENT turn only.
+
+        ``not_ready_ids``: attachments whose worker-side processing had not
+        finished when the hold timed out; their markers say "still processing".
 
         Every user message with attachments gets one ``[Attached: #N name (kind)]``
         marker per file (numbers from ``list_thread_attachments`` — the same ones
@@ -4568,6 +4610,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
         index = await self._load_thread_attachment_index(thread_id)
         if not index:
             return
+        not_ready = {str(x) for x in (not_ready_ids or ())}
+
+        def _marker(n, a):
+            return attachment_marker(n, a, still_processing=str(a.id) in not_ready)
+
         by_id = {str(a.id): (n, a) for n, a in index}
         by_message: dict = {}
         for n, a in index:
@@ -4608,7 +4655,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 continue
 
             text = message_obj.content if isinstance(message_obj.content, str) else ""
-            markers = "\n".join(attachment_marker(n, a) for n, a in atts)
+            markers = "\n".join(_marker(n, a) for n, a in atts)
             header = f"{text}\n\n{markers}" if text else markers
             if i <= last_assistant:
                 # An earlier turn: the files were shown on their own turn; now
@@ -4697,8 +4744,93 @@ class ChatConsumer(AsyncWebsocketConsumer):
             # Re-render the markers: a PDF's page count may have just been learned.
             content_blocks[0]["text"] = (
                 f"{text}\n\n" if text else ""
-            ) + "\n".join(attachment_marker(n, a) for n, a in atts)
+            ) + "\n".join(_marker(n, a) for n, a in atts)
             message_obj.content = content_blocks
+
+    async def _wait_for_attachments(self, thread, turn, *, seed_mode, on_waiting) -> bool:
+        """Hold the turn until the message's attachments finish worker-side
+        processing (``ChatAttachment.processing_state`` leaves PENDING).
+
+        Returns False when the turn was stopped or superseded while waiting (the
+        caller exits like the post-slot check). Returns True when everything is
+        ready, when there is nothing to wait for, when the hold is disabled
+        (``CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS`` = 0), or when the deadline
+        passes — in which case the still-pending ids are recorded on
+        ``turn.attachments_not_ready`` and the turn proceeds with what it has
+        (lazy extraction for pdf/docx, text only for a deck). ``on_waiting`` is
+        awaited once with the pending filenames the first time it actually waits.
+        """
+        from django.conf import settings
+
+        try:
+            timeout = float(getattr(settings, "CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS", 180) or 0)
+        except (TypeError, ValueError):
+            timeout = 180.0
+        ids = [str(x) for x in (turn.attachment_ids or [])]
+        if seed_mode and not ids:
+            # The minutes seed turn carries no ids: the files sit on the user
+            # messages enrichment expands (those after the last assistant message).
+            ids = await self._seed_attachment_ids(str(thread.id))
+        if timeout <= 0 or not ids:
+            return True
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        announced = False
+        while True:
+            pending = await self._pending_attachments(str(thread.id), ids)
+            if not pending:
+                return True
+            if self._stopped or turn.cancel_event.is_set() or self._turn is not turn:
+                return False
+            if not announced:
+                announced = True
+                try:
+                    await on_waiting([name for _pk, name in pending])
+                except Exception:  # noqa: BLE001 — a failed notice must not abort the turn
+                    logger.warning("attachment hold: could not notify the client", exc_info=True)
+            if loop.time() >= deadline:
+                turn.attachments_not_ready = {str(pk) for pk, _name in pending}
+                logger.warning(
+                    "attachment hold: %s attachment(s) still processing after %.0fs on thread %s; "
+                    "proceeding without them",
+                    len(pending), timeout, thread.id,
+                )
+                return True
+            await asyncio.sleep(_ATTACHMENT_POLL_INTERVAL_S)
+
+    @database_sync_to_async
+    def _pending_attachments(self, thread_id, ids):
+        """``[(id, filename)]`` of the given attachments still PENDING (this user's only)."""
+        from chat.models import ChatAttachment
+
+        return list(
+            ChatAttachment.objects.filter(
+                thread_id=thread_id,
+                uploaded_by=self.user,
+                id__in=ids,
+                processing_state=ChatAttachment.ProcessingState.PENDING,
+            ).values_list("id", "original_filename")
+        )
+
+    @database_sync_to_async
+    def _seed_attachment_ids(self, thread_id):
+        """Ids of this user's attachments on user messages after the last
+        assistant message — the same set ``_enrich_with_attachments`` expands."""
+        from chat.models import ChatAttachment, ChatMessage
+
+        last_assistant_at = (
+            ChatMessage.objects.filter(thread_id=thread_id, role="assistant")
+            .order_by("-created_at")
+            .values_list("created_at", flat=True)
+            .first()
+        )
+        qs = ChatAttachment.objects.filter(
+            thread_id=thread_id, uploaded_by=self.user, message__isnull=False, message__role="user",
+        )
+        if last_assistant_at is not None:
+            qs = qs.filter(message__created_at__gt=last_assistant_at)
+        return [str(pk) for pk in qs.values_list("id", flat=True)]
 
     @database_sync_to_async
     def _load_thread_attachment_index(self, thread_id):
