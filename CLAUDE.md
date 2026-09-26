@@ -157,27 +157,46 @@ summarized**, and is **never shown to the user** (deliberately absent from
 findings that would otherwise be lost when tool results are stubbed — the near-threshold
 Runtime nudge tells the model to use it.
 
-**Native files (images/PDFs)**: chat attachments are sent to the model natively only on
+**Native files (images/PDFs/decks)**: chat attachments are sent to the model natively only on
 the turn they were uploaded (`ChatConsumer._enrich_with_attachments`: user entries after the
 last assistant entry); older messages carry `[Attached: #N …]` markers and the agent
 re-views files with `chat_attachment_view` (numbers from `list_thread_attachments`). Tool
 views (`document_view_native`, `skill_resource_view`, `chat_attachment_view`) queue bytes via
 `RunContext.try_add_native_asset` and are visible only within the current reply. Any tool
 that shows a PDF natively must use `chat.pdf_attach.attach_pdf_to_context` (pages slice →
-page cap → compress → first-N page images → text).
+page cap → compress → first-N page images → text); any tool that shows rendered slides must
+use `chat.slide_view.queue_slide_images` (owner-agnostic selection + budget + `asset_id: ""`).
 
-**Document page renders**: a data-room `.pptx` version gets one JPEG per slide, stored as
-`chat.Asset` rows with `role=page_render` + `page_number` (owned by the version), rendered by the
-external Gotenberg app (`deploy/gotenberg/`, `DOCUMENT_RENDER_SERVICE_URL`; empty = off) from
-`documents/services/page_render.py` after the version reaches READY (never for quarantined
-versions; never blocks searchability). Invariants: page renders are **never tokenized**
-(`[[image:…]]`), **never shown to users**, and excluded from `_collect_doc_images`; the model
-sees them only through `document_view_native` (`pages` selects slides; first
-`DOCUMENT_RENDER_VIEW_DEFAULT_SLIDES` otherwise) with `asset_id: ""`. State lives on
-`DataRoomDocumentVersion.page_render_state` (`none`/`pending`/`partial`/`ready`/`skipped`/`failed`)
-plus `page_count`, `page_render_attempts`, `page_render_error`. Uploads to the render service use
-opaque names (`<version_id>-<batch>.pptx`), one conversion is in flight per worker (render slot),
-and chunks carry `source_page_start/end` = slide number (pptx) or page (PDF) so search cites them.
+**Attachment processing + the turn hold**: every pdf/docx/pptx chat or meeting attachment is
+processed on the worker right after upload (`chat/attachment_processing.py` via
+`process_chat_attachment`): text extraction (embedded pictures become **attachment-owned**
+`chat.Asset` rows, `Asset.attachment`), page/slide count, and for `.pptx` the slide renders
+(`chat/attachment_render.py`, `AttachmentTarget`, cap `CHAT_ATTACHMENT_RENDER_MAX_SLIDES`).
+`ChatAttachment.processing_state` (`pending`/`ready`/`failed`; images/text are `ready` from
+the start) is what the consumer waits on before taking a turn-gate slot
+(`_wait_for_attachments`, `CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS`, client event
+`turn.waiting_for_attachments`); on timeout the turn proceeds with lazy extraction and
+"still processing" markers. Rows are written with `.update()` only — the consumer links the
+attachment to its message concurrently. On the upload turn a deck's first
+`CHAT_ATTACHMENT_INITIAL_SLIDES` renders (per message) go in as image blocks after its text;
+later turns page through slides with `chat_attachment_view(pages=…)` (`representation: slides`).
+
+**Document page renders**: a data-room `.pptx` version (or a chat attachment) gets one JPEG per
+slide, stored as `chat.Asset` rows with `role=page_render` + `page_number` (owned by the version
+or the attachment), rendered by the external Gotenberg app (`deploy/gotenberg/`,
+`DOCUMENT_RENDER_SERVICE_URL`; empty = off). The core in `documents/services/page_render.py` is
+owner-agnostic (`render_pages(target)` over a `RenderTarget`: `VersionTarget` there,
+`AttachmentTarget` in `chat/attachment_render.py`) and runs after the version reaches READY
+(never for quarantined versions; never blocks searchability). Invariants: page renders are
+**never tokenized** (`[[image:…]]`), **never shown to users**, and excluded from
+`_collect_doc_images`; the model sees them only through `document_view_native` /
+`chat_attachment_view` (`pages` selects slides; first `DOCUMENT_RENDER_VIEW_DEFAULT_SLIDES`
+otherwise) with `asset_id: ""`. State lives on `DataRoomDocumentVersion.page_render_state` /
+`ChatAttachment.page_render_state` (`none`/`pending`/`partial`/`ready`/`skipped`/`failed`)
+plus `page_count` (and, for versions, `page_render_attempts`, `page_render_error`). Uploads to
+the render service use opaque names (`<version_id>-<batch>.pptx`, `a-<attachment_id>-<batch>.pptx`),
+one conversion is in flight per worker (render slot), and chunks carry `source_page_start/end` =
+slide number (pptx) or page (PDF) so search cites them.
 
 **Observability**: each turn's `LLMCallLog` row carries `tool_call_count`, `prune_count`
 (mid-turn compactions), `tool_result_tokens` (raw tool-output volume), and

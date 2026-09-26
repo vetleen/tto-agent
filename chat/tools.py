@@ -1639,65 +1639,22 @@ class DocumentViewNativeTool(ContextAwareTool):
         ``{"message"}`` alone when the run's attachment budget blocked every slide,
         or ``None`` when nothing could be shown (caller falls back to text).
         """
-        import base64
-
-        from django.conf import settings as dj_settings
-
         from chat.models import Asset
-        from chat.pdf_attach import parse_page_ranges
+        from chat.slide_view import queue_slide_images
 
         name = doc.original_filename or "presentation.pptx"
         total = int(version.page_count or 0)
         if total <= 0:
             return None
-        default_n = max(1, int(getattr(dj_settings, "DOCUMENT_RENDER_VIEW_DEFAULT_SLIDES", 8)))
-        max_n = max(1, int(getattr(dj_settings, "DOCUMENT_RENDER_VIEW_MAX_SLIDES", 12)))
-        selection_note = ""
-        wanted: list[int] = []
-        if pages:
-            wanted = [i + 1 for i in parse_page_ranges(pages, total)]
-            if not wanted:
-                selection_note = f" (no slides matched pages='{pages}', so the first slides are shown)"
-        if not wanted:
-            wanted = list(range(1, min(total, default_n) + 1))
-        truncated = len(wanted) > max_n
-        wanted = wanted[:max_n]
-
-        assets = {
-            a.page_number: a
-            for a in Asset.objects.filter(
-                version=version, role=Asset.ROLE_PAGE_RENDER, page_number__in=wanted,
-            )
-        }
-        shown: list[int] = []
-        missing: list[int] = []
-        budget_hit = False
-        for n in wanted:
-            asset = assets.get(n)
-            if asset is None or not asset.blob:
-                missing.append(n)
-                continue
-            try:
-                with asset.blob.open("rb") as fh:
-                    data = fh.read()
-            except Exception:
-                logger.exception("document_view_native: failed to read slide render for doc %s", doc.id)
-                missing.append(n)
-                continue
-            # No asset_id: rendered slides are agent-only and never get an embed token.
-            if not context.try_add_native_asset({
-                "kind": "image",
-                "asset_id": "",
-                "b64": base64.b64encode(data).decode("ascii"),
-                "media_type": asset.content_type or "image/jpeg",
-                "description": f"'{name}' slide {n} of {total}",
-            }, pathway="dataroom"):
-                budget_hit = True
-                break
-            shown.append(n)
-
+        outcome = queue_slide_images(
+            context,
+            assets=Asset.objects.filter(version=version, role=Asset.ROLE_PAGE_RENDER),
+            filename=name, total=total, pages=pages,
+            pathway="dataroom", log_ref=f"doc {doc.id}",
+        )
+        shown = outcome.shown
         if not shown:
-            if budget_hit:
+            if outcome.budget_hit:
                 return {
                     "message": (
                         f"Document #{idx} ('{name}'): the attachment budget for this run is "
@@ -1707,20 +1664,11 @@ class DocumentViewNativeTool(ContextAwareTool):
             return None
 
         noun = "slide" if len(shown) == 1 else "slides"
-        msg = f"Document #{idx} ('{name}'): attached {noun} {_format_numbers(shown)} of {total} as images{selection_note}."
-        if missing:
-            msg += (
-                f" Slide{'s' if len(missing) != 1 else ''} {_format_numbers(missing)} "
-                f"{'have' if len(missing) != 1 else 'has'} no preview."
-            )
-        if budget_hit:
-            msg += f" The attachment budget for this run is exhausted after slide {shown[-1]}."
-        if truncated:
-            msg += f" At most {max_n} slides are shown per call."
-        last = max(shown)
-        if last < total and not budget_hit:
-            hint_end = min(total, last + default_n)
-            msg += f" Pass pages='{last + 1}-{hint_end}' to view more."
+        msg = (
+            f"Document #{idx} ('{name}'): attached {noun} {_format_numbers(shown)} of {total} "
+            f"as images{outcome.selection_note}."
+            + outcome.missing_note() + outcome.budget_note() + outcome.cap_note() + outcome.more_hint()
+        )
         return {
             "message": msg,
             "view": {"doc_index": idx, "filename": name, "kind": "slides", "slides": shown, "total": total},
@@ -1923,12 +1871,9 @@ class DocumentViewNativeTool(ContextAwareTool):
 
 def _format_numbers(numbers: list[int]) -> str:
     """``[3, 4, 5]`` → ``3–5``; ``[1, 4, 7]`` → ``1, 4, 7``; ``[]`` → ``''``."""
-    if not numbers:
-        return ""
-    ordered = sorted(set(int(n) for n in numbers))
-    if len(ordered) > 1 and ordered[-1] - ordered[0] == len(ordered) - 1:
-        return f"{ordered[0]}–{ordered[-1]}"
-    return ", ".join(str(n) for n in ordered)
+    from chat.slide_view import format_numbers
+
+    return format_numbers(numbers)
 
 
 _registry = get_tool_registry()

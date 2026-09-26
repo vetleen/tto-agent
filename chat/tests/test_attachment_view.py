@@ -12,15 +12,20 @@ from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, TransactionTestCase, override_settings
 
-from chat.attachment_tools import ATTACHMENT_VIEW_TEXT_CAP, AttachmentViewTool
+from django.core.files.base import ContentFile
+
+from chat.attachment_tools import ATTACHMENT_VIEW_TEXT_CAP, AttachmentViewTool, _slides_text
 from chat.consumers import ChatConsumer
-from chat.models import ChatAttachment, ChatMessage, ChatThread
+from chat.models import Asset, ChatAttachment, ChatMessage, ChatThread
+from chat.tests.test_image_view import _slide_jpeg
 from chat.tools import AttachmentOpenToCanvasTool
 from llm.types.context import RunContext
 
 User = get_user_model()
 
 _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+_PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+_DECK_TEXT = "## Slide 1\n\nIntro\n\n## Slide 2\n\nMarket\n\n## Slide 3\n\nTeam"
 
 _IN_MEMORY_STORAGE = override_settings(
     STORAGES={
@@ -74,6 +79,26 @@ class AttachmentViewToolTests(TestCase):
         tool = AttachmentViewTool()
         tool.set_context(ctx)
         return json.loads(tool.invoke(args)), ctx
+
+    def _deck(self, n_renders, *, total=None, state=None, processing=None, body=b"PK deck",
+              extracted=_DECK_TEXT, error=""):
+        Render = ChatAttachment.PageRenderState
+        att = ChatAttachment.objects.create(
+            thread=self.thread, uploaded_by=self.user, message=self.msg,
+            file=SimpleUploadedFile("deck.pptx", body), original_filename="deck.pptx",
+            content_type=_PPTX_MIME, size_bytes=len(body),
+            page_count=total if total is not None else n_renders,
+            page_render_state=state or Render.READY,
+            processing_state=processing or ChatAttachment.ProcessingState.READY,
+            extracted_content=extracted, processing_error=error,
+        )
+        for n in range(1, n_renders + 1):
+            asset = Asset(
+                attachment=att, kind=Asset.KIND_IMAGE, role=Asset.ROLE_PAGE_RENDER,
+                page_number=n, content_type="image/jpeg", description=f"Slide {n}",
+            )
+            asset.blob.save(f"{asset.id}.jpg", ContentFile(_slide_jpeg(n)), save=True)
+        return att
 
     # --- metadata ---------------------------------------------------------
 
@@ -197,6 +222,128 @@ class AttachmentViewToolTests(TestCase):
         self.assertNotIn("--- page 1 ---", result["content"])
         self.assertEqual(ctx.pending_native_assets, [])
 
+    # --- presentations ---------------------------------------------------------
+
+    def test_pptx_default_attaches_the_first_slides(self):
+        self._deck(10)
+        result, ctx = self._view({"attachment_number": 1})
+        self.assertEqual(result["representation"], "slides")
+        self.assertEqual(result["slides"], [1, 2, 3, 4, 5, 6, 7, 8])
+        self.assertEqual(result["total_slides"], 10)
+        self.assertNotIn("pages", result)
+        self.assertIn("Slides 1–8 of 10 are attached below as images", result["note"])
+        self.assertIn("Pass pages='9-10' to view more", result["note"])
+        pending = ctx.pending_native_assets
+        self.assertEqual(len(pending), 8)
+        self.assertEqual(pending[0]["description"], "'deck.pptx' slide 1 of 10")
+        self.assertTrue(all(p["asset_id"] == "" and p["_pathway"] == "attachment" for p in pending))
+        self.assertEqual(
+            AttachmentViewTool().end_label_for_result(result), "Viewed deck.pptx (slides 1–8 of 10)",
+        )
+
+    def test_pptx_pages_selects_slides(self):
+        self._deck(10)
+        result, ctx = self._view({"attachment_number": 1, "pages": "3-5"})
+        self.assertEqual(result["representation"], "slides")
+        self.assertEqual(result["slides"], [3, 4, 5])
+        self.assertEqual(result["pages"], "3-5")
+        self.assertEqual([p["description"] for p in ctx.pending_native_assets],
+                         [f"'deck.pptx' slide {n} of 10" for n in (3, 4, 5)])
+        self.assertEqual(
+            AttachmentViewTool().end_label_for_result(result), "Viewed deck.pptx (slides 3–5 of 10)",
+        )
+
+    def test_pptx_single_slide_label(self):
+        self._deck(4)
+        result, _ = self._view({"attachment_number": 1, "pages": "4"})
+        self.assertEqual(result["slides"], [4])
+        self.assertIn("Slide 4 of 4 is attached", result["note"])
+        self.assertEqual(AttachmentViewTool().end_label_for_result(result), "Viewed deck.pptx (slide 4 of 4)")
+
+    @override_settings(DOCUMENT_RENDER_VIEW_MAX_SLIDES=3)
+    def test_pptx_per_call_cap(self):
+        self._deck(10)
+        result, ctx = self._view({"attachment_number": 1, "pages": "1-10"})
+        self.assertEqual(result["slides"], [1, 2, 3])
+        self.assertEqual(len(ctx.pending_native_assets), 3)
+        self.assertIn("At most 3 slides are shown per call", result["note"])
+        self.assertIn("Pass pages='4-10'", result["note"])
+
+    def test_pptx_missing_render_is_reported(self):
+        att = self._deck(5, state=ChatAttachment.PageRenderState.PARTIAL)
+        Asset.objects.filter(attachment=att, page_number=2).delete()
+        result, ctx = self._view({"attachment_number": 1, "pages": "1-3"})
+        self.assertEqual(result["slides"], [1, 3])
+        self.assertIn("Slide 2 has no preview", result["note"])
+
+    def test_pptx_pending_is_extracted_with_reason(self):
+        self._deck(0, total=6, state=ChatAttachment.PageRenderState.PENDING,
+                   processing=ChatAttachment.ProcessingState.PENDING)
+        result, ctx = self._view({"attachment_number": 1})
+        self.assertEqual(result["representation"], "extracted")
+        self.assertIn("still being prepared", result["reason"])
+        self.assertEqual(result["content"], _DECK_TEXT)
+        self.assertEqual(ctx.pending_native_assets, [])
+
+    def test_pptx_skipped_reason_comes_from_the_render_step(self):
+        self._deck(0, total=80, state=ChatAttachment.PageRenderState.SKIPPED,
+                   error="The deck has 80 slides; slide previews are only rendered for decks up to 50.")
+        result, ctx = self._view({"attachment_number": 1})
+        self.assertEqual(result["representation"], "extracted")
+        self.assertIn("80 slides", result["reason"])
+        self.assertIn("extracted text returned", result["reason"])
+        self.assertEqual(ctx.pending_native_assets, [])
+
+    def test_pptx_failed_and_unrendered_states_explain_themselves(self):
+        self._deck(0, total=3, state=ChatAttachment.PageRenderState.FAILED)
+        result, _ = self._view({"attachment_number": 1})
+        self.assertIn("could not be rendered", result["reason"])
+        self.msg2 = ChatMessage.objects.create(thread=self.thread, role="user", content="again")
+        self._deck(0, total=3, state=ChatAttachment.PageRenderState.NONE)
+        result, _ = self._view({"attachment_number": 2})
+        self.assertIn("no slide previews exist", result["reason"])
+
+    def test_pptx_non_vision_model_is_extracted_with_reason(self):
+        self._deck(3)
+        with patch("llm.display.supports_modality", return_value=False):
+            result, ctx = self._view({"attachment_number": 1}, self._ctx(model_id="text-only"))
+        self.assertEqual(result["representation"], "extracted")
+        self.assertIn("cannot view images", result["reason"])
+        self.assertEqual(ctx.pending_native_assets, [])
+
+    @override_settings(NATIVE_ASSET_BUDGET_B64_BYTES=10)
+    def test_pptx_budget_floor_is_extracted_with_reason(self):
+        self._deck(3)
+        result, ctx = self._view({"attachment_number": 1})
+        self.assertEqual(result["representation"], "extracted")
+        self.assertIn("budget", result["reason"])
+        self.assertEqual(ctx.pending_native_assets, [])
+
+    def test_pptx_extracted_mode_never_queues_and_scopes_by_slide(self):
+        self._deck(3)
+        result, ctx = self._view({"attachment_number": 1, "mode": "extracted", "pages": "2"})
+        self.assertEqual(result["representation"], "extracted")
+        self.assertEqual(result["pages"], "2")
+        self.assertEqual(result["content"], "## Slide 2\n\nMarket")
+        self.assertNotIn("reason", result)
+        self.assertEqual(ctx.pending_native_assets, [])
+        self.assertEqual(AttachmentViewTool().end_label_for_result(result), "Read deck.pptx (extracted text, p. 2)")
+
+    def test_pptx_slide_count_is_learned_from_the_file_when_unknown(self):
+        from documents.tests.test_page_render import _deck as _deck_bytes
+
+        att = self._deck(0, total=0, state=ChatAttachment.PageRenderState.NONE, body=_deck_bytes(2, notes=False))
+        result, _ = self._view({"attachment_number": 1})
+        self.assertEqual(result["representation"], "extracted")
+        att.refresh_from_db()
+        self.assertEqual(att.page_count, 2)
+
+    def test_slides_text_helper(self):
+        self.assertEqual(_slides_text(_DECK_TEXT, "1,3", 3), "## Slide 1\n\nIntro\n\n## Slide 3\n\nTeam")
+        self.assertEqual(_slides_text(_DECK_TEXT, "9", 3), "")
+        self.assertEqual(_slides_text("no headings", "1", 3), "")
+        self.assertEqual(_slides_text(_DECK_TEXT, None, 3), "")
+
     # --- extracted text / paging ------------------------------------------
 
     def test_extracted_text_pages_with_char_offset(self):
@@ -244,6 +391,13 @@ class AttachmentViewToolTests(TestCase):
         self.assertEqual(
             tool.end_label_for_result({"status": "ok", "filename": "d.docx", "representation": "extracted"}),
             "Read d.docx (extracted text)",
+        )
+        self.assertEqual(
+            tool.end_label_for_result({
+                "status": "ok", "filename": "deck.pptx", "representation": "slides",
+                "slides": [3, 4, 5], "total_slides": 17,
+            }),
+            "Viewed deck.pptx (slides 3–5 of 17)",
         )
         self.assertEqual(
             tool.end_label_for_result({"status": "error", "message": "x"}),

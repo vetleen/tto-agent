@@ -167,8 +167,28 @@
       "required": false
     },
     "DOCUMENT_RENDER_VIEW_MAX_SLIDES": {
-      "description": "Cap on slides attached per document_view_native call. Default 12.",
+      "description": "Cap on slides attached per document_view_native / chat_attachment_view call. Default 12.",
       "value": "12",
+      "required": false
+    },
+    "CHAT_ATTACHMENT_PPTX_MAX_SIZE_BYTES": {
+      "description": "Max .pptx chat/meeting attachment upload, bytes. Default 31457280 (30 MB).",
+      "value": "31457280",
+      "required": false
+    },
+    "CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS": {
+      "description": "How long a chat turn waits for its attachments' worker-side processing (extraction, slide renders) before running with text only. 0 disables the hold. Default 180.",
+      "value": "180",
+      "required": false
+    },
+    "CHAT_ATTACHMENT_RENDER_MAX_SLIDES": {
+      "description": "Attached decks with more slides get extracted text only (no slide renders). Default 50.",
+      "value": "50",
+      "required": false
+    },
+    "CHAT_ATTACHMENT_INITIAL_SLIDES": {
+      "description": "Slides of attached decks shown natively on the upload turn, per message; the rest via chat_attachment_view. Default 20.",
+      "value": "20",
       "required": false
     },
     "SENTRY_DSN": {

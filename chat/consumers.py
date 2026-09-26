@@ -4575,10 +4575,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
         from django.conf import settings
 
         from chat.pdf_attach import pdf_page_count
+        from chat.models import ChatAttachment
         from chat.services import (
             SUPPORTED_DOCX_TYPES,
             SUPPORTED_IMAGE_TYPES,
             SUPPORTED_PDF_TYPES,
+            SUPPORTED_PPTX_TYPES,
             SUPPORTED_TEXT_TYPES,
             attachment_marker,
             build_image_content_block,
@@ -4586,8 +4588,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
             build_text_content_block,
             detect_provider,
         )
+        from chat.slide_view import format_numbers
         from llm.core.native_limits import provider_native_b64_ceiling
         from llm.display import supports_modality
+
+        Render = ChatAttachment.PageRenderState
+        vision_tokens = getattr(settings, "VISION_IMAGE_TOKENS", 1_600)
 
         def _tag(block, b64len, label, est_tokens=None):
             # Markers the send-time enforcer reads for priority pruning; stripped
@@ -4664,6 +4670,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 continue
 
             content_blocks = [{"type": "text", "text": header}]
+            # Slides shown natively on the upload turn, across every deck on
+            # this message; the rest are viewed on demand (chat_attachment_view).
+            slides_left = max(0, int(getattr(settings, "CHAT_ATTACHMENT_INITIAL_SLIDES", 20)))
             for _n, att in atts:
                 att_id = att.id
                 try:
@@ -4728,6 +4737,74 @@ class ChatConsumer(AsyncWebsocketConsumer):
                                     )
                         else:
                             block = build_text_content_block(extracted, att.original_filename)
+                    elif ct in SUPPORTED_PPTX_TYPES:
+                        # A deck: its slide-by-slide text (cached by the worker,
+                        # else extracted now) plus the worker's slide renders as
+                        # image blocks — up to the per-message allowance — and a
+                        # note telling the model how to see the rest.
+                        extracted = await self._attachment_text(att, file_bytes)
+                        content_blocks.append(build_text_content_block(extracted, att.original_filename))
+                        name = att.original_filename
+                        total = int(att.page_count or 0)
+                        state = att.page_render_state
+                        still_processing = (
+                            str(att_id) in not_ready
+                            or att.processing_state == ChatAttachment.ProcessingState.PENDING
+                            or state == Render.PENDING
+                        )
+                        if still_processing:
+                            note = (
+                                f"(Slide images of '{name}' are still being prepared — use "
+                                "chat_attachment_view to see the slides in a later reply.)"
+                            )
+                        elif state not in (Render.READY, Render.PARTIAL):
+                            note = f"(No slide images are available for '{name}'; extracted text only.)"
+                        elif not supports_modality(model or "", "image"):
+                            note = f"(The current model cannot view images; '{name}' is shown as extracted text.)"
+                        elif slides_left <= 0:
+                            note = (
+                                f"(The slide-image allowance for this message is used up; use "
+                                f"chat_attachment_view with pages= to see the slides of '{name}'.)"
+                            )
+                        else:
+                            shown: list = []
+                            budget_hit = False
+                            for slide_no, jpeg in await self._load_attachment_slide_renders(att, slides_left):
+                                b64 = base64.b64encode(jpeg).decode("ascii")
+                                if context is not None and not context.reserve_native_asset(
+                                    len(b64), "attachment"
+                                ):
+                                    budget_hit = True
+                                    break
+                                content_blocks.append(_tag(
+                                    build_image_content_block(b64, "image/jpeg", provider),
+                                    len(b64), f"{name} slide {slide_no}", est_tokens=vision_tokens,
+                                ))
+                                shown.append(slide_no)
+                            slides_left -= len(shown)
+                            if shown:
+                                last = max(shown)
+                                note = (
+                                    f"(Slides {format_numbers(shown)} of {total or last} of '{name}' "
+                                    "are attached above as images"
+                                )
+                                if budget_hit:
+                                    note += "; the native-asset budget for this request stopped there"
+                                elif total and last < total:
+                                    note += (
+                                        f"; use chat_attachment_view with pages='{last + 1}-{total}' "
+                                        "to see the rest"
+                                    )
+                                note += ".)"
+                            elif budget_hit:
+                                note = (
+                                    f"(Slide images of '{name}' omitted — the native-asset budget "
+                                    "for this request is exhausted.)"
+                                )
+                            else:
+                                note = f"(No slide images are stored for '{name}'; extracted text only.)"
+                        content_blocks.append({"type": "text", "text": note})
+                        continue
                     elif ct in SUPPORTED_DOCX_TYPES:
                         extracted = await self._attachment_text(att, file_bytes)
                         block = build_text_content_block(extracted, att.original_filename)
@@ -4854,6 +4931,30 @@ class ChatConsumer(AsyncWebsocketConsumer):
         att.save(update_fields=["page_count"])
 
     @database_sync_to_async
+    def _load_attachment_slide_renders(self, att, limit: int) -> list:
+        """``[(slide_number, jpeg_bytes)]`` for the first ``limit`` stored slide
+        renders of a pptx attachment, in slide order."""
+        from chat.models import Asset
+
+        out: list = []
+        if limit <= 0:
+            return out
+        renders = (
+            Asset.objects.filter(attachment=att, role=Asset.ROLE_PAGE_RENDER)
+            .exclude(page_number__isnull=True)
+            .order_by("page_number")[:limit]
+        )
+        for asset in renders:
+            if not asset.blob:
+                continue
+            try:
+                with asset.blob.open("rb") as fh:
+                    out.append((asset.page_number, fh.read()))
+            except Exception:
+                logger.exception("Failed to read slide render %s of attachment %s", asset.page_number, att.id)
+        return out
+
+    @database_sync_to_async
     def _read_attachment_file(self, attachment):
         attachment.file.open("rb")
         try:
@@ -4863,10 +4964,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _attachment_text(self, attachment, file_bytes):
-        """Return the extracted text for a docx/pdf attachment, extracting and
-        persisting its embedded images as message-scoped Assets exactly
-        once and caching the result. Reused verbatim on later turns so per-turn
-        replay never re-extracts or recreates assets."""
+        """Return the extracted text for a docx/pdf/pptx attachment — normally
+        the worker cached it right after upload; otherwise extract now (embedded
+        images become attachment-owned Assets exactly once) and cache it. Reused
+        verbatim on later turns so per-turn replay never re-extracts."""
         from chat.services import get_or_extract_attachment_text
 
         return get_or_extract_attachment_text(attachment, file_bytes, user=self.user)

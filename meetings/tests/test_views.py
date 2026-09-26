@@ -94,6 +94,7 @@ class MeetingDetailViewTests(TestCase):
         self.assertIn("image/*", accept)
         self.assertIn(".png", accept)
         self.assertIn(".docx", accept)
+        self.assertIn(".pptx", accept)
         # Meeting attachments mirror chat: no audio/email kinds.
         self.assertNotIn(".mp3", accept)
 

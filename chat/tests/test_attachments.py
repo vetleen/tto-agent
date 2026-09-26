@@ -235,17 +235,34 @@ class UploadAttachmentTests(TestCase):
         self.assertEqual(resp.json()["attachments"][0]["processing_state"], "ready")
         delay.assert_not_called()
 
-    def test_upload_pptx_rejected_until_presentations_are_enabled(self):
-        # Guard against the octet-stream fallback letting an unsupported kind through.
-        f = SimpleUploadedFile("deck.pptx", b"PK fake", content_type="application/octet-stream")
-        resp = self.client.post(self.url, {"files": f})
-        from core.file_types import CHAT_KINDS, KIND_PPTX
+    def test_upload_pptx_is_pending_and_dispatches_processing(self):
+        # Browsers often report .pptx as octet-stream; the extension fallback maps it
+        # to the canonical MIME and the deck is processed (extracted + rendered) on
+        # the worker like a PDF.
+        from unittest.mock import patch
 
-        if KIND_PPTX in CHAT_KINDS:
-            self.assertEqual(resp.status_code, 200)
-        else:
-            self.assertEqual(resp.status_code, 400)
-            self.assertIn("Unsupported file type", resp.json()["error"])
+        f = SimpleUploadedFile("deck.pptx", b"PK fake", content_type="application/octet-stream")
+        with patch("chat.tasks.process_chat_attachment.delay") as delay, \
+             self.captureOnCommitCallbacks(execute=True):
+            resp = self.client.post(self.url, {"files": f})
+        self.assertEqual(resp.status_code, 200)
+        att = resp.json()["attachments"][0]
+        self.assertEqual(
+            att["content_type"],
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        )
+        self.assertEqual(att["processing_state"], "pending")
+        delay.assert_called_once_with(att["id"])
+
+    @override_settings(CHAT_ATTACHMENT_PPTX_MAX_SIZE_BYTES=64)
+    def test_upload_pptx_oversized_uses_the_pptx_cap(self):
+        f = SimpleUploadedFile(
+            "deck.pptx", b"\x00" * 65,
+            content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        )
+        resp = self.client.post(self.url, {"files": f})
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("too large", resp.json()["error"])
 
     def test_upload_valid_text_file(self):
         f = SimpleUploadedFile("readme.txt", b"Hello world", content_type="text/plain")

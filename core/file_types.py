@@ -141,17 +141,19 @@ FILE_TYPES: tuple[FileType, ...] = (
 
 # --- Per-surface kind selections ----------------------------------------
 DATA_ROOM_KINDS = frozenset({KIND_IMAGE, KIND_PDF, KIND_DOCX, KIND_PPTX, KIND_SPREADSHEET, KIND_TEXT, KIND_EMAIL, KIND_AUDIO})
-# Chat can only render image/pdf/docx natively or decode text; it has no path
-# for presentations (.pptx), spreadsheets (.xlsx/.xlsm), email (.msg/.eml), or
-# audio, so those kinds are excluded.
-CHAT_KINDS = frozenset({KIND_IMAGE, KIND_PDF, KIND_DOCX, KIND_TEXT})
+# Chat shows images/PDFs natively, decodes text, extracts Word documents, and
+# extracts + renders presentations (.pptx) slide-by-slide on the worker
+# (chat/attachment_processing.py). It has no path for spreadsheets
+# (.xlsx/.xlsm), email (.msg/.eml), or audio, so those kinds are excluded.
+CHAT_KINDS = frozenset({KIND_IMAGE, KIND_PDF, KIND_DOCX, KIND_PPTX, KIND_TEXT})
 # Meeting attachments are copied into the "minutes with Wilfred" chat thread,
 # so they accept exactly what chat can consume.
 MEETING_ATTACHMENT_KINDS = CHAT_KINDS
 # Canvas file import turns an upload into editable markdown. Only kinds that
-# yield text belong here: Word, PDF, and the decodable text family. Images have
-# no text to import (embed the [[image:uuid]] token instead), and chat has no
-# extraction path for pptx/spreadsheet/email/audio.
+# yield prose belong here: Word, PDF, and the decodable text family. Images have
+# no text to import (embed the [[image:uuid]] token instead); a deck's
+# slide-by-slide markdown is not a document to edit, and chat has no extraction
+# path for spreadsheet/email/audio.
 CANVAS_IMPORT_KINDS = frozenset({KIND_DOCX, KIND_PDF, KIND_TEXT})
 
 # Generic MIME tokens browsers send for unfamiliar types — always pass the

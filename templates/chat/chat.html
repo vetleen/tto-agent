@@ -2164,20 +2164,27 @@
   var SUPPORTED_PDF_TYPES = ['application/pdf'];
   var SUPPORTED_TEXT_TYPES = ['text/plain', 'text/markdown', 'text/csv', 'text/html', 'application/json', 'text/xml', 'application/xml', 'text/x-rst', 'application/x-tex', 'application/x-yaml', 'text/yaml'];
   var SUPPORTED_DOCX_TYPES = ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.openxmlformats-officedocument.wordprocessingml.template'];
-  var ALL_SUPPORTED_TYPES = SUPPORTED_IMAGE_TYPES.concat(SUPPORTED_PDF_TYPES, SUPPORTED_TEXT_TYPES, SUPPORTED_DOCX_TYPES);
+  var SUPPORTED_PPTX_TYPES = ['application/vnd.openxmlformats-officedocument.presentationml.presentation'];
+  var ALL_SUPPORTED_TYPES = SUPPORTED_IMAGE_TYPES.concat(SUPPORTED_PDF_TYPES, SUPPORTED_TEXT_TYPES, SUPPORTED_DOCX_TYPES, SUPPORTED_PPTX_TYPES);
   var MAX_IMAGE_SIZE = {{ attachment_image_max_bytes }};
   var MAX_PDF_SIZE = {{ attachment_pdf_max_bytes }};
+  var MAX_PPTX_SIZE = {{ attachment_pptx_max_bytes }};
   var MAX_OTHER_SIZE = {{ attachment_other_max_bytes }};
 
   function getMaxSizeForType(contentType) {
     if (SUPPORTED_PDF_TYPES.indexOf(contentType) !== -1) return MAX_PDF_SIZE;
     if (SUPPORTED_IMAGE_TYPES.indexOf(contentType) !== -1) return MAX_IMAGE_SIZE;
+    if (SUPPORTED_PPTX_TYPES.indexOf(contentType) !== -1) return MAX_PPTX_SIZE;
     return MAX_OTHER_SIZE;
   }
 
   function getAttachmentIcon(contentType) {
     if (contentType && contentType.indexOf('image/') === 0) {
       return '<svg class="w-3.5 h-3.5 shrink-0 text-body-subtle" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>';
+    }
+    if (SUPPORTED_PPTX_TYPES.indexOf(contentType) !== -1) {
+      // Presentation: a slide on an easel.
+      return '<svg class="w-3.5 h-3.5 shrink-0 text-body-subtle" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75h16.5M4.5 3.75v10.5a1.5 1.5 0 001.5 1.5h12a1.5 1.5 0 001.5-1.5V3.75M12 15.75v4.5m0 0l-3 0m3 0l3 0M8.25 12l2.25-2.25 1.5 1.5L15 8.25"/></svg>';
     }
     return '<svg class="w-3.5 h-3.5 shrink-0 text-body-subtle" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.62a3.38 3.38 0 00-.99-2.39l-4.24-4.24a3.38 3.38 0 00-2.39-.99H6.75A2.25 2.25 0 004.5 6.34v11.41a2.25 2.25 0 002.25 2.25h10.5a2.25 2.25 0 002.25-2.25z"/></svg>';
   }
@@ -2302,10 +2309,13 @@
     var hasImages = false;
     for (var i = 0; i < files.length; i++) {
       var ft = files[i].type;
-      // Browsers sometimes report .docx/.dotx as application/octet-stream
+      // Browsers sometimes report .docx/.dotx/.pptx as application/octet-stream
       if (ALL_SUPPORTED_TYPES.indexOf(ft) === -1) {
-        if (files[i].name && (files[i].name.toLowerCase().endsWith('.docx') || files[i].name.toLowerCase().endsWith('.dotx'))) {
+        var lowerName = (files[i].name || '').toLowerCase();
+        if (lowerName.endsWith('.docx') || lowerName.endsWith('.dotx')) {
           ft = SUPPORTED_DOCX_TYPES[0];
+        } else if (lowerName.endsWith('.pptx')) {
+          ft = SUPPORTED_PPTX_TYPES[0];
         } else {
           showToast("{{ assistant_name|escapejs }} can't read that file type yet: " + files[i].name);
           return;

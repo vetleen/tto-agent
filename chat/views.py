@@ -755,6 +755,9 @@ def chat_home(request):
             # label from these so client + server agree (images downscaled → larger).
             "attachment_image_max_bytes": max_size_for_content_type("image/png"),
             "attachment_pdf_max_bytes": max_size_for_content_type("application/pdf"),
+            "attachment_pptx_max_bytes": max_size_for_content_type(
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            ),
             "attachment_other_max_bytes": MAX_ATTACHMENT_SIZE,
             "thread_loop_id": thread_loop_id,
             "threads": threads,

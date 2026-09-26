@@ -212,6 +212,13 @@ READY and never blocks searchability; state lives in `DataRoomDocumentVersion.pa
   `DOCUMENT_RENDER_MAX_SLIDES` are marked `skipped`. Stuck `pending` renders are re-dispatched by
   `requeue_stale_documents` after 30 min (max 3 attempts → `failed`). Watch
   `heroku logs -a wilfred-render` for `R14` before considering a bigger dyno.
+- **Chat / meeting attachments** use the same service through `process_chat_attachment`
+  (`chat/attachment_render.py`): uploads are named `a-<attachment uuid>-<batch>.pptx`, decks over
+  `CHAT_ATTACHMENT_RENDER_MAX_SLIDES` (50) get text only, and there is no stale sweeper — Celery's
+  3 retries bound the attempts, after which the row is `page_render_state=failed` (text still
+  works). The chat turn waits for the row (`CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS`, 180 s) and
+  then proceeds with text; a busy render service therefore shows up as "still processing" markers
+  on the upload turn, with the slides viewable via `chat_attachment_view` on the next one.
 
 ### Rollback
 
@@ -233,6 +240,7 @@ If the release included a migration, rolling back the code without reversing the
 | `transcribe_meeting_chunk_task` | meetings | default | 600s hard / 540s soft | Transcribe a live-meeting audio chunk |
 | `transcribe_uploaded_audio_task` | meetings | default | 1800s hard / 1740s soft | Transcribe an uploaded audio file (may be long) |
 | `render_document_pages` | documents | 3 | 1800s hard / 1740s soft | Render a READY data-room pptx version's slides to JPEGs via the Gotenberg render service (batches of 8, one conversion in flight per worker; retries busy/unavailable with 30 s → 600 s backoff) |
+| `process_chat_attachment` | chat | 3 | 900s hard / 840s soft | Process a pdf/docx/pptx chat or meeting attachment right after upload: text extraction (embedded pictures → attachment-owned Assets), page/slide count, and for decks the slide renders via the render service. The chat turn waits on `ChatAttachment.processing_state` (≤ `CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS`); retries busy/unavailable with 30 s → 300 s backoff |
 
 Tasks use exponential backoff on retry, except `run_subagent_task`, which retries after a fixed 30 s: a retrying run keeps holding its sub-agent execution slot, so it must not sit idle for long.
 
@@ -484,6 +492,10 @@ See `.env.example` for the full list with comments. Key production variables:
 | `SKILL_RESOURCE_PDF_MAX_SIZE_BYTES` | No | Max skill-resource PDF upload (default: 15 MB) |
 | `CHAT_ATTACHMENT_IMAGE_MAX_SIZE_BYTES` | No | Max chat-attachment image upload (default: 25 MB; downscaled at ingest) |
 | `CHAT_ATTACHMENT_PDF_MAX_SIZE_BYTES` | No | Max chat-attachment PDF upload (default: 30 MB) |
+| `CHAT_ATTACHMENT_PPTX_MAX_SIZE_BYTES` | No | Max chat/meeting-attachment `.pptx` upload (default: 30 MB; rendered slide-by-slide on the worker, never sent as-is) |
+| `CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS` | No | Max time a chat turn is held for its attachments' worker-side processing (default: 180; `0` = no hold → turn runs with in-turn extraction / text only) |
+| `CHAT_ATTACHMENT_RENDER_MAX_SLIDES` | No | Attached decks above this many slides get text only, no slide renders (default: 50) |
+| `CHAT_ATTACHMENT_INITIAL_SLIDES` | No | Slides of attached decks shown natively on the upload turn, per message (default: 20); the rest via `chat_attachment_view(pages=…)` |
 | `VISION_IMAGE_MAX_EDGE` | No | Ingest image downscale: max long edge in px (default: 1568) |
 | `VISION_IMAGE_MAX_PIXELS` | No | Ingest image downscale: max pixel area (default: 1_150_000) |
 | `VISION_IMAGE_JPEG_QUALITY` | No | Ingest image re-encode JPEG quality (default: 82) |
