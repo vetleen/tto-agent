@@ -176,7 +176,7 @@ def file_token_for_document(document) -> str | None:
 
 def user_can_access_asset(user, asset) -> bool:
     """Re-derive access from the asset's owner (version / canvas / message /
-    thread / slide set).
+    thread / slide set / attachment).
 
     Returns False for orphans. This is the single gate on serving or reusing an
     asset's bytes (images and file downloads alike) — never a presigned S3 URL.
@@ -192,6 +192,8 @@ def user_can_access_asset(user, asset) -> bool:
         return asset.thread.created_by_id == user.id
     if asset.slide_set_id:
         return asset.slide_set.thread.created_by_id == user.id
+    if asset.attachment_id:
+        return asset.attachment.thread.created_by_id == user.id
     if asset.version_id:
         from documents.views import _user_can_access_data_room
 

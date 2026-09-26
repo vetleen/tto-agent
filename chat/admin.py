@@ -235,6 +235,8 @@ class AssetAdmin(admin.ModelAdmin):
             return f"thread {str(obj.thread_id)[:8]}"
         if obj.slide_set_id:
             return f"slide set {str(obj.slide_set_id)[:8]}"
+        if obj.attachment_id:
+            return f"attachment {str(obj.attachment_id)[:8]}"
         return "—"
 
     @admin.display(description="Size")

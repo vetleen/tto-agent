@@ -313,6 +313,30 @@ class ChatMessage(models.Model):
 
 
 class ChatAttachment(models.Model):
+    class ProcessingState(models.TextChoices):
+        """Worker-side processing (text extraction, page count, slide renders).
+
+        A turn is held until every attachment on its message leaves PENDING
+        (chat/consumers.py ``_wait_for_attachments``). READY is the model default
+        so legacy rows and ORM-created rows never hold a turn; only the upload
+        view and the meetings copy set PENDING and dispatch the task.
+        """
+
+        PENDING = "pending", "Processing"
+        READY = "ready", "Ready"
+        FAILED = "failed", "Failed"
+
+    class PageRenderState(models.TextChoices):
+        """Per-slide image renders for pptx attachments (mirrors
+        documents.DataRoomDocumentVersion.PageRenderState)."""
+
+        NONE = "none", "Not rendered"
+        PENDING = "pending", "Rendering"
+        PARTIAL = "partial", "Partially rendered"
+        READY = "ready", "Rendered"
+        SKIPPED = "skipped", "Skipped"
+        FAILED = "failed", "Failed"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     message = models.ForeignKey(
         ChatMessage,
@@ -334,15 +358,29 @@ class ChatAttachment(models.Model):
     original_filename = models.CharField(max_length=255)
     content_type = models.CharField(max_length=100)
     size_bytes = models.PositiveIntegerField()
-    # Cached text extracted from a docx/pdf attachment (with inline
+    # Cached text extracted from a docx/pdf/pptx attachment (with inline
     # [[image:uuid|...]] tokens for any embedded images persisted as
-    # message-scoped Assets). Populated once, lazily, the first time the
-    # attachment is enriched into an LLM request — so per-turn replay reuses it
-    # instead of re-extracting and recreating assets. Empty for images/text.
+    # attachment-owned Assets). Populated by the processing task
+    # (chat/attachment_processing.py) right after upload; the turn-time path
+    # extracts lazily only as a fallback. Empty for images/text.
     extracted_content = models.TextField(blank=True, default="")
-    # PDF page count, filled lazily wherever the bytes are already read (turn
-    # enrichment, chat_attachment_view). Null = unknown / not a PDF.
+    # PDF page count / pptx slide count. Null = unknown / not applicable.
     page_count = models.PositiveIntegerField(null=True, blank=True)
+    processing_state = models.CharField(
+        max_length=10,
+        choices=ProcessingState.choices,
+        default=ProcessingState.READY,
+        db_index=True,
+    )
+    processing_error = models.TextField(blank=True, default="")
+    # Slide renders (pptx only): Asset rows with role=page_render owned by this
+    # attachment. ``ready`` is only set by the task after the render finishes,
+    # is skipped (over CHAT_ATTACHMENT_RENDER_MAX_SLIDES) or fails.
+    page_render_state = models.CharField(
+        max_length=10,
+        choices=PageRenderState.choices,
+        default=PageRenderState.NONE,
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -759,11 +797,13 @@ class Asset(models.Model):
     distinguishes the two reference flavours so they never share a row.
 
     Scoped to exactly one owner — a data-room document version, a canvas, a
-    chat message, or a chat thread — via the nullable FKs below (enforced by a
-    CheckConstraint). Thread ownership exists for tool-generated images: the
-    assistant message isn't persisted until after the turn streams, but a tool
-    must mint a stable asset id mid-run (so the model can embed its token), and
-    the thread always exists at that point.
+    chat message, a chat thread, a slide set, or a chat attachment — via the
+    nullable FKs below (enforced by a CheckConstraint). Thread ownership exists
+    for tool-generated images: the assistant message isn't persisted until after
+    the turn streams, but a tool must mint a stable asset id mid-run (so the
+    model can embed its token), and the thread always exists at that point.
+    Attachment ownership covers pictures extracted from an uploaded file and
+    its rendered slides; both are deleted with the attachment.
     Lives in the chat app (not documents) so every FK points chat -> documents
     or within chat, avoiding a migration cycle (documents must not depend on chat).
     """
@@ -816,6 +856,13 @@ class Asset(models.Model):
         blank=True,
         related_name="assets",
     )
+    attachment = models.ForeignKey(
+        "ChatAttachment",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="assets",
+    )
 
     # Empty for a *reference* asset (version-owned, ``role=embedded`` with no
     # bytes of its own): the bytes live on the data-room version's native file
@@ -842,8 +889,8 @@ class Asset(models.Model):
         db_index=True,
     )
     # 1-based page/slide number; set only for ``role=page_render`` (unique per
-    # version, see Meta.constraints — the render task relies on that for
-    # idempotent resumes).
+    # version and per attachment, see Meta.constraints — the render task relies
+    # on that for idempotent resumes).
     page_number = models.PositiveIntegerField(null=True, blank=True)
     size_bytes = models.PositiveIntegerField(default=0)
     width = models.PositiveIntegerField(null=True, blank=True)
@@ -874,22 +921,29 @@ class Asset(models.Model):
             models.Index(fields=["canvas"]),
             models.Index(fields=["thread"]),
             models.Index(fields=["slide_set"]),
+            models.Index(fields=["attachment"]),
         ]
         constraints = [
             models.CheckConstraint(
                 name="imageasset_exactly_one_owner",
                 condition=(
-                    models.Q(version__isnull=False, canvas__isnull=True, message__isnull=True, thread__isnull=True, slide_set__isnull=True)
-                    | models.Q(version__isnull=True, canvas__isnull=False, message__isnull=True, thread__isnull=True, slide_set__isnull=True)
-                    | models.Q(version__isnull=True, canvas__isnull=True, message__isnull=False, thread__isnull=True, slide_set__isnull=True)
-                    | models.Q(version__isnull=True, canvas__isnull=True, message__isnull=True, thread__isnull=False, slide_set__isnull=True)
-                    | models.Q(version__isnull=True, canvas__isnull=True, message__isnull=True, thread__isnull=True, slide_set__isnull=False)
+                    models.Q(version__isnull=False, canvas__isnull=True, message__isnull=True, thread__isnull=True, slide_set__isnull=True, attachment__isnull=True)
+                    | models.Q(version__isnull=True, canvas__isnull=False, message__isnull=True, thread__isnull=True, slide_set__isnull=True, attachment__isnull=True)
+                    | models.Q(version__isnull=True, canvas__isnull=True, message__isnull=False, thread__isnull=True, slide_set__isnull=True, attachment__isnull=True)
+                    | models.Q(version__isnull=True, canvas__isnull=True, message__isnull=True, thread__isnull=False, slide_set__isnull=True, attachment__isnull=True)
+                    | models.Q(version__isnull=True, canvas__isnull=True, message__isnull=True, thread__isnull=True, slide_set__isnull=False, attachment__isnull=True)
+                    | models.Q(version__isnull=True, canvas__isnull=True, message__isnull=True, thread__isnull=True, slide_set__isnull=True, attachment__isnull=False)
                 ),
             ),
             models.UniqueConstraint(
                 fields=["version", "page_number"],
                 condition=models.Q(role="page_render"),
                 name="asset_unique_page_render_per_version",
+            ),
+            models.UniqueConstraint(
+                fields=["attachment", "page_number"],
+                condition=models.Q(role="page_render"),
+                name="asset_unique_page_render_per_attachment",
             ),
         ]
 
