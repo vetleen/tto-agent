@@ -638,6 +638,12 @@ CHAT_ATTACHMENT_RENDER_MAX_SLIDES = _env_int("CHAT_ATTACHMENT_RENDER_MAX_SLIDES"
 # Slides shown natively on the upload turn (per user message, across its decks);
 # the rest are viewed on demand via chat_attachment_view(pages=…).
 CHAT_ATTACHMENT_INITIAL_SLIDES = _env_int("CHAT_ATTACHMENT_INITIAL_SLIDES", "20")
+# Embedded pictures vision-described per pdf/docx/pptx chat/meeting attachment,
+# counted after content-hash dedupe (a repeated logo is one picture); the rest are
+# stored with a format-only label. Below the data-room cap (50) because the chat
+# turn is held while this runs. Concurrency and the org-wide description cache
+# are shared with data rooms (DOCUMENT_IMAGE_DESCRIBE_CONCURRENCY, IMGDESC_CACHE_TTL).
+CHAT_ATTACHMENT_MAX_DESCRIBED_IMAGES = _env_int("CHAT_ATTACHMENT_MAX_DESCRIBED_IMAGES", "30")
 
 # Native-asset (PDF/image) context budget, measured on base64 length — the shared
 # ceiling on how much file data any one LLM request carries across all three

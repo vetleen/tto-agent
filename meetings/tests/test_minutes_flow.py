@@ -466,7 +466,8 @@ class CreateMinutesThreadAttachmentTests(TestCase):
             data = att.file.read()
         finally:
             att.file.close()
-        with patch("chat.services.describe_image", return_value="A blue rectangle"):
+        with patch("chat.services.describe_image", return_value="A blue rectangle"), \
+             patch("chat.services.resolve_vision_model", return_value="anthropic/claude-opus-4-8"):
             text = get_or_extract_attachment_text(att, data, user=self.user)
 
         assets = list(Asset.objects.filter(attachment=att))

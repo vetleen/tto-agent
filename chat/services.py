@@ -723,10 +723,11 @@ def build_text_content_block(text: str, filename: str) -> dict:
     }
 
 
-# Cap on embedded images vision-described per chat/meeting attachment (docx or
-# pdf). Lower than the data-room cap (20) — chat is interactive and per-turn.
-CHAT_MAX_DESCRIBED_IMAGES = 10
-DOCX_MAX_DESCRIBED_IMAGES = CHAT_MAX_DESCRIBED_IMAGES  # back-compat alias
+# Cap on embedded images described by the legacy describe-only docx path
+# (extract_docx_text / describe_image_sink). Chat/meeting attachments go through
+# chat.assets.AttachmentImageDescriber, capped by
+# settings.CHAT_ATTACHMENT_MAX_DESCRIBED_IMAGES (unique pictures).
+DOCX_MAX_DESCRIBED_IMAGES = 10
 
 
 def extract_docx_text(file_bytes: bytes, *, user=None) -> str:
@@ -770,42 +771,70 @@ def pptx_to_markdown(file_bytes: bytes, *, image_sink=None) -> str:
     return _pptx_to_markdown(io.BytesIO(file_bytes), image_sink=image_sink)
 
 
-def extract_attachment_text(att, file_bytes: bytes, *, user) -> str:
-    """Extract a docx/pdf/pptx chat attachment to text with inline
-    ``[[image:uuid|...]]`` tokens, persisting embedded images as
-    attachment-owned Assets.
+def _report_progress(progress, stage: str, current: int = 0, total: int = 0) -> None:
+    """Call the optional ``(stage, current, total)`` progress hook. Best effort:
+    progress is feedback, never a reason for an extraction to fail."""
+    if progress is None:
+        return
+    try:
+        progress(stage, current, total)
+    except Exception:
+        logger.debug("attachment progress hook failed (stage=%s)", stage, exc_info=True)
 
-    The chat/meeting counterpart of the data-room image_asset_sink path. The
-    attachment owns its embedded pictures (not the message): processing runs on
-    the worker right after upload, before the file is linked to any message, and
-    the same owner later holds the pptx slide renders. Caller is responsible for
-    caching the result on ``att.extracted_content``.
+
+def extract_attachment_text(att, file_bytes: bytes, *, user, progress=None) -> str:
+    """Extract a docx/pdf/pptx chat attachment to text with inline
+    ``[[image:uuid|Image N: description]]`` tokens, persisting embedded pictures
+    as attachment-owned Assets.
+
+    Uses the same two-phase describer as the data-room pipeline
+    (``chat.assets.AttachmentImageDescriber``): the extractor walk stores each
+    unique picture with a fallback label, then the vision calls run concurrently
+    and the real descriptions are substituted into the text — so the returned
+    text (which the caller caches on ``att.extracted_content``) already carries
+    the final labels. The attachment owns its pictures (not the message):
+    processing runs on the worker right after upload, before the file is linked
+    to any message, and the same owner later holds the pptx slide renders.
+
+    ``progress`` is an optional ``(stage, current, total)`` callable — stages
+    ``extracting`` and ``describing_images`` — used by the worker task to feed
+    the composer pill / held-turn bubble.
     """
-    from chat.assets import attachment_image_asset_sink
+    from chat.assets import AttachmentImageDescriber
     from core.file_types import KIND_PDF, kind_for_mime
 
-    sink = attachment_image_asset_sink(att, user, max_described=CHAT_MAX_DESCRIBED_IMAGES)
+    describer = AttachmentImageDescriber(att, user)
+    _report_progress(progress, "extracting")
 
     kind = kind_for_mime(att.content_type)
     if kind == KIND_PDF:
         from core.pdf import pdf_to_text
 
-        return pdf_to_text(file_bytes, image_sink=sink)
-    if kind == KIND_PPTX:
-        return pptx_to_markdown(file_bytes, image_sink=sink)
-    from core.docx import docx_to_markdown
+        text = pdf_to_text(file_bytes, image_sink=describer.sink)
+    elif kind == KIND_PPTX:
+        text = pptx_to_markdown(file_bytes, image_sink=describer.sink)
+    else:
+        from core.docx import docx_to_markdown
 
-    return docx_to_markdown(file_bytes, image_sink=sink)
+        text = docx_to_markdown(file_bytes, image_sink=describer.sink)
+
+    if describer.total:
+        _report_progress(progress, "describing_images", 0, describer.total)
+        described = describer.run_descriptions(
+            progress_cb=lambda c, t: _report_progress(progress, "describing_images", c, t),
+        )
+        text = describer.substitute(text, described)
+    return text
 
 
-def get_or_extract_attachment_text(att, file_bytes, *, user) -> str:
+def get_or_extract_attachment_text(att, file_bytes, *, user, progress=None) -> str:
     """Cached :func:`extract_attachment_text`: extract (and persist embedded
     images) exactly once, storing the result on ``att.extracted_content`` so
     per-turn enrichment replay reuses it instead of re-extracting and recreating
-    assets."""
+    assets. ``progress`` is passed through to the extraction."""
     if att.extracted_content:
         return att.extracted_content
-    text = extract_attachment_text(att, file_bytes, user=user)
+    text = extract_attachment_text(att, file_bytes, user=user, progress=progress)
     att.extracted_content = text
     att.save(update_fields=["extracted_content"])
     return text
@@ -914,6 +943,23 @@ IMAGE_DESCRIPTION_PROMPT = (
 )
 
 
+def resolve_vision_model(user) -> str | None:
+    """The model image descriptions run on for *user* when the caller has no
+    explicit choice: the ``image_description`` feature model (cheap tier by
+    default), then the cheap → mid → primary tiers, first one that takes images.
+    ``None`` when nothing the user may use has vision. Resolved once per
+    attachment by ``chat.assets.AttachmentImageDescriber``."""
+    from core.preferences import get_preferences
+    from llm.display import supports_vision
+
+    prefs = get_preferences(user)
+    preferred = prefs.feature_models.get("image_description", prefs.cheap_model)
+    for candidate in (preferred, prefs.cheap_model, prefs.mid_model, prefs.top_model):
+        if candidate and supports_vision(candidate):
+            return candidate
+    return None
+
+
 def describe_image(
     image_bytes: bytes,
     content_type: str,
@@ -925,11 +971,10 @@ def describe_image(
 
     When *model* is given it is used directly (the caller must have picked a
     vision-capable model, e.g. via ``resolve_org_feature_model`` for data-room
-    ingestion). Otherwise this cascades through the user's cheap → mid → primary
-    models, picking the first that supports vision. Returns the description text,
-    or None on failure / when no vision model is available.
+    ingestion). Otherwise :func:`resolve_vision_model` picks the user's first
+    vision-capable model. Returns the description text, or None on failure /
+    when no vision model is available.
     """
-    from core.preferences import get_preferences
     from llm import get_llm_service
     from llm.display import get_minimal_thinking_level, supports_vision
     from llm.types import ChatRequest, Message, RunContext
@@ -938,12 +983,7 @@ def describe_image(
         if not supports_vision(model):
             return None
     else:
-        prefs = get_preferences(user)
-        preferred = prefs.feature_models.get("image_description", prefs.cheap_model)
-        for candidate in [preferred, prefs.cheap_model, prefs.mid_model, prefs.top_model]:
-            if supports_vision(candidate):
-                model = candidate
-                break
+        model = resolve_vision_model(user)
 
     if model is None:
         return None

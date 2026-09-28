@@ -1,9 +1,11 @@
 """Persist chat-embedded images as Assets (canvas docx import, and
-docx/pdf chat attachments).
+docx/pdf/pptx chat and meeting attachments).
 
-Mirrors documents.services.image_assets.image_asset_sink, but scopes assets to a
-ChatCanvas or ChatMessage and uses the user-scoped image describer (these are
-interactive, user-initiated actions).
+Attachments use ``AttachmentImageDescriber``, the chat arm of the shared
+two-phase describer in ``documents.services.image_assets`` (concurrent vision
+calls, in-document dedupe, org-wide description cache), owning the pictures on
+the ``ChatAttachment``. The canvas import keeps a simple inline sink scoped to
+the ``ChatCanvas`` (interactive, one document at a time).
 """
 
 from __future__ import annotations
@@ -11,6 +13,8 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+
+from documents.services.image_assets import EmbeddedImageDescriberBase
 
 logger = logging.getLogger(__name__)
 
@@ -401,31 +405,61 @@ def store_attachment_image(
     return asset
 
 
-def attachment_image_asset_sink(attachment, user, *, max_described: int = 10, model=None):
-    """Return a docx/pdf/pptx image_sink that stores each embedded image as an
-    Asset owned by *attachment* and emits a ``[[image:uuid|Image N: desc]]``
-    token. Descriptions are capped at *max_described*."""
+class AttachmentImageDescriber(EmbeddedImageDescriberBase):
+    """Chat/meeting-attachment arm of the shared two-phase image describer
+    (``documents.services.image_assets``): pictures extracted from an uploaded
+    docx/pdf/pptx become ``role=embedded`` Assets owned by the attachment and are
+    described concurrently after the extraction walk.
 
-    def store(img_bytes, ct, description, alt_text):
+    Model: the user's preference cascade (``chat.services.resolve_vision_model``)
+    resolved once per attachment, ``""`` when the user has no vision model
+    (pictures are still stored, with format-only labels). Org cache: keyed by
+    the uploader's org, shared with data rooms, so a picture already described
+    anywhere in the org costs no call. Cap: ``CHAT_ATTACHMENT_MAX_DESCRIBED_IMAGES``
+    unique pictures (data rooms: ``MAX_DESCRIBED_EMBEDDED_IMAGES``). A re-processed
+    attachment reuses its existing rows (``store_attachment_image(dedupe=True)``)
+    and never re-describes one that already has a real description.
+    """
+
+    def __init__(self, attachment, user, *, model=None, max_described=None):
+        from django.conf import settings
+
+        from accounts.models import get_user_org
+        from chat.services import resolve_vision_model  # call-time: tests patch it
+
+        org = get_user_org(user) if user is not None else None
+        if model is None:
+            model = (resolve_vision_model(user) if user is not None else None) or ""
+        if max_described is None:
+            max_described = getattr(settings, "CHAT_ATTACHMENT_MAX_DESCRIBED_IMAGES", 30)
+        super().__init__(
+            user=user,
+            org_id=org.id if org is not None else None,
+            model=model,
+            max_described=max_described,
+            label=f"attachment_id={attachment.id}",
+        )
+        self.attachment = attachment
+
+    def _store_asset(self, *, img_bytes, content_type, sha, description, alt_text):
         return store_attachment_image(
-            attachment,
+            self.attachment,
             img_bytes=img_bytes,
-            content_type=ct,
+            content_type=content_type,
             description=description,
             alt_text=alt_text,
-            created_by=user,
-            # core.pdf/core.docx/pptx already dedupe within a document; keep this
-            # on so a re-processed attachment can't double-store.
+            created_by=self.uploaded_by,
+            # A re-processed attachment reuses its rows instead of double-storing.
             dedupe=True,
         )
 
-    return _describe_and_store_sink(store, user, max_described=max_described, model=model)
-
 
 def _describe_and_store_sink(store, user, *, max_described, model=None):
-    """Shared body for the canvas/message asset sinks: describe (capped) then
-    persist via *store*, a ``(img_bytes, content_type, description, alt_text)``
-    -> asset callable. Emits a ``[[image:uuid|Image N: desc]]`` token."""
+    """Body of the canvas import sink (``canvas_asset_sink``): describe each
+    picture inline (capped, one blocking vision call per occurrence) then persist
+    via *store*, a ``(img_bytes, content_type, description, alt_text)`` -> asset
+    callable. Emits a ``[[image:uuid|Image N: desc]]`` token. Attachments use
+    the concurrent ``AttachmentImageDescriber`` instead."""
     from chat.services import describe_image
 
     def sink(image, idx: int) -> str:
@@ -471,26 +505,3 @@ def canvas_asset_sink(canvas, user, *, max_described: int = 25):
         )
 
     return _describe_and_store_sink(store, user, max_described=max_described)
-
-
-def message_image_asset_sink(message, user, *, max_described: int = 10, model=None):
-    """Return a docx/pdf image_sink that stores each embedded image as an
-    Asset scoped to *message* and emits a ``[[image:uuid|Image N: desc]]``
-    token — the chat/meeting attachment counterpart of the data-room
-    image_asset_sink. Descriptions are capped at *max_described*.
-    """
-
-    def store(img_bytes, ct, description, alt_text):
-        return store_message_image(
-            message,
-            img_bytes=img_bytes,
-            content_type=ct,
-            description=description,
-            alt_text=alt_text,
-            created_by=user,
-            # core.pdf/core.docx already dedupe within a document; keep this on so
-            # a re-enriched attachment can't double-store.
-            dedupe=True,
-        )
-
-    return _describe_and_store_sink(store, user, max_described=max_described, model=model)

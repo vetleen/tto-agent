@@ -600,6 +600,13 @@ class PersistentAttachmentExtractionTests(TestCase):
         self._media = self.settings(MEDIA_ROOT=self._tmp.name)
         self._media.enable()
         self.addCleanup(self._media.disable)
+        # The test environment configures no vision model; the describer resolves
+        # one per attachment before queueing any (patched) describe_image call.
+        from unittest.mock import patch
+
+        resolver = patch("chat.services.resolve_vision_model", return_value="anthropic/claude-opus-4-8")
+        resolver.start()
+        self.addCleanup(resolver.stop)
 
     def _attachment(self, data, content_type, *, linked=True):
         from django.core.files.base import ContentFile

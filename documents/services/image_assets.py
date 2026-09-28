@@ -1,11 +1,14 @@
-"""Persist embedded document images as Assets during data-room ingestion.
+"""Persist embedded document images as Assets and describe them concurrently.
 
-Provides an ``EmbeddedImageDescriber`` whose ``.sink`` (see
-core.docx.docx_to_markdown and core.pdf.pdf_to_text) stores each embedded image's
-bytes on an Asset scoped to the document version and leaves an inline
-``[[image:<uuid>|Image N: <description>]]`` token in the extracted markdown — so
-the image is never lost and its description stays searchable. Shared by the docx,
-pdf, pptx and email extraction paths.
+Provides the two-phase image describer whose ``.sink`` (see
+core.docx.docx_to_markdown, core.pdf.pdf_to_text and
+documents.services.chunking.pptx_to_markdown) stores each embedded image's bytes
+on an Asset and leaves an inline ``[[image:<uuid>|Image N: <description>]]``
+token in the extracted markdown — so the image is never lost and its description
+stays searchable. The core is owner-agnostic: ``EmbeddedImageDescriber`` is the
+data-room arm (Assets owned by a document version) and
+``chat.assets.AttachmentImageDescriber`` the chat/meeting-attachment arm (Assets
+owned by a ``ChatAttachment``). Shared by the docx, pdf, pptx and email paths.
 
 Description is **two-phase** so the vision calls run concurrently instead of one
 blocking round-trip per image inside the extraction walk:
@@ -18,7 +21,7 @@ blocking round-trip per image inside the extraction walk:
   images on a small thread pool (the calls are I/O-bound), updating each Asset's
   ``description`` and reporting progress.
 * **Phase 3 (``substitute``)** — swaps each described image's fallback label for
-  the real description in the combined text, before it is chunked.
+  the real description in the combined text, before it is chunked / cached.
 
 Only the description (text) is guardrail/PII-scanned; the bytes are not
 independently scanned (description-only for v1, same gap as standalone image
@@ -39,15 +42,17 @@ logger = logging.getLogger(__name__)
 # Collapses runs of whitespace (incl. newlines) in a token label.
 _TOKEN_WS_RE = re.compile(r"\s+")
 
-# Cap how many embedded images get a vision description per document (or, for an
-# email attachment tree, across the whole tree); beyond this they're still stored
-# (bytes preserved) but labelled by format only, so a 200-image deck can't fan out
-# into 200 vision calls.
+# Cap how many embedded images get a vision description per data-room document
+# (or, for an email attachment tree, across the whole tree); beyond this they're
+# still stored (bytes preserved) but labelled by format only, so a 200-image deck
+# can't fan out into 200 vision calls. Chat attachments use
+# settings.CHAT_ATTACHMENT_MAX_DESCRIBED_IMAGES instead.
 MAX_DESCRIBED_EMBEDDED_IMAGES = 50
 
-# Bump this when the vision prompt (chat.services.describe_image) changes, so
-# stale-prompt cached descriptions age out instead of being reused.
-_CACHE_KEY = "imgdesc:v1:{org_id}:{sha}"
+# Bump this when the vision prompt (chat.services.IMAGE_DESCRIPTION_PROMPT)
+# changes, so stale-prompt cached descriptions age out instead of being reused.
+# v2: transcription-first prompt (2026-09-28).
+_CACHE_KEY = "imgdesc:v2:{org_id}:{sha}"
 
 
 def _ext_for(content_type: str) -> str:
@@ -72,37 +77,45 @@ def _fallback_label(content_type: str) -> str:
     return f"{fmt} image" if fmt else "image"
 
 
-class EmbeddedImageDescriber:
-    """Two-phase describer for embedded document images (see module docstring).
+class EmbeddedImageDescriberBase:
+    """Owner-agnostic two-phase describer (see module docstring).
 
     One instance is threaded through a whole document (or email attachment tree)
     so ``Image N`` numbering, the description budget, and content-hash dedup all
-    span the whole thing. Construct it, pass ``.sink`` to
-    ``documents.services.chunking.load_documents``, then call
+    span the whole thing. Construct it, pass ``.sink`` to the extractor, then call
     ``run_descriptions()`` and ``substitute()`` on the returned text.
 
     Identical images are de-duplicated by content hash across the whole run: a
     logo repeated on every slide (or shared by two attachments of one email) is
     stored and described exactly once, and every occurrence re-emits the same
-    token. The org-scoped cache extends that dedup across documents in the org.
+    token (the extractor's own ``idx`` is ignored; numbering is per unique image).
+    The org-scoped cache extends that dedup across documents and chats in the org.
+
+    Subclasses supply the owner: ``_store_asset`` persists the bytes as an Asset
+    row (and may hand back a pre-existing row for the same bytes — its stored
+    description is then authoritative and it is not re-described).
     """
 
-    def __init__(self, version, doc):
-        from core.preferences import resolve_org_feature_model
-        from documents.services.pii_scan import org_id_for_document
-
-        self.version = version
-        self.doc = doc
-        self.uploaded_by = doc.uploaded_by
-        self.org_id = org_id_for_document(doc)
-        # "" when the org has no vision-capable model — assets are still stored.
-        self.model = resolve_org_feature_model(self.org_id, "document_image_description")
+    def __init__(self, *, user, org_id, model, max_described=MAX_DESCRIBED_EMBEDDED_IMAGES, label=""):
+        self.uploaded_by = user
+        # None → org cache off.
+        self.org_id = org_id
+        # "" when there is no vision-capable model — assets are still stored.
+        self.model = model or ""
+        self.max_described = int(max_described)
+        # Log-line identity only ("version_id=12" / "attachment_id=<uuid>").
+        self.label = label
 
         # sha256 -> the token already emitted for that image.
         self.seen: dict[str, str] = {}
         self.count = 0
         # Distinct images awaiting a vision call: one record per pending image.
         self.pending: list[dict] = []
+
+    def _store_asset(self, *, img_bytes: bytes, content_type: str, sha: str, description: str, alt_text: str):
+        """Persist *img_bytes* as an Asset owned by this describer's owner and
+        return it (blob written). Owner-specific; see the subclasses."""
+        raise NotImplementedError
 
     @property
     def total(self) -> int:
@@ -111,10 +124,6 @@ class EmbeddedImageDescriber:
 
     # ── Phase 1: inline sink ──────────────────────────────────────────────
     def sink(self, image, idx: int) -> str:
-        from django.core.files.base import ContentFile
-
-        from chat.models import Asset
-
         content_type = image.content_type or "application/octet-stream"
         with image.open() as f:
             raw = f.read()
@@ -143,26 +152,28 @@ class EmbeddedImageDescriber:
 
         # Org-scoped cache: reuse a real description for this image if the org has
         # one from an earlier document. Never reuse a format-only fallback.
+        fallback = _fallback_label(content_type)
         cached_desc = self._cache_get(sha)
-        description = cached_desc or _fallback_label(content_type)
+        description = cached_desc or fallback
 
-        asset = Asset(
-            version=self.version,
+        asset = self._store_asset(
+            img_bytes=img_bytes,
             content_type=content_type,
-            size_bytes=len(img_bytes),
-            sha256=sha,
+            sha=sha,
             description=description,
             alt_text=(image.alt_text or "")[:1024],
-            created_by=self.uploaded_by,
         )
-        asset.blob.save(f"{asset.id}.{_ext_for(content_type)}", ContentFile(img_bytes), save=True)
-        token = f"[[image:{asset.id}|Image {n}: {_sanitize_for_token(description)}]]"
+        # A reused pre-existing row (re-processed attachment) may already carry a
+        # real description: it wins, and the image is not described again.
+        label = (asset.description or "").strip() or description
+        token = f"[[image:{asset.id}|Image {n}: {_sanitize_for_token(label)}]]"
         self.seen[sha] = token
 
-        # Queue a vision call only when there's no cached description, a model is
+        # Queue a vision call only when there's no description yet, a model is
         # configured, and we're within the per-run description budget. Over-cap /
         # no-model images keep their fallback label.
-        if not cached_desc and self.model and n <= MAX_DESCRIBED_EMBEDDED_IMAGES:
+        already_described = bool(cached_desc) or label != fallback
+        if not already_described and self.model and n <= self.max_described:
             self.pending.append({
                 "asset": asset, "sha": sha, "bytes": img_bytes,
                 "content_type": content_type, "alt_text": image.alt_text, "n": n,
@@ -182,30 +193,42 @@ class EmbeddedImageDescriber:
 
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
+        from django.db import close_old_connections
+
         from chat.services import describe_image
 
         total = len(self.pending)
         max_workers = max(1, min(getattr(settings, "DOCUMENT_IMAGE_DESCRIBE_CONCURRENCY", 5), total))
         current = 0
-        # Workers do ONLY the pure vision call (network I/O, no DB); all shared
-        # state (results, cache, progress) is mutated on this main thread as
-        # futures complete, so no locking is needed.
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {
-                pool.submit(
-                    describe_image, rec["bytes"], rec["content_type"],
-                    self.uploaded_by, alt_text=rec["alt_text"], model=self.model,
-                ): rec
-                for rec in self.pending
-            }
+
+        def _job(rec):
+            # The vision call logs an LLMCallLog row on this thread; release the
+            # thread-local DB connection afterwards (conn_max_age=0) so a pool
+            # never leaves idle connections behind.
+            try:
+                return describe_image(
+                    rec["bytes"], rec["content_type"], self.uploaded_by,
+                    alt_text=rec["alt_text"], model=self.model,
+                )
+            finally:
+                close_old_connections()
+
+        # Workers do ONLY the vision call; all shared state (results, cache,
+        # progress) is mutated on this main thread as futures complete, so no
+        # locking is needed. An exception on the main thread (e.g. Celery's soft
+        # time limit) cancels what hasn't started instead of waiting it out.
+        pool = ThreadPoolExecutor(max_workers=max_workers)
+        try:
+            futures = {pool.submit(_job, rec): rec for rec in self.pending}
             for fut in as_completed(futures):
                 rec = futures[fut]
                 current += 1
                 try:
                     desc = (fut.result() or "").strip()
                 except Exception:
-                    logger.exception("Failed to describe embedded image for version %s", self.version.id)
+                    logger.exception("Failed to describe embedded image for %s", self.label)
                     desc = ""
+                rec["bytes"] = None  # working set shrinks as descriptions land
                 if desc:
                     results[rec["asset"].id] = desc
                     rec["asset"].description = desc
@@ -214,7 +237,11 @@ class EmbeddedImageDescriber:
                     try:
                         progress_cb(current, total)
                     except Exception:  # progress is best-effort; never fail ingest
-                        logger.debug("progress_cb failed for version %s", self.version.id, exc_info=True)
+                        logger.debug("progress_cb failed for %s", self.label, exc_info=True)
+        except BaseException:
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
+        pool.shutdown(wait=True)
 
         described = [rec["asset"] for rec in self.pending if rec["asset"].id in results]
         if described:
@@ -260,3 +287,44 @@ class EmbeddedImageDescriber:
             )
         except Exception:  # pragma: no cover - cache is already fail-open
             pass
+
+
+class EmbeddedImageDescriber(EmbeddedImageDescriberBase):
+    """Data-room arm: Assets owned by a ``DataRoomDocumentVersion``.
+
+    Model = the org's ``document_image_description`` feature model; cache keyed by
+    the document's org; cap ``MAX_DESCRIBED_EMBEDDED_IMAGES``.
+    """
+
+    def __init__(self, version, doc):
+        from core.preferences import resolve_org_feature_model
+        from documents.services.pii_scan import org_id_for_document
+
+        org_id = org_id_for_document(doc)
+        super().__init__(
+            user=doc.uploaded_by,
+            org_id=org_id,
+            # "" when the org has no vision-capable model — assets are still stored.
+            model=resolve_org_feature_model(org_id, "document_image_description"),
+            max_described=MAX_DESCRIBED_EMBEDDED_IMAGES,
+            label=f"version_id={version.id}",
+        )
+        self.version = version
+        self.doc = doc
+
+    def _store_asset(self, *, img_bytes, content_type, sha, description, alt_text):
+        from django.core.files.base import ContentFile
+
+        from chat.models import Asset
+
+        asset = Asset(
+            version=self.version,
+            content_type=content_type,
+            size_bytes=len(img_bytes),
+            sha256=sha,
+            description=description,
+            alt_text=alt_text,
+            created_by=self.uploaded_by,
+        )
+        asset.blob.save(f"{asset.id}.{_ext_for(content_type)}", ContentFile(img_bytes), save=True)
+        return asset

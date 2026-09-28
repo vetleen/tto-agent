@@ -217,6 +217,47 @@ class ImageDescribeConcurrencyTests(TestCase):
         self.assertEqual(progress_calls[-1], (n, n))  # counter reached N/N
 
 
+@override_settings(CACHES=LOCMEM)
+class AttachmentProgressStoreTests(TestCase):
+    """The attachment flavour of the store (UUID owner ids, its own namespace)."""
+
+    def setUp(self):
+        cache.clear()
+
+    def test_round_trip_read_many_and_clear(self):
+        from documents.services import progress
+
+        att_id = "5d2f7e5a-9c1e-4d6c-9c0a-1c8b7c2d3e4f"
+        progress.attachments.set_stage(att_id, "describing_images", current=6, total=30)
+        self.assertEqual(
+            progress.attachments.read(att_id), {"stage": "describing_images", "current": 6, "total": 30},
+        )
+        self.assertEqual(progress.attachments.read_many([att_id, "missing"]), {
+            att_id: {"stage": "describing_images", "current": 6, "total": 30},
+        })
+        progress.attachments.bump(att_id, "rendering", 2, 10)
+        self.assertEqual(progress.attachments.read(att_id)["stage"], "rendering")
+        progress.attachments.clear(att_id)
+        self.assertIsNone(progress.attachments.read(att_id))
+
+    def test_version_and_attachment_namespaces_do_not_collide(self):
+        from documents.services import progress
+
+        progress.set_stage(7, "chunking")
+        progress.attachments.set_stage("7", "extracting")
+        self.assertEqual(progress.read_many([7])[7]["stage"], "chunking")
+        self.assertEqual(progress.attachments.read("7")["stage"], "extracting")
+        progress.clear(7)
+        self.assertEqual(progress.attachments.read("7")["stage"], "extracting")
+
+
+class DescriberCacheKeyTests(TestCase):
+    def test_cache_key_is_v2_after_the_prompt_change(self):
+        from documents.services import image_assets
+
+        self.assertTrue(image_assets._CACHE_KEY.startswith("imgdesc:v2:"))
+
+
 class DescribeImagePromptTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="q@example.com", password="x")

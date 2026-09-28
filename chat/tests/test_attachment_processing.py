@@ -94,6 +94,11 @@ class ProcessAttachmentTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="proc@example.com", password="pw")
         self.thread = ChatThread.objects.create(created_by=self.user)
+        # No vision model is configured under test; the describer needs one to
+        # queue the (patched) describe_image calls.
+        resolver = patch("chat.services.resolve_vision_model", return_value="anthropic/claude-opus-4-8")
+        resolver.start()
+        self.addCleanup(resolver.stop)
 
     def _make(self, name, ct, body, **kw):
         return _make_attachment(self.thread, self.user, name, ct, body, **kw)
