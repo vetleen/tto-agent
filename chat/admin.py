@@ -13,8 +13,6 @@ from .models import (
     ChatThread,
     ChatThreadDataRoom,
     SlideComment,
-    SlideRender,
-    SlideRenderRun,
     SlideSet,
     SlideSetCheckpoint,
     SubAgentRun,
@@ -60,7 +58,7 @@ class ThreadChunkUsageInline(admin.TabularInline):
 
 @admin.register(ChatThread)
 class ChatThreadAdmin(admin.ModelAdmin):
-    list_display = ("id", "title", "created_by", "cost_usd", "created_at", "updated_at")
+    list_display = ("id", "created_by", "cost_usd", "created_at", "updated_at")
     list_filter = ("created_at",)
     search_fields = ("title",)
     readonly_fields = ("id", "created_at", "updated_at")
@@ -110,9 +108,9 @@ class SlideCommentInline(admin.TabularInline):
 
 @admin.register(SlideSet)
 class SlideSetAdmin(admin.ModelAdmin):
-    list_display = ("id", "thread", "title", "base_template", "is_active", "deleted_at", "updated_at")
+    list_display = ("id", "owner", "base_template", "is_active", "deleted_at", "updated_at")
     list_filter = ("is_active", "base_template", "created_at")
-    search_fields = ("title", "id")
+    search_fields = ("title", "id", "thread__created_by__email")
     readonly_fields = ("content_pretty", "created_at", "updated_at", "last_activated_at")
     # Raw ``content`` is excluded from the form; ``content_pretty`` shows the deck
     # JSON indented (the field is huge and hand-editing it in admin is unsafe).
@@ -121,40 +119,21 @@ class SlideSetAdmin(admin.ModelAdmin):
         "content_pretty", "last_activated_at", "created_at", "updated_at",
     )
     raw_id_fields = ("thread",)
-    list_select_related = ("thread",)
+    list_select_related = ("thread__created_by",)
     inlines = [SlideSetCheckpointInline, SlideCommentInline]
+
+    @admin.display(description="Owner", ordering="thread__created_by__email")
+    def owner(self, obj):
+        return obj.thread.created_by
 
     @admin.display(description="Content")
     def content_pretty(self, obj):
         return _pretty_json_html(obj.content)
 
 
-@admin.register(SlideRenderRun)
-class SlideRenderRunAdmin(admin.ModelAdmin):
-    list_display = ("short_id", "slide_set", "purpose", "status", "created_at", "finished_at")
-    list_filter = ("purpose", "status", "created_at")
-    search_fields = ("id", "slide_set__title")
-    readonly_fields = ("id", "created_at", "started_at", "finished_at")
-    list_select_related = ("slide_set",)
-    ordering = ["-created_at"]
-
-    @admin.display(description="ID")
-    def short_id(self, obj):
-        return str(obj.id)[:8]
-
-
-@admin.register(SlideRender)
-class SlideRenderAdmin(admin.ModelAdmin):
-    list_display = ("id", "slide_set", "slide_id", "content_hash", "width", "height", "rendered_at")
-    search_fields = ("slide_id", "content_hash", "slide_set__title")
-    readonly_fields = ("rendered_at",)
-    list_select_related = ("slide_set",)
-    raw_id_fields = ("asset",)
-
-
 @admin.register(SubAgentRun)
 class SubAgentRunAdmin(admin.ModelAdmin):
-    list_display = ("short_id", "thread", "user", "status", "model_tier", "model_used", "short_prompt", "tokens_used", "cost_display", "has_result", "created_at")
+    list_display = ("short_id", "thread", "user", "status", "model_tier", "model_used", "tokens_used", "cost_display", "has_result", "created_at")
     list_filter = ("status", "model_tier", "created_at")
     search_fields = ("prompt", "result", "id")
     readonly_fields = ("id", "created_at", "dispatched_at", "started_at", "completed_at")
@@ -165,10 +144,6 @@ class SubAgentRunAdmin(admin.ModelAdmin):
     def short_id(self, obj):
         return str(obj.id)[:8]
 
-    @admin.display(description="Prompt")
-    def short_prompt(self, obj):
-        return obj.prompt[:80] if obj.prompt else ""
-
     @admin.display(description="Cost", ordering="cost_usd")
     def cost_display(self, obj):
         return f"${obj.cost_usd:.4f}" if obj.cost_usd else "-"
@@ -176,17 +151,6 @@ class SubAgentRunAdmin(admin.ModelAdmin):
     @admin.display(description="Result?", boolean=True)
     def has_result(self, obj):
         return bool(obj.result)
-
-
-@admin.register(ChatMessage)
-class ChatMessageAdmin(admin.ModelAdmin):
-    list_display = ("id", "thread", "role", "short_content", "is_redacted", "created_at")
-    list_filter = ("role", "is_redacted", "created_at")
-    readonly_fields = ("id", "created_at")
-
-    @admin.display(description="Content")
-    def short_content(self, obj):
-        return obj.content[:100] if obj.content else ""
 
 
 @admin.register(Asset)

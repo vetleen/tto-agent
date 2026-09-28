@@ -93,7 +93,7 @@ class DataRoomDocumentTagAdmin(admin.ModelAdmin):
 
 @admin.register(DataRoomDocumentChunk)
 class DataRoomDocumentChunkAdmin(admin.ModelAdmin):
-    list_display = ("version", "chunk_index", "heading", "token_count", "created_at")
+    list_display = ("version", "chunk_index", "token_count", "created_at")
     list_filter = ("version__document__data_room",)
     search_fields = ("text", "heading")
     raw_id_fields = ("version",)
