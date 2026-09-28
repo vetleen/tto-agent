@@ -219,6 +219,12 @@ READY and never blocks searchability; state lives in `DataRoomDocumentVersion.pa
   works). The chat turn waits for the row (`CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS`, 180 s) and
   then proceeds with text; a busy render service therefore shows up as "still processing" markers
   on the upload turn, with the slides viewable via `chat_attachment_view` on the next one.
+  Embedded pictures are described by the same concurrent describer as data rooms
+  (`DOCUMENT_IMAGE_DESCRIBE_CONCURRENCY` calls in flight, org-wide cache `imgdesc:v2:*`, cap
+  `CHAT_ATTACHMENT_MAX_DESCRIBED_IMAGES`), and the task publishes its stage to Redis
+  (`attprogress:v1:<attachment>`: `extracting` → `describing_images i/N` → `rendering i/N`) for the
+  composer pill and the held turn's bubble ("Reading images 6 of 30…"); a missing key just means
+  "Preparing…", it is never an error.
 
 ### Rollback
 
@@ -496,6 +502,10 @@ See `.env.example` for the full list with comments. Key production variables:
 | `CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS` | No | Max time a chat turn is held for its attachments' worker-side processing (default: 180; `0` = no hold → turn runs with in-turn extraction / text only) |
 | `CHAT_ATTACHMENT_RENDER_MAX_SLIDES` | No | Attached decks above this many slides get text only, no slide renders (default: 50) |
 | `CHAT_ATTACHMENT_INITIAL_SLIDES` | No | Slides of attached decks shown natively on the upload turn, per message (default: 20); the rest via `chat_attachment_view(pages=…)` |
+| `CHAT_ATTACHMENT_MAX_DESCRIBED_IMAGES` | No | Unique embedded pictures vision-described per pdf/docx/pptx chat or meeting attachment (default: 30; data rooms: fixed 50). The rest are stored with a format-only label |
+| `DOCUMENT_IMAGE_DESCRIBE_CONCURRENCY` | No | Concurrent vision calls while describing a document's or attachment's pictures (default: 5). Each briefly holds a DB connection: peak ≈ this × concurrently processing documents/attachments |
+| `IMGDESC_CACHE_TTL` | No | Seconds an org-wide picture description stays cached in Redis (`imgdesc:v2:<org>:<sha>`, default: 30 days); shared by data rooms and chat attachments |
+| `DOCPROGRESS_CACHE_TTL` | No | Seconds a processing-progress dict lives in Redis (`docprogress:v1:<version>`, `attprogress:v1:<attachment>`, default: 600); every write refreshes it |
 | `VISION_IMAGE_MAX_EDGE` | No | Ingest image downscale: max long edge in px (default: 1568) |
 | `VISION_IMAGE_MAX_PIXELS` | No | Ingest image downscale: max pixel area (default: 1_150_000) |
 | `VISION_IMAGE_JPEG_QUALITY` | No | Ingest image re-encode JPEG quality (default: 82) |

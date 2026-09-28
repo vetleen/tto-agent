@@ -191,6 +191,16 @@
       "value": "20",
       "required": false
     },
+    "CHAT_ATTACHMENT_MAX_DESCRIBED_IMAGES": {
+      "description": "Unique embedded pictures vision-described per pdf/docx/pptx chat or meeting attachment (data rooms: 50). Default 30.",
+      "value": "30",
+      "required": false
+    },
+    "DOCUMENT_IMAGE_DESCRIBE_CONCURRENCY": {
+      "description": "Concurrent vision calls while describing a document's or attachment's pictures; each briefly holds a DB connection. Default 5.",
+      "value": "5",
+      "required": false
+    },
     "SENTRY_DSN": {
       "description": "Optional: error tracking. Disabled if unset.",
       "required": false

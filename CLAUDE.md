@@ -172,11 +172,21 @@ processed on the worker right after upload (`chat/attachment_processing.py` via
 `process_chat_attachment`): text extraction (embedded pictures become **attachment-owned**
 `chat.Asset` rows, `Asset.attachment`), page/slide count, and for `.pptx` the slide renders
 (`chat/attachment_render.py`, `AttachmentTarget`, cap `CHAT_ATTACHMENT_RENDER_MAX_SLIDES`).
+Pictures are described by `chat.assets.AttachmentImageDescriber`, the chat arm of the shared
+two-phase describer `documents/services/image_assets.py:EmbeddedImageDescriberBase` (optimize →
+sha dedupe → org cache `imgdesc:v2` → thread pool → substitute; `_store_asset` is the only owner
+hook, `EmbeddedImageDescriber(version, doc)` is the data-room arm) — cap
+`CHAT_ATTACHMENT_MAX_DESCRIBED_IMAGES` unique pictures, model resolved once per attachment via
+`chat.services.resolve_vision_model` (tests must patch it: the test env has no vision model).
 `ChatAttachment.processing_state` (`pending`/`ready`/`failed`; images/text are `ready` from
 the start) is what the consumer waits on before taking a turn-gate slot
 (`_wait_for_attachments`, `CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS`, client event
 `turn.waiting_for_attachments`); on timeout the turn proceeds with lazy extraction and
-"still processing" markers. Rows are written with `.update()` only — the consumer links the
+"still processing" markers. Progress goes through `documents/services/progress.py`'s
+`attachments` store (`attprogress:v1:<uuid>`: `extracting` → `describing_images i/N` →
+`rendering i/N`, cleared on every terminal exit): the status endpoint returns it as `progress`
+while pending, and the hold loop re-sends `turn.waiting_for_attachments` with a `progress`
+summary whenever it changes. Rows are written with `.update()` only — the consumer links the
 attachment to its message concurrently. On the upload turn a deck's first
 `CHAT_ATTACHMENT_INITIAL_SLIDES` renders (per message) go in as image blocks after its text;
 later turns page through slides with `chat_attachment_view(pages=…)` (`representation: slides`).
