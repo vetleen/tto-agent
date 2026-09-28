@@ -143,8 +143,9 @@ The prompt's `# Relevant skills` section renders each attached skill's slug and 
 **aim**; the model's registry window is the **hard** cap. All budgeting is measured, not a
 blind fraction — see `llm/context_budget.py`:
 
-- `output_reservation(model, effort)` — tokens reserved for the response (output counts
-  against the window on every provider). `request_input_ceiling = min(aim, window) − output
+- `output_reservation(model, effort, aim)` — tokens reserved for the response (output counts
+  against the window on every provider); capped at 25% of the aim so a small aim (50k floor)
+  with high effort still leaves room for input. `request_input_ceiling = min(aim, window) − output
   − CONTEXT_SAFETY_MARGIN_TOKENS`. `history_budget = ceiling − system/tool/message overhead`.
 - Native assets (image/PDF) are counted at their real provider cost in `core/tokens.py`
   (`_wf_est_tokens` markers), never by stringifying base64.

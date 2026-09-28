@@ -62,9 +62,20 @@ class GetHistoryBudgetTests(TestCase):
         )
 
     def test_small_setting(self):
+        # 120k aim: the 32k reservation is capped at 25% of the aim (30k).
         self.assertEqual(
-            get_history_budget("gpt-5.4-nano", max_context_tokens=120_000), 56_000
+            get_history_budget("gpt-5.4-nano", max_context_tokens=120_000), 58_000
         )
+
+    def test_reservation_capped_at_quarter_of_aim(self):
+        # The 50k floor with xhigh (48k) used to leave no input room at all
+        # (ceiling fell to its 1k floor): now 50k - 12.5k - 8k = 29.5k.
+        from llm.context_budget import output_reservation, request_input_ceiling
+
+        self.assertEqual(output_reservation("gpt-5.4", "xhigh", 50_000), 12_500)
+        self.assertEqual(request_input_ceiling("gpt-5.4", 50_000, "xhigh"), 29_500)
+        # A large aim keeps the effort-based reservation.
+        self.assertEqual(output_reservation("gpt-5.4", "xhigh", 1_000_000), 48_000)
 
     def test_unknown_model_uses_default_window(self):
         # 128k default window − 32k − 8k − 24k = 64k.
@@ -84,8 +95,15 @@ class GetHistoryBudgetTests(TestCase):
             200_000 - _OUT - 8_000 - 50_000,
         )
 
-    def test_floor_when_reservations_exceed_aim(self):
-        # A 50k aim is smaller than the reservations (~64k) → history floors at 4k.
+    def test_small_aim_keeps_room_for_history(self):
+        # 50k aim: output reservation capped at 12.5k → 50k − 12.5k − 8k − 24k.
         self.assertEqual(
-            get_history_budget("gpt-5.4", max_context_tokens=50_000), 4_000
+            get_history_budget("gpt-5.4", max_context_tokens=50_000), 5_500
+        )
+
+    def test_floor_when_reservations_exceed_aim(self):
+        # A measured overhead bigger than what's left → history floors at 4k.
+        self.assertEqual(
+            get_history_budget("gpt-5.4", max_context_tokens=50_000, reserved_tokens=40_000),
+            4_000,
         )

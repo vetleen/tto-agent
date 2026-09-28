@@ -307,16 +307,33 @@ class ScratchpadEditPointTests(TestCase):
         from llm.types import Message
 
         base = [Message(role="system", content="sys"), Message(role="user", content="hi")]
+        base += self._note_round("c0", "web_search", "old")  # something to prune
         req = self._req("main", base, scratchpad="")
         req.context.scratchpad_turn_notes.append("NEW THIS TURN")
         mgr = self._mgr(req)
-        out = self._finish(
-            mgr, req, base + self._note_round("c1", "web_search", "q"),
-            real_input_tokens=40_000, cid="c1",
-        )
+        with self.settings(CONTEXT_MIDTURN_KEEP_TOOL_RESULTS=0):
+            out = self._finish(
+                mgr, req, base + self._note_round("c1", "web_search", "q"),
+                real_input_tokens=40_000, cid="c1",
+            )
         blocks = self._blocks(out)
         self.assertEqual(len(blocks), 1)
         self.assertIn("NEW THIS TURN", blocks[0].content)
+
+    def test_over_ceiling_with_nothing_to_change_is_not_an_edit(self):
+        """Still over the ceiling but nothing left to prune/trim: stay
+        append-only (no block churn every round, no edit point counted)."""
+        from llm.types import Message
+
+        base = [Message(role="system", content="sys"), Message(role="user", content="hi")]
+        req = self._req("main", base, scratchpad="")
+        req.context.scratchpad_turn_notes.append("NOTE")
+        mgr = self._mgr(req)
+        new = base + self._note_round("c1", "web_search", "q")
+        out = self._finish(mgr, req, new, real_input_tokens=40_000, cid="c1")
+        self.assertEqual(out, new)
+        self.assertEqual(mgr.edit_rounds, [])
+        self.assertNotIn("edit_points_total", req.context.observability)
 
     def test_main_agent_without_turn_notes_gets_no_block(self):
         from llm.types import Message

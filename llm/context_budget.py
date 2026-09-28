@@ -38,17 +38,30 @@ _EFFORT_OUTPUT_RESERVATION = {
 _DEFAULT_OUTPUT_RESERVATION = 32_000
 
 
-def output_reservation(model: str | None, effort: str | None = None) -> int:
+# The output reservation never takes more than this share of the context aim.
+# Without it a small aim (the 50k floor) with a high-effort reservation (xhigh =
+# 48k) left no room for input at all: the ceiling fell to its 1k floor and every
+# tool-loop round pruned.
+_MAX_RESERVATION_FRACTION_OF_AIM = 0.25
+
+
+def output_reservation(
+    model: str | None, effort: str | None = None, aim: int | None = None,
+) -> int:
     """Tokens to reserve for the model's response (including thinking).
 
-    Scales with effort, capped by the model's registry ``max_output_tokens``.
+    Scales with effort, capped by the model's registry ``max_output_tokens`` and
+    by a quarter of ``aim`` (the request's context aim) when given.
     """
     base = _EFFORT_OUTPUT_RESERVATION.get(
         (effort or "").lower(), _DEFAULT_OUTPUT_RESERVATION
     )
     info = get_model_info(model) if model else None
     cap = getattr(info, "max_output_tokens", None) if info else None
-    return min(base, cap) if cap else base
+    reservation = min(base, cap) if cap else base
+    if aim:
+        reservation = min(reservation, int(aim * _MAX_RESERVATION_FRACTION_OF_AIM))
+    return reservation
 
 
 def _margin() -> int:
@@ -62,7 +75,7 @@ def request_input_ceiling(
     output reservation and a safety margin. Never exceeds the model's window."""
     window = get_context_window(model)
     aim = min(window, max_context_tokens) if max_context_tokens else window
-    ceiling = aim - output_reservation(model, effort) - _margin()
+    ceiling = aim - output_reservation(model, effort, aim) - _margin()
     return max(ceiling, 1_000)
 
 

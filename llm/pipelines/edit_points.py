@@ -164,6 +164,16 @@ def trim_old_tool_call_args(
     return out, count
 
 
+def _provider_view(messages: List[Message]) -> list:
+    """What a provider sees of ``messages`` (metadata excluded) — to tell whether
+    an edit point changed anything."""
+    return [
+        (m.role, m.content, m.tool_call_id,
+         [(tc.id, tc.name, tc.arguments) for tc in (m.tool_calls or []) if isinstance(tc, ToolCall)])
+        for m in messages
+    ]
+
+
 def record_thinking_drops(context, response_metadata) -> None:
     """Count Anthropic ``input_transformations`` thinking drops for this round
     (present only when the preserved-thinking beta header is sent). Unknown
@@ -254,8 +264,7 @@ class EditPointManager:
                 protect_call_ids=round_call_ids,
                 protect_msg_indices=asset_msg_indices,
             )
-        else:
-            self._append_seed_scratchpad(new_messages, req)
+        self._append_seed_scratchpad(new_messages, req)  # no-op once shown
         self._maybe_nudge(new_messages, req, projected, ceiling)
         return new_messages, tools
 
@@ -290,6 +299,8 @@ class EditPointManager:
         ctx = req.context
         keep_recent = _setting("CONTEXT_MIDTURN_KEEP_TOOL_RESULTS", 6)
         protected_ids = set(protect_call_ids) | recent_tool_call_ids(messages, keep_recent)
+        original = messages
+        before = _provider_view(messages)
 
         # 1. Dedup: re-decide append-only redactions as keep-newest.
         messages = normalize_keep_newest(messages)
@@ -327,6 +338,16 @@ class EditPointManager:
             )
             messages = apply_native_evictions(messages, plan)
             evicted = len(plan)
+
+        # Nothing actually changed (e.g. still over the ceiling but nothing left to
+        # prune): not an edit point. Keep the prefix untouched — refreshing the
+        # scratchpad block alone would edit history every round for nothing.
+        if EDIT_KIND_TOOLS not in kinds and _provider_view(messages) == before:
+            logger.debug(
+                "Edit point triggered (%s) but nothing to change; staying append-only",
+                ",".join(kinds),
+            )
+            return original
 
         # 5. Consolidated scratchpad block, always last.
         messages = self._refresh_scratchpad_block(messages, req)

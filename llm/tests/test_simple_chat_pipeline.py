@@ -1534,10 +1534,11 @@ class MidturnPruningTests(TestCase):
     # -- _midturn_ceiling --
 
     def test_midturn_ceiling_uses_params(self):
-        # min(window, 50000) - output_reservation(low=16384) - margin(8000).
+        # min(window, 50000) - output_reservation(low=16384, capped at 25% of the
+        # 50k aim = 12500) - margin(8000).
         req = self._req([Message(role="user", content="q")])
         ceiling = SimpleChatPipeline()._midturn_ceiling(req)
-        self.assertEqual(ceiling, 50_000 - 16_384 - 8_000)
+        self.assertEqual(ceiling, 50_000 - 12_500 - 8_000)
 
     # -- pruning at edit points (llm/pipelines/edit_points.py) --
 
