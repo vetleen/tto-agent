@@ -67,9 +67,9 @@ The typical false positive in this corpus is a medical-technology document dense
 clinical vocabulary and named researchers, but containing no fact about any
 identifiable individual's health. Density of medical terminology is not evidence.
 
-*When deciding about images that have medical content, separate images that are clearly staged 
-and/or meant for promotional purposes from images of actual medical procedures. If the images 
-is promotional or used in a promotional setting, then it's probably not article 9 or 10 data.*'
+*When deciding about images that have medical content, separate images that are clearly staged
+and/or meant for promotional purposes from images of actual medical procedures. If the image
+is promotional or used in a promotional setting, then it's probably not article 9 or 10 data.*
 
 ## Output
 
