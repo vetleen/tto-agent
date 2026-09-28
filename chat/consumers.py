@@ -52,6 +52,22 @@ class _TurnState:
 _ATTACHMENT_POLL_INTERVAL_S = 1.0
 
 
+def _attachment_progress_summary(pending) -> dict | None:
+    """The hold notice's progress: the first still-pending attachment that has a
+    live worker stage, as ``{attachment_id, name, stage, current, total}``, else
+    None. ``pending`` is ``[(id, filename, progress_dict_or_None)]``."""
+    for pk, name, progress in pending:
+        if progress and progress.get("stage"):
+            return {
+                "attachment_id": str(pk),
+                "name": name,
+                "stage": str(progress.get("stage")),
+                "current": int(progress.get("current") or 0),
+                "total": int(progress.get("total") or 0),
+            }
+    return None
+
+
 def _valid_uuids(values):
     """Keep only well-formed UUID strings from a client-supplied id list.
 
@@ -2222,11 +2238,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
             if self._sink.wants_heartbeats and queue_hb is None:
                 queue_hb = asyncio.create_task(self._send_heartbeats())
 
-        async def _on_waiting(names):
+        async def _on_waiting(names, progress=None):
+            # Sent when the hold starts and again whenever the worker's progress
+            # summary changes ({name, stage, current, total} of the first pending
+            # file, or None); the client retitles the bubble's spinner.
             nonlocal queue_hb
             await self._sink.send_event({
                 "event_type": "turn.waiting_for_attachments",
-                "data": {"names": names, "count": len(names)},
+                "data": {"names": names, "count": len(names), "progress": progress},
             })
             if self._sink.wants_heartbeats and queue_hb is None:
                 queue_hb = asyncio.create_task(self._send_heartbeats())
@@ -4834,8 +4853,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
         (``CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS`` = 0), or when the deadline
         passes — in which case the still-pending ids are recorded on
         ``turn.attachments_not_ready`` and the turn proceeds with what it has
-        (lazy extraction for pdf/docx, text only for a deck). ``on_waiting`` is
-        awaited once with the pending filenames the first time it actually waits.
+        (lazy extraction for pdf/docx, text only for a deck). ``on_waiting(names,
+        progress)`` is awaited the first time it actually waits and again whenever
+        the progress summary (the first pending file's live worker stage) changes;
+        unchanged polls never resend.
         """
         from django.conf import settings
 
@@ -4854,20 +4875,25 @@ class ChatConsumer(AsyncWebsocketConsumer):
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         announced = False
+        last_sent = None
         while True:
             pending = await self._pending_attachments(str(thread.id), ids)
             if not pending:
                 return True
             if self._stopped or turn.cancel_event.is_set() or self._turn is not turn:
                 return False
-            if not announced:
+            names = [name for _pk, name, _progress in pending]
+            summary = _attachment_progress_summary(pending)
+            signature = (tuple(names), tuple(sorted(summary.items())) if summary else None)
+            if not announced or signature != last_sent:
                 announced = True
+                last_sent = signature
                 try:
-                    await on_waiting([name for _pk, name in pending])
+                    await on_waiting(names, summary)
                 except Exception:  # noqa: BLE001 — a failed notice must not abort the turn
                     logger.warning("attachment hold: could not notify the client", exc_info=True)
             if loop.time() >= deadline:
-                turn.attachments_not_ready = {str(pk) for pk, _name in pending}
+                turn.attachments_not_ready = {str(pk) for pk, _name, _progress in pending}
                 logger.warning(
                     "attachment hold: %s attachment(s) still processing after %.0fs on thread %s; "
                     "proceeding without them",
@@ -4878,10 +4904,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _pending_attachments(self, thread_id, ids):
-        """``[(id, filename)]`` of the given attachments still PENDING (this user's only)."""
+        """``[(id, filename, progress)]`` of the given attachments still PENDING
+        (this user's only); ``progress`` is the worker's live ``{stage, current,
+        total}`` dict or None — one cache round-trip in the same thread hop."""
         from chat.models import ChatAttachment
+        from documents.services.progress import attachments as att_progress
 
-        return list(
+        rows = list(
             ChatAttachment.objects.filter(
                 thread_id=thread_id,
                 uploaded_by=self.user,
@@ -4889,6 +4918,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 processing_state=ChatAttachment.ProcessingState.PENDING,
             ).values_list("id", "original_filename")
         )
+        if not rows:
+            return []
+        progress = att_progress.read_many([str(pk) for pk, _name in rows])
+        return [(pk, name, progress.get(str(pk))) for pk, name in rows]
 
     @database_sync_to_async
     def _seed_attachment_ids(self, thread_id):

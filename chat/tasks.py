@@ -326,6 +326,9 @@ class _AttachmentProcessingTask(Task):
                 ChatAttachment.objects.filter(pk=attachment_id, processing_state=State.PENDING).update(
                     processing_state=State.FAILED, processing_error=error,
                 )
+            from documents.services.progress import attachments as att_progress
+
+            att_progress.clear(str(attachment_id))
         except Exception:
             logger.exception("Failed to settle attachment %s after processing failure", attachment_id)
 

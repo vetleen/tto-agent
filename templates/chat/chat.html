@@ -2205,7 +2205,18 @@
     '<span class="attachment-status shrink-0 inline-flex items-center text-body-subtle" title="Preparing…">' +
     '<svg class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg></span>';
   var ATTACHMENT_STATUS_POLL_MS = 2000;
-  var ATTACHMENT_STATUS_MAX_POLLS = 90;
+  var ATTACHMENT_STATUS_MAX_POLLS = 150;
+
+  // Worker stage → copy, mirroring the data-room document list
+  // (static/js/document-list.js progressLabel). '' when there is nothing to say.
+  function attachmentProgressLabel(p) {
+    if (!p || !p.stage) return '';
+    var current = p.current || 0;
+    if (p.stage === 'describing_images') return p.total ? 'Reading images ' + current + ' of ' + p.total + '…' : 'Reading images…';
+    if (p.stage === 'rendering') return p.total ? 'Preparing slides ' + current + ' of ' + p.total + '…' : 'Preparing slides…';
+    if (p.stage === 'extracting') return 'Extracting text and images…';
+    return '';
+  }
 
   function addAttachmentPill(id, filename, contentType, processingState) {
     var pending = processingState === 'pending';
@@ -2943,12 +2954,17 @@
     }
     if (et === "turn.waiting_for_attachments") {
       // The server holds the turn until the worker has processed this
-      // message's attachments (text extraction, slide renders). Same spinner
-      // retitle as turn.queued; the first token clears it.
+      // message's attachments (text extraction, picture descriptions, slide
+      // renders) and resends this event whenever the worker's progress changes.
+      // Same spinner retitle as turn.queued; the first token clears it.
       var waitingLabel = currentStreamingElement && currentStreamingElement.querySelector(".waiting-indicator span");
-      if (waitingLabel) waitingLabel.textContent = (data.data && data.data.count === 1)
-        ? "Preparing your attachment…"
-        : "Preparing your attachments…";
+      if (waitingLabel) {
+        var wd = data.data || {};
+        var waitingBase = (wd.count === 1) ? "Preparing your attachment…" : "Preparing your attachments…";
+        var waitingDetail = attachmentProgressLabel(wd.progress);
+        if (waitingDetail && wd.count > 1 && wd.progress && wd.progress.name) waitingDetail = wd.progress.name + ': ' + waitingDetail;
+        waitingLabel.textContent = waitingDetail ? waitingBase + ' ' + waitingDetail : waitingBase;
+      }
       return;
     }
     if (et === "subagents.updated") { updateSubagentStatusBar(data.active_count || 0, null, data.waiting_count || 0); return; }

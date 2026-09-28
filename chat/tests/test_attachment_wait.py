@@ -103,8 +103,45 @@ class WaitForAttachmentsTests(TransactionTestCase):
         )
         await flipper
         self.assertTrue(ok)
-        on_waiting.assert_awaited_once_with(["deck.pdf"])
+        on_waiting.assert_awaited_once_with(["deck.pdf"], None)
         self.assertEqual(turn.attachments_not_ready, set())
+
+    @override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}})
+    async def test_progress_changes_re_announce_once_per_change(self):
+        from django.core.cache import cache
+
+        from documents.services.progress import attachments as att_progress
+
+        cache.clear()
+        att = await self._att(name="deck.pptx")
+        turn = _make_turn([att.id])
+        on_waiting = AsyncMock()
+        key = str(att.id)
+
+        async def drive():
+            await asyncio.sleep(0.04)
+            att_progress.set_stage(key, "describing_images", current=1, total=3)
+            await asyncio.sleep(0.04)
+            att_progress.set_stage(key, "describing_images", current=2, total=3)
+            await asyncio.sleep(0.04)
+            att_progress.set_stage(key, "describing_images", current=2, total=3)  # unchanged
+            await asyncio.sleep(0.04)
+            await self._set_state(att, State.READY)
+
+        driver = asyncio.create_task(drive())
+        ok = await self._consumer(turn)._wait_for_attachments(
+            self.thread, turn, seed_mode=False, on_waiting=on_waiting,
+        )
+        await driver
+        cache.clear()
+        self.assertTrue(ok)
+        progress_seen = [c.args[1] for c in on_waiting.await_args_list]
+        self.assertEqual(progress_seen[0], None)
+        self.assertEqual(
+            [p and (p["stage"], p["current"], p["total"], p["name"]) for p in progress_seen[1:]],
+            [("describing_images", 1, 3, "deck.pptx"), ("describing_images", 2, 3, "deck.pptx")],
+        )
+        self.assertTrue(all(c.args[0] == ["deck.pptx"] for c in on_waiting.await_args_list))
 
     @override_settings(CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS=0.05)
     async def test_timeout_proceeds_and_records_the_pending_ids(self):
@@ -175,7 +212,7 @@ class WaitForAttachmentsTests(TransactionTestCase):
         ok = await c._wait_for_attachments(self.thread, turn, seed_mode=True, on_waiting=on_waiting)
         await flipper
         self.assertTrue(ok)
-        on_waiting.assert_awaited_once_with(["new.pdf"])
+        on_waiting.assert_awaited_once_with(["new.pdf"], None)
         # The old (still pending) file never held the turn.
         old_att = await database_sync_to_async(ChatAttachment.objects.get)(pk=old_att.pk)
         self.assertEqual(old_att.processing_state, State.PENDING)
@@ -253,7 +290,7 @@ class AttachmentHoldConsumerTests(TransactionTestCase):
         comm = await self._connect()
 
         event = await self._send_with_attachment(comm, att)
-        self.assertEqual(event["data"], {"names": ["deck.pdf"], "count": 1})
+        self.assertEqual(event["data"], {"names": ["deck.pdf"], "count": 1, "progress": None})
         # Held means held: the LLM has not been called.
         await asyncio.sleep(0.1)
         self.assertEqual(dispatcher.calls, 0)

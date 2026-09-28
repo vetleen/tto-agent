@@ -19,18 +19,31 @@ service's logs never see a filename.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-from documents.services.page_render import _int_setting, render_pages, store_render_asset
+from documents.services.page_render import STATE_PENDING, _int_setting, render_pages, store_render_asset
+from documents.services.progress import attachments as att_progress
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class AttachmentTarget:
-    """``RenderTarget`` over a ``chat.ChatAttachment`` instance."""
+    """``RenderTarget`` over a ``chat.ChatAttachment`` instance.
+
+    Also publishes "rendering i of N" progress for the composer pill / held-turn
+    bubble: ``render_pages`` calls ``set_state(pending, page_count=N)``, then
+    ``existing_pages()`` (a resumed retry starts at the pages already rendered),
+    then ``store()`` once per slide.
+    """
 
     attachment: object  # chat.models.ChatAttachment (lazy import: chat models load after documents)
+    _done: int = field(default=0, init=False, repr=False)
+    _total: int = field(default=0, init=False, repr=False)
+
+    def _report(self) -> None:
+        if self._total:
+            att_progress.bump(str(self.attachment.id), "rendering", self._done, self._total)
 
     @property
     def label(self) -> str:
@@ -71,14 +84,19 @@ class AttachmentTarget:
     def existing_pages(self) -> set[int]:
         from chat.models import Asset
 
-        return set(
+        pages = set(
             Asset.objects.filter(attachment=self.attachment, role=Asset.ROLE_PAGE_RENDER)
             .exclude(page_number__isnull=True)
             .values_list("page_number", flat=True)
         )
+        self._done = len(pages)
+        self._report()
+        return pages
 
     def store(self, page_number: int, jpeg: bytes) -> None:
         store_render_asset({"attachment": self.attachment}, page_number, jpeg)
+        self._done += 1
+        self._report()
 
     def set_state(self, state: str, *, error: str | None = None, page_count: int | None = None) -> None:
         from chat.models import ChatAttachment
@@ -89,6 +107,10 @@ class AttachmentTarget:
         if page_count is not None:
             fields["page_count"] = page_count
         ChatAttachment.objects.filter(pk=self.attachment.pk).update(**fields)
+        if state == STATE_PENDING and page_count:
+            self._total = int(page_count)
+            self._done = 0
+            self._report()
 
     def touch(self) -> None:
         # No stale sweeper for attachments; nothing to heartbeat.

@@ -1709,18 +1709,26 @@ def upload_attachments(request, thread_id):
 @login_required
 @require_http_methods(["GET"])
 def attachment_status(request, attachment_id):
-    """Processing state of one attachment (polled by the composer's pills)."""
+    """Processing state of one attachment (polled by the composer's pills).
+
+    ``progress`` is the worker's live ``{stage, current, total}`` dict while the
+    row is pending (``documents.services.progress.attachments``), else ``None``.
+    """
+    from documents.services.progress import attachments as att_progress
+
     att = get_object_or_404(
         ChatAttachment.objects.select_related("thread"),
         id=attachment_id,
         thread__created_by=request.user,
     )
+    pending = att.processing_state == ChatAttachment.ProcessingState.PENDING
     return JsonResponse({
         "id": str(att.id),
         "processing_state": att.processing_state,
         "page_render_state": att.page_render_state,
         "page_count": att.page_count,
         "error": att.processing_error or "",
+        "progress": att_progress.read(str(att.id)) if pending else None,
     })
 
 

@@ -84,22 +84,27 @@ def mark_for_reprocessing(attachment) -> None:
     queue processing: the extracted text was copied, the slide renders were not."""
     from chat.models import ChatAttachment
 
+    from documents.services.progress import attachments as att_progress
+
     ChatAttachment.objects.filter(pk=attachment.pk).update(
         processing_state=ChatAttachment.ProcessingState.PENDING,
         page_render_state=ChatAttachment.PageRenderState.NONE,
         processing_error="",
     )
     attachment.processing_state = ChatAttachment.ProcessingState.PENDING
+    att_progress.clear(str(attachment.pk))
     dispatch_after_commit(attachment)
 
 
 def _fail(attachment_id, error: str) -> None:
     from chat.models import ChatAttachment
+    from documents.services.progress import attachments as att_progress
 
     ChatAttachment.objects.filter(pk=attachment_id).update(
         processing_state=ChatAttachment.ProcessingState.FAILED,
         processing_error=(error or "Processing failed.")[:2000],
     )
+    att_progress.clear(str(attachment_id))
 
 
 def process_attachment(attachment_id: str, *, first_delivery: bool = True) -> str:
@@ -108,9 +113,15 @@ def process_attachment(attachment_id: str, *, first_delivery: bool = True) -> st
     Raises ``RenderBusy`` / ``RenderUnavailable`` from the pptx render step so the
     Celery task retries with backoff — the row stays PENDING and the retry resumes
     at the first missing slide (extraction is already cached by then).
+
+    Progress (``documents.services.progress.attachments``: ``extracting`` →
+    ``describing_images i of N`` → ``rendering i of N``) is published for the
+    composer pill and the held turn's bubble, and cleared on every exit except a
+    retry (the resumed run overwrites it).
     """
     from chat.models import ChatAttachment
     from chat.services import SUPPORTED_PDF_TYPES, SUPPORTED_PPTX_TYPES, get_or_extract_attachment_text
+    from documents.services.progress import attachments as att_progress
 
     State = ChatAttachment.ProcessingState
     Render = ChatAttachment.PageRenderState
@@ -120,11 +131,13 @@ def process_attachment(attachment_id: str, *, first_delivery: bool = True) -> st
         logger.info("attachment_processing: attachment_id=%s not found (deleted before processing)", attachment_id)
         return "missing"
     if att.processing_state == State.READY and att.page_render_state != Render.PENDING:
+        att_progress.clear(str(att.pk))
         return "ready"
 
     ct = att.content_type or ""
     if not needs_processing(ct):
         ChatAttachment.objects.filter(pk=att.pk).update(processing_state=State.READY, processing_error="")
+        att_progress.clear(str(att.pk))
         return "ready"
     is_pdf = ct in SUPPORTED_PDF_TYPES
     is_pptx = ct in SUPPORTED_PPTX_TYPES
@@ -137,8 +150,11 @@ def process_attachment(attachment_id: str, *, first_delivery: bool = True) -> st
         _fail(att.pk, "The uploaded file could not be read.")
         return "failed"
 
+    def _progress(stage: str, current: int, total: int) -> None:
+        att_progress.set_stage(str(att.pk), stage, current=current, total=total)
+
     try:
-        get_or_extract_attachment_text(att, data, user=att.uploaded_by)
+        get_or_extract_attachment_text(att, data, user=att.uploaded_by, progress=_progress)
         if is_pdf:
             from chat.pdf_attach import pdf_page_count
 
@@ -170,6 +186,7 @@ def process_attachment(attachment_id: str, *, first_delivery: bool = True) -> st
     # Only the state flips here: a render outcome may have left an explanatory
     # processing_error (skipped / failed) that the view tool surfaces.
     ChatAttachment.objects.filter(pk=att.pk).update(processing_state=State.READY)
+    att_progress.clear(str(att.pk))
     return "ready"
 
 

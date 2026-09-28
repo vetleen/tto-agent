@@ -5,12 +5,15 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError, transaction
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from chat.assets import user_can_access_asset
+from documents.services.progress import attachments as att_progress
+from documents.tests.test_progress import LOCMEM
 from chat.attachment_processing import (
     dispatch_processing,
     initial_processing_state,
@@ -278,8 +281,21 @@ class AttachmentStatusViewTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json(), {
             "id": str(self.att.id), "processing_state": "pending", "page_render_state": "none",
-            "page_count": 4, "error": "",
+            "page_count": 4, "error": "", "progress": None,
         })
+
+    @override_settings(CACHES=LOCMEM)
+    def test_live_progress_is_returned_while_pending_only(self):
+        cache.clear()
+        self.addCleanup(cache.clear)
+        att_progress.set_stage(str(self.att.id), "describing_images", current=6, total=30)
+        self.client.force_login(self.user)
+        self.assertEqual(
+            self.client.get(self.url).json()["progress"],
+            {"stage": "describing_images", "current": 6, "total": 30},
+        )
+        ChatAttachment.objects.filter(pk=self.att.pk).update(processing_state=State.READY)
+        self.assertIsNone(self.client.get(self.url).json()["progress"])
 
     def test_other_user_gets_404(self):
         self.client.force_login(self.other)
@@ -287,3 +303,87 @@ class AttachmentStatusViewTests(TestCase):
 
     def test_anonymous_is_redirected(self):
         self.assertEqual(self.client.get(self.url).status_code, 302)
+
+
+@_IN_MEMORY_STORAGE
+@override_settings(CACHES=LOCMEM, DOCUMENT_RENDER_SERVICE_URL="http://render.test", DOCUMENT_RENDER_BATCH_SIZE=8)
+class AttachmentProgressTests(TestCase):
+    """The worker publishes extracting → describing_images → rendering progress
+    for the pill / hold bubble, and clears it on every terminal exit."""
+
+    def setUp(self):
+        cache.clear()
+        self.addCleanup(cache.clear)
+        self.user = User.objects.create_user(email="progress@example.com", password="pw")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+        resolver = patch("chat.services.resolve_vision_model", return_value="anthropic/claude-opus-4-8")
+        resolver.start()
+        self.addCleanup(resolver.stop)
+
+    def _make(self, name, ct, body, **kw):
+        return _make_attachment(self.thread, self.user, name, ct, body, **kw)
+
+    def test_stages_are_recorded_during_processing_and_cleared_at_ready(self):
+        att = self._make("r.pdf", _PDF_MIME, _pdf_with_image())
+        seen_during_describe = []
+
+        def fake_describe(*_a, **_k):
+            seen_during_describe.append(att_progress.read(str(att.id)))
+            return "A red rectangle"
+
+        with patch("chat.services.describe_image", side_effect=fake_describe), \
+             patch.object(att_progress, "set_stage", wraps=att_progress.set_stage) as set_stage:
+            self.assertEqual(process_attachment(str(att.id)), "ready")
+        self.assertEqual(seen_during_describe, [{"stage": "describing_images", "current": 0, "total": 1}])
+        stages = [(c.args[1], c.kwargs.get("current", 0), c.kwargs.get("total", 0)) for c in set_stage.call_args_list]
+        self.assertEqual(stages[:3], [("extracting", 0, 0), ("describing_images", 0, 1), ("describing_images", 1, 1)])
+        self.assertIsNone(att_progress.read(str(att.id)))
+
+    def test_render_progress_counts_slides_from_the_resumed_position(self):
+        from chat.attachment_render import AttachmentTarget
+
+        att = self._make("d.pptx", _PPTX_MIME, b"PK")
+        pr.store_render_asset({"attachment": att}, 1, _jpeg())  # already rendered earlier
+        seen = []
+        with patch.object(att_progress, "bump", wraps=att_progress.bump) as bump:
+            target = AttachmentTarget(att)
+            target.set_state(pr.STATE_PENDING, page_count=3)
+            self.assertEqual(target.existing_pages(), {1})
+            target.store(2, _jpeg())
+            target.store(3, _jpeg())
+            seen = [(c.args[1], c.args[2], c.args[3]) for c in bump.call_args_list]
+        self.assertEqual(seen, [("rendering", 0, 3), ("rendering", 1, 3), ("rendering", 2, 3), ("rendering", 3, 3)])
+        self.assertEqual(att_progress.read(str(att.id)), {"stage": "rendering", "current": 3, "total": 3})
+
+    def test_pptx_run_ends_with_progress_cleared(self):
+        att = self._make("deck.pptx", _PPTX_MIME, _deck(2, notes=False))
+        with patch.object(pr.GotenbergClient, "convert", _FakeConvert()):
+            self.assertEqual(process_attachment(str(att.id)), "ready")
+        self.assertIsNone(att_progress.read(str(att.id)))
+
+    def test_busy_render_leaves_progress_for_the_retry(self):
+        att = self._make("deck.pptx", _PPTX_MIME, _deck(2, notes=False))
+        with patch.object(pr.GotenbergClient, "convert", _FakeConvert(lambda *_: pr.RenderBusy("full"))), \
+             patch.object(pr.time, "sleep"), self.assertRaises(pr.RenderBusy):
+            process_attachment(str(att.id))
+        progress = att_progress.read(str(att.id))
+        self.assertIsNotNone(progress)
+        self.assertEqual(progress["stage"], "rendering")
+
+    def test_failure_paths_clear_progress(self):
+        from chat.attachment_processing import _fail
+        from chat.tasks import _AttachmentProcessingTask
+
+        att = self._make("d.pdf", _PDF_MIME, b"%PDF")
+        att_progress.set_stage(str(att.id), "extracting")
+        _fail(att.pk, "boom")
+        self.assertIsNone(att_progress.read(str(att.id)))
+
+        att_progress.set_stage(str(att.id), "extracting")
+        _AttachmentProcessingTask().on_failure(RuntimeError("boom"), "task-id", [str(att.id)], {}, None)
+        self.assertIsNone(att_progress.read(str(att.id)))
+
+        att_progress.set_stage(str(att.id), "rendering", current=1, total=3)
+        with patch("chat.tasks.process_chat_attachment.delay"):
+            mark_for_reprocessing(att)
+        self.assertIsNone(att_progress.read(str(att.id)))
