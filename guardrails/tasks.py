@@ -727,7 +727,10 @@ def _scan_web_content(text: str, user_id: int, thread_id, source_label: str) -> 
     org_id = _resolve_org_id(user_id)
 
     try:
-        result = classify_web_content_sync(text, user_id=user_id, org_id=org_id)
+        result = classify_web_content_sync(
+            text, user_id=user_id, org_id=org_id,
+            conversation_id=str(thread_id) if thread_id else None,
+        )
     except GuardrailModelUnavailableError:
         # Misconfiguration, not an attack signal and not transient — log and skip
         # rather than retry. WARNING so Sentry surfaces the missing model.
@@ -770,6 +773,7 @@ def _record_flagged_web_content(
             source_label=source_label,
             org_id=org_id,
             user_id=user_id,
+            conversation_id=str(thread_id) if thread_id else None,
         )
     except Exception:
         logger.exception(

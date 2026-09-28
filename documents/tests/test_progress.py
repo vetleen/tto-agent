@@ -193,8 +193,11 @@ class ImageDescribeConcurrencyTests(TestCase):
         barrier = threading.Barrier(n, timeout=8)
         threads_seen = set()
 
-        def fake_describe(image_bytes, content_type, user, alt_text=None, model=None):
+        conversation_ids = set()
+
+        def fake_describe(image_bytes, content_type, user, alt_text=None, model=None, conversation_id=None):
             threads_seen.add(threading.get_ident())
+            conversation_ids.add(conversation_id)
             barrier.wait()
             return "desc"
 
@@ -215,6 +218,8 @@ class ImageDescribeConcurrencyTests(TestCase):
         self.assertEqual(len(described), n)
         self.assertEqual(len(threads_seen), n)  # truly ran on n threads
         self.assertEqual(progress_calls[-1], (n, n))  # counter reached N/N
+        # Data-room work is not billed to any chat thread.
+        self.assertEqual(conversation_ids, {None})
 
 
 @override_settings(CACHES=LOCMEM)

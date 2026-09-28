@@ -471,10 +471,12 @@ def review_flagged_web_content(
     source_label: str,
     org_id: int | None,
     user_id: int | None = None,
+    conversation_id: str | None = None,
 ) -> WebReviewDecision | None:
     """Layer 2 reviewer for web content the cheap classifier flagged.
 
     Synchronous — called directly from the ``scan_web_content_task`` Celery task.
+    ``conversation_id`` bills the call to the thread that fetched the content.
     Returns a :class:`WebReviewDecision`, or ``None`` when no reviewer model is
     configured so the caller can fall back to recording the classifier flag (web
     scanning is observability-only and must never fail closed).
@@ -508,7 +510,7 @@ def review_flagged_web_content(
         f"{_wrap_untrusted(content, nonce)}"
     )
 
-    context = RunContext.create(user_id=user_id)
+    context = RunContext.create(user_id=user_id, conversation_id=conversation_id)
     request = ChatRequest(
         messages=[
             Message(role="system", content=_WEB_REVIEWER_SYSTEM_PROMPT),

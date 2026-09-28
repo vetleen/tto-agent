@@ -438,6 +438,7 @@ class AttachmentImageDescriber(EmbeddedImageDescriberBase):
             model=model,
             max_described=max_described,
             label=f"attachment_id={attachment.id}",
+            conversation_id=str(attachment.thread_id),
         )
         self.attachment = attachment
 
@@ -454,7 +455,7 @@ class AttachmentImageDescriber(EmbeddedImageDescriberBase):
         )
 
 
-def _describe_and_store_sink(store, user, *, max_described, model=None):
+def _describe_and_store_sink(store, user, *, max_described, model=None, conversation_id=None):
     """Body of the canvas import sink (``canvas_asset_sink``): describe each
     picture inline (capped, one blocking vision call per occurrence) then persist
     via *store*, a ``(img_bytes, content_type, description, alt_text)`` -> asset
@@ -470,7 +471,10 @@ def _describe_and_store_sink(store, user, *, max_described, model=None):
         description = ""
         if idx <= max_described:
             try:
-                description = describe_image(img_bytes, ct, user, alt_text=image.alt_text, model=model) or ""
+                description = describe_image(
+                    img_bytes, ct, user, alt_text=image.alt_text, model=model,
+                    conversation_id=conversation_id,
+                ) or ""
             except Exception:
                 logger.exception("Failed to describe embedded image")
         if not description:
@@ -504,4 +508,6 @@ def canvas_asset_sink(canvas, user, *, max_described: int = 25):
             dedupe=False,
         )
 
-    return _describe_and_store_sink(store, user, max_described=max_described)
+    return _describe_and_store_sink(
+        store, user, max_described=max_described, conversation_id=str(canvas.thread_id),
+    )

@@ -1352,7 +1352,9 @@ def canvas_import(request, thread_id, canvas_id=None):
     if not thread.title:
         from chat.services import generate_canvas_title
 
-        generated_title = generate_canvas_title(title, content, request.user)
+        generated_title = generate_canvas_title(
+            title, content, request.user, conversation_id=str(thread.pk),
+        )
         if generated_title:
             ChatThread.objects.filter(pk=thread.pk).update(title=generated_title)
 

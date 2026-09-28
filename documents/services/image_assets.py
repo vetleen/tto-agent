@@ -97,8 +97,13 @@ class EmbeddedImageDescriberBase:
     description is then authoritative and it is not re-described).
     """
 
-    def __init__(self, *, user, org_id, model, max_described=MAX_DESCRIBED_EMBEDDED_IMAGES, label=""):
+    def __init__(
+        self, *, user, org_id, model, max_described=MAX_DESCRIBED_EMBEDDED_IMAGES, label="",
+        conversation_id=None,
+    ):
         self.uploaded_by = user
+        # Chat thread the vision calls are billed to (/cost); None for data rooms.
+        self.conversation_id = conversation_id
         # None → org cache off.
         self.org_id = org_id
         # "" when there is no vision-capable model — assets are still stored.
@@ -210,6 +215,7 @@ class EmbeddedImageDescriberBase:
                 return describe_image(
                     rec["bytes"], rec["content_type"], self.uploaded_by,
                     alt_text=rec["alt_text"], model=self.model,
+                    conversation_id=self.conversation_id,
                 )
             finally:
                 close_old_connections()

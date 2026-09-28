@@ -57,7 +57,7 @@ class AttachmentImageDescriberTests(TestCase):
         barrier = threading.Barrier(n, timeout=8)  # deadlocks if calls run serially
         threads_seen = set()
 
-        def fake_describe(image_bytes, content_type, user, alt_text=None, model=None):
+        def fake_describe(image_bytes, content_type, user, alt_text=None, model=None, conversation_id=None):
             threads_seen.add(threading.get_ident())
             barrier.wait()
             return f"desc {len(image_bytes)}"
@@ -76,6 +76,15 @@ class AttachmentImageDescriberTests(TestCase):
         self.assertTrue(all(a.description.startswith("desc ") for a in self._embedded()))
         text = d.substitute("\n".join(tokens), described)
         self.assertNotIn("PNG image", text)
+
+    def test_vision_calls_are_billed_to_the_attachment_thread(self):
+        """Picture descriptions carry the thread id so /cost counts them."""
+        d = self._describer()
+        self.assertEqual(d.conversation_id, str(self.thread.id))
+        with patch("chat.services.describe_image", return_value="A chart") as describe:
+            d.sink(_FakeImg(_png(1)), 1)
+            d.run_descriptions()
+        self.assertEqual(describe.call_args.kwargs["conversation_id"], str(self.thread.id))
 
     def test_dedupes_identical_pictures_and_numbers_unique_ones(self):
         d = self._describer()

@@ -966,8 +966,12 @@ def describe_image(
     user,
     alt_text: str | None = None,
     model: str | None = None,
+    conversation_id: str | None = None,
 ) -> str | None:
     """Use a vision-capable model to describe an image.
+
+    *conversation_id* attributes the call's ``LLMCallLog`` row to a chat thread
+    so it counts toward that thread's cost (``/cost``).
 
     When *model* is given it is used directly (the caller must have picked a
     vision-capable model, e.g. via ``resolve_org_feature_model`` for data-room
@@ -1015,7 +1019,7 @@ def describe_image(
     if minimal_level is not None:
         params["thinking_level"] = minimal_level
 
-    context = RunContext.create(user_id=user.pk)
+    context = RunContext.create(user_id=user.pk, conversation_id=conversation_id)
     request = ChatRequest(
         messages=[Message(role="user", content=content_blocks)],
         model=model,
@@ -1063,9 +1067,12 @@ def describe_image_sink(user, *, max_described=None, model=None, over_limit_labe
     return sink
 
 
-def generate_canvas_title(doc_title: str, doc_content: str, user) -> str | None:
+def generate_canvas_title(
+    doc_title: str, doc_content: str, user, *, conversation_id: str | None = None,
+) -> str | None:
     """Generate a short title for an imported canvas document using the cheap LLM.
 
+    *conversation_id* attributes the call to the thread's cost (``/cost``).
     Returns the title string or None on failure (never raises).
     """
     from core.preferences import get_preferences
@@ -1079,7 +1086,7 @@ def generate_canvas_title(doc_title: str, doc_content: str, user) -> str | None:
         "Reply with ONLY the title."
     )
 
-    context = RunContext.create(user_id=user.pk)
+    context = RunContext.create(user_id=user.pk, conversation_id=conversation_id)
     request = ChatRequest(
         messages=[Message(role="user", content=prompt)],
         model=prefs.feature_models.get("canvas_title", prefs.cheap_model),

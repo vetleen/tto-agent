@@ -778,6 +778,19 @@ class DescribeImageTests(TestCase):
         self.assertEqual(request.model, "openai/gpt-5-mini")
 
     @patch("llm.get_llm_service")
+    def test_conversation_id_attributes_the_call_to_the_thread(self, mock_svc):
+        from chat.services import describe_image
+
+        mock_svc.return_value.run.return_value.message.content = "A photo"
+        describe_image(b"\x89PNG", "image/png", self.user, model="openai/gpt-5-mini")
+        self.assertIsNone(mock_svc.return_value.run.call_args[0][1].context.conversation_id)
+
+        describe_image(
+            b"\x89PNG", "image/png", self.user, model="openai/gpt-5-mini", conversation_id="thread-1",
+        )
+        self.assertEqual(mock_svc.return_value.run.call_args[0][1].context.conversation_id, "thread-1")
+
+    @patch("llm.get_llm_service")
     def test_asks_for_the_least_reasoning_the_model_accepts(self, mock_svc):
         """Descriptions are mechanical: the request pins the model's lowest
         reasoning level so the service never applies the chat default (Luna's
@@ -827,6 +840,21 @@ class GenerateCanvasTitleTests(TestCase):
         result = generate_canvas_title("license.docx", "This is a patent license...", self.user)
         self.assertEqual(result, "Patent License Agreement")
         mock_svc.return_value.run.assert_called_once()
+        self.assertIsNone(mock_svc.return_value.run.call_args[0][1].context.conversation_id)
+
+    @patch("core.preferences.get_preferences")
+    @patch("llm.get_llm_service")
+    def test_conversation_id_attributes_the_call_to_the_thread(self, mock_svc, mock_prefs):
+        from chat.services import generate_canvas_title
+
+        prefs = MagicMock()
+        prefs.feature_models = {}
+        prefs.cheap_model = "openai/gpt-5-mini"
+        mock_prefs.return_value = prefs
+        mock_svc.return_value.run.return_value.message.content = "Title"
+
+        generate_canvas_title("doc", "content", self.user, conversation_id="thread-1")
+        self.assertEqual(mock_svc.return_value.run.call_args[0][1].context.conversation_id, "thread-1")
 
     @patch("core.preferences.get_preferences")
     @patch("llm.get_llm_service")
@@ -883,6 +911,7 @@ class CanvasImportTitleIntegrationTests(TestCase):
         self.assertEqual(data["thread_title"], "Generated Title")
         thread.refresh_from_db()
         self.assertEqual(thread.title, "Generated Title")
+        self.assertEqual(mock_gen.call_args.kwargs["conversation_id"], str(thread.id))
 
     @patch("chat.services.generate_canvas_title")
     @patch("chat.services.import_docx_to_canvas")

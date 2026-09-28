@@ -100,6 +100,21 @@ class WebScanTests(TransactionTestCase):
         _scan_web_content("anything", self.user.pk, None, "web_fetch")
         self.assertEqual(self._events().count(), 0)
 
+    @patch("guardrails.reviewer.review_flagged_web_content", return_value=None)
+    @patch("guardrails.classifier.classify_web_content_sync", return_value=_flagged())
+    def test_calls_are_billed_to_the_fetching_thread(self, mock_classify, mock_review):
+        """Classifier and reviewer carry the thread id so /cost counts them."""
+        from chat.models import ChatThread
+
+        thread = ChatThread.objects.create(created_by=self.user)
+        _scan_web_content("suspicious", self.user.pk, str(thread.id), "web_fetch")
+        self.assertEqual(mock_classify.call_args.kwargs["conversation_id"], str(thread.id))
+        self.assertEqual(mock_review.call_args.kwargs["conversation_id"], str(thread.id))
+
+        _scan_web_content("suspicious", self.user.pk, None, "web_fetch")
+        self.assertIsNone(mock_classify.call_args.kwargs["conversation_id"])
+        self.assertIsNone(mock_review.call_args.kwargs["conversation_id"])
+
     @patch("guardrails.reviewer.review_flagged_web_content")
     @patch("guardrails.classifier.classify_web_content_sync", return_value=_flagged())
     def test_org_resolved_from_membership(self, _mock_classify, mock_review):

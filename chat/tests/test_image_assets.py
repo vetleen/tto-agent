@@ -197,9 +197,11 @@ class CanvasImportAssetsTests(TestCase):
         from chat.tests.test_attachments import _docx_with_image
 
         f = SimpleUploadedFile("deck.docx", _docx_with_image())
-        with patch("chat.services.describe_image", return_value="a revenue chart"):
+        with patch("chat.services.describe_image", return_value="a revenue chart") as describe:
             _title, content, _truncated = import_docx_to_canvas(f, self.user, canvas=self.canvas)
 
+        # Billed to the canvas's thread so /cost counts it.
+        self.assertEqual(describe.call_args.kwargs["conversation_id"], str(self.thread.id))
         assets = list(Asset.objects.filter(canvas=self.canvas))
         self.assertEqual(len(assets), 1)
         self.assertEqual(assets[0].description, "a revenue chart")

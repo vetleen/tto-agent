@@ -320,6 +320,7 @@ def classify_web_content_sync(
     text: str,
     user_id: int,
     org_id: int | None = None,
+    conversation_id: str | None = None,
 ) -> ClassifierResult:
     """Synchronous classifier for fetched web content (pages, search results).
 
@@ -327,10 +328,11 @@ def classify_web_content_sync(
     with an explicit allowance for editorial/topical mentions of injection and
     jailbreaks — the false-positive pattern the heuristic it replaces tripped on.
     Resolves the dedicated ``guardrail_web_scan`` cheap model. Called from the
-    ``scan_web_content_task`` Celery task (sync context).
+    ``scan_web_content_task`` Celery task (sync context). ``conversation_id``
+    bills the call to the thread that fetched the content.
     """
     return _run_classifier(
-        text, user_id, None, _WEB_CLASSIFIER_SYSTEM_PROMPT, org_id,
+        text, user_id, conversation_id, _WEB_CLASSIFIER_SYSTEM_PROMPT, org_id,
         feature_key="guardrail_web_scan",
     )
 
