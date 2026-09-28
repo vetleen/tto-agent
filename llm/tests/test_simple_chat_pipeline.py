@@ -409,11 +409,41 @@ class SimpleChatPipelineTests(TestCase):
             mock_create.return_value = fake_model
             response = pipeline.run(request)
 
-        # 3 tool rounds + 1 final (tool_schemas stripped to force text response)
+        # 3 tool rounds + 1 final. The final call keeps its tools bound (a stable
+        # request prefix) and disables them via tool_choice="none".
         self.assertEqual(fake_model.generate.call_count, 4)
         last_call = fake_model.generate.call_args_list[3][0][0]
-        self.assertIsNone(last_call.tool_schemas)
+        self.assertEqual([t.name for t in last_call.tool_schemas], ["document_search"])
+        self.assertEqual(last_call.params["_tool_choice"], "none")
         self.assertEqual(response.message.content, "Done.")
+
+    def test_run_final_call_ignores_stray_tool_calls(self):
+        """A tool call returned despite tool_choice="none" is dropped, never
+        persisted (an unanswered tool call would 400 the next turn)."""
+        mock_tool = self._make_mock_tool("document_search")
+        request = ChatRequest(
+            messages=[Message(role="user", content="Loop")],
+            stream=False, model="gpt-4o-mini", tools=["document_search"],
+            context=RunContext.create(),
+        )
+        tool_response = ChatResponse(
+            message=Message(role="assistant", content="", tool_calls=[
+                ToolCall(id="c1", name="document_search", arguments={})]),
+            model="gpt-4o-mini", usage=None, metadata={},
+        )
+        stray = ChatResponse(
+            message=Message(role="assistant", content="Answer.", tool_calls=[
+                ToolCall(id="c9", name="document_search", arguments={})]),
+            model="gpt-4o-mini", usage=None, metadata={},
+        )
+        fake_model = MagicMock()
+        fake_model.generate.side_effect = [tool_response, stray]
+        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
+             self._patch_tool_registry(mock_tool):
+            mock_create.return_value = fake_model
+            response = SimpleChatPipeline(max_tool_iterations=1).run(request)
+        self.assertEqual(response.message.content, "Answer.")
+        self.assertFalse(response.message.tool_calls)
 
     def test_resolve_tools_skips_unknown_names(self):
         """Unknown tool names are skipped, not raised — a stale skill tool must
@@ -1509,10 +1539,19 @@ class MidturnPruningTests(TestCase):
         ceiling = SimpleChatPipeline()._midturn_ceiling(req)
         self.assertEqual(ceiling, 50_000 - 16_384 - 8_000)
 
-    # -- _prune_growing_loop --
+    # -- pruning at edit points (llm/pipelines/edit_points.py) --
+
+    def _finish(self, new_messages, req, *, real_input_tokens, protect):
+        from llm.pipelines.edit_points import EditPointManager
+
+        mgr = EditPointManager(SimpleChatPipeline(), req, {})
+        out, _ = mgr.finish_round(
+            new_messages, req, [], prior_len=len(req.messages),
+            real_input_tokens=real_input_tokens, round_call_ids=protect, notice=None,
+        )
+        return out
 
     def test_growing_loop_prunes_when_over_ceiling(self):
-        pipe = SimpleChatPipeline()
         base = [
             Message(role="user", content="q"),
             self._asst("c1", "web_search", {"query": "x"}),
@@ -1523,15 +1562,13 @@ class MidturnPruningTests(TestCase):
         req = self._req(base)
         new_messages = base + [self._asst("c3", "web_search", {"query": "z"}), self._tool("c3", "CURRENT")]
         with self.settings(CONTEXT_MIDTURN_KEEP_TOOL_RESULTS=1):
-            out = pipe._prune_growing_loop(
-                new_messages, req, real_input_tokens=30_000, protect_call_ids={"c3"},
-            )
+            out = self._finish(new_messages, req, real_input_tokens=30_000, protect={"c3"})
         bodies = {m.tool_call_id: m.content for m in out if m.role == "tool"}
         self.assertTrue(bodies["c1"].startswith("[Earlier result of"))
         self.assertEqual(bodies["c3"], "CURRENT")
+        self.assertEqual(req.context.observability.get("prunes"), 1)
 
     def test_growing_loop_noop_when_under_ceiling(self):
-        pipe = SimpleChatPipeline()
         base = [
             Message(role="user", content="q"),
             self._asst("c1", "web_search", {"query": "x"}),
@@ -1540,13 +1577,12 @@ class MidturnPruningTests(TestCase):
         req = self._req(base)
         new_messages = base + [self._asst("c2", "web_search", {"query": "z"}), self._tool("c2", "CURRENT")]
         with self.settings(CONTEXT_MIDTURN_KEEP_TOOL_RESULTS=1):
-            out = pipe._prune_growing_loop(
-                new_messages, req, real_input_tokens=100, protect_call_ids={"c2"},
-            )
+            out = self._finish(new_messages, req, real_input_tokens=100, protect={"c2"})
         self.assertEqual(out[2].content, "OLD_ONE")  # untouched
 
     def test_final_prune_backstops_over_ceiling(self):
-        pipe = SimpleChatPipeline()
+        from llm.pipelines.edit_points import EditPointManager
+
         big = "word " * 40_000  # a large tool body pushing the estimate over the ceiling
         msgs = [
             Message(role="user", content="q"),
@@ -1558,28 +1594,12 @@ class MidturnPruningTests(TestCase):
         ]
         req = self._req(msgs, max_context_tokens=50_000)
         with self.settings(CONTEXT_MIDTURN_KEEP_TOOL_RESULTS=1):
-            out = pipe._prune_final_messages(list(msgs), req)
+            out = EditPointManager(SimpleChatPipeline(), req, {}).finish_final(list(msgs), req)
         bodies = {m.tool_call_id: m.content for m in out if m.role == "tool"}
         self.assertTrue(bodies["c1"].startswith("[Earlier result of"))
+        self.assertEqual(req.context.observability["edit_point:prune"], 1)
 
     # -- observability counters --
-
-    def test_prune_increments_observability_counter(self):
-        pipe = SimpleChatPipeline()
-        base = [
-            Message(role="user", content="q"),
-            self._asst("c1", "web_search", {"query": "x"}),
-            self._tool("c1", "OLD_ONE"),
-            self._asst("c2", "web_search", {"query": "y"}),
-            self._tool("c2", "OLD_TWO"),
-        ]
-        req = self._req(base)
-        new_messages = base + [self._asst("c3", "web_search", {"query": "z"}), self._tool("c3", "CURRENT")]
-        with self.settings(CONTEXT_MIDTURN_KEEP_TOOL_RESULTS=1):
-            pipe._prune_growing_loop(
-                new_messages, req, real_input_tokens=30_000, protect_call_ids={"c3"},
-            )
-        self.assertEqual(req.context.observability.get("prunes"), 1)
 
     def test_record_tool_round_stats_counts_calls_and_tokens(self):
         ctx = RunContext.create()

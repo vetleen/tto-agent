@@ -77,14 +77,48 @@ class ContextAwareTool(BaseTool):
         self.context = ctx
         return self
 
+    # Calls whose serialized arguments are shorter than this are never trimmed
+    # (not worth an edit). See trim_args_at_edit_point.
+    trim_args_min_chars: int = 2000
+
     def end_label_for_result(self, result: dict) -> str | None:
         """Dynamic past-tense label derived from the (best-effort parsed) result
         dict. Return None to fall back to ``end_label``. Override in tools whose
         completion label depends on the result (counts, names, status, etc.)."""
         return None
 
+    def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> dict | None:
+        """Return a shrunken copy of an OLD call's arguments, or None to keep them.
+
+        Called only at edit points (the tool loop is already editing history) and
+        on between-turn history, for calls outside the recent window whose
+        serialized args exceed ``trim_args_min_chars``. Override in tools whose
+        big arguments stay reachable another way (a read tool, a later call that
+        supersedes them, the scratchpad block) — replace the big fields with a
+        short marker saying where the content lives. Must return a JSON object.
+        ``later_calls`` are the ToolCalls made after this one, oldest first, so a
+        tool can tell whether this call was superseded.
+        """
+        return None
+
+
+OMITTED_ARG_PREFIX = "[Omitted from this transcript to save space"
+
+
+def omitted_arg_marker(what: str, where: str) -> str:
+    """Marker replacing a trimmed call argument (see trim_args_at_edit_point).
+
+    Worded so the model reads it as an omission from its own history — NOT as the
+    value the call ran with (a bare "[4,200 chars saved]" was read by a live
+    model as "I saved a placeholder", and it re-did the work)."""
+    return f"{OMITTED_ARG_PREFIX} — this call ran with the full {what}. {where}]"
+
+
+def is_omitted_arg(value) -> bool:
+    return isinstance(value, str) and value.startswith(OMITTED_ARG_PREFIX)
+
 
 # Backward-compat alias
 Tool = ContextAwareTool
 
-__all__ = ["ContextAwareTool", "Tool"]
+__all__ = ["ContextAwareTool", "Tool", "omitted_arg_marker", "is_omitted_arg"]

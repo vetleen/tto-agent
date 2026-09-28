@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from llm.core.model_factory import create_variant_client
+from llm.core.model_factory import anthropic_binds_thinking, create_variant_client
 from llm.core.providers.base import BaseLangChainChatModel
 from llm.model_registry import get_model_info
 from llm.types.requests import ChatRequest
@@ -34,9 +34,24 @@ class AnthropicChatModel(BaseLangChainChatModel):
 
     # -- Thinking / extended-thinking support --
 
+    def _thinking(self, config: dict) -> dict:
+        """``thinking`` param, plus preserved-thinking's drop_block opt-in when the
+        model binds thinking to the request prefix: a tool-loop edit point then
+        drops the replayed reasoning instead of failing the request with a 400."""
+        if anthropic_binds_thinking(self.name):
+            return {**config, "block_binding": {"prefix_mismatch_behavior": "drop_block"}}
+        return config
+
     def _get_reasoning_client(self, request: ChatRequest):
         level = request.params.get("thinking_level")
         if level is None:
+            if anthropic_binds_thinking(self.name):
+                # Omitting `thinking` would leave the binding behavior to the
+                # header's default; set it explicitly.
+                return create_variant_client(
+                    self._api_model, provider="anthropic",
+                    thinking=self._thinking({"type": "adaptive", "display": "summarized"}),
+                )
             return self._client
         if level == "off":
             # Explicit, because several models (Opus 5, Sonnet 5) think by
@@ -55,11 +70,18 @@ class AnthropicChatModel(BaseLangChainChatModel):
         # tool call, which always-thinking models (Opus 5.5) reject with a 400.
         return {"method": "json_schema"}
 
+    def _tool_choice_kwargs(self, request: ChatRequest) -> dict:
+        # langchain-anthropic turns an unknown string into {"type": "tool",
+        # "name": <str>}; the dict form passes through. "none" survives thinking.
+        if (request.params or {}).get("_tool_choice") == "none":
+            return {"tool_choice": {"type": "none"}}
+        return {}
+
     def _get_streaming_client(self, request: ChatRequest):
         client = self._get_reasoning_client(request)
 
         if request.tool_schemas:
-            client = client.bind_tools(request.tool_schemas)
+            client = client.bind_tools(request.tool_schemas, **self._tool_choice_kwargs(request))
 
         # Automatic prefix caching: langchain-anthropic places this on the
         # last eligible message block; Anthropic's lookback window finds
@@ -72,7 +94,7 @@ class AnthropicChatModel(BaseLangChainChatModel):
         return create_variant_client(
             self._api_model,
             provider="anthropic",
-            thinking={"type": "enabled", "budget_tokens": cfg["budget"]},
+            thinking=self._thinking({"type": "enabled", "budget_tokens": cfg["budget"]}),
             max_tokens=cfg["max_tokens"],
         )
 
@@ -81,7 +103,7 @@ class AnthropicChatModel(BaseLangChainChatModel):
         return create_variant_client(
             self._api_model,
             provider="anthropic",
-            thinking={"type": "adaptive", "display": "summarized"},
+            thinking=self._thinking({"type": "adaptive", "display": "summarized"}),
             output_config={"effort": level},
             max_tokens=info.max_output_tokens if info else 128_000,
         )

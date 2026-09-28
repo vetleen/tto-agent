@@ -68,6 +68,14 @@ class ModelInfo:
     default_reasoning_level: str | None = None
     # Anthropic transport: adaptive or extended. Other providers leave this None.
     thinking_mode: str | None = None
+    # Anthropic "preserved thinking" enforcement: the model binds each thinking
+    # block to the exact request prefix before it (system, tools, earlier
+    # messages) and rejects/drops it if that prefix was edited. Mandatory on all
+    # accounts for Claude models released after 2026-10-01. When True, the
+    # Anthropic adapter opts into the beta header + drop_block so an edit point
+    # degrades (reasoning dropped) instead of failing with a 400. False for every
+    # current model: our pre-2026-08-31 account isn't enforced on them.
+    binds_thinking_to_prefix: bool = False
     uses_responses_api: bool = False
     input_modalities: tuple[str, ...] = ("text",)
     output_modalities: tuple[str, ...] = ("text",)

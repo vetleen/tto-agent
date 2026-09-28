@@ -190,11 +190,18 @@ def _observability_fields(context) -> dict:
     distinguishable from "no tools"."""
     obs = getattr(context, "observability", None) or {}
     had_tools = "tool_calls" in obs
+    edit_kinds = {
+        key.split(":", 1)[1]: value
+        for key, value in obs.items() if key.startswith("edit_point:")
+    }
     return {
         "tool_call_count": obs.get("tool_calls"),
         "tool_result_tokens": obs.get("tool_result_tokens"),
         "prune_count": obs.get("prunes", 0) if had_tools else None,
         "estimated_input_tokens": obs.get("estimated_input_tokens"),
+        "edit_point_count": obs.get("edit_points_total", 0) if had_tools else None,
+        "edit_points": edit_kinds or None,
+        "thinking_dropped_count": obs.get("thinking_dropped", 0) if had_tools else None,
     }
 
 

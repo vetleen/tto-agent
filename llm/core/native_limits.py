@@ -100,17 +100,9 @@ def _make_stub(blk: dict) -> dict:
     }
 
 
-def enforce_native_request_limits(messages, provider_id):
-    """Return a message list whose native base64 total is within the provider
-    ceiling, pruning lowest-priority native blocks oldest-first.
-
-    Non-skill blocks are evicted before skill blocks; within a tier the oldest
-    (earliest message, then earliest block) go first. Evicted blocks become a
-    short text stub. ``_wf_*`` markers are stripped from every returned native
-    block. Messages with no native/marked blocks are reused by reference, so the
-    common (text-only) path returns the original list unchanged.
-    """
-    native = []  # (msg_idx, blk_idx, size, pathway)
+def _collect_native(messages):
+    """``([(msg_idx, blk_idx, size, pathway)], total_b64)`` for every native block."""
+    native = []
     total = 0
     for mi, msg in enumerate(messages):
         content = getattr(msg, "content", None)
@@ -121,7 +113,74 @@ def enforce_native_request_limits(messages, provider_id):
                 size = _block_b64_len(blk)
                 native.append((mi, bi, size, _block_pathway(blk)))
                 total += size
+    return native, total
 
+
+def _eviction_order(native):
+    # Non-skill first (priority key 0), then skill (1); within a tier,
+    # oldest-first (message index, then block index).
+    return sorted(
+        range(len(native)),
+        key=lambda i: (
+            1 if native[i][3] == PATHWAY_SKILL else 0,
+            native[i][0],
+            native[i][1],
+        ),
+    )
+
+
+def native_b64_total(messages) -> int:
+    """Total base64 chars of native blocks in ``messages``."""
+    return _collect_native(messages)[1]
+
+
+def plan_native_evictions(messages, target: int, *, protect_msg_indices=()) -> set:
+    """``{(msg_idx, blk_idx)}`` to evict so the native total drops to ``target``,
+    in the enforcer's priority order, never touching ``protect_msg_indices``."""
+    native, total = _collect_native(messages)
+    protected = set(protect_msg_indices)
+    evict: set = set()
+    remaining = total
+    for i in _eviction_order(native):
+        if remaining <= target:
+            break
+        if native[i][0] in protected:
+            continue
+        evict.add((native[i][0], native[i][1]))
+        remaining -= native[i][2]
+    return evict
+
+
+def apply_native_evictions(messages, evict: set):
+    """Replace the planned native blocks with their text stub. Markers on the
+    remaining blocks are kept (the send-time enforcer strips them)."""
+    if not evict:
+        return messages
+    out = list(messages)
+    for mi in {mi for mi, _bi in evict}:
+        msg = messages[mi]
+        out[mi] = msg.model_copy(update={"content": [
+            _make_stub(blk) if (mi, bi) in evict else blk
+            for bi, blk in enumerate(msg.content)
+        ]})
+    return out
+
+
+def enforce_native_request_limits(messages, provider_id):
+    """Return a message list whose native base64 total is within the provider
+    ceiling, pruning lowest-priority native blocks oldest-first.
+
+    Non-skill blocks are evicted before skill blocks; within a tier the oldest
+    (earliest message, then earliest block) go first. Evicted blocks become a
+    short text stub. ``_wf_*`` markers are stripped from every returned native
+    block. Messages with no native/marked blocks are reused by reference, so the
+    common (text-only) path returns the original list unchanged.
+
+    This is the send-time backstop: the tool loop already evicts (with
+    hysteresis) at its edit points and saves the result into its history
+    (llm/pipelines/edit_points.py), so this normally only strips markers.
+    """
+    native, total = _collect_native(messages)
     if not native:
         return messages
 
@@ -129,18 +188,8 @@ def enforce_native_request_limits(messages, provider_id):
 
     evict: set = set()
     if total > ceiling:
-        # Eviction order: non-skill first (priority key 0), then skill (1);
-        # within a tier, oldest-first (message index, then block index).
-        order = sorted(
-            range(len(native)),
-            key=lambda i: (
-                1 if native[i][3] == PATHWAY_SKILL else 0,
-                native[i][0],
-                native[i][1],
-            ),
-        )
         remaining = total
-        for i in order:
+        for i in _eviction_order(native):
             if remaining <= ceiling:
                 break
             evict.add((native[i][0], native[i][1]))
@@ -167,4 +216,10 @@ def enforce_native_request_limits(messages, provider_id):
     return out
 
 
-__all__ = ["enforce_native_request_limits", "provider_native_b64_ceiling"]
+__all__ = [
+    "apply_native_evictions",
+    "enforce_native_request_limits",
+    "native_b64_total",
+    "plan_native_evictions",
+    "provider_native_b64_ceiling",
+]

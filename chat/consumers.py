@@ -5231,6 +5231,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         # 4. Build message list
         messages: list[dict] = []
+        trim_eligible_ids: set[str] = set()
         if thread.summary and not scoped:
             messages.append({
                 "role": "system",
@@ -5253,6 +5254,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
             }
             if m.metadata and m.metadata.get("tool_calls"):
                 msg_dict["tool_calls"] = m.metadata["tool_calls"]
+                if idx < stub_before_idx:
+                    trim_eligible_ids.update(
+                        tc.get("id") for tc in m.metadata["tool_calls"] if tc.get("id")
+                    )
             if m.metadata and m.metadata.get("attachment_ids"):
                 msg_dict["attachment_ids"] = m.metadata["attachment_ids"]
             if m.role == "user":
@@ -5260,6 +5265,27 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 # (branched threads carry the source thread's ids in metadata).
                 msg_dict["message_id"] = str(m.id)
             messages.append(msg_dict)
+
+        # 4b. Shrink big arguments of those same old calls (canvas text, deck
+        #     JSON, scratchpad notes …) per each tool's trim_args_at_edit_point —
+        #     the content stays reachable (canvas_read, document_read, the
+        #     scratchpad preamble). Same window as the result stubbing above.
+        if trim_eligible_ids:
+            from llm.pipelines.edit_points import trim_history_call_args
+
+            new_args = trim_history_call_args(
+                [tc for msg in messages for tc in msg.get("tool_calls") or []],
+                trim_eligible_ids,
+            )
+            if new_args:
+                for msg in messages:
+                    if msg.get("tool_calls") and any(
+                        tc.get("id") in new_args for tc in msg["tool_calls"]
+                    ):
+                        msg["tool_calls"] = [
+                            {**tc, "arguments": new_args[tc["id"]]} if tc.get("id") in new_args else tc
+                            for tc in msg["tool_calls"]
+                        ]
 
         # 5. Strip orphan tool results whose tool_call_id doesn't match any
         #    assistant tool_calls entry (e.g. from history truncation or

@@ -76,10 +76,14 @@ class RunContext(BaseModel):
     # representation truthfully. None → assume native input; the drain degrades.
     model_id: Optional[str] = None
     # Sub-agent private scratchpad (subagent_scratchpad_append). Held in memory so
-    # the tool loop can re-inject it into the system prompt every iteration without
-    # a DB read; the durable copy lives on SubAgentRun.scratchpad. Empty for the
-    # main agent (which uses the thread-scoped scratchpad instead).
+    # the tool loop can re-inject it at edit points without a DB read; the durable
+    # copy lives on SubAgentRun.scratchpad. Empty for the main agent (which uses
+    # the thread-scoped scratchpad instead).
     scratchpad: str = ""
+    # Notes appended to the scratchpad during THIS run (both agent kinds). The
+    # tool loop re-shows them in a consolidated block at edit points; the main
+    # agent's earlier notes are already in its per-turn preamble.
+    scratchpad_turn_notes: list = Field(default_factory=list)
     # Files a tool asked to surface to the model this turn (document_view_native
     # queues images/pdf). The chat pipeline drains these into a user message as
     # native content blocks when the model supports the modality, else a text

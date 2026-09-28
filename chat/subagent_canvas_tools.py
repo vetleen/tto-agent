@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from chat.canvas_tools import EditItem
 from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
+from llm.tools.interfaces import omitted_arg_marker
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,13 @@ class SubagentCanvasEditInput(ReasonBaseModel):
         return value
 
 
+def _superseded_by_later_write(later_calls: list) -> bool:
+    """A later full rewrite makes an earlier write/edit's arguments moot — the
+    canvas no longer depends on them. (No sub-agent canvas read tool exists, so
+    an un-superseded call's content is kept.)"""
+    return any(getattr(c, "name", "") == "subagent_canvas_write" for c in later_calls)
+
+
 class SubagentCanvasLoadTemplateInput(ReasonBaseModel):
     template_name: str = Field(description="Name of the template to load into your working canvas.")
 
@@ -111,6 +119,14 @@ class SubagentCanvasWriteTool(ContextAwareTool):
         "append instead; that is private and is not returned.)"
     )
     args_schema: type[BaseModel] = SubagentCanvasWriteInput
+
+    def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> dict | None:
+        content = args.get("content")
+        if not isinstance(content, str) or not _superseded_by_later_write(later_calls):
+            return None
+        return {**args, "content": omitted_arg_marker(
+            f"{len(content):,}-char content", "A later subagent_canvas_write replaced it.",
+        )}
 
     def _run(self, content: str, title: str = "", **kwargs) -> str:
         from chat.services import CANVAS_MAX_CHARS
@@ -144,6 +160,14 @@ class SubagentCanvasEditTool(ContextAwareTool):
         "it unique. If your canvas is empty, use subagent_canvas_write first."
     )
     args_schema: type[BaseModel] = SubagentCanvasEditInput
+
+    def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> dict | None:
+        edits = args.get("edits")
+        if not isinstance(edits, list) or not _superseded_by_later_write(later_calls):
+            return None
+        return {**args, "edits": omitted_arg_marker(
+            f"list of {len(edits)} edit(s)", "A later subagent_canvas_write replaced the canvas.",
+        )}
 
     def _run(self, edits: list[dict] | list[EditItem], **kwargs) -> str:
         from chat.edit_utils import apply_unique_text_edits

@@ -1,10 +1,19 @@
 """Deduplicate tool results to reduce token consumption.
 
 When the LLM calls both document_search and document_read for the same
-document, the same chunk content can appear multiple times.  This module
-provides a stateless pass that redacts duplicate content from *older* tool
-results (keeping the newest copy intact) and redacts descriptions already
-present in the dynamic context.
+document, the same chunk content can appear multiple times. Two passes:
+
+- ``deduplicate_tool_results`` (keep-newest) redacts duplicate content from
+  *older* tool results and descriptions already present in the dynamic context.
+  It edits earlier history, so the tool loop only runs it at edit points
+  (``normalize_keep_newest``) and between turns.
+- ``redact_new_duplicates`` (append-only) redacts duplicate content from the
+  results a tool-loop round just appended, before they are ever sent, and never
+  touches earlier messages — keeping the request prefix byte-stable (prompt
+  cache, Anthropic preserved thinking) between edit points.
+
+Each redaction stashes the original content in ``metadata["wf_original_content"]``
+(in-memory only) so ``normalize_keep_newest`` can restore and re-decide.
 """
 
 from __future__ import annotations
@@ -21,7 +30,13 @@ logger = logging.getLogger(__name__)
 
 # Placeholder text inserted in place of redacted content
 _CONTENT_PLACEHOLDER = "[Content already provided in a later tool result]"
+_EARLIER_PLACEHOLDER = "[Content already provided in an earlier tool result above]"
 _DESC_PLACEHOLDER = "[See document list in context]"
+_PLACEHOLDERS = (_CONTENT_PLACEHOLDER, _EARLIER_PLACEHOLDER)
+# Prefix of a pruned tool result (chat/tool_stub.py) — carries no content.
+_STUB_PREFIX = "[Earlier result of "
+# Message.metadata key holding a redacted result's original content.
+ORIGINAL_CONTENT_KEY = "wf_original_content"
 
 
 @dataclass
@@ -60,13 +75,6 @@ def deduplicate_tool_results(
     if not tool_infos:
         return messages
 
-    # Parse coverage for each tool result
-    for info in tool_infos:
-        if info.tool_name == "document_search":
-            info.coverage = _parse_search_coverage(info.content)
-        elif info.tool_name == "document_read":
-            info.coverage = _parse_read_coverage(info.content)
-
     # Build "seen" coverage scanning newest-first
     seen: dict[int, set[int]] = {}  # doc_index -> set(chunk_indices)
     # Track which infos need chunk redaction and which doc_indices
@@ -101,19 +109,91 @@ def deduplicate_tool_results(
         if not chunk_docs and not desc_docs:
             continue
 
-        if info.tool_name == "document_search":
-            new_content = _redact_search_content(info.content, chunk_docs, desc_docs)
-        elif info.tool_name == "document_read":
-            new_content = _redact_read_content(info.content, chunk_docs)
-        else:
-            continue
-
+        new_content = _redact(info, chunk_docs, desc_docs, _CONTENT_PLACEHOLDER)
         if new_content != info.content:
-            result[info.msg_index] = messages[info.msg_index].model_copy(
-                update={"content": new_content}
+            # Between turns (dynamic_context given) redactions are final; in the
+            # tool loop they are stashed so the next edit point can re-decide.
+            result[info.msg_index] = _with_redacted_content(
+                messages[info.msg_index], new_content, stash=not dynamic_context,
             )
 
     return result
+
+
+def redact_new_duplicates(messages: list[Message], new_start: int) -> list[Message]:
+    """Append-only dedup: redact duplicate content only in ``messages[new_start:]``.
+
+    Coverage is built from the live (non-stub, non-placeholder) results before
+    ``new_start``; a new result whose chunks for a doc are all already present
+    gets that doc's content replaced with a pointer to the earlier copy. Earlier
+    messages are returned by reference, untouched. New results are processed
+    oldest-first, so a later result in the same round dedups against an earlier
+    one.
+    """
+    tool_infos = _identify_tool_messages(messages)
+    if not any(info.msg_index >= new_start for info in tool_infos):
+        return messages
+
+    seen: dict[int, set[int]] = {}
+    result = list(messages)
+    for info in sorted(tool_infos, key=lambda x: x.msg_index):
+        if info.msg_index >= new_start:
+            redact_docs = {
+                doc_idx for doc_idx, chunks in info.coverage.items()
+                if chunks and doc_idx in seen and chunks.issubset(seen[doc_idx])
+            }
+            if redact_docs:
+                new_content = _redact(info, redact_docs, set(), _EARLIER_PLACEHOLDER)
+                if new_content != info.content:
+                    result[info.msg_index] = _with_redacted_content(
+                        messages[info.msg_index], new_content,
+                    )
+        for doc_idx, chunks in info.coverage.items():
+            seen.setdefault(doc_idx, set()).update(chunks)
+    return result
+
+
+def normalize_keep_newest(messages: list[Message], dynamic_context: str = "") -> list[Message]:
+    """Restore every redacted result (unless it was since pruned to a stub), then
+    run the keep-newest pass. Used at tool-loop edit points, where earlier
+    history is being rewritten anyway: it turns append-only redactions (newer
+    copy redacted) into keep-newest ones (older copy redacted), so the full copy
+    is the one the pruner's recency window protects."""
+    return deduplicate_tool_results(restore_redacted(messages), dynamic_context)
+
+
+def restore_redacted(messages: list[Message]) -> list[Message]:
+    """Undo stashed redactions. A result pruned to a stub since keeps its stub
+    (only the stash is dropped)."""
+    result = list(messages)
+    for idx, msg in enumerate(messages):
+        meta = msg.metadata or {}
+        if ORIGINAL_CONTENT_KEY not in meta:
+            continue
+        rest = {k: v for k, v in meta.items() if k != ORIGINAL_CONTENT_KEY}
+        if isinstance(msg.content, str) and msg.content.startswith(_STUB_PREFIX):
+            result[idx] = msg.model_copy(update={"metadata": rest})
+        else:
+            result[idx] = msg.model_copy(
+                update={"content": meta[ORIGINAL_CONTENT_KEY], "metadata": rest},
+            )
+    return result
+
+
+def _with_redacted_content(msg: Message, new_content: str, *, stash: bool = True) -> Message:
+    if not stash:
+        return msg.model_copy(update={"content": new_content})
+    meta = dict(msg.metadata or {})
+    meta.setdefault(ORIGINAL_CONTENT_KEY, msg.content)
+    return msg.model_copy(update={"content": new_content, "metadata": meta})
+
+
+def _redact(info: "_ToolResultInfo", chunk_docs: set[int], desc_docs: set[int], placeholder: str) -> str:
+    if info.tool_name == "document_search":
+        return _redact_search_content(info.content, chunk_docs, desc_docs, placeholder)
+    if info.tool_name == "document_read":
+        return _redact_read_content(info.content, chunk_docs, placeholder)
+    return info.content
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +202,8 @@ def deduplicate_tool_results(
 
 
 def _identify_tool_messages(messages: list[Message]) -> list[_ToolResultInfo]:
-    """Find tool-result messages for document_search / document_read.
+    """Find tool-result messages for document_search / document_read, with
+    their parsed chunk coverage. Pruned stubs are skipped.
 
     Correlates ``role="tool"`` messages to their tool names by matching
     ``tool_call_id`` against preceding assistant messages' ``tool_calls[].id``.
@@ -142,13 +223,20 @@ def _identify_tool_messages(messages: list[Message]) -> list[_ToolResultInfo]:
             continue
         if not isinstance(msg.content, str):
             continue
+        if msg.content.startswith(_STUB_PREFIX):
+            continue  # pruned — no content left to cover or redact
         tool_name = call_id_to_name.get(msg.tool_call_id, "")
         if tool_name in target_tools:
-            infos.append(_ToolResultInfo(
+            info = _ToolResultInfo(
                 msg_index=idx,
                 tool_name=tool_name,
                 content=msg.content,
-            ))
+            )
+            if tool_name == "document_search":
+                info.coverage = _parse_search_coverage(msg.content)
+            else:
+                info.coverage = _parse_read_coverage(msg.content)
+            infos.append(info)
 
     return infos
 
@@ -169,6 +257,8 @@ def _parse_search_coverage(content: str) -> dict[int, set[int]]:
         if not doc_match:
             continue
         doc_index = int(doc_match.group(1))
+        if any(p in block for p in _PLACEHOLDERS):
+            continue  # redacted copy — its content lives elsewhere
 
         # Extract chunk range from "Chunk #N of M" or "Chunks #N–#M of T"
         chunk_match = re.search(
@@ -208,6 +298,8 @@ def _parse_read_coverage(content: str) -> dict[int, set[int]]:
             continue
         if "error" in doc and "content" not in doc:
             continue
+        if doc.get("content") in _PLACEHOLDERS:
+            continue  # redacted copy — its content lives elsewhere
 
         total_chunks = doc.get("total_chunks", 0)
         chunk_range = doc.get("chunk_range")
@@ -233,6 +325,7 @@ def _redact_search_content(
     content: str,
     chunk_redact_doc_indices: set[int],
     desc_redact_doc_indices: set[int],
+    placeholder: str = _CONTENT_PLACEHOLDER,
 ) -> str:
     """Redact chunk content and/or descriptions from document_search output.
 
@@ -273,7 +366,7 @@ def _redact_search_content(
 
             # Redact chunk content if needed
             if doc_index in chunk_redact_doc_indices:
-                body = _redact_search_block_content(body)
+                body = _redact_search_block_content(body, placeholder)
 
         result_parts.append(header + body)
         i += 2
@@ -281,7 +374,7 @@ def _redact_search_content(
     return "".join(result_parts)
 
 
-def _redact_search_block_content(body: str) -> str:
+def _redact_search_block_content(body: str, placeholder: str = _CONTENT_PLACEHOLDER) -> str:
     """Replace chunk text in a single search result block with a placeholder.
 
     Keeps metadata lines (those starting with **) and the chunk label line,
@@ -302,7 +395,7 @@ def _redact_search_block_content(body: str) -> str:
 
         if found_chunk_label and not content_replaced:
             # This is where chunk content starts — replace it
-            new_lines.append(_CONTENT_PLACEHOLDER)
+            new_lines.append(placeholder)
             content_replaced = True
             # Skip remaining content lines until next metadata or end
             continue
@@ -321,7 +414,9 @@ def _redact_search_block_content(body: str) -> str:
     return "\n".join(new_lines)
 
 
-def _redact_read_content(content: str, doc_indices_to_redact: set[int]) -> str:
+def _redact_read_content(
+    content: str, doc_indices_to_redact: set[int], placeholder: str = _CONTENT_PLACEHOLDER,
+) -> str:
     """Replace content field in document_read JSON for matching doc_indices."""
     try:
         data = json.loads(content)
@@ -337,7 +432,7 @@ def _redact_read_content(content: str, doc_indices_to_redact: set[int]) -> str:
     for doc in documents:
         if isinstance(doc, dict) and doc.get("doc_index") in doc_indices_to_redact and "content" in doc:
             doc = dict(doc)  # shallow copy
-            doc["content"] = _CONTENT_PLACEHOLDER
+            doc["content"] = placeholder
             modified = True
         new_documents.append(doc)
 

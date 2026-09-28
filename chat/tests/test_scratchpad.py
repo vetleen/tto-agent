@@ -210,65 +210,166 @@ class SubagentScratchpadMetadataTests(TestCase):
         self.assertEqual(ScratchpadAppendTool().audience, "main")
 
 
-class SubagentScratchpadInjectionTests(TestCase):
-    """The pipeline re-injects the run scratchpad as a single trailing block each
-    iteration so it survives mid-run pruning (see _refresh_subagent_scratchpad)."""
 
-    def _pipeline(self):
-        from llm.pipelines.simple_chat import SimpleChatPipeline
 
-        return SimpleChatPipeline()
+class ScratchpadEditPointTests(TestCase):
+    """The tool loop never re-injects the scratchpad between edit points (the
+    notes are visible as the append calls' own arguments); at an edit point it
+    appends ONE consolidated block and shrinks the old note arguments."""
 
-    def _req(self, agent_kind, scratchpad):
-        from llm.types import ChatRequest, Message
+    LONG = "Fact: " + "x" * 300  # over the scratchpad tools' trim threshold
+
+    def _req(self, agent_kind, messages, scratchpad=""):
+        from llm.types import ChatRequest
 
         ctx = RunContext.create(user_id="1")
         ctx.agent_kind = agent_kind
         ctx.scratchpad = scratchpad
         return ChatRequest(
-            messages=[Message(role="system", content="sys")],
-            model="gpt-4o",
-            context=ctx,
+            messages=messages, model="gpt-5.4", context=ctx,
+            params={"max_context_tokens": 50_000, "thinking_level": "low"},
         )
 
-    def _marker(self):
-        from llm.pipelines.simple_chat import _SUBAGENT_SCRATCHPAD_MARKER
+    def _mgr(self, req):
+        from llm.pipelines.edit_points import EditPointManager
+        from llm.pipelines.simple_chat import SimpleChatPipeline
 
-        return _SUBAGENT_SCRATCHPAD_MARKER
+        return EditPointManager(SimpleChatPipeline(), req, {})
 
-    def test_notes_injected_as_trailing_block(self):
-        from llm.types import Message
+    def _note_round(self, cid, tool, note):
+        from llm.types import Message, ToolCall
 
-        pipe = self._pipeline()
-        req = self._req("subagent", "Fact A\nFact B")
-        messages = [Message(role="system", content="sys"), Message(role="user", content="hi")]
-        pipe._refresh_subagent_scratchpad(messages, req)
-        self.assertTrue(messages[-1].content.startswith(self._marker()))
-        self.assertIn("Fact A", messages[-1].content)
-
-    def test_reinjection_is_idempotent(self):
-        from llm.types import Message
-
-        pipe = self._pipeline()
-        req = self._req("subagent", "Fact A")
-        messages = [Message(role="system", content="sys")]
-        pipe._refresh_subagent_scratchpad(messages, req)
-        # Simulate a next round: scratchpad grew, re-inject.
-        req.context.scratchpad = "Fact A\nFact B"
-        pipe._refresh_subagent_scratchpad(messages, req)
-        blocks = [
-            m for m in messages
-            if isinstance(m.content, str) and m.content.startswith(self._marker())
+        return [
+            Message(role="assistant", content="", tool_calls=[
+                ToolCall(id=cid, name=tool, arguments={"note": note})]),
+            Message(role="tool", content='{"status": "ok"}', tool_call_id=cid),
         ]
+
+    def _blocks(self, messages):
+        from llm.pipelines.edit_points import SCRATCHPAD_BLOCK_HEADER
+
+        return [
+            m for m in messages
+            if isinstance(m.content, str) and m.content.startswith(SCRATCHPAD_BLOCK_HEADER)
+        ]
+
+    def _finish(self, mgr, req, new_messages, *, real_input_tokens, cid):
+        out, _tools = mgr.finish_round(
+            new_messages, req, [], prior_len=len(req.messages),
+            real_input_tokens=real_input_tokens, round_call_ids={cid}, notice=None,
+        )
+        return out
+
+    def test_quiet_round_adds_no_block(self):
+        from llm.types import Message
+
+        base = [Message(role="system", content="sys"), Message(role="user", content="hi")]
+        req = self._req("subagent", base)
+        mgr = self._mgr(req)
+        req.context.scratchpad = self.LONG  # the tool updated it this round
+        out = self._finish(
+            mgr, req, base + self._note_round("c1", "subagent_scratchpad_append", self.LONG),
+            real_input_tokens=100, cid="c1",
+        )
+        self.assertEqual(self._blocks(out), [])
+        self.assertEqual(mgr.edit_rounds, [])
+
+    def test_edit_point_appends_one_block_and_shrinks_old_notes(self):
+        from chat.scratchpad_tools import SAVED_NOTE_MARKER
+        from llm.types import Message
+
+        base = [Message(role="system", content="sys"), Message(role="user", content="hi")]
+        history = base + self._note_round("c1", "subagent_scratchpad_append", self.LONG)
+        req = self._req("subagent", history, scratchpad=self.LONG)
+        mgr = self._mgr(req)
+        with self.settings(CONTEXT_MIDTURN_KEEP_TOOL_RESULTS=0):
+            out = self._finish(
+                mgr, req, history + self._note_round("c2", "web_search", "q"),
+                real_input_tokens=40_000, cid="c2",  # over the ceiling: edit point
+            )
+            # A second edit point replaces (not duplicates) the block.
+            req2 = req.model_copy(update={"messages": out})
+            req2.context.scratchpad = self.LONG + "\n\nFact B"
+            out2 = self._finish(
+                mgr, req2, out + self._note_round("c3", "web_search", "q2"),
+                real_input_tokens=40_000, cid="c3",
+            )
+        self.assertEqual(mgr.edit_rounds, [0, 1])
+        self.assertIs(out[-1], self._blocks(out)[-1])  # block is last
+        blocks = self._blocks(out2)
         self.assertEqual(len(blocks), 1)
         self.assertIn("Fact B", blocks[0].content)
+        note_call = out2[2].tool_calls[0]
+        self.assertEqual(note_call.arguments["note"], SAVED_NOTE_MARKER)
+        self.assertEqual(req.context.observability["edit_points_total"], 2)
 
-    def test_main_agent_is_noop(self):
+    def test_main_agent_block_has_only_this_turns_notes(self):
         from llm.types import Message
 
-        pipe = self._pipeline()
-        req = self._req("main", "should be ignored")
-        messages = [Message(role="user", content="hi")]
-        pipe._refresh_subagent_scratchpad(messages, req)
-        self.assertEqual(len(messages), 1)
-        self.assertNotIn(self._marker(), messages[0].content)
+        base = [Message(role="system", content="sys"), Message(role="user", content="hi")]
+        req = self._req("main", base, scratchpad="")
+        req.context.scratchpad_turn_notes.append("NEW THIS TURN")
+        mgr = self._mgr(req)
+        out = self._finish(
+            mgr, req, base + self._note_round("c1", "web_search", "q"),
+            real_input_tokens=40_000, cid="c1",
+        )
+        blocks = self._blocks(out)
+        self.assertEqual(len(blocks), 1)
+        self.assertIn("NEW THIS TURN", blocks[0].content)
+
+    def test_main_agent_without_turn_notes_gets_no_block(self):
+        from llm.types import Message
+
+        base = [Message(role="system", content="sys"), Message(role="user", content="hi")]
+        req = self._req("main", base)
+        out = self._finish(
+            self._mgr(req), req, base + self._note_round("c1", "web_search", "q"),
+            real_input_tokens=40_000, cid="c1",
+        )
+        self.assertEqual(self._blocks(out), [])
+
+    def test_seeded_subagent_scratchpad_shown_once_append_only(self):
+        from llm.types import Message
+
+        base = [Message(role="system", content="sys"), Message(role="user", content="hi")]
+        req = self._req("subagent", base, scratchpad="Seeded from a retried run")
+        mgr = self._mgr(req)
+        out = self._finish(
+            mgr, req, base + self._note_round("c1", "web_search", "q"),
+            real_input_tokens=100, cid="c1",
+        )
+        self.assertEqual(len(self._blocks(out)), 1)
+        self.assertEqual(out[:len(base)], base)  # nothing earlier touched
+        req2 = req.model_copy(update={"messages": out})
+        out2 = self._finish(
+            mgr, req2, out + self._note_round("c2", "web_search", "q2"),
+            real_input_tokens=100, cid="c2",
+        )
+        self.assertEqual(len(self._blocks(out2)), 1)  # not re-appended
+
+    def test_subagent_nudge_appended_once_when_filling(self):
+        from llm.types import Message
+
+        base = [Message(role="system", content="sys"), Message(role="user", content="hi")]
+        req = self._req("subagent", base)
+        mgr = self._mgr(req)
+        out = self._finish(
+            mgr, req, base + self._note_round("c1", "web_search", "q"),
+            real_input_tokens=20_000, cid="c1",  # >= 0.7 x ceiling, under it
+        )
+        req2 = req.model_copy(update={"messages": out})
+        out2 = self._finish(
+            mgr, req2, out + self._note_round("c2", "web_search", "q2"),
+            real_input_tokens=21_000, cid="c2",
+        )
+        nudges = [m for m in out2 if isinstance(m.content, str) and m.content.startswith("# Context notice")]
+        self.assertEqual(len(nudges), 1)
+        self.assertEqual(out2[:len(out)], out)  # append-only
+
+    def test_append_tools_record_turn_notes(self):
+        user = User.objects.create_user(email="notes@example.com", password="x")
+        thread = ChatThread.objects.create(created_by=user, title="t")
+        ctx = _ctx(user.pk, thread.pk)
+        _invoke({"note": "remember this"}, ctx)
+        self.assertEqual(ctx.scratchpad_turn_notes, ["remember this"])

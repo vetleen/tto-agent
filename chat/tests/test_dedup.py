@@ -575,3 +575,123 @@ class ExtractContextDocIndicesTests(SimpleTestCase):
     def test_no_retrieved_documents(self):
         ctx = "# Some other section\nNo docs here."
         self.assertEqual(_extract_context_doc_indices(ctx), set())
+
+
+# ---------------------------------------------------------------------------
+# Append-only dedup (tool loop between edit points) + restore/normalize
+# ---------------------------------------------------------------------------
+
+
+class AppendOnlyDedupTests(SimpleTestCase):
+    """redact_new_duplicates only ever touches the newly appended results."""
+
+    def _history(self):
+        search = _full_search_output(_search_result(1, 1, chunk_start=3, content="ORIGINAL CHUNK"))
+        return [
+            _user_msg("q"),
+            _assistant_msg([("s1", "document_search")]),
+            _tool_msg("s1", search),
+        ]
+
+    def test_new_duplicate_redacted_earlier_untouched(self):
+        from chat.dedup import _EARLIER_PLACEHOLDER, ORIGINAL_CONTENT_KEY, redact_new_duplicates
+
+        history = self._history()
+        new_search = _full_search_output(_search_result(1, 1, chunk_start=3, content="ORIGINAL CHUNK"))
+        msgs = history + [_assistant_msg([("s2", "document_search")]), _tool_msg("s2", new_search)]
+        out = redact_new_duplicates(msgs, len(history))
+        for i, m in enumerate(history):
+            self.assertIs(out[i], m)  # earlier messages returned by reference
+        self.assertIn(_EARLIER_PLACEHOLDER, out[-1].content)
+        self.assertNotIn("ORIGINAL CHUNK", out[-1].content)
+        self.assertEqual(out[-1].metadata[ORIGINAL_CONTENT_KEY], new_search)
+
+    def test_second_result_in_same_round_dedups_against_first(self):
+        from chat.dedup import _EARLIER_PLACEHOLDER, redact_new_duplicates
+
+        a = _full_search_output(_search_result(1, 4, chunk_start=1, content="CHUNK ONE"))
+        read = json.dumps({"documents": [
+            {"doc_index": 4, "chunk_range": "1-1", "total_chunks": 5, "content": "CHUNK ONE"},
+        ]})
+        msgs = [
+            _user_msg("q"),
+            _assistant_msg([("a", "document_search"), ("b", "document_read")]),
+            _tool_msg("a", a),
+            _tool_msg("b", read),
+        ]
+        out = redact_new_duplicates(msgs, 1)
+        self.assertIn("CHUNK ONE", out[2].content)
+        self.assertEqual(json.loads(out[3].content)["documents"][0]["content"], _EARLIER_PLACEHOLDER)
+
+    def test_partial_overlap_not_redacted(self):
+        from chat.dedup import redact_new_duplicates
+
+        history = self._history()
+        wider = _full_search_output(_search_result(1, 1, chunk_start=3, chunk_end=4, content="MORE"))
+        msgs = history + [_assistant_msg([("s2", "document_search")]), _tool_msg("s2", wider)]
+        out = redact_new_duplicates(msgs, len(history))
+        self.assertIs(out[-1], msgs[-1])
+
+    def test_redacted_copies_do_not_count_as_coverage(self):
+        from chat.dedup import redact_new_duplicates
+
+        # The earlier copy is itself a placeholder: it carries no content, so a
+        # new copy must stay full.
+        history = self._history()
+        history[2] = _tool_msg("s1", redact_new_duplicates(
+            history + [_assistant_msg([("x", "document_search")]), _tool_msg("x", history[2].content)],
+            len(history),
+        )[-1].content)
+        new = _full_search_output(_search_result(1, 1, chunk_start=3, content="ORIGINAL CHUNK"))
+        msgs = history + [_assistant_msg([("s2", "document_search")]), _tool_msg("s2", new)]
+        out = redact_new_duplicates(msgs, len(history))
+        self.assertIn("ORIGINAL CHUNK", out[-1].content)
+
+
+class RestoreThenNormalizeTests(SimpleTestCase):
+    """At an edit point, append-only redactions become keep-newest ones."""
+
+    def test_normalize_moves_full_copy_to_newest(self):
+        from chat.dedup import normalize_keep_newest, redact_new_duplicates
+
+        old = _full_search_output(_search_result(1, 1, chunk_start=3, content="THE CHUNK"))
+        history = [_user_msg("q"), _assistant_msg([("s1", "document_search")]), _tool_msg("s1", old)]
+        msgs = redact_new_duplicates(
+            history + [_assistant_msg([("s2", "document_search")]), _tool_msg("s2", old)],
+            len(history),
+        )
+        self.assertNotIn("THE CHUNK", msgs[-1].content)
+        out = normalize_keep_newest(msgs)
+        self.assertIn("THE CHUNK", out[-1].content)  # newest is full again
+        self.assertIn(_CONTENT_PLACEHOLDER, out[2].content)  # older now redacted
+
+    def test_content_never_vanishes_when_newest_copy_was_pruned(self):
+        from chat.dedup import ORIGINAL_CONTENT_KEY, normalize_keep_newest, redact_new_duplicates
+
+        old = _full_search_output(_search_result(1, 1, chunk_start=3, content="THE CHUNK"))
+        history = [_user_msg("q"), _assistant_msg([("s1", "document_search")]), _tool_msg("s1", old)]
+        msgs = redact_new_duplicates(
+            history + [_assistant_msg([("s2", "document_search")]), _tool_msg("s2", old)],
+            len(history),
+        )
+        msgs = normalize_keep_newest(msgs)  # s1 redacted (stashed), s2 full
+        # The pruner then stubs the newest (full) copy.
+        stub = "[Earlier result of document_search() was cleared to save context.]"
+        msgs[-1] = msgs[-1].model_copy(update={"content": stub})
+        out = normalize_keep_newest(msgs)
+        self.assertIn("THE CHUNK", out[2].content)  # older copy restored
+        self.assertEqual(out[-1].content, stub)
+        self.assertNotIn(ORIGINAL_CONTENT_KEY, out[-1].metadata)
+
+    def test_between_turn_redactions_are_final(self):
+        from chat.dedup import ORIGINAL_CONTENT_KEY
+
+        old = _full_search_output(_search_result(1, 1, chunk_start=3, content="THE CHUNK"))
+        msgs = [
+            _user_msg("q"),
+            _assistant_msg([("s1", "document_search")]), _tool_msg("s1", old),
+            _assistant_msg([("s2", "document_search")]), _tool_msg("s2", old),
+        ]
+        out = deduplicate_tool_results(msgs, dynamic_context="1. [1] \"doc.pdf\" (Report) — A document")
+        self.assertIn(_CONTENT_PLACEHOLDER, out[2].content)
+        self.assertNotIn(ORIGINAL_CONTENT_KEY, out[2].metadata)

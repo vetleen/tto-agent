@@ -71,6 +71,15 @@ class LLMCallLog(models.Model):
     # round, same rounds as input_tokens). Compare against input_tokens (the
     # provider's actual) to calibrate the estimator that drives pruning decisions.
     estimated_input_tokens = models.PositiveIntegerField(null=True, blank=True)
+    # Tool-loop edit points (llm/pipelines/edit_points.py): rounds where earlier
+    # history had to be rewritten — each breaks the prompt cache and, on
+    # preserved-thinking models, drops replayed reasoning. edit_points breaks the
+    # count down by trigger, e.g. {"prune": 1, "tools": 1, "native_evict": 0}.
+    edit_point_count = models.PositiveIntegerField(null=True, blank=True)
+    edit_points = models.JSONField(null=True, blank=True)
+    # Replayed thinking blocks the provider dropped this turn (Anthropic
+    # input_transformations, reported only for binds_thinking_to_prefix models).
+    thinking_dropped_count = models.PositiveIntegerField(null=True, blank=True)
 
     # Status / errors
     status = models.CharField(

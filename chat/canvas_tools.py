@@ -8,6 +8,7 @@ import re
 from pydantic import BaseModel, Field, field_validator
 
 from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
+from llm.tools.interfaces import omitted_arg_marker, is_omitted_arg
 
 # Markdown image syntax the model sometimes emits. It never renders in the
 # canvas (DOMPurify drops <img>) and a bare URL/filename has no asset behind it,
@@ -34,6 +35,10 @@ _MD_IMAGE_WARNING = (
     "document tool (document_search / document_list / document_read / document_view_native) "
     "gave you, verbatim, into the content."
 )
+
+
+def _canvas_read_marker(what: str) -> str:
+    return omitted_arg_marker(what, "Call canvas_read to see the canvas as it is now.")
 
 
 class ActiveCanvasInput(ReasonBaseModel):
@@ -160,6 +165,12 @@ class WriteCanvasTool(ContextAwareTool):
     )
     args_schema: type[BaseModel] = WriteCanvasInput
 
+    def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> dict | None:
+        content = args.get("content")
+        if not isinstance(content, str) or is_omitted_arg(content):
+            return None
+        return {**args, "content": _canvas_read_marker(f"{len(content):,}-char document")}
+
     def _run(self, title: str, content: str, canvas_name: str = "", **kwargs) -> str:
         from django.db import IntegrityError
 
@@ -262,6 +273,12 @@ class EditCanvasTool(ContextAwareTool):
     )
     args_schema: type[BaseModel] = EditCanvasInput
 
+    def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> dict | None:
+        edits = args.get("edits")
+        if not isinstance(edits, list):
+            return None
+        return {**args, "edits": _canvas_read_marker(f"list of {len(edits)} edit(s)")}
+
     def _run(self, edits: list[dict] | list[EditItem], canvas_name: str = "", **kwargs) -> str:
         from chat.services import resolve_canvas
 
@@ -344,6 +361,55 @@ class EditCanvasTool(ContextAwareTool):
         if stripped_images:
             result["warning"] = _MD_IMAGE_WARNING % stripped_images
         return json.dumps(result)
+
+
+class ReadCanvasInput(ReasonBaseModel):
+    canvas_name: str = Field(
+        default="",
+        description="Title of the canvas to read. If omitted, reads the active canvas.",
+    )
+
+
+class ReadCanvasTool(ContextAwareTool):
+    """Return a canvas's current content.
+
+    Active canvases are shown in the per-turn context, but within a turn the model
+    only sees what it wrote in its own tool calls — and those arguments are trimmed
+    when the tool loop compacts older context. This tool is how the current text
+    stays reachable."""
+
+    name: str = "canvas_read"
+    audience: str = "main"
+    section: str = "skills"
+    start_label: str = "Reading canvas..."
+    end_label: str = "Read canvas"
+    description: str = (
+        "Read the current full content of a canvas. Use this when you need the "
+        "canvas text but it is not in your context — e.g. after earlier canvas_write "
+        "or canvas_edit calls were shortened to save space. Leave canvas_name empty "
+        "to read the active canvas."
+    )
+    args_schema: type[BaseModel] = ReadCanvasInput
+
+    def _run(self, canvas_name: str = "", **kwargs) -> str:
+        from chat.services import resolve_canvas
+
+        thread_id = self.context.conversation_id if self.context else None
+        if not thread_id:
+            return json.dumps({"status": "error", "message": "No thread context available."})
+
+        canvas, err = resolve_canvas(thread_id, canvas_name or None)
+        if err:
+            return json.dumps({
+                "status": "error",
+                "message": err if canvas_name else "No canvas exists for this thread.",
+            })
+        return json.dumps({
+            "status": "ok",
+            "title": canvas.title,
+            "canvas_id": str(canvas.pk),
+            "content": canvas.content,
+        })
 
 
 class DeleteCanvasInput(ReasonBaseModel):
@@ -548,5 +614,6 @@ _registry = get_tool_registry()
 _registry.register_tool(ActiveCanvasTool())
 _registry.register_tool(WriteCanvasTool())
 _registry.register_tool(EditCanvasTool())
+_registry.register_tool(ReadCanvasTool())
 _registry.register_tool(DeleteCanvasTool())
 _registry.register_tool(PasteUserTextTool())

@@ -19,6 +19,7 @@ from io import BytesIO
 from pydantic import BaseModel, Field, field_validator
 
 from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
+from llm.tools.interfaces import omitted_arg_marker
 
 # The slides_add_slide layout ids, sourced from the seed catalogue so this
 # always matches what actually exists (no hand-maintained list to go stale).
@@ -322,6 +323,21 @@ class WriteDeckTool(ContextAwareTool):
         "JSON format is documented in the Slide Deck Collaborator skill."
     )
     args_schema: type[BaseModel] = WriteDeckInput
+
+    def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> dict | None:
+        # No deck read tool, so only a later full rewrite of the same deck makes
+        # this call's JSON moot.
+        deck = args.get("deck_name") or ""
+        superseded = any(
+            getattr(c, "name", "") == "slide_canvas_write"
+            and ((getattr(c, "arguments", None) or {}).get("deck_name") or "") == deck
+            for c in later_calls
+        )
+        if not superseded or args.get("content") is None:
+            return None
+        return {**args, "content": omitted_arg_marker(
+            "deck JSON", "A later slide_canvas_write of this deck replaced it.",
+        )}
 
     def _run(self, content=None, title: str = "", deck_name: str = "", **kwargs) -> str:
         from chat.slides import schema, service

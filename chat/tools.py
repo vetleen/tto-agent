@@ -9,6 +9,7 @@ from typing import Optional
 from pydantic import BaseModel, Field, field_validator
 
 from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
+from llm.tools.interfaces import omitted_arg_marker
 
 logger = logging.getLogger(__name__)
 
@@ -1260,6 +1261,21 @@ class EditDocumentTool(ContextAwareTool):
         "It's a shortcut, not your primary editing pathway."
     )
     args_schema: type[BaseModel] = EditDocumentInput
+
+    def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> dict | None:
+        # The edit is saved as a new document version, readable with document_read.
+        out = dict(args)
+        content = args.get("content")
+        if isinstance(content, str) and len(content) > 200:
+            out["content"] = omitted_arg_marker(
+                f"{len(content):,}-char content", "Call document_read to see the document as it is now.",
+            )
+        edits = args.get("edits")
+        if isinstance(edits, list) and edits:
+            out["edits"] = omitted_arg_marker(
+                f"list of {len(edits)} edit(s)", "Call document_read to see the document as it is now.",
+            )
+        return out if out != args else None
 
     def _run(self, doc_index: int, mode: str = "edit", edits: list | None = None,
              content: str = "", data_room_id: int | None = None, reason: str = "", **kwargs) -> str:

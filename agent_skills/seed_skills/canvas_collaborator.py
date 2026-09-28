@@ -1,7 +1,7 @@
 """Canvas Collaborator (seed skill).
 
 A main-agent skill that unlocks the canvas workspace tools (``canvas_activate``,
-``canvas_write``, ``canvas_edit``, ``canvas_delete``, ``canvas_save_to_document``,
+``canvas_write``, ``canvas_edit``, ``canvas_read``, ``canvas_delete``, ``canvas_save_to_document``,
 ``canvas_paste_user_text`` and ``chat_attachment_open_to_canvas``; all
 ``section="skills"``, ``audience="main"``). Activating it lets the assistant draft
 and edit documents in the side-panel canvas. Sub-agents have their own canvas
@@ -56,6 +56,7 @@ Supported diagram types: `graph`/`flowchart`, `sequenceDiagram`, `classDiagram`,
         "canvas_activate",
         "canvas_write",
         "canvas_edit",
+        "canvas_read",
         "canvas_delete",
         "canvas_save_to_document",
         "canvas_paste_user_text",

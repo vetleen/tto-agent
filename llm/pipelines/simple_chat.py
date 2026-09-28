@@ -11,6 +11,7 @@ from typing import Iterator, List, Tuple
 from llm.core.interfaces import ChatModel
 from llm.core.model_factory import create_chat_model
 from llm.pipelines.base import BasePipeline
+from llm.pipelines.edit_points import EditPointManager, record_thinking_drops
 from llm.pipelines.registry import get_pipeline_registry
 from llm.types.messages import Message, ToolCall
 from llm.types.requests import ChatRequest
@@ -28,11 +29,6 @@ logger = logging.getLogger(__name__)
 # _execute_tool_calls so every tool (web, canvas, doc search, skills) is
 # covered without per-tool logic.
 MAX_TOOL_RESULT_CHARS = 200_000
-
-# Header that prefixes the sub-agent scratchpad block re-injected each tool-loop
-# iteration. Used both to render the block and to strip the prior copy so exactly
-# one is ever present (see _refresh_subagent_scratchpad).
-_SUBAGENT_SCRATCHPAD_MARKER = "# Scratchpad (your private notes)"
 
 
 def _iteration_notice(
@@ -506,108 +502,30 @@ class SimpleChatPipeline(BasePipeline):
             params.get("thinking_level"),
         )
 
-    def _prune_growing_loop(
-        self, new_messages: List[Message], req: ChatRequest,
-        *, real_input_tokens: int, protect_call_ids: set,
-    ) -> List[Message]:
-        """After a round appends its tool results, stub OLD tool results when the
-        next request would exceed the model's input ceiling. Anchored on the
-        provider's real prompt-token count for the request just sent (accurate)
-        plus a tiktoken estimate of what this round appended. The current round's
-        results (``protect_call_ids``) and a small recency window stay raw."""
-        from django.conf import settings
+    @staticmethod
+    def _final_request(req: ChatRequest, edits: EditPointManager) -> ChatRequest:
+        """The last, tool-less call after the loop ends (iteration cap or deadline).
 
-        from core.tokens import estimate_chat_request_tokens
-
-        ceiling = self._midturn_ceiling(req)
-        prior = len(req.messages)
-        appended = new_messages[prior:] if len(new_messages) > prior else []
-        projected = (real_input_tokens or 0) + estimate_chat_request_tokens(appended)
-        if projected <= ceiling:
-            return new_messages
-        keep_recent = int(getattr(settings, "CONTEXT_MIDTURN_KEEP_TOOL_RESULTS", 6))
-        pruned, n = _prune_tool_messages_midturn(
-            new_messages, keep_recent=keep_recent, protect_call_ids=protect_call_ids,
-        )
-        if n:
-            logger.info(
-                "Mid-turn context prune: stubbed %d old tool result(s) "
-                "(projected input ~%d > ceiling %d, model %s)",
-                n, projected, ceiling, req.model,
-            )
-            if req.context is not None:
-                req.context.bump_stat("prunes", 1)
-        return pruned
-
-    def _refresh_subagent_scratchpad(self, messages: List[Message], req: ChatRequest) -> None:
-        """Re-inject the sub-agent's private scratchpad as a trailing message so it
-        stays visible every iteration despite mid-run tool-result pruning.
-
-        Idempotent: strips the prior injected block (matched by header) before
-        appending the current one, so exactly one copy — at the tail, mirroring
-        where the main agent renders its scratchpad — is ever present. No-op for
-        the main agent (it carries its scratchpad in the per-turn preamble). When
-        no notes exist yet, a short nudge is injected only once context is filling,
-        so a long run doesn't silently lose its early findings to pruning."""
-        ctx = req.context
-        if not ctx or getattr(ctx, "agent_kind", "main") != "subagent":
-            return
-        # Drop any previously injected copy (block or nudge — both share the header).
-        messages[:] = [
-            m for m in messages
-            if not (
-                isinstance(getattr(m, "content", None), str)
-                and m.content.startswith(_SUBAGENT_SCRATCHPAD_MARKER)
+        Tools stay bound and ``tool_choice`` is set to "none" (passed as the
+        ``_tool_choice`` param; each provider adapter maps it) instead of dropping
+        ``tool_schemas`` — removing the tool set would change the request prefix,
+        breaking the prompt cache and invalidating Anthropic's replayed thinking.
+        """
+        final_messages = list(req.messages) + [
+            Message(
+                role="user",
+                content=(
+                    "You have reached the tool-use limit. Do NOT call any more tools. "
+                    "Using the information you have gathered so far, provide your "
+                    "comprehensive final response now as plain text."
+                ),
             )
         ]
-        scratchpad = (getattr(ctx, "scratchpad", "") or "").strip()
-        if scratchpad:
-            messages.append(Message(role="user", content=(
-                f"{_SUBAGENT_SCRATCHPAD_MARKER}\n"
-                "Your own notes from earlier in this run — retained even when tool "
-                "results are cleared. Add to it with `subagent_scratchpad_append`.\n"
-                f"```\n{scratchpad}\n```"
-            )))
-            return
-        # No notes yet: nudge only when context is actually filling (mirrors the
-        # main agent's 70%-of-budget nudge), so we don't nag short runs.
-        from core.tokens import estimate_chat_request_tokens
-
-        ceiling = self._midturn_ceiling(req)
-        if ceiling and estimate_chat_request_tokens(messages) >= 0.7 * ceiling:
-            messages.append(Message(role="user", content=(
-                f"{_SUBAGENT_SCRATCHPAD_MARKER}\n"
-                "Your context is filling up, and older tool results will be cleared "
-                "to stay under budget. Save any facts, figures, or URLs you'll need "
-                "for your final answer with `subagent_scratchpad_append` now — cleared "
-                "results don't come back."
-            )))
-
-    def _prune_final_messages(self, final_messages: List[Message], req: ChatRequest) -> List[Message]:
-        """Backstop prune before the final tool-stripped call: if the assembled
-        request still estimates over the ceiling, stub old tool results (keeping
-        the recency window). Estimated with tiktoken since no fresh provider
-        count is available here."""
-        from django.conf import settings
-
-        from core.tokens import estimate_chat_request_tokens
-
-        ceiling = self._midturn_ceiling(req)
-        if estimate_chat_request_tokens(final_messages) <= ceiling:
-            return final_messages
-        keep_recent = int(getattr(settings, "CONTEXT_MIDTURN_KEEP_TOOL_RESULTS", 6))
-        pruned, n = _prune_tool_messages_midturn(
-            final_messages, keep_recent=keep_recent, protect_call_ids=set(),
-        )
-        if n:
-            logger.info(
-                "Final-call context prune: stubbed %d old tool result(s) "
-                "(estimate over ceiling %d, model %s)",
-                n, ceiling, req.model,
-            )
-            if req.context is not None:
-                req.context.bump_stat("prunes", 1)
-        return pruned
+        final_messages = edits.finish_final(final_messages, req)
+        return req.model_copy(update={
+            "messages": final_messages,
+            "params": {**(req.params or {}), "_tool_choice": "none"},
+        })
 
     def _run_tool_loop(
         self,
@@ -619,6 +537,7 @@ class SimpleChatPipeline(BasePipeline):
         tool_by_name = {t.name: t for t in tools}
         req = request
         cancel_check = (request.params or {}).get("_cancel_check")
+        edits = EditPointManager(self, request, tool_by_name)
 
         ctx = request.context
         deadline_dt = None
@@ -682,10 +601,14 @@ class SimpleChatPipeline(BasePipeline):
             self._record_outbound_estimate(req.context, req)
             response = chat_model.generate(req)
             _accumulate(response.usage)
+            record_thinking_drops(
+                req.context, (response.metadata or {}).get("response_metadata"),
+            )
             msg = response.message
             if not msg.tool_calls:
                 return _with_aggregate(response)
 
+            prior_len = len(req.messages)
             new_messages = list(req.messages) + [msg]
             results = self._execute_tool_calls(msg.tool_calls, tool_by_name)
             for tc, result_str in results:
@@ -694,50 +617,39 @@ class SimpleChatPipeline(BasePipeline):
                 )
             self._record_tool_round_stats(req.context, results)
 
-            from chat.dedup import deduplicate_tool_results
-            new_messages = deduplicate_tool_results(new_messages)
-
             notice = _iteration_notice(
                 i, effective_max, deadline_dt,
                 getattr(req.context, "agent_kind", "main") if req.context else "main",
             )
-            if notice is not None:
-                new_messages.append(notice)
-
-            self._append_pending_native_assets(new_messages, req)
-            self._append_pending_skill_instructions(new_messages, req)
-            new_messages = self._prune_growing_loop(
-                new_messages, req,
+            new_messages, tools = edits.finish_round(
+                new_messages, req, tools,
+                prior_len=prior_len,
                 real_input_tokens=(response.usage.prompt_tokens if response.usage else 0),
-                protect_call_ids={tc.id for tc in msg.tool_calls},
+                round_call_ids={tc.id for tc in msg.tool_calls},
+                notice=notice,
             )
-            self._refresh_subagent_scratchpad(new_messages, req)
-            tools = self._expand_tools_from_context(tools, tool_by_name, req)
             req = req.model_copy(update={"messages": new_messages, "tool_schemas": tools})
         else:
             logger.warning(
-                "Tool loop exhausted %d iterations; stripping tools for final generate",
+                "Tool loop exhausted %d iterations; disabling tools for final generate",
                 effective_max,
             )
 
-        final_messages = list(req.messages) + [
-            Message(
-                role="user",
-                content=(
-                    "You have reached the tool-use limit. Do NOT call any more tools. "
-                    "Using the information you have gathered so far, provide your "
-                    "comprehensive final response now as plain text."
-                ),
-            )
-        ]
-        final_messages = self._prune_final_messages(final_messages, req)
-        final_req = req.model_copy(update={
-            "tool_schemas": None,
-            "messages": final_messages,
-        })
+        final_req = self._final_request(req, edits)
         self._record_outbound_estimate(final_req.context, final_req)
         response = chat_model.generate(final_req)
         _accumulate(response.usage)
+        record_thinking_drops(
+            final_req.context, (response.metadata or {}).get("response_metadata"),
+        )
+        if response.message.tool_calls:
+            logger.warning(
+                "Model returned %d tool call(s) on the final tool-less call; ignoring them",
+                len(response.message.tool_calls),
+            )
+            response = response.model_copy(update={
+                "message": response.message.model_copy(update={"tool_calls": None}),
+            })
         return _with_aggregate(response)
 
     def _stream_with_tools(
@@ -759,6 +671,7 @@ class SimpleChatPipeline(BasePipeline):
         req = request
         sequence = 1
         params = request.params or {}
+        edits = EditPointManager(self, request, tool_by_name)
         cancel_event = params.get("_cancel_event")
         # Sub-agents cancel cooperatively via a DB-poll callable (_cancel_check)
         # rather than the consumer's threading.Event; honor both. Polled only at
@@ -887,6 +800,8 @@ class SimpleChatPipeline(BasePipeline):
             if iter_cost is not None:
                 agg_cost_usd = (agg_cost_usd or 0.0) + iter_cost
 
+            record_thinking_drops(req.context, end_data.get("response_metadata"))
+
             # Check for tool calls
             tool_call_dicts = end_data.get("tool_calls")
             if not tool_call_dicts:
@@ -929,6 +844,7 @@ class SimpleChatPipeline(BasePipeline):
                 # e.g. Gemini function-call thought signatures — must round-trip
                 # or Gemini 3 rejects the follow-up with 400 INVALID_ARGUMENT.
                 assistant_meta["additional_kwargs"] = replay_ak
+            prior_len = len(req.messages)
             new_messages = list(req.messages) + [
                 Message(
                     role="assistant",
@@ -990,47 +906,25 @@ class SimpleChatPipeline(BasePipeline):
                     Message(role="tool", content=result_str, tool_call_id=tc.id)
                 )
 
-            from chat.dedup import deduplicate_tool_results
-            new_messages = deduplicate_tool_results(new_messages)
-
             notice = _iteration_notice(
                 i, max_iterations, deadline_dt,
                 getattr(req.context, "agent_kind", "main") if req.context else "main",
             )
-            if notice is not None:
-                new_messages.append(notice)
-
-            self._append_pending_native_assets(new_messages, req)
-            self._append_pending_skill_instructions(new_messages, req)
-            new_messages = self._prune_growing_loop(
-                new_messages, req,
+            new_messages, tools = edits.finish_round(
+                new_messages, req, tools,
+                prior_len=prior_len,
                 real_input_tokens=(end_data.get("input_tokens") or 0),
-                protect_call_ids={tc.id for tc in parsed_tool_calls},
+                round_call_ids={tc.id for tc in parsed_tool_calls},
+                notice=notice,
             )
-            self._refresh_subagent_scratchpad(new_messages, req)
-            tools = self._expand_tools_from_context(tools, tool_by_name, req)
             req = req.model_copy(update={"messages": new_messages, "tool_schemas": tools})
         else:
             logger.warning(
-                "Streaming tool loop exhausted %d iterations; stripping tools for final stream",
+                "Streaming tool loop exhausted %d iterations; disabling tools for final stream",
                 max_iterations,
             )
 
-        final_messages = list(req.messages) + [
-            Message(
-                role="user",
-                content=(
-                    "You have reached the tool-use limit. Do NOT call any more tools. "
-                    "Using the information you have gathered so far, provide your "
-                    "comprehensive final response now as plain text."
-                ),
-            )
-        ]
-        final_messages = self._prune_final_messages(final_messages, req)
-        final_req = req.model_copy(update={
-            "tool_schemas": None,
-            "messages": final_messages,
-        })
+        final_req = self._final_request(req, edits)
         self._record_outbound_estimate(final_req.context, final_req)
         saw_error = False
         for item in _do_stream_iteration(final_req, sequence):
@@ -1044,6 +938,7 @@ class SimpleChatPipeline(BasePipeline):
             # (log_stream still logs ERROR from the error event).
             yield _usage_message_end()
             return
+        record_thinking_drops(final_req.context, end_data.get("response_metadata"))
         # Add aggregate usage to final message_end
         agg_input_tokens += end_data.get("input_tokens") or 0
         agg_output_tokens += end_data.get("output_tokens") or 0
@@ -1063,7 +958,8 @@ class SimpleChatPipeline(BasePipeline):
         end_data["cost_usd"] = agg_cost_usd
         end_data.pop("content", None)
         end_data.pop("content_blocks", None)
-        end_data.pop("tool_calls", None)
+        if end_data.pop("tool_calls", None):
+            logger.warning("Model returned tool call(s) on the final tool-less stream; ignoring them")
         yield StreamEvent(
             event_type="message_end",
             data=end_data,

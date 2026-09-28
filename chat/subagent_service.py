@@ -325,7 +325,8 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
         context.run_id = str(run_id)
         context.agent_kind = "subagent"
         # Seed the in-memory scratchpad so a resumed run re-reads its prior notes;
-        # the tool loop re-injects context.scratchpad into the prompt each round.
+        # the tool loop shows context.scratchpad once up front and again at every
+        # edit point (llm/pipelines/edit_points.py).
         context.scratchpad = run.scratchpad or ""
         # Reuse this one (already memoized) User instance for every tool call in the
         # run, so UserSettings/Membership are read once instead of per tool. Set on

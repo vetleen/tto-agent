@@ -144,6 +144,35 @@ class LoadHistoryStubbingTests(TransactionTestCase):
         call_ids = {m.get("tool_call_id") for m in messages if m["role"] == "tool"}
         self.assertIn("call-old", call_ids)
 
+    @override_settings(CONTEXT_RAW_TOOL_TURNS=2)
+    async def test_old_big_call_args_trimmed_recent_kept(self):
+        """Outside the raw window, a tool's trim_args_at_edit_point shrinks big
+        call arguments (canvas text → canvas_read pointer); recent calls keep theirs."""
+        big = "canvas body " * 400
+        await self._msg("Question one", role="user")
+        await self._msg("", role="assistant", tool_calls=[
+            {"id": "w-old", "name": "canvas_write", "arguments": {"title": "T", "content": big}},
+        ])
+        await self._msg('{"status": "ok"}', role="tool", tool_call_id="w-old")
+        await self._msg("Question two", role="user")
+        await self._msg("Answer two", role="assistant")
+        await self._msg("Question three", role="user")
+        await self._msg("", role="assistant", tool_calls=[
+            {"id": "w-new", "name": "canvas_write", "arguments": {"title": "T", "content": big}},
+        ])
+        await self._msg('{"status": "ok"}', role="tool", tool_call_id="w-new")
+
+        messages = (await self.consumer._load_history(self.thread))["messages"]
+        calls = {tc["id"]: tc for m in messages for tc in m.get("tool_calls") or []}
+        self.assertIn("canvas_read", calls["w-old"]["arguments"]["content"])
+        self.assertEqual(calls["w-old"]["arguments"]["title"], "T")
+        self.assertEqual(calls["w-new"]["arguments"]["content"], big)
+        # The stored message is not modified.
+        stored = await database_sync_to_async(
+            lambda: ChatMessage.objects.filter(thread=self.thread, role="assistant").order_by("created_at").first()
+        )()
+        self.assertEqual(stored.metadata["tool_calls"][0]["arguments"]["content"], big)
+
 
 class SummariseExcludesToolNoiseTests(TransactionTestCase):
     def setUp(self):

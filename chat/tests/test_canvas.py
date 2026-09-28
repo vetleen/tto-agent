@@ -2398,3 +2398,43 @@ class DeleteCanvasToolTests(TestCase):
         deleted.refresh_from_db()
         self.assertEqual(deleted.title, "Doc (2)")
         self.assertIsNone(deleted.deleted_at)
+
+
+class ReadCanvasToolTests(TestCase):
+    """canvas_read keeps canvas text reachable once old write/edit args are trimmed."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="canvasread@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+
+    def _read(self, args):
+        from chat.canvas_tools import ReadCanvasTool
+
+        return _invoke(ReadCanvasTool, args, _ctx(self.user.pk, self.thread.id))
+
+    def test_reads_active_canvas(self):
+        _invoke(WriteCanvasTool, {"title": "Draft", "content": "Hello there"}, _ctx(self.user.pk, self.thread.id))
+        result = self._read({})
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["content"], "Hello there")
+        self.assertEqual(result["title"], "Draft")
+
+    def test_reads_named_canvas(self):
+        ctx = _ctx(self.user.pk, self.thread.id)
+        _invoke(WriteCanvasTool, {"title": "One", "content": "first"}, ctx)
+        _invoke(WriteCanvasTool, {"title": "Two", "content": "second"}, ctx)
+        self.assertEqual(self._read({"canvas_name": "One"})["content"], "first")
+
+    def test_errors_when_missing(self):
+        self.assertEqual(self._read({})["status"], "error")
+        self.assertEqual(self._read({"canvas_name": "Nope"})["status"], "error")
+
+    def test_is_main_audience_skill_tool_with_labels(self):
+        from agent_skills.seed_skills.canvas_collaborator import CANVAS_COLLABORATOR
+        from chat.canvas_tools import ReadCanvasTool
+
+        tool = ReadCanvasTool()
+        self.assertEqual(tool.audience, "main")
+        self.assertEqual(tool.section, "skills")
+        self.assertEqual(tool.start_label, "Reading canvas...")
+        self.assertIn("canvas_read", CANVAS_COLLABORATOR["tool_names"])

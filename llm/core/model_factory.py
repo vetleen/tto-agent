@@ -102,12 +102,26 @@ def detect_provider(model_name: str | None) -> str:
         return ""
 
 
+ANTHROPIC_THINKING_BINDING_BETA = "thinking-binding-controls-2026-08-01"
+
+
+def anthropic_binds_thinking(model_name: str) -> bool:
+    """Whether this Anthropic model enforces preserved thinking (registry flag)."""
+    info = get_model_info(model_name)
+    return bool(info and info.binds_thinking_to_prefix)
+
+
 def _get_provider_kwargs(provider: str, api_model: str) -> dict[str, Any]:
     """Return provider-specific default kwargs."""
     kwargs: dict[str, Any] = {}
     # stream_usage is supported by OpenAI and Anthropic but not Google
     if provider != "google_genai":
         kwargs["stream_usage"] = True
+    if provider == "anthropic" and anthropic_binds_thinking(api_model):
+        # Preserved thinking: lets the adapter set block_binding.
+        # prefix_mismatch_behavior and makes responses carry
+        # input_transformations (routes via client.beta.messages).
+        kwargs["betas"] = [ANTHROPIC_THINKING_BINDING_BETA]
     if provider == "google_genai":
         # When a service account is configured (staging/prod), steer Gemini onto
         # the Vertex AI backend (project/location/credentials + explicit
@@ -201,6 +215,19 @@ def _build_client(provider: str, api_model: str, provider_kwargs: dict[str, Any]
     rate_limiter = _get_rate_limiter(provider)
     with _client_cache_lock:
         client = _client_cache.get(key)
+        if client is None and provider == "anthropic" and provider_kwargs.get("betas"):
+            # Preserved-thinking models: a subclass that keeps the stream's
+            # input_transformations (init_chat_model can't take a class).
+            from llm.core.providers.anthropic_client import WilfredChatAnthropic
+
+            client = WilfredChatAnthropic(
+                model=api_model,
+                max_retries=3,
+                timeout=120,
+                **({"rate_limiter": rate_limiter} if rate_limiter else {}),
+                **provider_kwargs,
+            )
+            _client_cache[key] = client
         if client is None:
             client = init_chat_model(
                 api_model,
@@ -279,4 +306,11 @@ def create_variant_client(api_model: str, provider: str, **extra_kwargs):
     return _build_client(provider, api_model, provider_kwargs)
 
 
-__all__ = ["create_chat_model", "create_variant_client", "clear_client_cache", "detect_provider"]
+__all__ = [
+    "ANTHROPIC_THINKING_BINDING_BETA",
+    "anthropic_binds_thinking",
+    "clear_client_cache",
+    "create_chat_model",
+    "create_variant_client",
+    "detect_provider",
+]

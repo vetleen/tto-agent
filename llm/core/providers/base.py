@@ -499,11 +499,22 @@ class BaseLangChainChatModel(ChatModel):
         """
         return self._client
 
+    def _tool_choice_kwargs(self, request: ChatRequest) -> dict:
+        """``bind_tools`` kwargs for the pipeline's ``_tool_choice`` param.
+
+        The only value used is "none" (the final tool-less call keeps its tools
+        bound so the request prefix stays stable). OpenAI and Gemini accept the
+        string; Anthropic overrides (langchain-anthropic would read a bare
+        string as a tool name)."""
+        if (request.params or {}).get("_tool_choice") == "none":
+            return {"tool_choice": "none"}
+        return {}
+
     def _get_streaming_client(self, request: ChatRequest):
         """Return the LangChain client for streaming (reasoning variant + tools)."""
         client = self._get_reasoning_client(request)
         if request.tool_schemas:
-            client = client.bind_tools(request.tool_schemas)
+            client = client.bind_tools(request.tool_schemas, **self._tool_choice_kwargs(request))
         return client
 
     def _structured_output_kwargs(self) -> dict:

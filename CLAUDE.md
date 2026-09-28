@@ -157,18 +157,43 @@ dropped (the model can always call the tool again):
   (`chat/tool_stub.py:build_tool_result_stub`) that names the tool + args; `tool_call_id` is
   preserved so provider pairing holds. User/assistant narrative is instead rolled into the
   summary (`_get_messages_to_summarise` excludes tool noise).
-- **Mid-turn** (`llm/pipelines/simple_chat.py`): when a tool-loop round would push the next
-  request past `request_input_ceiling`, `_prune_growing_loop` stubs the oldest tool results
-  (keeping `CONTEXT_MIDTURN_KEEP_TOOL_RESULTS`=6 recent + the current round, protected by
-  `tool_call_id`). In-memory only; the full result stays in the DB and in the `tool_end`
-  event the user sees. The consumer wires `max_context_tokens` into `req.params` so the
-  pipeline can size the ceiling (**sub-agents don't get this yet — they fall back to the
-  model window**).
+- **Mid-turn** (`llm/pipelines/edit_points.py`, driven from `simple_chat.py`): the tool loop
+  is **append-only between edit points** — every provider, main agent and sub-agents alike.
+  Each request must extend the previous one byte-for-byte (prompt cache; Anthropic
+  "preserved thinking" binds replayed thinking blocks to the exact prefix of system + tools
+  + earlier messages). An **edit point** is a round that must rewrite earlier history: the
+  next request would pass `request_input_ceiling` (prune), a skill attach added tools, or
+  native assets overflow the provider ceiling. An edit point does ALL deferred clean-up at
+  once: dedup `normalize_keep_newest`, per-tool arg trimming, pruning (early past
+  `CONTEXT_EDIT_POINT_PRUNE_FRACTION`), native eviction with hysteresis
+  (`NATIVE_EVICT_EARLY/LOW_FRACTION`, `plan/apply_native_evictions`), and refreshing the
+  consolidated scratchpad block. Between edit points: dedup only redacts the NEW duplicate
+  (`chat/dedup.py:redact_new_duplicates`), notices/files/skill instructions are appended,
+  nothing is removed. Pruning keeps `CONTEXT_MIDTURN_KEEP_TOOL_RESULTS`=6 recent results +
+  the current round. The final tool-less call keeps its tools bound with
+  `params["_tool_choice"]="none"` (each provider adapter maps it; `_tool_choice_kwargs`).
+  **New code in the loop must not edit earlier messages outside an edit point**
+  (`llm/tests/test_edit_points.py::PrefixInvariantTests` enforces it). The consumer wires
+  `max_context_tokens` into `req.params` so the pipeline can size the ceiling
+  (**sub-agents don't get this yet — they fall back to the model window**).
+- **Per-tool argument trimming**: a tool whose old call arguments are big and recoverable
+  elsewhere overrides `ContextAwareTool.trim_args_at_edit_point(args, *, later_calls)`
+  (returns shrunken args or None; gated by `trim_args_min_chars`). Applied at edit points
+  and between turns (`_load_history`, same window as result stubbing). The marker must say
+  where the content lives (`canvas_read`, `document_read`, the scratchpad) — never trim
+  content that has no read path (e.g. sub-agent canvas/deck writes only when superseded).
+- **Preserved thinking**: `ModelInfo.binds_thinking_to_prefix` (False for all current
+  models; set it for Claude models released after 2026-10-01) makes the Anthropic adapter
+  send beta `thinking-binding-controls-2026-08-01` + `block_binding.prefix_mismatch_behavior:
+  "drop_block"`, so an edit point drops replayed reasoning instead of 400ing;
+  `WilfredChatAnthropic` keeps the stream's `input_transformations`.
 
 **Scratchpad** (`chat/scratchpad_tools.py`, `ChatThread.scratchpad`): an agent-only,
 append-only note store (`scratchpad_append` tool, `SCRATCHPAD_MAX_CHARS`=20k). It is injected
-into every turn's dynamic context (`build_dynamic_context`), is **never pruned or
-summarized**, and is **never shown to the user** (deliberately absent from
+into every turn's dynamic context (`build_dynamic_context`); within a turn a note stays
+visible as its own call argument, and at an edit point the loop appends one consolidated
+block (main agent: this turn's notes; sub-agent: its full run scratchpad) and shrinks the old
+note arguments. It is **never pruned or summarized**, and is **never shown to the user** (deliberately absent from
 `CANVAS_UPDATED_TOOLS`; emits no content event). It is the model's durable memory for
 findings that would otherwise be lost when tool results are stubbed — the near-threshold
 Runtime nudge tells the model to use it.
@@ -225,7 +250,9 @@ one conversion is in flight per worker (render slot), and chunks carry `source_p
 slide number (pptx) or page (PDF) so search cites them.
 
 **Observability**: each turn's `LLMCallLog` row carries `tool_call_count`, `prune_count`
-(mid-turn compactions), `tool_result_tokens` (raw tool-output volume), and
+(mid-turn compactions), `edit_point_count` + `edit_points` (per-kind breakdown — each is a
+cache break), `thinking_dropped_count` (Anthropic preserved-thinking drops),
+`tool_result_tokens` (raw tool-output volume), and
 `estimated_input_tokens` (our pre-send estimate, summed per round — compare against the
 provider's actual `input_tokens` to calibrate the estimator that drives pruning). All are
 accumulated on `RunContext.observability` (via `bump_stat`) and written by

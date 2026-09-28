@@ -723,6 +723,14 @@ CONTEXT_RAW_TOOL_TURNS = _env_int("CONTEXT_RAW_TOOL_TURNS", "2")
 # input ceiling, keep this many of the most recent tool results raw and stub the
 # rest — bounds the loop growth that drives the 500k–5.9M-token production turns.
 CONTEXT_MIDTURN_KEEP_TOOL_RESULTS = _env_int("CONTEXT_MIDTURN_KEEP_TOOL_RESULTS", "6")
+# Edit points (llm/pipelines/edit_points.py): the tool loop is append-only except
+# on rounds where it must edit earlier history (prune / new tools / native-asset
+# eviction). An edit point also does opportunistic clean-up so the next one comes
+# later: prune once over this fraction of the ceiling, evict native assets once
+# over the EARLY fraction of the native ceiling, down to the LOW fraction.
+CONTEXT_EDIT_POINT_PRUNE_FRACTION = float(os.environ.get("CONTEXT_EDIT_POINT_PRUNE_FRACTION", "0.7"))
+NATIVE_EVICT_EARLY_FRACTION = float(os.environ.get("NATIVE_EVICT_EARLY_FRACTION", "0.8"))
+NATIVE_EVICT_LOW_FRACTION = float(os.environ.get("NATIVE_EVICT_LOW_FRACTION", "0.6"))
 # Upload file-type allow-lists are derived from the single capability table in
 # core/file_types.py — data rooms accept every kind, including images and audio.
 # Edit that table (not these constants) to change supported types; chat and

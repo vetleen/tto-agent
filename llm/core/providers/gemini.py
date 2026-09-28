@@ -47,7 +47,7 @@ class GeminiChatModel(BaseLangChainChatModel):
     def _get_streaming_client(self, request: ChatRequest):
         client = self._get_reasoning_client(request)
         if request.tool_schemas:
-            client = client.bind_tools(request.tool_schemas)
+            client = client.bind_tools(request.tool_schemas, **self._tool_choice_kwargs(request))
         return client
 
     def _extract_replay_metadata(self, lc_message) -> dict:

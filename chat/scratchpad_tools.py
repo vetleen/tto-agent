@@ -15,9 +15,20 @@ import logging
 from django.conf import settings
 from pydantic import BaseModel, Field
 
-from llm.tools.interfaces import ContextAwareTool, ReasonBaseModel
+from llm.tools.interfaces import ContextAwareTool, ReasonBaseModel, omitted_arg_marker
 
 logger = logging.getLogger(__name__)
+
+
+SAVED_NOTE_MARKER = omitted_arg_marker("note", "It is in your scratchpad.")
+
+
+def _trim_note_args(args: dict) -> dict | None:
+    """At an edit point the scratchpad is re-shown in full, so an old note's
+    text is a duplicate — keep the call, shrink the note."""
+    if not isinstance(args.get("note"), str) or args["note"] == SAVED_NOTE_MARKER:
+        return None
+    return {**args, "note": SAVED_NOTE_MARKER}
 
 
 class ScratchpadAppendInput(ReasonBaseModel):
@@ -45,6 +56,10 @@ class ScratchpadAppendTool(ContextAwareTool):
         "cleared. It is agent-only — the user never sees it."
     )
     args_schema: type[BaseModel] = ScratchpadAppendInput
+    trim_args_min_chars: int = 200
+
+    def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> dict | None:
+        return _trim_note_args(args)
 
     def _run(self, note: str, **kwargs) -> str:
         thread_id = self.context.conversation_id if self.context else None
@@ -71,6 +86,10 @@ class ScratchpadAppendTool(ContextAwareTool):
             truncated = True
         thread.scratchpad = combined
         thread.save(update_fields=["scratchpad"])
+        # This turn's notes are re-shown by the tool loop at edit points (the
+        # pre-turn scratchpad is already in the per-turn preamble).
+        if self.context is not None:
+            self.context.scratchpad_turn_notes.append(note)
 
         result = {"status": "ok", "scratchpad_chars": len(combined)}
         if truncated:
@@ -95,8 +114,10 @@ class SubagentScratchpadAppendInput(ReasonBaseModel):
 
 class SubagentScratchpadAppendTool(ContextAwareTool):
     """Run-scoped scratchpad for a sub-agent (see ``ScratchpadAppendTool`` for the
-    main-agent analogue). Stored on the ``SubAgentRun`` and re-injected into the
-    system prompt every tool-loop iteration, so notes survive mid-run pruning."""
+    main-agent analogue). Stored on the ``SubAgentRun``; between edit points the
+    note stays visible as this call's own argument, and at every edit point the
+    tool loop re-shows the whole scratchpad as a trailing user message, so notes
+    survive mid-run pruning."""
 
     name: str = "subagent_scratchpad_append"
     audience: str = "subagent"
@@ -105,12 +126,16 @@ class SubagentScratchpadAppendTool(ContextAwareTool):
     end_label: str = "Made a note"
     description: str = (
         "Append a note to your private, persistent scratchpad. The scratchpad is "
-        "shown back to you every step and survives context pruning, so use it to "
+        "shown back to you whenever older context is cleared, so use it to "
         "retain findings before large tool results are cleared. It is private "
         "working memory — NOT part of your deliverable (build that in your working "
         "canvas) and the user never sees it."
     )
     args_schema: type[BaseModel] = SubagentScratchpadAppendInput
+    trim_args_min_chars: int = 200
+
+    def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> dict | None:
+        return _trim_note_args(args)
 
     def _run(self, note: str, **kwargs) -> str:
         run_id = getattr(self.context, "run_id", None) if self.context else None
@@ -137,10 +162,11 @@ class SubagentScratchpadAppendTool(ContextAwareTool):
             truncated = True
         run.scratchpad = combined
         run.save(update_fields=["scratchpad"])
-        # Update the in-memory copy the tool loop re-injects each iteration, so the
-        # append is visible next round without a DB read (see simple_chat pipeline).
+        # Update the in-memory copy the tool loop re-shows at edit points, so it
+        # needs no DB read (see llm/pipelines/edit_points.py).
         if self.context is not None:
             self.context.scratchpad = combined
+            self.context.scratchpad_turn_notes.append(note)
 
         result = {"status": "ok", "scratchpad_chars": len(combined)}
         if truncated:
