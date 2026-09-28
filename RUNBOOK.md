@@ -127,7 +127,11 @@ assumed).
 free knobs above** — import-footprint trimming won't move the floor much because the worker is
 already ~250 MB idle and the full stack loads on any heavy task. Consistent with the standing
 decision: accept benign R14 on staging / low load, revisit Standard-2X before heavy production
-load.
+load. **Exception — live testing on staging:** bump staging to production size first
+(`heroku ps:type web=standard-2x worker=standard-2x -a wilfred-staging`) and downgrade
+afterwards (`heroku ps:type web=basic worker=basic -a wilfred-staging`); on Basic the dynos
+swap under a realistic walkthrough and uploads hit H12, so the test measures the infrastructure
+rather than the feature.
 
 **Deploy flow:** push to `main` on GitHub → `wilfred-staging` auto-builds (release phase runs migrations + collectstatic, then web/worker dynos restart) → verify on staging → `heroku pipelines:promote -a wilfred-staging` ships the same slug to `wilfred-production`. Never `git push heroku main` directly to production — it bypasses staging. See CLAUDE.md > Heroku & Environments for the full pipeline.
 

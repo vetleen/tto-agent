@@ -51,6 +51,22 @@ Three-app pipeline `wilfred` (EU region). Each app has its own Postgres (`essent
 
 **PRODUCTION IS USER-GATED (2026-09-09, real users onboard).** Agents must NOT promote to production, write production config vars, restart/scale production dynos, change addons, or run production migrations/DB writes without the user's explicit approval for that specific action in the current conversation — especially 08:00–16:00 weekdays (Europe/Oslo); each of these cycles dynos or changes behavior under live users. Prepare everything up to that step (commit → push → staging verify), then hand the user the command. Read-only production ops (logs, `config:get`, `releases`, `redis:info`, read-only DB queries) and pushes to `main` (staging-only effect) remain fine.
 
+**Live testing on staging: bump the dynos first, downgrade after.** Staging runs Basic dynos
+(512 MB) while production runs Standard-2X (1 GB). Under a realistic walkthrough (uploads, decks,
+picture descriptions) the Basic dynos swap (R14) and uploads hit the router's 30 s timeout (H12),
+so results are not representative and turns fail for infrastructure reasons. Before a live
+test session on staging:
+
+```bash
+heroku ps:type web=standard-2x worker=standard-2x -a wilfred-staging   # match production
+heroku ps -a wilfred-staging                                            # verify
+# ... test ...
+heroku ps:type web=basic worker=basic -a wilfred-staging               # ALWAYS downgrade after
+```
+
+Standard-2X is billed pro rata (~$50/dyno/month), so leaving it up is a real cost. Staging
+dyno changes need no approval; production sizing stays user-gated.
+
 **Local dev shares the `wilfred-dev` Postgres** (its `DATABASE_URL` is in the local `.env`). Staging and production have isolated databases. Two consequences:
 
 1. Local migrations and any destructive shell commands hit the shared dev DB. Be mindful — there is no local-only DB unless you unset `DATABASE_URL`.
