@@ -2216,9 +2216,9 @@
   function attachmentProgressLabel(p) {
     if (!p || !p.stage) return '';
     var current = p.current || 0;
-    if (p.stage === 'describing_images') return p.total ? 'Reading images ' + current + ' of ' + p.total + '…' : 'Reading images…';
+    if (p.stage === 'describing_images') return p.total ? 'Viewing images ' + current + ' of ' + p.total + '…' : 'Viewing images…';
     if (p.stage === 'rendering') return p.total ? 'Preparing slides ' + current + ' of ' + p.total + '…' : 'Preparing slides…';
-    if (p.stage === 'extracting') return 'Extracting text and images…';
+    if (p.stage === 'extracting') return 'Reading the file…';
     return '';
   }
 

@@ -1,7 +1,7 @@
 """Best-effort processing-progress store (stage + current/total).
 
 Backs the granular progress the document list shows during ingestion — a stage
-label ("Extracting…", "Reading images 12 of 46…", "Indexing…") instead of an
+label ("Reading the file…", "Viewing images 12 of 46…", "Indexing…") instead of an
 opaque spinner — and, through the ``attachments`` store, the same thing for chat
 / meeting attachments (composer pill + the held turn's bubble). State lives in
 the Redis cache (``core.cache.ResilientRedisCache``, DB 1), NOT the database: it

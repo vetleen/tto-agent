@@ -227,7 +227,7 @@ READY and never blocks searchability; state lives in `DataRoomDocumentVersion.pa
   (`DOCUMENT_IMAGE_DESCRIBE_CONCURRENCY` calls in flight, org-wide cache `imgdesc:v2:*`, cap
   `CHAT_ATTACHMENT_MAX_DESCRIBED_IMAGES`), and the task publishes its stage to Redis
   (`attprogress:v1:<attachment>`: `extracting` → `describing_images i/N` → `rendering i/N`) for the
-  composer pill and the held turn's bubble ("Reading images 6 of 30…"); a missing key just means
+  composer pill and the held turn's bubble ("Viewing images 6 of 30…"); a missing key just means
   "Preparing…", it is never an error.
 
 ### Rollback

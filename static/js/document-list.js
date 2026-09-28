@@ -48,7 +48,7 @@
   // stored on the row as data-stage/-current/-total). Only surfaced while the
   // coarse status is still "processing"; the "scanning" note is handled below.
   var STAGE_LABELS = {
-    extracting: 'Extracting text and images…',
+    extracting: 'Reading the file…',
     chunking: 'Organizing content…',
     embedding: 'Indexing…',
     scanning: 'Checking for sensitive data…'
@@ -61,9 +61,9 @@
       var total = parseInt(row.dataset.total, 10);
       var current = parseInt(row.dataset.current, 10);
       if (total > 0) {
-        return 'Reading images ' + (current || 0) + ' of ' + total + '…';
+        return 'Viewing images ' + (current || 0) + ' of ' + total + '…';
       }
-      return 'Reading images…';
+      return 'Viewing images…';
     }
     return STAGE_LABELS[stage] || '';
   }
