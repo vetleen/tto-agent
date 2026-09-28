@@ -1083,10 +1083,12 @@ class RunSubagentServiceTests(TestCase):
 
     @patch("llm.get_llm_service")
     @patch("core.preferences.get_preferences")
-    def test_no_budget_leaves_max_context_unset(self, mock_prefs, mock_svc):
-        """With no budget for the tier, max_context_tokens is absent (unlimited —
-        the pruner falls back to the model window)."""
-        mock_prefs.return_value = _prefs(subagent_context_budgets={"top": 150_000})
+    def test_no_budget_falls_back_to_org_context_limit(self, mock_prefs, mock_svc):
+        """With no budget for the tier, the sub-agent uses the org's context limit
+        (default 200k) — never the model's full window."""
+        mock_prefs.return_value = _prefs(
+            subagent_context_budgets={"top": 150_000}, max_context_tokens=90_000,
+        )
         mock_response = MagicMock()
         mock_response.message.content = "Done"
         mock_response.usage.total_tokens = 100
@@ -1101,7 +1103,7 @@ class RunSubagentServiceTests(TestCase):
         run_subagent(run.id)
 
         request = mock_svc.return_value.run_via_stream.call_args[0][1]
-        self.assertNotIn("max_context_tokens", request.params)
+        self.assertEqual(request.params.get("max_context_tokens"), 90_000)
 
     @patch("llm.get_llm_service")
     @patch("core.preferences.get_preferences")

@@ -175,8 +175,9 @@ dropped (the model can always call the tool again):
   `params["_tool_choice"]="none"` (each provider adapter maps it; `_tool_choice_kwargs`).
   **New code in the loop must not edit earlier messages outside an edit point**
   (`llm/tests/test_edit_points.py::PrefixInvariantTests` enforces it). The consumer wires
-  `max_context_tokens` into `req.params` so the pipeline can size the ceiling
-  (**sub-agents don't get this yet — they fall back to the model window**).
+  `max_context_tokens` into `req.params` so the pipeline can size the ceiling; sub-agents
+  get their org per-tier budget, else the org's context limit (default 200k) — never the
+  bare model window (`chat/subagent_service.py`).
 - **Per-tool argument trimming**: a tool whose old call arguments are big and recoverable
   elsewhere overrides `ContextAwareTool.trim_args_at_edit_point(args, *, later_calls)`
   (returns shrunken args or None; gated by `trim_args_min_chars`). Applied at edit points

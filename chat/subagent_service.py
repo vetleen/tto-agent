@@ -337,16 +337,16 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
         def _is_cancelled():
             return SubAgentRun.objects.filter(pk=run_id, status=SubAgentRun.Status.FAILED).exists()
 
-        # Per-tier context budget (org-only). When set, this is the aim the
-        # mid-turn pruner (llm/pipelines/simple_chat.py) sizes to — otherwise the
-        # sub-agent grows to the model's full hard window. 0/unset = unlimited.
+        # Context aim the mid-turn pruner (llm/pipelines/edit_points.py) sizes to:
+        # the org's per-tier sub-agent budget when set, else the org's context
+        # limit (default 200k) — never the model's full hard window, which let a
+        # long run re-send ~1M-token histories every round.
         params = {
             "_cancel_check": _is_cancelled,
             "max_tool_iterations": SUBAGENT_MAX_TOOL_ITERATIONS,
         }
-        budget = prefs.subagent_context_budgets.get(run.model_tier, 0)
-        if budget:
-            params["max_context_tokens"] = max(budget, MIN_CONTEXT_TOKENS)
+        budget = prefs.subagent_context_budgets.get(run.model_tier, 0) or prefs.max_context_tokens
+        params["max_context_tokens"] = max(budget, MIN_CONTEXT_TOKENS)
 
         request = ChatRequest(
             messages=[
