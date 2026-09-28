@@ -900,6 +900,20 @@ async def generate_summary(
     return response.message.content.strip()
 
 
+# The one image-description prompt, shared by chat attachments, the docx/pdf/pptx
+# sinks and the data-room pipeline. Transcription first (it is what search and
+# the model need; it may be long), then a short description — the earlier
+# "single short paragraph" wording fought the verbatim-transcription request.
+IMAGE_DESCRIPTION_PROMPT = (
+    "Describe this image for someone who cannot see it. First the text: if the image "
+    "contains text, a table, or a chart's labels and values, transcribe it verbatim and "
+    "completely, keeping the reading order (use simple Markdown for tables). Then add one "
+    "or two sentences on what the image shows: subject, layout, and notable visual details. "
+    "Describe only what is actually visible; never guess or invent. Output only the "
+    "transcription and description, with no preamble."
+)
+
+
 def describe_image(
     image_bytes: bytes,
     content_type: str,
@@ -917,7 +931,7 @@ def describe_image(
     """
     from core.preferences import get_preferences
     from llm import get_llm_service
-    from llm.display import supports_vision
+    from llm.display import get_minimal_thinking_level, supports_vision
     from llm.types import ChatRequest, Message, RunContext
 
     if model is not None:
@@ -940,13 +954,7 @@ def describe_image(
 
     b64 = base64.b64encode(image_bytes).decode("ascii")
 
-    prompt = (
-        "Describe this image in a single short paragraph, so someone who cannot see it "
-        "understands what it shows — the subject and any notable details. If the image "
-        "contains text, a table, or a chart's labels and values, transcribe that text "
-        "verbatim (this matters more than prose). Describe only what is actually visible "
-        "— do not guess or invent anything. Output only the description, with no preamble."
-    )
+    prompt = IMAGE_DESCRIPTION_PROMPT
     if alt_text:
         prompt += f"\nThe original alt text was: {alt_text}"
 
@@ -959,6 +967,14 @@ def describe_image(
         image_block,
     ]
 
+    # Transcribing an image is mechanical: the model's curated chat default
+    # (e.g. Luna's xhigh) spends ~90% of the output tokens — and the wait —
+    # on reasoning, so ask for the least reasoning the model accepts.
+    params: dict = {}
+    minimal_level = get_minimal_thinking_level(model)
+    if minimal_level is not None:
+        params["thinking_level"] = minimal_level
+
     context = RunContext.create(user_id=user.pk)
     request = ChatRequest(
         messages=[Message(role="user", content=content_blocks)],
@@ -966,6 +982,7 @@ def describe_image(
         stream=False,
         tools=[],
         context=context,
+        params=params,
     )
 
     try:

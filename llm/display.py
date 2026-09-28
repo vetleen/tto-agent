@@ -113,6 +113,16 @@ def get_default_thinking_level(model_id: str) -> str | None:
     return "off" if "off" in levels else (levels[0] if levels else None)
 
 
+def get_minimal_thinking_level(model_id: str) -> str | None:
+    """The least reasoning a model accepts ("none"/"off"/"minimal"/"low" — the
+    first entry of its registry levels, which are in ascending UX order), or
+    None when the model has no reasoning control. For mechanical calls such as
+    image descriptions, where the model's curated chat default (e.g. Luna's
+    xhigh) only adds latency and reasoning tokens."""
+    levels = get_thinking_levels(model_id)
+    return levels[0] if levels else None
+
+
 def supports_vision(model_id: str) -> bool:
     """Return True if the model supports vision (image) inputs."""
     info = get_model_info(model_id)

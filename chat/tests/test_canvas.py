@@ -777,6 +777,34 @@ class DescribeImageTests(TestCase):
         request = call_args[0][1]
         self.assertEqual(request.model, "openai/gpt-5-mini")
 
+    @patch("llm.get_llm_service")
+    def test_asks_for_the_least_reasoning_the_model_accepts(self, mock_svc):
+        """Descriptions are mechanical: the request pins the model's lowest
+        reasoning level so the service never applies the chat default (Luna's
+        xhigh spent ~90% of its output tokens thinking)."""
+        from chat.services import IMAGE_DESCRIPTION_PROMPT, describe_image
+        from llm.display import get_thinking_levels
+
+        mock_response = MagicMock()
+        mock_response.message.content = "Text: Q1 revenue 4.2 MNOK"
+        mock_svc.return_value.run.return_value = mock_response
+
+        describe_image(b"\x89PNG", "image/png", self.user, model="openai/gpt-6-luna")
+        request = mock_svc.return_value.run.call_args[0][1]
+        self.assertEqual(request.params["thinking_level"], "none")
+        self.assertEqual(request.params["thinking_level"], get_thinking_levels("openai/gpt-6-luna")[0])
+        self.assertEqual(request.messages[0].content[0]["text"], IMAGE_DESCRIPTION_PROMPT)
+        self.assertIn("transcribe it verbatim and completely", IMAGE_DESCRIPTION_PROMPT)
+
+        # Anthropic models spell the floor "off"; a model without reasoning
+        # controls gets no level at all (the service then leaves it alone).
+        describe_image(b"\x89PNG", "image/png", self.user, model="anthropic/claude-sonnet-5")
+        self.assertEqual(mock_svc.return_value.run.call_args[0][1].params["thinking_level"], "off")
+        with patch("llm.display.supports_vision", return_value=True), \
+             patch("llm.display.get_thinking_levels", return_value=[]):
+            describe_image(b"\x89PNG", "image/png", self.user, model="custom/vision-no-reasoning")
+        self.assertNotIn("thinking_level", mock_svc.return_value.run.call_args[0][1].params)
+
 
 class GenerateCanvasTitleTests(TestCase):
     def setUp(self):
