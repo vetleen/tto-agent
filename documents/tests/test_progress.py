@@ -258,6 +258,36 @@ class DescriberCacheKeyTests(TestCase):
         self.assertTrue(image_assets._CACHE_KEY.startswith("imgdesc:v2:"))
 
 
+@override_settings(CACHES=LOCMEM)
+class DataRoomDescribeCapTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(email="cap@example.com", password="x")
+        self.data_room = DataRoom.objects.create(name="R", slug="r-cap", created_by=self.user)
+        self.doc = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="d.pdf", status=DataRoomDocument.Status.UPLOADED,
+        )
+        self.version = DataRoomDocumentVersion.objects.create(document=self.doc, version_index=0)
+
+    def test_default_cap_is_the_module_constant(self):
+        from documents.services.image_assets import MAX_DESCRIBED_EMBEDDED_IMAGES
+
+        self.assertEqual(EmbeddedImageDescriber(self.version, self.doc).max_described, MAX_DESCRIBED_EMBEDDED_IMAGES)
+
+    @override_settings(DOCUMENT_MAX_DESCRIBED_IMAGES=1)
+    def test_cap_comes_from_the_setting(self):
+        describer = EmbeddedImageDescriber(self.version, self.doc)
+        describer.org_id = None
+        describer.model = "anthropic/claude-opus-4-8"
+        self.assertEqual(describer.max_described, 1)
+        with tempfile.TemporaryDirectory() as tmpdir, self.settings(MEDIA_ROOT=tmpdir):
+            describer.sink(_FakeImg(_png(1)), 1)
+            token2 = describer.sink(_FakeImg(_png(2)), 2)
+        self.assertEqual(describer.total, 1)  # the second unique picture is over the cap
+        self.assertIn("PNG image", token2)
+
+
 class DescribeImagePromptTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="q@example.com", password="x")

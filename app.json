@@ -192,8 +192,13 @@
       "required": false
     },
     "CHAT_ATTACHMENT_MAX_DESCRIBED_IMAGES": {
-      "description": "Unique embedded pictures vision-described per pdf/docx/pptx chat or meeting attachment (data rooms: 50). Default 30.",
-      "value": "30",
+      "description": "Unique embedded pictures vision-described per pdf/docx/pptx chat or meeting attachment. Default 50.",
+      "value": "50",
+      "required": false
+    },
+    "DOCUMENT_MAX_DESCRIBED_IMAGES": {
+      "description": "Unique embedded pictures vision-described per data-room document (or email attachment tree). Default 50.",
+      "value": "50",
       "required": false
     },
     "DOCUMENT_IMAGE_DESCRIBE_CONCURRENCY": {

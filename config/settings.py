@@ -640,10 +640,12 @@ CHAT_ATTACHMENT_RENDER_MAX_SLIDES = _env_int("CHAT_ATTACHMENT_RENDER_MAX_SLIDES"
 CHAT_ATTACHMENT_INITIAL_SLIDES = _env_int("CHAT_ATTACHMENT_INITIAL_SLIDES", "20")
 # Embedded pictures vision-described per pdf/docx/pptx chat/meeting attachment,
 # counted after content-hash dedupe (a repeated logo is one picture); the rest are
-# stored with a format-only label. Below the data-room cap (50) because the chat
-# turn is held while this runs. Concurrency and the org-wide description cache
-# are shared with data rooms (DOCUMENT_IMAGE_DESCRIBE_CONCURRENCY, IMGDESC_CACHE_TTL).
-CHAT_ATTACHMENT_MAX_DESCRIBED_IMAGES = _env_int("CHAT_ATTACHMENT_MAX_DESCRIBED_IMAGES", "30")
+# stored with a format-only label. Same default as data rooms
+# (DOCUMENT_MAX_DESCRIBED_IMAGES); the chat turn is held while this runs, so keep
+# it well inside CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS (~0.6 s per picture at the
+# default concurrency). Concurrency and the org-wide description cache are shared
+# with data rooms (DOCUMENT_IMAGE_DESCRIBE_CONCURRENCY, IMGDESC_CACHE_TTL).
+CHAT_ATTACHMENT_MAX_DESCRIBED_IMAGES = _env_int("CHAT_ATTACHMENT_MAX_DESCRIBED_IMAGES", "50")
 
 # Native-asset (PDF/image) context budget, measured on base64 length — the shared
 # ceiling on how much file data any one LLM request carries across all three
@@ -806,10 +808,15 @@ XLSX_READ_MAX_ROWS = _env_int("XLSX_READ_MAX_ROWS", "200")
 # PDF so a pathological deck can't fan out into thousands of assets.
 PDF_MIN_IMAGE_DIMENSION = _env_int("PDF_MIN_IMAGE_DIMENSION", "32")
 PDF_MAX_EMBEDDED_IMAGES = _env_int("PDF_MAX_EMBEDDED_IMAGES", "200")
+# Embedded pictures vision-described per data-room document (or per email
+# attachment tree), counted after content-hash dedupe; the rest are stored with a
+# format-only label. Chat attachments have their own cap (CHAT_ATTACHMENT_MAX_DESCRIBED_IMAGES).
+DOCUMENT_MAX_DESCRIBED_IMAGES = _env_int("DOCUMENT_MAX_DESCRIBED_IMAGES", "50")
 # Embedded-image description is I/O-bound (one non-streaming vision call apiece),
-# so it runs on a small thread pool per document. Peak provider calls in flight is
-# roughly this x DOCUMENT_WORKER_SLOTS, and each call briefly writes one LLMCallLog
-# row from its worker thread — keep it modest so it stays under the DB conn cap.
+# so it runs on a small thread pool per document or attachment. Peak provider calls
+# in flight is roughly this x (DOCUMENT_WORKER_SLOTS + concurrent attachment tasks),
+# and each call briefly writes one LLMCallLog row from its worker thread — keep it
+# modest so it stays under the DB conn cap.
 DOCUMENT_IMAGE_DESCRIBE_CONCURRENCY = _env_int("DOCUMENT_IMAGE_DESCRIBE_CONCURRENCY", "5")
 # Per-version processing-progress dict (stage + current/total) in the Redis cache,
 # read by the document_status poll endpoint. Best-effort and short-lived; the TTL

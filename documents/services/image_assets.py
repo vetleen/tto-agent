@@ -42,11 +42,12 @@ logger = logging.getLogger(__name__)
 # Collapses runs of whitespace (incl. newlines) in a token label.
 _TOKEN_WS_RE = re.compile(r"\s+")
 
-# Cap how many embedded images get a vision description per data-room document
-# (or, for an email attachment tree, across the whole tree); beyond this they're
-# still stored (bytes preserved) but labelled by format only, so a 200-image deck
-# can't fan out into 200 vision calls. Chat attachments use
-# settings.CHAT_ATTACHMENT_MAX_DESCRIBED_IMAGES instead.
+# Default cap on how many embedded images get a vision description per data-room
+# document (or, for an email attachment tree, across the whole tree); beyond this
+# they're still stored (bytes preserved) but labelled by format only, so a
+# 200-image deck can't fan out into 200 vision calls. Overridden by
+# settings.DOCUMENT_MAX_DESCRIBED_IMAGES; chat attachments use
+# settings.CHAT_ATTACHMENT_MAX_DESCRIBED_IMAGES.
 MAX_DESCRIBED_EMBEDDED_IMAGES = 50
 
 # Bump this when the vision prompt (chat.services.IMAGE_DESCRIPTION_PROMPT)
@@ -293,7 +294,8 @@ class EmbeddedImageDescriber(EmbeddedImageDescriberBase):
     """Data-room arm: Assets owned by a ``DataRoomDocumentVersion``.
 
     Model = the org's ``document_image_description`` feature model; cache keyed by
-    the document's org; cap ``MAX_DESCRIBED_EMBEDDED_IMAGES``.
+    the document's org; cap ``settings.DOCUMENT_MAX_DESCRIBED_IMAGES`` (default
+    ``MAX_DESCRIBED_EMBEDDED_IMAGES``).
     """
 
     def __init__(self, version, doc):
@@ -306,7 +308,7 @@ class EmbeddedImageDescriber(EmbeddedImageDescriberBase):
             org_id=org_id,
             # "" when the org has no vision-capable model — assets are still stored.
             model=resolve_org_feature_model(org_id, "document_image_description"),
-            max_described=MAX_DESCRIBED_EMBEDDED_IMAGES,
+            max_described=getattr(settings, "DOCUMENT_MAX_DESCRIBED_IMAGES", MAX_DESCRIBED_EMBEDDED_IMAGES),
             label=f"version_id={version.id}",
         )
         self.version = version

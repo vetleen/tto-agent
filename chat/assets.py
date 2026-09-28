@@ -416,7 +416,7 @@ class AttachmentImageDescriber(EmbeddedImageDescriberBase):
     (pictures are still stored, with format-only labels). Org cache: keyed by
     the uploader's org, shared with data rooms, so a picture already described
     anywhere in the org costs no call. Cap: ``CHAT_ATTACHMENT_MAX_DESCRIBED_IMAGES``
-    unique pictures (data rooms: ``MAX_DESCRIBED_EMBEDDED_IMAGES``). A re-processed
+    unique pictures (data rooms: ``DOCUMENT_MAX_DESCRIBED_IMAGES``). A re-processed
     attachment reuses its existing rows (``store_attachment_image(dedupe=True)``)
     and never re-describes one that already has a real description.
     """
@@ -431,7 +431,7 @@ class AttachmentImageDescriber(EmbeddedImageDescriberBase):
         if model is None:
             model = (resolve_vision_model(user) if user is not None else None) or ""
         if max_described is None:
-            max_described = getattr(settings, "CHAT_ATTACHMENT_MAX_DESCRIBED_IMAGES", 30)
+            max_described = getattr(settings, "CHAT_ATTACHMENT_MAX_DESCRIBED_IMAGES", 50)
         super().__init__(
             user=user,
             org_id=org.id if org is not None else None,

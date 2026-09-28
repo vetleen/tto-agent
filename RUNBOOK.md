@@ -506,7 +506,8 @@ See `.env.example` for the full list with comments. Key production variables:
 | `CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS` | No | Max time a chat turn is held for its attachments' worker-side processing (default: 180; `0` = no hold → turn runs with in-turn extraction / text only) |
 | `CHAT_ATTACHMENT_RENDER_MAX_SLIDES` | No | Attached decks above this many slides get text only, no slide renders (default: 50) |
 | `CHAT_ATTACHMENT_INITIAL_SLIDES` | No | Slides of attached decks shown natively on the upload turn, per message (default: 20); the rest via `chat_attachment_view(pages=…)` |
-| `CHAT_ATTACHMENT_MAX_DESCRIBED_IMAGES` | No | Unique embedded pictures vision-described per pdf/docx/pptx chat or meeting attachment (default: 30; data rooms: fixed 50). The rest are stored with a format-only label |
+| `CHAT_ATTACHMENT_MAX_DESCRIBED_IMAGES` | No | Unique embedded pictures vision-described per pdf/docx/pptx chat or meeting attachment (default: 50). The rest are stored with a format-only label; ~0.6 s and ~$0.0001 per picture on Luna |
+| `DOCUMENT_MAX_DESCRIBED_IMAGES` | No | Same cap per data-room document / email attachment tree (default: 50) |
 | `DOCUMENT_IMAGE_DESCRIBE_CONCURRENCY` | No | Concurrent vision calls while describing a document's or attachment's pictures (default: 5). Each briefly holds a DB connection: peak ≈ this × concurrently processing documents/attachments |
 | `IMGDESC_CACHE_TTL` | No | Seconds an org-wide picture description stays cached in Redis (`imgdesc:v2:<org>:<sha>`, default: 30 days); shared by data rooms and chat attachments |
 | `DOCPROGRESS_CACHE_TTL` | No | Seconds a processing-progress dict lives in Redis (`docprogress:v1:<version>`, `attprogress:v1:<attachment>`, default: 600); every write refreshes it |
