@@ -11,7 +11,6 @@
   'use strict';
 
   var TOP_N = 5;
-  var DEFAULT_PRICE_LEVEL = 4;
   var EFFORT_ORDER = ['none', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
   var EFFORT_LABELS = {
     none: 'Reasoning off', off: 'Reasoning off', minimal: 'Minimal', low: 'Low',
@@ -101,9 +100,8 @@
       model: null,        // detail view when set
       notice: '',         // one-line message above the list
       showAll: false,
-      // [] = all price groups ("All" chip).
-      prices: [priceLevels.indexOf(DEFAULT_PRICE_LEVEL) !== -1
-        ? DEFAULT_PRICE_LEVEL : priceLevels[priceLevels.length - 1]]
+      // [] = all price groups ("All" chip), the default.
+      prices: []
     };
     var lastFocus = null;
 
@@ -250,7 +248,7 @@
         if (ranked.length > TOP_N) {
           body.appendChild(el('div', { style: 'padding:0 24px;' }, [el('button', {
             type: 'button', 'class': 'mg-link',
-            text: state.showAll ? 'Show top ' + TOP_N : 'Show all (' + ranked.length + ')',
+            text: state.showAll ? 'Show only top ' + TOP_N : 'Show all (' + ranked.length + ')',
             onclick: function () { state.showAll = !state.showAll; render(); }
           })]));
         }
