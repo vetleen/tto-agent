@@ -21,7 +21,6 @@ from llm.model_registry import canonical_model_id, get_registered_model_ids
 
 BENCHMARK_GDPVAL = "gdpval_aa"
 BENCHMARK_ARENA_BUSINESS = "arena_business"
-BENCHMARK_HEMINGWAY = "hemingway"
 BENCHMARK_GDP_PDF = "gdp_pdf"
 BENCHMARK_OMNISCIENCE = "omniscience_hallucination"
 
@@ -44,6 +43,10 @@ class BenchmarkScore:
 class Benchmark:
     key: str
     name: str
+    # Plain-language heading and the question the benchmark answers, for
+    # users who don't know the benchmark by name.
+    title: str
+    question: str
     metric: str
     description: str
     source_url: str
@@ -268,19 +271,6 @@ _ARENA_SCORES = (
     _row("gemini/gemini-3.5-flash-lite", None, 1453.6, "gemini-3.5-flash-lite", ci=8.2),
 )
 
-# The page's CIs are asymmetric; ci stores the larger half-width.
-_HEMINGWAY_SCORES = (
-    _row("openai/gpt-5.6-sol", "medium", 1057, "GPT 5.6 Sol (Medium reasoning)", ci=20),
-    _row("anthropic/claude-fable-5-1", "high", 1095, "Claude Fable 5.1 (Adaptive/High)", ci=24),
-    _row("anthropic/claude-fable-5", "high", 1110, "Claude Fable 5 (Adaptive/High)", ci=20),
-    _row("gemini/gemini-3.1-pro-preview", "high", 1073, "Gemini 3.1 Pro (High reasoning)", ci=16),
-    _row("gemini/gemini-3.8-flash", "medium", 1093, "Gemini 3.8 Flash (Medium reasoning)", ci=24),
-    _row(
-        "gemini/gemini-3.5-flash-lite", "minimal", 990,
-        "Gemini 3.5 Flash-Lite (Minimal reasoning)", ci=20,
-    ),
-)
-
 _FETCHED = date(2026, 9, 29)
 
 BENCHMARKS: dict[str, Benchmark] = {
@@ -288,6 +278,11 @@ BENCHMARKS: dict[str, Benchmark] = {
         Benchmark(
             key=BENCHMARK_GDPVAL,
             name="GDPval-AA",
+            title="General office work",
+            question=(
+                "How good is the model at real knowledge work, such as reports, "
+                "memos and analyses, as judged by people?"
+            ),
             metric="Elo",
             description=(
                 "Real knowledge-work deliverables (reports, memos, analyses, "
@@ -301,6 +296,11 @@ BENCHMARKS: dict[str, Benchmark] = {
         Benchmark(
             key=BENCHMARK_ARENA_BUSINESS,
             name="LMArena: Business, Management & Financial Ops",
+            title="Business questions",
+            question=(
+                "Whose answers do people prefer on business, management and "
+                "finance questions?"
+            ),
             metric="Elo",
             description=(
                 "Which answer people prefer, in blind side-by-side votes on "
@@ -315,21 +315,13 @@ BENCHMARKS: dict[str, Benchmark] = {
             caveat="Measures preference on business topics, not writing quality as such.",
         ),
         Benchmark(
-            key=BENCHMARK_HEMINGWAY,
-            name="Hemingway-bench",
-            metric="Elo",
-            description=(
-                "Writing quality (creative, business and everyday writing), "
-                "judged by professional writers in blind pairwise comparisons."
-            ),
-            source_url="https://surgehq.ai/benchmarks/hemingway-bench",
-            # The page states no date; its CMS "updated" field reads 2026-09-26.
-            as_of=_FETCHED,
-            scores=_HEMINGWAY_SCORES,
-        ),
-        Benchmark(
             key=BENCHMARK_GDP_PDF,
             name="GDP.pdf",
+            title="Working with PDFs",
+            question=(
+                "How reliably can the model answer questions from real "
+                "professional PDFs?"
+            ),
             metric="Tasks fully correct (%)",
             description=(
                 "Answering questions about real professional PDFs (4,592 pages): "
@@ -343,6 +335,11 @@ BENCHMARKS: dict[str, Benchmark] = {
         Benchmark(
             key=BENCHMARK_OMNISCIENCE,
             name="AA-Omniscience",
+            title="Admitting what it doesn't know",
+            question=(
+                "When the model doesn't know the answer, how often does it make "
+                "one up?"
+            ),
             metric="Hallucination rate (%)",
             description=(
                 "When the model doesn't know the answer, how often it makes "
@@ -401,6 +398,8 @@ def build_model_guide(allowed_models: list[str]) -> dict:
         benchmarks.append({
             "key": bench.key,
             "name": bench.name,
+            "title": bench.title,
+            "question": bench.question,
             "metric": bench.metric,
             "description": bench.description,
             "caveat": bench.caveat,
@@ -437,7 +436,7 @@ def build_model_guide(allowed_models: list[str]) -> dict:
 
 __all__ = [
     "Benchmark", "BenchmarkScore", "BENCHMARKS",
-    "BENCHMARK_GDPVAL", "BENCHMARK_ARENA_BUSINESS", "BENCHMARK_HEMINGWAY",
+    "BENCHMARK_GDPVAL", "BENCHMARK_ARENA_BUSINESS",
     "BENCHMARK_GDP_PDF", "BENCHMARK_OMNISCIENCE",
     "get_benchmark", "get_scores", "missing_models", "build_model_guide",
 ]

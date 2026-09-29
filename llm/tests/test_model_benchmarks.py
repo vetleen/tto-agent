@@ -7,7 +7,6 @@ from django.test import SimpleTestCase
 from llm.model_benchmarks import (
     BENCHMARK_ARENA_BUSINESS,
     BENCHMARK_GDPVAL,
-    BENCHMARK_HEMINGWAY,
     BENCHMARK_OMNISCIENCE,
     BENCHMARKS,
     build_model_guide,
@@ -43,7 +42,6 @@ class BenchmarkDataTests(SimpleTestCase):
     def test_missing_models(self):
         self.assertEqual(missing_models(BENCHMARK_ARENA_BUSINESS), ["anthropic/claude-sonnet-5-5"])
         self.assertEqual(missing_models(BENCHMARK_GDPVAL), [])
-        self.assertIn("anthropic/claude-opus-5-5", missing_models(BENCHMARK_HEMINGWAY))
         for key in BENCHMARKS:
             covered = {s.model_id for s in get_scores(key)}
             self.assertEqual(
@@ -61,6 +59,12 @@ class BenchmarkDataTests(SimpleTestCase):
             get_scores(BENCHMARK_GDPVAL, "openai/gpt-5.6-sol"),
         )
         self.assertEqual(get_scores("nope"), [])
+
+    def test_every_benchmark_has_a_plain_language_title_and_question(self):
+        for bench in BENCHMARKS.values():
+            with self.subTest(bench=bench.key):
+                self.assertTrue(bench.title)
+                self.assertTrue(bench.question.endswith("?"))
 
     def test_hallucination_rate_is_lower_is_better(self):
         self.assertFalse(get_benchmark(BENCHMARK_OMNISCIENCE).higher_is_better)
@@ -81,9 +85,6 @@ class ModelGuideTests(SimpleTestCase):
         by_key = {b["key"]: b for b in guide["benchmarks"]}
         self.assertEqual(by_key[BENCHMARK_ARENA_BUSINESS]["missing"], ["anthropic/claude-sonnet-5-5"])
         self.assertEqual(by_key[BENCHMARK_GDPVAL]["missing"], [])
-        self.assertEqual(
-            set(by_key[BENCHMARK_HEMINGWAY]["missing"]), set(self.ALLOWED),
-        )
 
     def test_models_carry_picker_price_and_star_levels(self):
         guide = build_model_guide(self.ALLOWED)

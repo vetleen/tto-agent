@@ -878,43 +878,62 @@
 <style>
   .mg-help-btn { display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; margin-left:6px; border:0; border-radius:999px; background:transparent; color:var(--color-body-subtle); cursor:pointer; }
   .mg-help-btn:hover { background:var(--color-neutral-tertiary); color:var(--color-heading); }
-  .mg-help-btn:focus-visible, .mg-chip:focus-visible, .mg-row:focus-visible, .mg-nav:focus-visible, .mg-link:focus-visible { outline:2px solid var(--color-brand); outline-offset:2px; }
-  .mg-nav { display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; border:1px solid var(--color-default-subtle); border-radius:8px; background:transparent; color:var(--color-body); cursor:pointer; flex-shrink:0; }
-  .mg-nav:hover { background:var(--color-neutral-secondary-soft); color:var(--color-heading); }
-  .mg-dot { width:7px; height:7px; border-radius:999px; border:0; padding:0; background:var(--color-default-medium); cursor:pointer; }
-  .mg-dot.is-active { background:var(--color-brand); width:18px; }
-  .mg-chip { height:28px; min-width:44px; padding:0 10px; border-radius:999px; border:1px solid var(--color-default-medium); background:transparent; font-family:var(--font-mono); font-size:12px; color:var(--color-body); cursor:pointer; }
-  .mg-chip[aria-pressed="true"] { background:var(--color-accent-soft); border-color:var(--color-accent); color:var(--color-heading); }
-  .mg-row { display:block; width:100%; text-align:left; padding:8px 10px; border:0; border-radius:6px; background:transparent; cursor:pointer; }
-  .mg-row:hover { background:var(--color-neutral-secondary-soft); }
-  .dark .mg-row:hover { background:var(--color-neutral-primary-strong); }
-  .mg-row.is-static { cursor:default; }
-  .mg-row.is-static:hover { background:transparent; }
-  .mg-track { height:8px; border-radius:999px; background:var(--color-neutral-secondary-soft); overflow:hidden; margin-top:6px; }
-  .dark .mg-track { background:var(--color-neutral-primary-strong); }
-  .mg-bar { height:100%; border-radius:999px; background:var(--color-brand); transition:width 260ms cubic-bezier(0.16,1,0.3,1); }
-  .mg-row.is-top .mg-bar { background:var(--color-accent); }
-  @media (prefers-reduced-motion: reduce) { .mg-bar { transition:none; } }
-  .mg-link { color:var(--color-fg-brand); text-decoration:underline; background:none; border:0; padding:0; font:inherit; cursor:pointer; }
+  .mg-help-btn:focus-visible { outline:2px solid var(--color-brand); outline-offset:2px; }
+  /* Design-system tokens (Wilfred DS), scoped to the modal: light by default, dark under .dark. */
+  #model-guide-modal {
+    --mg-card:#FFFFFF; --mg-page:#FAF8F4; --mg-sunken:#F4F1EA; --mg-track:#F4F1EA;
+    --mg-heading:#0B2418; --mg-body:#283044; --mg-muted:#525C72; --mg-link:#16432C;
+    --mg-border-subtle:#E4DFD3; --mg-border:#D5CEBE; --mg-border-strong:#8FBBA4; --mg-border-brand:#103120;
+    --mg-brand-soft:#EEF4F0; --mg-best:#16432C; --mg-card-border:transparent;
+    --mg-tier-1:#8FBBA4; --mg-tier-2:#589A77; --mg-tier-3:#2C6E4A; --mg-tier-4:#103120; --mg-tier-5:#06150E;
+  }
+  .dark #model-guide-modal {
+    --mg-card:#0E2719; --mg-page:#06150E; --mg-sunken:#081C12; --mg-track:#16402A;
+    --mg-heading:#EFF5F1; --mg-body:#C4D6CB; --mg-muted:#8AA395; --mg-link:#E2BC93;
+    --mg-border-subtle:rgba(255,255,255,.06); --mg-border:rgba(255,255,255,.12); --mg-border-strong:rgba(255,255,255,.22); --mg-border-brand:#BE8242;
+    --mg-brand-soft:#16402A; --mg-best:#D29C63; --mg-card-border:rgba(255,255,255,.06);
+    /* Tier ramp inverted in dark: lightest = most expensive. */
+    --mg-tier-1:#2C6E4A; --mg-tier-2:#589A77; --mg-tier-3:#8FBBA4; --mg-tier-4:#BFD8CB; --mg-tier-5:#EEF4F0;
+  }
+  #model-guide-modal .mg-card { position:relative; width:520px; max-width:100%; margin:auto; background:var(--mg-card); border:1px solid var(--mg-card-border); border-radius:12px; box-shadow:var(--shadow-xl); color:var(--mg-body); overflow:hidden; }
+  #model-guide-modal .mg-nav { width:34px; height:34px; display:flex; align-items:center; justify-content:center; border:1px solid var(--mg-border); background:var(--mg-card); border-radius:8px; color:var(--mg-heading); cursor:pointer; flex-shrink:0; }
+  #model-guide-modal .mg-nav:hover { border-color:var(--mg-border-strong); }
+  #model-guide-modal .mg-close { width:32px; height:32px; display:flex; align-items:center; justify-content:center; border:0; background:transparent; border-radius:8px; color:var(--mg-muted); cursor:pointer; flex-shrink:0; }
+  #model-guide-modal .mg-close:hover { background:var(--mg-sunken); }
+  #model-guide-modal .mg-chip { display:flex; align-items:center; gap:7px; padding:4px 10px 4px 8px; border-radius:999px; font:500 12.5px var(--font-mono); cursor:pointer; border:1px solid var(--mg-border); background:var(--mg-card); color:var(--mg-muted); }
+  #model-guide-modal .mg-chip.mg-chip-all { padding:4px 12px; font-family:var(--font-sans); }
+  #model-guide-modal .mg-chip[aria-pressed="true"] { border-color:var(--mg-border-brand); background:var(--mg-brand-soft); color:var(--mg-heading); }
+  #model-guide-modal .mg-swatch { width:10px; height:10px; border-radius:2px; }
+  #model-guide-modal .mg-row { display:block; width:100%; text-align:left; padding:9px 24px; border:0; background:transparent; font:inherit; color:inherit; cursor:pointer; }
+  #model-guide-modal .mg-row:hover { background:var(--mg-sunken); }
+  #model-guide-modal .mg-row.is-static { cursor:default; }
+  #model-guide-modal .mg-row.is-static:hover { background:transparent; }
+  #model-guide-modal .mg-track { height:16px; border-radius:3px; background:var(--mg-track); overflow:hidden; }
+  #model-guide-modal .mg-bar { height:100%; border-radius:3px; transition:width 260ms cubic-bezier(0.16,1,0.3,1); }
+  @media (prefers-reduced-motion: reduce) { #model-guide-modal .mg-bar { transition:none; } }
+  #model-guide-modal .mg-link { display:inline-flex; align-items:center; gap:6px; border:0; background:none; padding:4px 0; font:500 13px var(--font-sans); color:var(--mg-link); cursor:pointer; }
+  #model-guide-modal a { color:var(--mg-link); }
+  #model-guide-modal .mg-best { font-size:11px; font-weight:600; padding:1px 7px; border-radius:999px; background:var(--mg-brand-soft); color:var(--mg-best); }
+  #model-guide-modal button:focus-visible, #model-guide-modal a:focus-visible { outline:2px solid var(--mg-border-brand); outline-offset:2px; }
 </style>
-<div id="model-guide-modal" role="dialog" aria-modal="true" aria-labelledby="model-guide-title" tabindex="-1" aria-hidden="true" class="fixed inset-0 z-50 hidden flex items-center justify-center p-4 overflow-y-auto wf-scrim">
-  <div class="wfm-modal" style="position:relative;width:560px;max-width:100%;margin:auto;background:var(--color-neutral-primary-medium);border:1px solid var(--color-default-subtle);border-radius:12px;box-shadow:var(--shadow-xl);overflow:hidden;">
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--color-default-subtle);">
-      <h2 id="model-guide-title" style="margin:0;font-family:var(--font-serif);font-size:20px;font-weight:600;color:var(--color-heading);letter-spacing:-0.01em;">What model should I pick?</h2>
-      <button type="button" id="close-model-guide" class="wfm-iconbtn" aria-label="Close" style="display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border:0;background:transparent;color:var(--color-body-subtle);border-radius:5px;cursor:pointer;"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg></button>
-    </div>
-    {# Pager: prev / benchmark name + dots / next #}
-    <div style="display:flex;align-items:center;gap:12px;padding:14px 22px 0;">
-      <button type="button" id="model-guide-prev" class="mg-nav" aria-label="Previous benchmark"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg></button>
-      <div style="flex:1;min-width:0;text-align:center;">
-        <div id="model-guide-bench-name" aria-live="polite" style="font-size:15px;font-weight:600;line-height:1.3;color:var(--color-heading);"></div>
-        <div id="model-guide-dots" style="display:flex;justify-content:center;gap:6px;margin-top:6px;"></div>
+<div id="model-guide-modal" role="dialog" aria-modal="true" aria-labelledby="mg-title" aria-describedby="mg-question" tabindex="-1" aria-hidden="true" class="fixed inset-0 z-50 hidden flex items-center justify-center p-4 overflow-y-auto wf-scrim">
+  <div class="mg-card wfm-modal">
+    <div style="padding:20px 16px 0 24px;display:flex;gap:16px;align-items:center;">
+      <div style="flex:1;min-width:0;">
+        <h2 id="mg-title" aria-live="polite" style="margin:0 0 3px;font-family:var(--font-serif);font-size:24px;line-height:1.2;font-weight:600;letter-spacing:-.01em;color:var(--mg-heading);"></h2>
+        <p id="mg-question" style="margin:0;font-size:13.5px;line-height:1.45;color:var(--mg-muted);text-wrap:pretty;"></p>
       </div>
-      <button type="button" id="model-guide-next" class="mg-nav" aria-label="Next benchmark"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg></button>
+      <div style="display:flex;align-items:center;gap:8px;align-self:flex-start;">
+        <button type="button" id="model-guide-prev" class="mg-nav" aria-label="Previous benchmark"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg></button>
+        <span id="mg-count" style="font-family:var(--font-mono);font-size:12px;color:var(--mg-muted);min-width:28px;text-align:center;"></span>
+        <button type="button" id="model-guide-next" class="mg-nav" aria-label="Next benchmark"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg></button>
+        <span style="width:1px;height:22px;background:var(--mg-border-subtle);margin:0 2px;"></span>
+        <button type="button" id="close-model-guide" class="mg-close" aria-label="Close"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+      </div>
     </div>
-    <div id="model-guide-body" style="padding:14px 22px 20px;max-height:min(70vh,640px);overflow-y:auto;">
-      {# Populated by js/model-guide.js #}
-    </div>
+    <div id="mg-filters" role="group" aria-label="Price groups" style="margin:18px 24px 6px;padding:10px 0;border-top:1px solid var(--mg-border-subtle);border-bottom:1px solid var(--mg-border-subtle);display:flex;align-items:center;gap:8px;flex-wrap:wrap;"></div>
+    <div id="model-guide-body">{# Populated by js/model-guide.js #}</div>
+    <div id="mg-footer" style="margin-top:8px;padding:16px 24px 20px;border-top:1px solid var(--mg-border-subtle);background:var(--mg-page);font-size:13px;line-height:1.55;color:var(--mg-muted);display:flex;flex-direction:column;gap:8px;text-wrap:pretty;"></div>
   </div>
 </div>
 <script src="{% static 'js/model-guide.js' %}" defer></script>
