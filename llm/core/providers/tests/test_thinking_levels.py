@@ -50,6 +50,16 @@ class AnthropicReasoningTests(SimpleTestCase):
         self.assertEqual(kwargs["output_config"], {"effort": "medium"})
 
     @patch("llm.core.providers.anthropic.create_variant_client")
+    def test_sonnet_55_default_is_adaptive_high(self, create_variant):
+        create_variant.return_value = MagicMock()
+        model = AnthropicChatModel("anthropic/claude-sonnet-5-5", MagicMock())
+        model._get_streaming_client(_request("high"))
+        kwargs = create_variant.call_args.kwargs
+        self.assertEqual(kwargs["thinking"], {"type": "adaptive", "display": "summarized"})
+        self.assertEqual(kwargs["output_config"], {"effort": "high"})
+        self.assertEqual(kwargs["max_tokens"], 128_000)
+
+    @patch("llm.core.providers.anthropic.create_variant_client")
     def test_opus_48_xhigh_is_adaptive(self, create_variant):
         create_variant.return_value = MagicMock()
         model = AnthropicChatModel("anthropic/claude-opus-4-8", MagicMock())

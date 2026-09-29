@@ -317,6 +317,18 @@ _MODELS: dict[str, ModelInfo] = {
         cached_input_price=Decimal("0.50"), cache_write_price=Decimal("6.25"),
         cache_write_1h_price=Decimal("10.00"), output_price=Decimal("25.00"),
     ),
+    "anthropic/claude-sonnet-5-5": ModelInfo(
+        display_name="Claude Sonnet 5.5", provider="anthropic",
+        api_model="claude-sonnet-5-5", stars=3,
+        # No "off": thinking.type "disabled" 400s (the lowest setting is
+        # "between_tools", which we don't use). Provider default effort is high.
+        reasoning_levels=("low", "medium", "high", "xhigh", "max"),
+        default_reasoning_level="high", thinking_mode="adaptive",
+        input_modalities=_MULTIMODAL, context_window=1_000_000,
+        max_output_tokens=128_000, input_price=Decimal("2.00"),
+        cached_input_price=Decimal("0.20"), cache_write_price=Decimal("2.50"),
+        cache_write_1h_price=Decimal("4.00"), output_price=Decimal("10.00"),
+    ),
     "anthropic/claude-sonnet-5": ModelInfo(
         display_name="Claude Sonnet 5", provider="anthropic", api_model="claude-sonnet-5",
         stars=3,
