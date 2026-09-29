@@ -690,6 +690,7 @@ def chat_home(request):
         supports_thinking,
         supports_vision,
     )
+    from llm.model_benchmarks import build_model_guide
 
     prefs = get_preferences(request.user)
 
@@ -772,6 +773,9 @@ def chat_home(request):
             "skills_json": skills_json,
             "thread_skills_json": json.dumps(thread_skills),
             "model_choices_json": json.dumps(model_choices),
+            # "What model should I pick?" modal: benchmark scores for the
+            # org's enabled models (rendered via json_script).
+            "model_guide": build_model_guide(prefs.allowed_models),
             "default_model": effective_model,
             "default_model_display": get_display_name(effective_model),
             "preferred_chat_model": preferred_chat_model,

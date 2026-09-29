@@ -335,16 +335,16 @@ class ChatHomeModelChoicesTests(TestCase):
 
         mock_preferences.return_value = ResolvedPreferences(
             top_model="openai/gpt-5.6-sol",
-            mid_model="openai/gpt-5.6-luna",
+            mid_model="openai/gpt-6-luna",
             cheap_model="openai/gpt-5.4-nano",
-            allowed_models=["openai/gpt-5.6-sol", "openai/gpt-5.6-luna"],
-            feature_models={"chat": "openai/gpt-5.6-luna"},
+            allowed_models=["openai/gpt-5.6-sol", "openai/gpt-6-luna"],
+            feature_models={"chat": "openai/gpt-6-luna"},
         )
 
         response = self.client.get(reverse("chat_home"))
 
         self.assertEqual(
-            response.context["default_model"], "openai/gpt-5.6-luna"
+            response.context["default_model"], "openai/gpt-6-luna"
         )
 
     def test_attach_accept_offers_photo_picker(self):
@@ -367,6 +367,28 @@ class ChatHomeModelChoicesTests(TestCase):
         response = self.client.get(reverse("chat_home"))
         self.assertContains(response, 'id="model-selector-btn"')
         self.assertContains(response, 'id="model-selector-dropdown"')
+
+    @patch("core.preferences.get_preferences")
+    def test_model_guide_covers_only_enabled_models(self, mock_preferences):
+        from core.preferences import ResolvedPreferences
+
+        enabled = ["anthropic/claude-opus-5-5", "openai/gpt-6-luna"]
+        mock_preferences.return_value = ResolvedPreferences(
+            top_model="anthropic/claude-opus-5-5",
+            mid_model="openai/gpt-6-luna",
+            cheap_model="openai/gpt-6-luna",
+            allowed_models=enabled,
+        )
+
+        response = self.client.get(reverse("chat_home"))
+
+        guide = response.context["model_guide"]
+        self.assertEqual([m["id"] for m in guide["models"]], enabled)
+        for bench in guide["benchmarks"]:
+            self.assertLessEqual({r["model_id"] for r in bench["rows"]}, set(enabled))
+        self.assertContains(response, 'id="model-guide-data"')
+        self.assertContains(response, 'id="model-guide-btn"')
+        self.assertContains(response, "js/model-guide.js")
         self.assertContains(response, 'id="reasoning-toggle"')
         self.assertContains(response, 'id="reasoning-level-picker"')
         self.assertContains(response, 'id="reasoning-level-select"')
