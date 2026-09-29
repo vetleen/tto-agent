@@ -105,17 +105,20 @@
     };
     var lastFocus = null;
 
-    function isPercent(bench) { return bench.metric.indexOf('%') !== -1; }
+    // "percent" and "score" are bounded 0-100 (bars from 0); "elo" is relative.
+    function isBounded(bench) { return bench.scale !== 'elo'; }
 
     function formatScore(bench, score) {
-      return isPercent(bench) ? score.toFixed(1) + '%' : String(Math.round(score));
+      if (bench.scale === 'percent') return score.toFixed(1) + '%';
+      if (bench.scale === 'score') return score.toFixed(1);
+      return String(Math.round(score));
     }
 
     // Longer bar = better, always. For a lower-is-better % metric the bar
     // length is 100 − value while the label shows the value itself.
     function goodness(bench, score) {
       if (bench.higher_is_better) return score;
-      return isPercent(bench) ? 100 - score : -score;
+      return isBounded(bench) ? 100 - score : -score;
     }
 
     function inPriceGroups(modelId) {
@@ -134,7 +137,7 @@
       if (!values.length) return function () { return 0; };
       var hi = Math.max.apply(null, values);
       var lo = 0;
-      if (!isPercent(bench)) {
+      if (!isBounded(bench)) {
         var min = Math.min.apply(null, values);
         lo = bench.higher_is_better ? Math.floor((min - 100) / 100) * 100 : min - Math.max((hi - min) * 0.15, 5);
       }
@@ -157,7 +160,7 @@
 
     function barRow(bench, scale, opts) {
       var row = opts.row;
-      var ci = row.ci ? ' ±' + (isPercent(bench) ? row.ci.toFixed(1) : Math.round(row.ci)) : '';
+      var ci = row.ci ? ' ±' + (isBounded(bench) ? row.ci.toFixed(1) : Math.round(row.ci)) : '';
       var head = el('div', { style: 'display:flex;align-items:' + (opts.best !== undefined ? 'center' : 'baseline') + ';gap:8px;margin-bottom:6px;' }, [
         el('span', { style: 'font-size:14px;font-weight:' + (opts.subtitle !== undefined ? '500' : '400') + ';color:var(--mg-heading);' }, [
           opts.title,

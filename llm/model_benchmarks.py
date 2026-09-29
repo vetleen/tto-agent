@@ -22,6 +22,7 @@ from llm.model_registry import canonical_model_id, get_registered_model_ids
 BENCHMARK_GDPVAL = "gdpval_aa"
 BENCHMARK_ARENA_BUSINESS = "arena_business"
 BENCHMARK_GDP_PDF = "gdp_pdf"
+BENCHMARK_LIVEBENCH_IF = "livebench_if"
 BENCHMARK_OMNISCIENCE = "omniscience_hallucination"
 
 
@@ -56,6 +57,9 @@ class Benchmark:
     scores: tuple[BenchmarkScore, ...]
     higher_is_better: bool = True
     caveat: str | None = None
+    # How the guide formats and scales scores: "elo" (relative, no zero),
+    # "percent" (0-100, shown with %), "score" (0-100, shown bare).
+    scale: str = "elo"
 
 
 def _row(model_id, effort, score, source_label, ci=None, note=None):
@@ -271,6 +275,29 @@ _ARENA_SCORES = (
     _row("gemini/gemini-3.5-flash-lite", None, 1453.6, "gemini-3.5-flash-lite", ci=8.2),
 )
 
+# LiveBench release 2026-06-25 (livebench.ai/table_2026_06_25.csv): the IF
+# category is the mean of paraphrase, simplify, story_generation and summarize.
+# New models are added to the current release, so all rows share one question
+# set. Haiku 4.5 is not listed.
+_LIVEBENCH_IF_SCORES = (
+    _row("openai/gpt-6-astra", "max", 75.58, "gpt-6-astra-max"),
+    _row("openai/gpt-6-sol", "max", 68.57, "gpt-6-sol-max"),
+    _row("openai/gpt-6-luna", "max", 55.93, "gpt-6-luna-max"),
+    _row("openai/gpt-5.6-sol", "max", 71.85, "gpt-5.6-sol-max"),
+    _row("openai/gpt-5.6-terra", "max", 64.62, "gpt-5.6-terra-max"),
+    _row("openai/gpt-5.4-nano", "xhigh", 67.20, "gpt-5.4-nano-xhigh"),
+    _row("anthropic/claude-fable-5-1", "max", 72.99, "claude-fable-5-1-max-effort"),
+    _row("anthropic/claude-fable-5", "max", 75.77, "claude-fable-5-max-effort"),
+    _row("anthropic/claude-opus-5-5", "xhigh", 67.05, "claude-opus-5-5-xhigh-effort"),
+    _row("anthropic/claude-opus-5-5", "max", 65.74, "claude-opus-5-5-max-effort"),
+    _row("anthropic/claude-sonnet-5-5", "xhigh", 70.52, "claude-sonnet-5-5-xhigh-effort"),
+    _row("anthropic/claude-sonnet-5-5", "max", 56.79, "claude-sonnet-5-5-max-effort"),
+    _row("anthropic/claude-sonnet-5", "xhigh", 63.86, "claude-sonnet-5-xhigh-effort"),
+    _row("gemini/gemini-3.1-pro-preview", "high", 79.10, "gemini-3.1-pro-preview-high"),
+    _row("gemini/gemini-3.8-flash", "high", 81.41, "gemini-3.8-flash-high"),
+    _row("gemini/gemini-3.5-flash-lite", "high", 67.24, "gemini-3.5-flash-lite-high"),
+)
+
 _FETCHED = date(2026, 9, 29)
 
 BENCHMARKS: dict[str, Benchmark] = {
@@ -331,6 +358,26 @@ BENCHMARKS: dict[str, Benchmark] = {
             source_url="https://artificialanalysis.ai/evaluations/gdp-pdf",
             as_of=_FETCHED,
             scores=_AA_SCORES[BENCHMARK_GDP_PDF],
+            scale="percent",
+        ),
+        Benchmark(
+            key=BENCHMARK_LIVEBENCH_IF,
+            name="LiveBench — Instruction Following",
+            title="Following instructions",
+            question=(
+                "How precisely does the model follow explicit instructions on "
+                "format, length and content?"
+            ),
+            metric="Score (0–100)",
+            description=(
+                "Rewriting tasks (paraphrasing, simplifying, summarizing and "
+                "story writing) under explicit constraints, graded automatically "
+                "against those constraints rather than by an AI judge."
+            ),
+            source_url="https://livebench.ai/",
+            as_of=date(2026, 6, 25),
+            scores=_LIVEBENCH_IF_SCORES,
+            scale="score",
         ),
         Benchmark(
             key=BENCHMARK_OMNISCIENCE,
@@ -349,6 +396,7 @@ BENCHMARKS: dict[str, Benchmark] = {
             as_of=_FETCHED,
             scores=_AA_SCORES[BENCHMARK_OMNISCIENCE],
             higher_is_better=False,
+            scale="percent",
             caveat=(
                 "Tested without documents (from memory), which is not the same "
                 "as sticking to sources you provide."
@@ -406,6 +454,7 @@ def build_model_guide(allowed_models: list[str]) -> dict:
             "source_url": bench.source_url,
             "as_of": bench.as_of.isoformat(),
             "higher_is_better": bench.higher_is_better,
+            "scale": bench.scale,
             "rows": [
                 {
                     "model_id": s.model_id,
@@ -437,6 +486,6 @@ def build_model_guide(allowed_models: list[str]) -> dict:
 __all__ = [
     "Benchmark", "BenchmarkScore", "BENCHMARKS",
     "BENCHMARK_GDPVAL", "BENCHMARK_ARENA_BUSINESS",
-    "BENCHMARK_GDP_PDF", "BENCHMARK_OMNISCIENCE",
+    "BENCHMARK_GDP_PDF", "BENCHMARK_LIVEBENCH_IF", "BENCHMARK_OMNISCIENCE",
     "get_benchmark", "get_scores", "missing_models", "build_model_guide",
 ]

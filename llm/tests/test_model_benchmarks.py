@@ -6,7 +6,9 @@ from django.test import SimpleTestCase
 
 from llm.model_benchmarks import (
     BENCHMARK_ARENA_BUSINESS,
+    BENCHMARK_GDP_PDF,
     BENCHMARK_GDPVAL,
+    BENCHMARK_LIVEBENCH_IF,
     BENCHMARK_OMNISCIENCE,
     BENCHMARKS,
     build_model_guide,
@@ -65,6 +67,21 @@ class BenchmarkDataTests(SimpleTestCase):
             with self.subTest(bench=bench.key):
                 self.assertTrue(bench.title)
                 self.assertTrue(bench.question.endswith("?"))
+
+    def test_page_order_and_scales(self):
+        self.assertEqual(
+            [(b.key, b.scale) for b in BENCHMARKS.values()],
+            [
+                (BENCHMARK_GDPVAL, "elo"),
+                (BENCHMARK_ARENA_BUSINESS, "elo"),
+                (BENCHMARK_GDP_PDF, "percent"),
+                (BENCHMARK_LIVEBENCH_IF, "score"),
+                (BENCHMARK_OMNISCIENCE, "percent"),
+            ],
+        )
+
+    def test_livebench_if_misses_only_haiku(self):
+        self.assertEqual(missing_models(BENCHMARK_LIVEBENCH_IF), ["anthropic/claude-haiku-4-5"])
 
     def test_hallucination_rate_is_lower_is_better(self):
         self.assertFalse(get_benchmark(BENCHMARK_OMNISCIENCE).higher_is_better)
