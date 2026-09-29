@@ -94,6 +94,17 @@
   .wf-file-chip--unavailable:hover { background: var(--wf-sunken); border-color: var(--wf-border-subtle); }
   .tool-card { transition: opacity 0.2s; }
   .tool-cards-done { opacity: 0.5; transition: opacity 0.5s ease; }
+  /* A long tool run (TOOL_GROUP_THRESHOLD+) folds into a "Used n tools" toggle styled like
+     the thinking block; expanded, the calls are a compact list instead of pills. */
+  .tool-cards.tool-cards--grouped { display: block; }
+  .tool-cards-done.tool-cards--grouped { opacity: 1; }
+  .tool-cards-done.tool-cards--grouped .tool-group-list { opacity: 0.6; }
+  .tool-cards--grouped .tool-group-chevron { transform: rotate(90deg); }
+  .tool-cards--grouped.collapsed .tool-group-chevron { transform: rotate(0deg); }
+  .tool-cards--grouped.collapsed .tool-group-list { display: none; }
+  .tool-group-list { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; margin-top: 4px; padding-left: 12px; border-left: 2px solid var(--color-neutral-quaternary); max-height: 16rem; overflow-y: auto; scrollbar-width: thin; }
+  .tool-group-list .tool { background: none; border: 0; border-radius: 0; padding: 2px 0; font-size: 12px; gap: 7px; }
+  .tool-group-current { color: var(--wf-faint); }
 
   /* ===== Chat redesign v2 (ledger) — token aliases + components ===== */
   /* Aliases point at project color tokens so dark mode flips automatically.
@@ -3003,6 +3014,39 @@
     currentThinkingBlock = null; thinkingStartTime = null;
   }
 
+  // Once a reply has made TOOL_GROUP_THRESHOLD tool calls, fold its chips into a
+  // collapsed "Used n tools" toggle (thinking-block style). While a call runs the
+  // header also names it, so the collapsed view still shows what is happening.
+  var TOOL_GROUP_THRESHOLD = 5;
+  function updateToolGroup(container) {
+    if (!container) return;
+    var cards = container.querySelectorAll(".tool-card");
+    if (cards.length < TOOL_GROUP_THRESHOLD) return;
+    var list = container.querySelector(".tool-group-list");
+    if (!list) {
+      container.classList.add("tool-cards--grouped", "collapsed");
+      var toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "tool-group-toggle flex items-center gap-1.5 text-xs text-body/70 hover:text-body cursor-pointer select-none";
+      toggle.innerHTML = '<svg class="tool-group-chevron w-3 h-3 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg><span class="tool-group-label"></span>';
+      toggle.addEventListener("click", function() { container.classList.toggle("collapsed"); });
+      list = document.createElement("div"); list.className = "tool-group-list";
+      cards.forEach(function(c) { list.appendChild(c); });
+      container.appendChild(toggle); container.appendChild(list);
+    }
+    var n = cards.length;
+    var running = list.querySelectorAll(".tool-card.is-running");
+    var failed = list.querySelectorAll(".tool-card.is-error").length;
+    var text = (running.length ? "Using " : "Used ") + n + " tools";
+    var html = escapeHtml(text);
+    if (failed) html += " · " + failed + " failed";
+    if (running.length) {
+      var cur = running[running.length - 1].querySelector(".tool-card-text");
+      if (cur) html += ' <span class="tool-group-current">· ' + escapeHtml(cur.textContent) + '</span>';
+    }
+    var label = container.querySelector(".tool-group-label"); if (label) label.innerHTML = html;
+  }
+
   function appendLoopUserMessage(text) {
     // A scheduled loop turn fired while this thread is open: render its prompt
     // as a user bubble, then let the broadcast assistant stream into a fresh
@@ -3377,12 +3421,13 @@
       ensureBubble();
       const container = currentStreamingElement.querySelector(".tool-cards");
       if (container) {
-        const card = document.createElement("div"); card.className = "tool-card tool"; card.setAttribute("data-tool-id", toolId);
+        const card = document.createElement("div"); card.className = "tool-card tool is-running"; card.setAttribute("data-tool-id", toolId);
         let displayText = (data.data && data.data.display_label) || "Working...";
         const toolArgs = (data.data && data.data.arguments) || {}; const reasonText = (typeof toolArgs === "object" && toolArgs.reason) ? ' <span class="italic">(' + escapeHtml(toolArgs.reason) + ')</span>' : '';
         if (toolName === "chat_subagent_create" && toolId && typeof toolArgs === "object" && toolArgs.reason) subagentReasons[toolId] = toolArgs.reason;
         card.innerHTML = '<svg class="w-3 h-3 animate-spin shrink-0" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><span class="tool-card-text">' + displayText + reasonText + '</span>';
-        container.appendChild(card);
+        (container.querySelector(".tool-group-list") || container).appendChild(card);
+        updateToolGroup(container);
       }
       scrollToBottom(); return;
     }
@@ -3420,6 +3465,8 @@
           var reasonSuffix = "";
           if (isSubagentActive && subagentReasons[toolId]) { var rr = subagentReasons[toolId]; reasonSuffix = ' <span class="italic">(' + escapeHtml(rr.charAt(0).toLowerCase() + rr.slice(1)) + ')</span>'; }
           card.innerHTML = iconSvg + '<span class="tool-card-text">' + escapeHtml(doneLabel) + reasonSuffix + '</span>';
+          card.classList.remove("is-running"); if (isToolError) card.classList.add("is-error");
+          updateToolGroup(card.closest(".tool-cards"));
         }
       }
       scrollToBottom(); return;
