@@ -29,9 +29,9 @@ class ParseProviderTests(SimpleTestCase):
         self.assertEqual(api_model, "claude-sonnet-5")
 
     def test_explicit_gemini_prefix(self):
-        provider, api_model = _parse_provider("gemini/gemini-3.7-flash")
+        provider, api_model = _parse_provider("gemini/gemini-3.8-flash")
         self.assertEqual(provider, "google_genai")
-        self.assertEqual(api_model, "gemini-3.7-flash")
+        self.assertEqual(api_model, "gemini-3.8-flash")
 
     def test_auto_detect_gpt(self):
         provider, api_model = _parse_provider("gpt-5-mini")
@@ -54,9 +54,14 @@ class ParseProviderTests(SimpleTestCase):
         self.assertEqual(api_model, "o4-mini")
 
     def test_auto_detect_claude(self):
+        provider, api_model = _parse_provider("claude-opus-5-5")
+        self.assertEqual(provider, "anthropic")
+        self.assertEqual(api_model, "claude-opus-5-5")
+
+    def test_retired_bare_name_forwards_to_successor(self):
         provider, api_model = _parse_provider("claude-opus-4-6")
         self.assertEqual(provider, "anthropic")
-        self.assertEqual(api_model, "claude-opus-4-6")
+        self.assertEqual(api_model, "claude-opus-5-5")
 
     def test_auto_detect_gemini(self):
         provider, api_model = _parse_provider("gemini-3.1-pro-preview")

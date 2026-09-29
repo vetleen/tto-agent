@@ -113,7 +113,13 @@ def canonical_image_model_id(model_id: str | None) -> str | None:
     if not model_id:
         return None
     candidate = model_id.strip()
-    candidate = IMAGE_MODEL_REPLACEMENTS.get(candidate, candidate)
+    # Follow the chain (never repoint old rows), guarding against cycles.
+    seen: set[str] = set()
+    while candidate in IMAGE_MODEL_REPLACEMENTS:
+        if candidate in seen:
+            return None
+        seen.add(candidate)
+        candidate = IMAGE_MODEL_REPLACEMENTS[candidate]
     return candidate if candidate in _IMAGE_GENERATION_MODELS else None
 
 

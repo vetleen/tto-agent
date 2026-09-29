@@ -595,7 +595,8 @@ class DefaultReasoningLevelTests(TestCase):
         return fake_pipeline.run.call_args[0][0].params
 
     def test_missing_level_gets_registry_default(self):
-        self.assertEqual(self._run("openai/gpt-5.6-luna")["thinking_level"], "max")
+        # Retired Luna forwards to GPT-6 Luna and takes its default.
+        self.assertEqual(self._run("openai/gpt-5.6-luna")["thinking_level"], "xhigh")
         self.assertEqual(self._run("openai/gpt-6-luna")["thinking_level"], "xhigh")
         self.assertEqual(self._run("anthropic/claude-opus-5-5")["thinking_level"], "medium")
 

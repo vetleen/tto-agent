@@ -148,9 +148,9 @@ class ModelInfo:
 _GPT56_LEVELS = ("none", "low", "medium", "high", "xhigh", "max")
 _MULTIMODAL = ("text", "image", "pdf")
 
-# Keyed only by the models that may appear in the curated picker. Historical
-# IDs are handled separately by MODEL_REPLACEMENTS so stored preferences migrate
-# without putting retired models back into the allow-list.
+# Keyed only by the models that may appear in the curated picker. Retired IDs
+# are forwarded by MODEL_REPLACEMENTS so stored preferences resolve to a live
+# model without putting retired models back into the allow-list.
 _MODELS: dict[str, ModelInfo] = {
     # OpenAI
     "openai/gpt-6-astra": ModelInfo(
@@ -228,21 +228,6 @@ _MODELS: dict[str, ModelInfo] = {
         long_context_cache_write_price=Decimal("5.00"),
         long_context_output_price=Decimal("18.00"),
     ),
-    "openai/gpt-5.6-luna": ModelInfo(
-        display_name="GPT-5.6 Luna", provider="openai", api_model="gpt-5.6-luna",
-        stars=2,
-        # Product choice: highest effort (provider default is medium).
-        reasoning_levels=_GPT56_LEVELS, default_reasoning_level="max",
-        uses_responses_api=True, input_modalities=_MULTIMODAL,
-        context_window=1_050_000, max_output_tokens=128_000,
-        input_price=Decimal("0.20"), cached_input_price=Decimal("0.02"),
-        cache_write_price=Decimal("0.25"), output_price=Decimal("1.20"),
-        long_context_threshold=272_000,
-        long_context_input_price=Decimal("0.40"),
-        long_context_cached_input_price=Decimal("0.04"),
-        long_context_cache_write_price=Decimal("0.50"),
-        long_context_output_price=Decimal("1.80"),
-    ),
     "openai/gpt-5.4-nano": ModelInfo(
         display_name="GPT-5.4 Nano", provider="openai", api_model="gpt-5.4-nano",
         stars=1,
@@ -286,36 +271,6 @@ _MODELS: dict[str, ModelInfo] = {
         # Cache reads are 0.05x input, not the usual 0.1x.
         cached_input_price=Decimal("0.20"), cache_write_price=Decimal("5.00"),
         cache_write_1h_price=Decimal("8.00"), output_price=Decimal("20.00"),
-    ),
-    "anthropic/claude-opus-5": ModelInfo(
-        display_name="Claude Opus 5", provider="anthropic", api_model="claude-opus-5",
-        stars=4,
-        reasoning_levels=("off", "low", "medium", "high", "xhigh", "max"),
-        default_reasoning_level="high", thinking_mode="adaptive",
-        input_modalities=_MULTIMODAL, context_window=1_000_000,
-        max_output_tokens=128_000, input_price=Decimal("5.00"),
-        cached_input_price=Decimal("0.50"), cache_write_price=Decimal("6.25"),
-        cache_write_1h_price=Decimal("10.00"), output_price=Decimal("25.00"),
-    ),
-    "anthropic/claude-opus-4-8": ModelInfo(
-        display_name="Claude Opus 4.8", provider="anthropic", api_model="claude-opus-4-8",
-        stars=4,
-        reasoning_levels=("off", "low", "medium", "high", "xhigh", "max"),
-        default_reasoning_level="off", thinking_mode="adaptive",
-        input_modalities=_MULTIMODAL, context_window=1_000_000,
-        max_output_tokens=128_000, input_price=Decimal("5.00"),
-        cached_input_price=Decimal("0.50"), cache_write_price=Decimal("6.25"),
-        cache_write_1h_price=Decimal("10.00"), output_price=Decimal("25.00"),
-    ),
-    "anthropic/claude-opus-4-6": ModelInfo(
-        display_name="Claude Opus 4.6", provider="anthropic", api_model="claude-opus-4-6",
-        stars=4,
-        reasoning_levels=("off", "low", "medium", "high", "max"),
-        default_reasoning_level="off", thinking_mode="adaptive",
-        input_modalities=_MULTIMODAL, context_window=1_000_000,
-        max_output_tokens=128_000, input_price=Decimal("5.00"),
-        cached_input_price=Decimal("0.50"), cache_write_price=Decimal("6.25"),
-        cache_write_1h_price=Decimal("10.00"), output_price=Decimal("25.00"),
     ),
     "anthropic/claude-sonnet-5-5": ModelInfo(
         display_name="Claude Sonnet 5.5", provider="anthropic",
@@ -375,19 +330,6 @@ _MODELS: dict[str, ModelInfo] = {
             cache_write_1h_price=None, output_price=Decimal("7.50"),
         ),),
     ),
-    "gemini/gemini-3.7-flash": ModelInfo(
-        display_name="Gemini 3.7 Flash", provider="google_genai",
-        api_model="gemini-3.7-flash", stars=2,
-        reasoning_levels=("low", "medium", "high"), default_reasoning_level="medium",
-        input_modalities=_MULTIMODAL, context_window=1_048_576,
-        max_output_tokens=65_536, input_price=Decimal("0.75"),
-        cached_input_price=Decimal("0.075"), output_price=Decimal("3.75"),
-        price_changes=(PriceChange(
-            starts_on=date(2027, 1, 1), input_price=Decimal("1.50"),
-            cached_input_price=Decimal("0.15"), cache_write_price=None,
-            cache_write_1h_price=None, output_price=Decimal("7.50"),
-        ),),
-    ),
     "gemini/gemini-3.5-flash-lite": ModelInfo(
         display_name="Gemini 3.5 Flash-Lite", provider="google_genai",
         api_model="gemini-3.5-flash-lite", stars=1,
@@ -400,13 +342,22 @@ _MODELS: dict[str, ModelInfo] = {
 }
 
 
+# Forwarding for retired models. To retire a model: delete its _MODELS entry and
+# add one row here pointing at its successor. Rows are never repointed — lookups
+# follow the chain (A → B, later B → C, so A resolves to C). To un-retire a
+# model, delete its own row here.
 MODEL_REPLACEMENTS: dict[str, str] = {
     "openai/gpt-5.5": "openai/gpt-5.6-sol",
     "openai/gpt-5.4": "openai/gpt-5.6-terra",
     "openai/gpt-5.4-mini": "openai/gpt-5.6-luna",
+    "openai/gpt-5.6-luna": "openai/gpt-6-luna",
     "anthropic/claude-opus-4-7": "anthropic/claude-opus-5",
+    "anthropic/claude-opus-4-6": "anthropic/claude-opus-5-5",
+    "anthropic/claude-opus-4-8": "anthropic/claude-opus-5-5",
+    "anthropic/claude-opus-5": "anthropic/claude-opus-5-5",
     "anthropic/claude-sonnet-4-6": "anthropic/claude-sonnet-5",
     "gemini/gemini-3.5-flash": "gemini/gemini-3.7-flash",
+    "gemini/gemini-3.7-flash": "gemini/gemini-3.8-flash",
     "gemini/gemini-3.1-flash-lite": "gemini/gemini-3.5-flash-lite",
 }
 
@@ -430,7 +381,12 @@ def canonical_model_id(model_id: str | None) -> str | None:
     if not model_id:
         return None
     candidate = _with_inferred_prefix(model_id.strip())
-    candidate = MODEL_REPLACEMENTS.get(candidate, candidate)
+    seen: set[str] = set()
+    while candidate in MODEL_REPLACEMENTS:
+        if candidate in seen:  # a cycle would otherwise loop forever
+            return None
+        seen.add(candidate)
+        candidate = MODEL_REPLACEMENTS[candidate]
     return candidate if candidate in _MODELS else None
 
 

@@ -245,7 +245,7 @@ class OrgSettingsAccessTests(TestCase):
         self.assertContains(response, f"{settings.ASSISTANT_NAME} Chat")
 
     @patch("llm.service.policies.get_allowed_models", return_value=[
-        "openai/gpt-5.6-sol", "openai/gpt-5.6-luna",
+        "openai/gpt-5.6-sol", "openai/gpt-6-luna",
     ])
     @patch("llm.tools.registry.get_tool_registry")
     def test_chat_feature_override_is_rendered(self, mock_reg, mock_models):
@@ -261,8 +261,8 @@ class OrgSettingsAccessTests(TestCase):
         self.assertEqual(chat_row["label"], "Chat")
         self.assertIn("openai/gpt-5.6-sol", chat_row["eligible_models"])
         # Luna's curated 2 stars clear chat's 2-star floor even though its
-        # promo price puts it in the cheap category.
-        self.assertIn("openai/gpt-5.6-luna", chat_row["eligible_models"])
+        # low price puts it in the cheap category.
+        self.assertIn("openai/gpt-6-luna", chat_row["eligible_models"])
         self.assertContains(response, "The default model for new chats.")
 
     @patch("llm.service.policies.get_allowed_models", return_value=[

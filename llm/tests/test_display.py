@@ -77,8 +77,8 @@ class ReasoningLevelTests(SimpleTestCase):
 
     def test_anthropic_levels_are_model_specific(self):
         self.assertEqual(
-            get_thinking_levels("anthropic/claude-opus-4-6"),
-            ["off", "low", "medium", "high", "max"],
+            get_thinking_levels("anthropic/claude-sonnet-5"),
+            ["off", "low", "medium", "high", "xhigh", "max"],
         )
         self.assertEqual(
             get_thinking_levels("anthropic/claude-haiku-4-5"),
@@ -154,8 +154,8 @@ class PickerRatingTests(SimpleTestCase):
             "Standard · $20 / 1M output tokens",
         )
         self.assertEqual(
-            get_model_meta_tooltip("anthropic/claude-opus-5"),
-            "Standard · $25 / 1M output tokens",
+            get_model_meta_tooltip("anthropic/claude-opus-5-5"),
+            "Standard · $20 / 1M output tokens",
         )
         # 3-star models read as "Mid" under the star-based categories.
         self.assertEqual(
