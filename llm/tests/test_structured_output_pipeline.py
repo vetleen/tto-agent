@@ -185,6 +185,81 @@ class StructuredOutputPipelineTests(TestCase):
         self.assertIn("_TestSchema", str(ctx.exception))
         self.assertIn("output did not match schema", str(ctx.exception))
 
+    def _refusing_model(self, raw):
+        fake_structured = MagicMock()
+        fake_structured.invoke.return_value = {
+            "raw": raw,
+            "parsed": None,
+            "parsing_error": ValueError("Invalid json output: "),
+        }
+        fake_client = MagicMock()
+        fake_client.with_structured_output.return_value = fake_structured
+        return BaseLangChainChatModel(model_name="gpt-4o-mini", client=fake_client), fake_structured
+
+    @patch("llm.pipelines.structured_output.create_chat_model")
+    def test_anthropic_refusal_raises_provider_refusal_without_retry(self, mock_create):
+        """stop_reason=refusal (empty content) is reported as a refusal, not a
+        parse error, and is not retried — it is deterministic (WILFRED-8X)."""
+        raw = MagicMock()
+        raw.usage_metadata = None
+        raw.response_metadata = {
+            "stop_reason": "refusal",
+            "stop_details": {"type": "refusal", "category": "reasoning_extraction",
+                             "explanation": "blocked"},
+        }
+        raw.additional_kwargs = {}
+        model, fake_structured = self._refusing_model(raw)
+        mock_create.return_value = model
+
+        with self.assertRaises(LLMProviderError) as ctx:
+            StructuredOutputPipeline().run(self._make_request())
+
+        self.assertEqual(fake_structured.invoke.call_count, 1)
+        self.assertEqual(ctx.exception.error_code, "provider_refusal")
+        self.assertIn("reasoning_extraction", str(ctx.exception))
+        self.assertNotIn("Invalid json", str(ctx.exception))
+
+    @patch("llm.pipelines.structured_output.create_chat_model")
+    def test_openai_refusal_raises_provider_refusal(self, mock_create):
+        raw = MagicMock()
+        raw.usage_metadata = None
+        raw.response_metadata = {"finish_reason": "stop"}
+        raw.additional_kwargs = {"refusal": "I can't help with that."}
+        model, fake_structured = self._refusing_model(raw)
+        mock_create.return_value = model
+
+        with self.assertRaises(LLMProviderError) as ctx:
+            StructuredOutputPipeline().run(self._make_request())
+
+        self.assertEqual(fake_structured.invoke.call_count, 1)
+        self.assertEqual(ctx.exception.error_code, "provider_refusal")
+
+    @patch("llm.pipelines.structured_output.create_chat_model")
+    def test_parse_failure_keeps_parse_error_code(self, mock_create):
+        """A plain parse failure (no refusal signal) still retries and keeps
+        the structured_output_parse_error code."""
+        raw = MagicMock()
+        raw.usage_metadata = None
+        raw.response_metadata = {"stop_reason": "end_turn"}
+        raw.additional_kwargs = {}
+        model, fake_structured = self._refusing_model(raw)
+        mock_create.return_value = model
+
+        with self.assertRaises(LLMProviderError) as ctx:
+            StructuredOutputPipeline().run(self._make_request())
+
+        self.assertEqual(fake_structured.invoke.call_count, 2)
+        self.assertEqual(ctx.exception.error_code, "structured_output_parse_error")
+
+    def test_pii_review_schema_does_not_request_internal_analysis(self):
+        """Anthropic refuses schemas asking for the model's internal analysis
+        (stop_details.category=reasoning_extraction) — WILFRED-8X."""
+        from llm.types.structured import PIIReviewDecision
+
+        description = PIIReviewDecision.model_fields["reasoning"].description.lower()
+        for phrase in ("internal", "thinking", "chain of thought"):
+            self.assertNotIn(phrase, description)
+
     @patch("llm.core.providers.base._wait_before_retry", return_value=True)
     @patch("llm.pipelines.structured_output.create_chat_model")
     def test_run_transient_error_classified_not_generic(self, mock_create, _wait):

@@ -41,6 +41,25 @@ def _sum_usage(a: Usage | None, b: Usage | None) -> Usage | None:
     )
 
 
+def _refusal_details(raw) -> dict | None:
+    """Return ``{"category", "explanation"}`` when the provider refused the request.
+
+    Anthropic signals a refusal with ``stop_reason="refusal"`` (plus
+    ``stop_details``) and empty content, which the parser otherwise reports as a
+    misleading "Invalid json output". OpenAI puts the refusal text in
+    ``additional_kwargs["refusal"]``.
+    """
+    meta = getattr(raw, "response_metadata", None)
+    if isinstance(meta, dict) and meta.get("stop_reason") == "refusal":
+        details = meta.get("stop_details")
+        details = details if isinstance(details, dict) else {}
+        return {"category": details.get("category"), "explanation": details.get("explanation")}
+    extra = getattr(raw, "additional_kwargs", None)
+    if isinstance(extra, dict) and extra.get("refusal"):
+        return {"category": None, "explanation": str(extra["refusal"])}
+    return None
+
+
 class StructuredOutputPipeline(BasePipeline):
     """Pipeline that uses .with_structured_output() to return a Pydantic model."""
 
@@ -86,6 +105,21 @@ class StructuredOutputPipeline(BasePipeline):
             parsed = result["parsed"]
             if parsed is not None:
                 break
+            # A refusal is deterministic for this request — retrying only
+            # doubles the spend — and is not a parse error, so name it.
+            refusal = _refusal_details(result.get("raw"))
+            if refusal is not None:
+                logger.error(
+                    "structured_output: model=%s refused the request for schema=%s "
+                    "category=%s explanation=%s",
+                    request.model, schema_name, refusal["category"],
+                    str(refusal["explanation"])[:300],
+                )
+                raise LLMProviderError(
+                    f"The model refused the request for schema '{schema_name}' "
+                    f"(category: {refusal['category'] or 'unspecified'}).",
+                    error_code="provider_refusal",
+                )
             # include_raw=True swallows parse failures into parsing_error
             # instead of raising; parsed is None in that case.
             parsing_error = result.get("parsing_error")

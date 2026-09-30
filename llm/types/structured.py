@@ -90,8 +90,13 @@ class PIIReviewDecision(BaseModel):
         le=1.0,
         description="Certainty in the determination, 0.0-1.0",
     )
+    # Anthropic refuses ("reasoning_extraction") a schema that asks for the
+    # model's internal analysis/thinking — ask for a justification instead.
     reasoning: str = Field(
-        description="Full internal analysis; logged for calibration review"
+        description=(
+            "Brief justification for the decision (2-4 sentences) citing the "
+            "specific text; logged for calibration review"
+        )
     )
     findings: str = Field(
         description=(
