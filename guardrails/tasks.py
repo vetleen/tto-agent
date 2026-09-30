@@ -68,7 +68,7 @@ def _batch_chunks_by_budget(chunks: list[dict]) -> list[list[dict]]:
     return batches
 
 
-@shared_task(base=DocumentPipelineTask, bind=True, max_retries=3, time_limit=600, soft_time_limit=570)
+@shared_task(base=DocumentPipelineTask, bind=True, max_retries=3)
 def scan_document_version(self, version_id: int) -> None:
     """Scan all chunks of a version for adversarial content, then release it.
 
@@ -686,7 +686,7 @@ def _log_chunk_event(
 _MAX_WEB_SCAN_CHARS = 40_000
 
 
-@shared_task(bind=True, max_retries=2, time_limit=120, soft_time_limit=110)
+@shared_task(bind=True, max_retries=2)
 def scan_web_content_task(self, text, user_id, thread_id, source_label):
     """Classify fetched web content and, if flagged, review it — logging only.
 
@@ -696,15 +696,13 @@ def scan_web_content_task(self, text, user_id, thread_id, source_label):
     acceptable; a stuck task is not. A missing model (misconfiguration) is a
     non-retryable skip, not a retry.
     """
-    from celery.exceptions import MaxRetriesExceededError, SoftTimeLimitExceeded
+    from celery.exceptions import MaxRetriesExceededError
 
     if not text or not text.strip() or user_id is None:
         return
 
     try:
         _scan_web_content(text[:_MAX_WEB_SCAN_CHARS], int(user_id), thread_id, source_label)
-    except SoftTimeLimitExceeded:
-        logger.warning("scan_web_content_task: soft time limit hit source=%s", source_label)
     except Exception as exc:
         logger.warning(
             "scan_web_content_task: scan failed source=%s (attempt %s/%s): %s",

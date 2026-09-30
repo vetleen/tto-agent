@@ -47,10 +47,7 @@ def _push_to_ws(meeting_uuid, payload: dict) -> None:
 # file and fail with FileNotFoundError — masking the real first-attempt error.
 # If we want retries on transient API failures later, we need to keep the file
 # alive across attempts (skip cleanup until success or final failure).
-@shared_task(
-    time_limit=600,
-    soft_time_limit=540,
-)
+@shared_task
 def transcribe_meeting_chunk_task(
     meeting_id: int,
     segment_index: int,
@@ -195,17 +192,12 @@ def transcribe_meeting_chunk_task(
 # transient retries (network flake / 429s) happen inside the orchestrator at
 # the right level — see meetings/services/audio_transcription.py.
 #
-# Time limits are sized for the worst legal upload, not the typical one: the
-# 50 MB byte cap admits many hours of low-bitrate audio (e.g. ~7h at 16 kbps),
-# which the orchestrator processes as dozens of sequential ~5-min chunks. 3h
-# wall clock covers that with margin. If the soft limit still fires,
-# SoftTimeLimitExceeded surfaces inside the current chunk call, the
-# orchestrator persists the partial transcript, and the classifier maps it to
-# a friendly "ran out of time" message — no stranded LIVE_TRANSCRIBING row.
-@shared_task(
-    time_limit=10800,
-    soft_time_limit=10500,
-)
+# No wall-clock limit (Celery enforces none on our threads pool, see
+# config/celery.py): the 50 MB byte cap admits many hours of low-bitrate audio
+# (e.g. ~7h at 16 kbps), processed as dozens of sequential ~5-min chunks, each
+# bounded by its own API and ffmpeg timeouts. A run that dies silently is
+# caught by expire_stale_transcriptions (STALE_UPLOAD_MINUTES below).
+@shared_task
 def transcribe_uploaded_audio_task(
     meeting_id: int,
     temp_path: str,
@@ -271,12 +263,12 @@ def transcribe_uploaded_audio_task(
         cleanup_temp(temp_path)
 
 
-# Sweeper staleness thresholds. Chunk segments transcribe within the chunk
-# task's 600s hard limit, so 15 min is safely past it. Upload staleness keys
-# off Meeting.updated_at, which a healthy upload run refreshes continuously
-# (per-chunk progress writes plus sub-second partial-transcript flushes), so
-# 60 min of *silence* means the task is dead — the threshold does not need to
-# cover the upload task's multi-hour wall-clock ceiling.
+# Sweeper staleness thresholds. A chunk segment is one ~5-min audio slice bounded
+# by the transcription API's own timeouts, so 15 min is safely past a healthy
+# one. Upload staleness keys off Meeting.updated_at, which a healthy upload run
+# refreshes continuously (per-chunk progress writes plus sub-second
+# partial-transcript flushes), so 60 min of *silence* means the task is dead —
+# the threshold does not need to cover the upload's multi-hour total runtime.
 STALE_SEGMENT_MINUTES = 15
 STALE_UPLOAD_MINUTES = 60
 # Live-path staleness. The WS heartbeat/disconnect normally move a live meeting
@@ -288,7 +280,7 @@ STALE_UPLOAD_MINUTES = 60
 STALE_LIVE_HOURS = 6
 
 
-@shared_task(time_limit=60)
+@shared_task
 def expire_stale_transcriptions() -> int:
     """Periodic recovery of transcription work stranded by a worker restart.
 

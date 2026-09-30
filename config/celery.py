@@ -19,6 +19,13 @@ app.config_from_object("django.conf:settings", namespace="CELERY")
 # and locks current behaviour in ahead of that upgrade.
 app.conf.broker_connection_retry_on_startup = True
 # Prefork pool causes PermissionError on Windows (billiard semaphores). Use solo.
+#
+# No Celery time limits: the worker runs --pool=threads (Procfile), solo locally,
+# and neither pool enforces time_limit / soft_time_limit (they only work under
+# prefork). Setting them is a silent no-op and SoftTimeLimitExceeded never fires,
+# so none of our tasks declare them. Bound long work in code instead: HTTP/API
+# timeouts, run deadlines (sub-agents: deadline_seconds in chat/tasks.py), and
+# the stale-row sweepers. Re-add limits only if the worker moves to prefork.
 if sys.platform == "win32":
     app.conf.worker_pool = "solo"
 app.autodiscover_tasks()

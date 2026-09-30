@@ -298,7 +298,7 @@ def _extract_chunk(source_path: Path, boundary: ChunkBoundary, max_bytes: int) -
 
     Wraps ``ffmpeg_extract_chunk`` + :func:`_validate_chunk_size`. A wedged
     ffmpeg surfaces as :class:`AudioSplitTimeoutError` (ffmpeg has its own
-    per-call subprocess timeout) so it can't burn the whole Celery time limit.
+    per-call subprocess timeout) so it can't hang the upload task.
     The caller is responsible for unlinking the returned path.
     """
     from llm.service._audio_subprocess import ffmpeg_extract_chunk

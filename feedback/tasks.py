@@ -14,8 +14,6 @@ logger = logging.getLogger(__name__)
     autoretry_for=(Exception,),
     retry_backoff=True,
     retry_kwargs={"max_retries": 2},
-    time_limit=30,
-    soft_time_limit=25,
 )
 def notify_admin_feedback_task(feedback_id: int) -> None:
     """Email ADMINS about a new feedback submission. Best-effort.

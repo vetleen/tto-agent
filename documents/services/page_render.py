@@ -653,8 +653,6 @@ def render_pages(target: RenderTarget, *, count_attempt: bool = True) -> str:
     the Celery task can retry with backoff — the owner then stays PENDING and
     resumes at the first missing slide.
     """
-    from celery.exceptions import SoftTimeLimitExceeded
-
     started = time.monotonic()
     label = target.label
 
@@ -743,13 +741,6 @@ def render_pages(target: RenderTarget, *, count_attempt: bool = True) -> str:
                     "page_render: %s batch %s/%s slides=%s done in %.1fs",
                     label, batch_no, len(batches), len(batch), time.monotonic() - batch_started,
                 )
-    except SoftTimeLimitExceeded:
-        remaining = [n for n in todo if n not in rendered and n not in failed]
-        logger.warning(
-            "page_render: %s hit the soft time limit with %s slide(s) left; finalising",
-            label, len(remaining),
-        )
-        failed.extend(remaining)
     except (RenderBusy, RenderUnavailable) as exc:
         logger.warning(
             "page_render: %s paused after %s new slide(s): %s; Celery will retry",

@@ -10,7 +10,7 @@ from celery import shared_task
 logger = logging.getLogger(__name__)
 
 
-@shared_task(bind=True, time_limit=30)
+@shared_task(bind=True)
 def restart_worker_nightly(self) -> str:
     """Warm-shutdown this worker so Heroku boots a fresh process.
 
@@ -36,7 +36,7 @@ def restart_worker_nightly(self) -> str:
     return "shutdown"
 
 
-@shared_task(time_limit=60)
+@shared_task
 def memory_report_task(tag: str = "manual") -> dict:
     """Log a full in-process memory report from inside the worker.
 

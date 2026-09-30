@@ -60,8 +60,8 @@ def _capture_subagent_failure(exc: BaseException, run_id_str: str) -> None:
     The ``LoggingIntegration`` that normally turns the upstream
     ``logger.error(exc_info=True)`` into an event has been observed to silently
     drop long-running provider failures — e.g. prod run b268f675, a ~562s
-    Anthropic read-timeout that overran Celery's ``soft_time_limit`` (540s), so
-    none of its error logs produced a Sentry event despite being written.
+    Anthropic read-timeout that ran past the run's 540s deadline, so none of its
+    error logs produced a Sentry event despite being written.
 
     ``on_failure`` fires exactly once per run, only after retries are exhausted,
     so we capture + flush *synchronously* here: the task is already finished, so
@@ -157,8 +157,6 @@ class _SubagentTask(Task):
     # slot while it waits.
     max_retries=2,
     default_retry_delay=30,
-    time_limit=600,
-    soft_time_limit=540,
 )
 def run_subagent_task(self, run_id: str) -> None:
     """Execute a sub-agent run asynchronously via Celery."""
@@ -166,6 +164,9 @@ def run_subagent_task(self, run_id: str) -> None:
     from chat.subagent_service import is_retryable_subagent_error, run_subagent
 
     try:
+        # The only time bound on a run: the tool loop stops starting new rounds
+        # near it (llm/pipelines/simple_chat.py). Celery enforces no time limit
+        # on our threads pool (see config/celery.py).
         run_subagent(uuid.UUID(run_id), deadline_seconds=540)
     except Exception as exc:
         if is_retryable_subagent_error(exc):
@@ -179,7 +180,7 @@ def run_subagent_task(self, run_id: str) -> None:
         raise
 
 
-@shared_task(time_limit=30)
+@shared_task
 def expire_stale_subagent_runs() -> int:
     """Periodic cleanup of stuck subagent runs.
 
@@ -209,7 +210,7 @@ def expire_stale_subagent_runs() -> int:
         return 0
 
 
-@shared_task(time_limit=600, soft_time_limit=540)
+@shared_task
 def run_loop(loop_id: str) -> None:
     """Execute one scheduled Loop turn headlessly.
 
@@ -223,7 +224,7 @@ def run_loop(loop_id: str) -> None:
     execute_loop_run(uuid.UUID(loop_id))
 
 
-@shared_task(time_limit=30)
+@shared_task
 def tick_and_scan_loops() -> int:
     """Periodic: enqueue every Loop that is due to fire.
 
@@ -287,8 +288,6 @@ class _SlideRenderTask(Task):
     autoretry_for=(OperationalError,),
     retry_backoff=True,
     retry_kwargs={"max_retries": 2},
-    time_limit=600,
-    soft_time_limit=540,
 )
 def render_deck_task(self, run_id: str) -> None:
     """Render a slide deck (preview PNGs or export PDF) on the worker."""
@@ -341,8 +340,6 @@ class _AttachmentProcessingTask(Task):
     retry_backoff_max=300,
     retry_jitter=True,
     retry_kwargs={"max_retries": 3},
-    time_limit=900,
-    soft_time_limit=840,
 )
 def process_chat_attachment(self, attachment_id: str) -> str:
     """Extract text / count pages / render pptx slides for a chat attachment
@@ -353,7 +350,7 @@ def process_chat_attachment(self, attachment_id: str) -> str:
     return process_attachment(str(attachment_id), first_delivery=self.request.retries == 0)
 
 
-@shared_task(time_limit=60)
+@shared_task
 def expire_stale_slide_renders() -> int:
     """Fail runs stuck RUNNING>15min / PENDING>30min; prune old runs (>7d).
 

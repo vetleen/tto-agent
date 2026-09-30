@@ -20,8 +20,6 @@ logger = logging.getLogger(__name__)
     retry_backoff_max=600,
     retry_jitter=True,
     retry_kwargs={"max_retries": 3},
-    time_limit=1800,
-    soft_time_limit=1740,
 )
 def render_document_pages(self, version_id: int) -> str:
     """Render a released pptx version's slides to images (documents.services.page_render).
@@ -57,8 +55,6 @@ def _maybe_enqueue_page_render(version_id: int) -> None:
     autoretry_for=(Exception,),
     retry_backoff=True,
     retry_kwargs={"max_retries": 5},
-    time_limit=600,
-    soft_time_limit=540,
 )
 def process_document_task(document_id: int) -> None:
     # Back-compat entry (pre-gate Celery messages): ensures v0 then processes it.
@@ -70,8 +66,6 @@ def process_document_task(document_id: int) -> None:
     autoretry_for=(Exception,),
     retry_backoff=True,
     retry_kwargs={"max_retries": 5},
-    time_limit=600,
-    soft_time_limit=540,
 )
 def process_document_version_task(version_id: int) -> None:
     process_document_version(version_id)
@@ -91,7 +85,7 @@ MAX_PAGE_RENDER_ATTEMPTS = 3
 PAGE_RENDER_INTERRUPTED_MESSAGE = "Slide rendering was interrupted repeatedly and has been stopped."
 
 
-@shared_task(time_limit=60)
+@shared_task
 def requeue_stale_documents() -> int:
     """Periodic recovery of *versions* stranded by a worker restart.
 
@@ -396,7 +390,7 @@ def _mirror_doc_status(version_ids, status, now, error=None):
     ).update(**fields)
 
 
-@shared_task(base=DocumentPipelineTask, bind=True, max_retries=3, time_limit=600, soft_time_limit=540)
+@shared_task(base=DocumentPipelineTask, bind=True, max_retries=3)
 def finalize_document_metadata(self, version_id: int) -> None:
     """Thin Celery wrapper around :func:`finalize_version` (the shared scan sink).
 
@@ -655,7 +649,7 @@ def finalize_version(version_id: int, *, eager: bool = False, on_pii_retry=None)
 MAX_VERSIONS_PER_DOCUMENT = 10
 
 
-@shared_task(time_limit=300)
+@shared_task
 def prune_document_versions() -> int:
     """Nightly prune of old document versions.
 

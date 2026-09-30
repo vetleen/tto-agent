@@ -39,9 +39,12 @@ STALE_PENDING_MINUTES = 7
 # Safety valve for a runaway queue: a run still waiting for a slot after this
 # long is given up on. Bounds the wait; it is not a throughput knob.
 STALE_WAITING_MINUTES = 45
-# Must comfortably exceed the Celery run_subagent_task hard time_limit (600s = 10
-# min) so the sweeper never expires a run the worker is still legitimately
-# executing (which would discard its completed result).
+# Must comfortably exceed a normal run's wall clock so the sweeper never expires
+# a run the worker is still legitimately executing (which would discard its
+# completed result). Nothing kills a run at a fixed time (Celery enforces no
+# time limit on our threads pool, see config/celery.py): the 540s deadline only
+# stops new tool rounds, so the last round and the final answer run past it —
+# typically ~9-10 min in total.
 STALE_RUNNING_MINUTES = 15
 
 # Transaction-scoped Postgres advisory lock that serializes dispatchers.

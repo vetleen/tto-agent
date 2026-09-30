@@ -542,8 +542,8 @@ class SimpleChatPipeline(BasePipeline):
         ctx = request.context
         deadline_dt = None
         if ctx and ctx.deadline_seconds:
-            # Reserve 60s for the final tool-stripped generate + result storage,
-            # so we don't race with the Celery soft time limit.
+            # Reserve 60s for the final tool-stripped generate + result storage.
+            # The check runs between rounds, so a round in flight still completes.
             margin = min(60, ctx.deadline_seconds // 4)
             deadline_dt = ctx.started_at + timedelta(seconds=ctx.deadline_seconds - margin)
 
