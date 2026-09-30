@@ -139,9 +139,16 @@ class EmbeddedImageDescriberBase:
         # lower tokens) and shrinks the working set held during phase 2. Format is
         # preserved (allow_transcode=False) so the stored content_type stays valid.
         img_bytes = raw
-        from core.images import optimize_for_vision
+        from core.images import optimize_for_vision, to_vision_format
 
-        opt = optimize_for_vision(raw, allow_transcode=False)
+        # JPEG 2000 / TIFF / BMP (common in scanned PDFs) are accepted by no
+        # vision provider and shown by few browsers: store and describe a
+        # PNG/JPEG conversion instead, or the image is silently never described.
+        converted = to_vision_format(raw)
+        if converted is not None:
+            img_bytes, content_type = converted
+
+        opt = optimize_for_vision(img_bytes, allow_transcode=False)
         if opt is not None and len(opt[0]) < len(img_bytes):
             img_bytes = opt[0]
 

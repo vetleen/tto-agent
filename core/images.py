@@ -70,6 +70,71 @@ def sanitize_raster_image(raw_bytes: bytes) -> tuple[bytes, str] | None:
         return None
 
 
+# Raster formats that turn up embedded in documents (PDF JPXDecode → JPEG 2000,
+# CCITT fax scans → TIFF, docx/pptx BMP/TIFF pictures) but that no vision
+# provider accepts and most browsers can't display. ``to_vision_format``
+# converts them to PNG/JPEG; anything else outside _ALLOWED_FORMATS stays
+# unsupported.
+_CONVERTIBLE_FORMATS = {"JPEG2000", "TIFF", "BMP"}
+
+
+def to_vision_format(raw_bytes: bytes) -> tuple[bytes, str] | None:
+    """Convert a JPEG 2000 / TIFF / BMP raster to PNG (transparency or
+    bilevel/grey scans, which PNG keeps crisp) or JPEG (other opaque images),
+    downscaled to the vision cap like :func:`optimize_for_vision`.
+
+    Returns ``(bytes, media_type)``, or ``None`` when the input is already in a
+    provider-accepted format, is not one of the convertible formats, or can't be
+    decoded. Multi-frame TIFFs keep their first frame.
+    """
+    try:
+        from django.conf import settings
+
+        max_edge = int(getattr(settings, "VISION_IMAGE_MAX_EDGE", 1568))
+        max_pixels = int(getattr(settings, "VISION_IMAGE_MAX_PIXELS", 1_150_000))
+        quality = int(getattr(settings, "VISION_IMAGE_JPEG_QUALITY", 82))
+    except Exception:
+        max_edge, max_pixels, quality = 1568, 1_150_000, 82
+
+    try:
+        with Image.open(io.BytesIO(raw_bytes)) as img:
+            if img.format not in _CONVERTIBLE_FORMATS:
+                return None
+            if img.width * img.height > _MAX_IMAGE_PIXELS:
+                return None
+            if img.format == "JPEG2000":
+                # Decode at a reduced resolution level (each level halves both
+                # sides) when the image is far above the cap — bounds decode RAM.
+                reduce = 0
+                while max(img.width, img.height) >> (reduce + 1) >= max_edge:
+                    reduce += 1
+                img.reduce = reduce
+            img.load()
+            ImageOps.exif_transpose(img, in_place=True)
+            if img.mode == "1" or img.mode.startswith(("I", "F")):
+                # Bilevel fax scans and 16/32-bit greyscale → 8-bit grey.
+                img = img.convert("L")
+            elif img.mode not in ("RGB", "RGBA", "L", "LA"):
+                img = img.convert("RGBA" if _has_alpha(img) else "RGB")
+            w, h = img.width, img.height
+            scale = min(1.0, max_edge / max(w, h), (max_pixels / (w * h)) ** 0.5)
+            if scale < 1.0:
+                img.thumbnail(
+                    (max(1, round(w * scale)), max(1, round(h * scale))),
+                    Image.Resampling.LANCZOS,
+                )
+            buffer = io.BytesIO()
+            if img.mode in ("RGBA", "LA", "L"):
+                img.save(buffer, format="PNG", optimize=True)
+                media_type = "image/png"
+            else:
+                img.save(buffer, format="JPEG", quality=quality, optimize=True)
+                media_type = "image/jpeg"
+            return buffer.getvalue(), media_type
+    except Exception:
+        return None
+
+
 def _has_alpha(img: "Image.Image") -> bool:
     return img.mode in ("RGBA", "LA", "PA") or (
         img.mode == "P" and "transparency" in img.info

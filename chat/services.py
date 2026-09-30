@@ -756,8 +756,18 @@ def extract_pdf_text(file_bytes: bytes) -> str:
     except ImportError:  # pragma: no cover
         from PyPDF2 import PdfReader  # type: ignore
 
+    from core.pdf import form_field_blocks
+
     reader = PdfReader(io.BytesIO(file_bytes))
-    return "\n\n".join((page.extract_text() or "") for page in reader.pages).strip()
+    # Filled-in form answers live outside the page text (see core.pdf).
+    forms = form_field_blocks(file_bytes)
+    pages = []
+    for i, page in enumerate(reader.pages):
+        text = page.extract_text() or ""
+        if forms.get(i):
+            text = (text.rstrip() + "\n\n" + forms[i]) if text.strip() else forms[i]
+        pages.append(text)
+    return "\n\n".join(pages).strip()
 
 
 def pptx_to_markdown(file_bytes: bytes, *, image_sink=None) -> str:
@@ -994,6 +1004,7 @@ def describe_image(
 
     media_type = content_type or "image/png"
     if media_type not in SUPPORTED_IMAGE_TYPES:
+        logger.warning("describe_image: skipping unsupported image type %s (%d bytes)", media_type, len(image_bytes))
         return None
 
     b64 = base64.b64encode(image_bytes).decode("ascii")

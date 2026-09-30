@@ -235,3 +235,211 @@ class PdfToTextTests(SimpleTestCase):
         sink, _ = _recording_sink()
         with self.assertRaises(ValueError):
             pdf_to_text(b"this is not a pdf", image_sink=sink)
+
+
+def _form_pdf(*, with_acroform: bool = True, appearances: bool = False) -> bytes:
+    """A one-page filled-in form: printed labels in the content stream, answers
+    only in AcroForm widgets (what a PDF filled in Acrobat looks like).
+
+    Layout (PDF points, origin bottom-left)::
+
+      Title: [Eira]                        Date of innovation/
+                                           invention:
+                                           [30.06.2026]
+      At what stage?
+      [ ] Concept   [x] Prototype
+      [Tested in an RCT]                   <- comment box under the checkbox row
+      Name:                 Role:
+      [Ola Nordmann]        [Supervisor]
+      [            ]                       <- empty field, not listed
+    """
+    from pypdf import PdfReader, PdfWriter
+    from pypdf.generic import (
+        ArrayObject, BooleanObject, DictionaryObject, FloatObject, NameObject, NumberObject, TextStringObject,
+    )
+
+    lines = [
+        (20, 262, "Title:"), (290, 272, "Date of innovation/"), (290, 260, "invention:"),
+        (20, 212, "At what stage?"), (34, 192, "Concept"), (114, 192, "Prototype"),
+        (20, 122, "Name:"), (200, 122, "Role:"),
+    ]
+    stream = b"".join(
+        b"BT /F1 10 Tf %d %d Td (%s) Tj ET\n" % (x, y, t.encode("latin-1")) for x, y, t in lines
+    )
+    objs = [
+        b"<</Type/Catalog/Pages 2 0 R>>",
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>",
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 400 300]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>",
+        b"<</Length " + str(len(stream)).encode() + b">>stream\n" + stream + b"\nendstream",
+        b"<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for i, body in enumerate(objs, start=1):
+        offsets.append(len(out))
+        out += str(i).encode() + b" 0 obj" + body + b"endobj\n"
+    xref_pos = len(out)
+    out += b"xref\n0 6\n0000000000 65535 f \n" + b"".join(("%010d 00000 n \n" % o).encode() for o in offsets)
+    out += b"trailer<</Size 6/Root 1 0 R>>\nstartxref\n" + str(xref_pos).encode() + b"\n%%EOF"
+
+    writer = PdfWriter(clone_from=PdfReader(io.BytesIO(bytes(out))))
+    page = writer.pages[0]
+    fields = [
+        ("title", "/Tx", (70, 257, 270, 274), "Eira", None),
+        ("date", "/Tx", (290, 235, 390, 252), "30.06.2026", None),
+        ("cb_concept", "/Btn", (20, 190, 30, 200), None, "/Off"),
+        ("cb_prototype", "/Btn", (100, 190, 110, 200), None, "/Yes"),
+        ("comment", "/Tx", (20, 150, 380, 180), "Tested in an RCT", None),
+        ("name1", "/Tx", (20, 97, 180, 114), "Ola Nordmann", None),
+        ("role1", "/Tx", (200, 97, 380, 114), "Supervisor", None),
+        ("name2", "/Tx", (20, 77, 180, 94), "", None),
+    ]
+    refs = ArrayObject()
+    for name, ft, rect, value, state in fields:
+        widget = DictionaryObject({
+            NameObject("/Type"): NameObject("/Annot"),
+            NameObject("/Subtype"): NameObject("/Widget"),
+            NameObject("/FT"): NameObject(ft),
+            NameObject("/T"): TextStringObject(name),
+            NameObject("/Rect"): ArrayObject([FloatObject(c) for c in rect]),
+            NameObject("/F"): NumberObject(4),
+            NameObject("/DA"): TextStringObject("/Helv 10 Tf 0 g"),
+        })
+        if ft == "/Tx":
+            widget[NameObject("/V")] = TextStringObject(value)
+        else:
+            widget[NameObject("/V")] = NameObject(state)
+            widget[NameObject("/AS")] = NameObject(state)
+        refs.append(writer._add_object(widget))
+    page[NameObject("/Annots")] = refs
+    if with_acroform:
+        writer._root_object[NameObject("/AcroForm")] = writer._add_object(DictionaryObject({
+            NameObject("/Fields"): ArrayObject(list(refs)),
+            NameObject("/NeedAppearances"): BooleanObject(True),
+            NameObject("/DA"): TextStringObject("/Helv 10 Tf 0 g"),
+        }))
+        if appearances:
+            # Generate /AP streams, as a real form filler does.
+            writer.update_page_form_field_values(
+                page, {f[0]: f[3] for f in fields if f[1] == "/Tx"}, auto_regenerate=False,
+            )
+    buf = io.BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
+
+
+class PdfFormFieldTests(SimpleTestCase):
+    """Filled-in AcroForm answers live in widgets, not the page text — they must
+    be extracted, labelled from the printed text next to them."""
+
+    def _block(self, out: str) -> str:
+        from core.pdf import FORM_BLOCK_HEADER
+
+        self.assertIn(FORM_BLOCK_HEADER, out)
+        return out[out.index(FORM_BLOCK_HEADER):]
+
+    def test_plain_extract_text_misses_the_answers(self):
+        # Control: this is the bug — pypdf's page text has only the labels.
+        from pypdf import PdfReader
+
+        text = PdfReader(io.BytesIO(_form_pdf())).pages[0].extract_text()
+        self.assertIn("Title:", text)
+        self.assertNotIn("Eira", text)
+
+    def test_values_extracted_with_geometric_labels(self):
+        sink, _ = _recording_sink()
+        block = self._block(pdf_to_text(_form_pdf(), image_sink=sink))
+        self.assertIn("- Title: Eira", block)
+        # A label wrapped over two lines is re-joined.
+        self.assertIn("- Date of innovation/invention: 30.06.2026", block)
+        # Checkbox row: every option with its mark, prefixed with the question.
+        self.assertIn("- At what stage?: [ ] Concept · [x] Prototype", block)
+        # A comment box under the row belongs to the checked option.
+        self.assertIn("- Prototype: Tested in an RCT", block)
+        # Column headers label the fields below them.
+        self.assertIn("- Name: Ola Nordmann", block)
+        self.assertIn("- Role: Supervisor", block)
+
+    def test_reading_order_and_empty_fields_skipped(self):
+        sink, _ = _recording_sink()
+        block = self._block(pdf_to_text(_form_pdf(), image_sink=sink))
+        order = ["Eira", "30.06.2026", "[x] Prototype", "Tested in an RCT", "Ola Nordmann", "Supervisor"]
+        positions = [block.index(s) for s in order]
+        self.assertEqual(positions, sorted(positions))
+        self.assertEqual(block.count("\n- "), 6)
+
+    def test_block_follows_page_text_and_markers(self):
+        sink, _ = _recording_sink()
+        out = pdf_to_text(_form_pdf(), image_sink=sink, page_markers=True)
+        self.assertTrue(out.startswith(page_marker(1)))
+        self.assertLess(out.index("Title:"), out.index("- Title: Eira"))
+
+    def test_label_lookup_failure_falls_back_to_field_names(self):
+        from unittest import mock
+
+        sink, _ = _recording_sink()
+        with mock.patch("core.pdf._PageLines", side_effect=RuntimeError("boom")):
+            block = self._block(pdf_to_text(_form_pdf(), image_sink=sink))
+        self.assertIn("- title: Eira", block)
+        self.assertIn("- comment: Tested in an RCT", block)
+
+    def test_no_acroform_no_block(self):
+        from core.pdf import FORM_BLOCK_HEADER
+
+        sink, _ = _recording_sink()
+        self.assertNotIn(FORM_BLOCK_HEADER, pdf_to_text(_text_pdf("Plain text"), image_sink=sink))
+        self.assertNotIn(FORM_BLOCK_HEADER, pdf_to_text(_form_pdf(with_acroform=False), image_sink=sink))
+
+    def test_form_field_blocks_for_text_only_paths(self):
+        from core.pdf import form_field_blocks
+
+        blocks = form_field_blocks(_form_pdf())
+        self.assertEqual(list(blocks), [0])
+        self.assertIn("- Title: Eira", blocks[0])
+        self.assertEqual(form_field_blocks(_form_pdf(), [5]), {})
+        self.assertEqual(form_field_blocks(b"not a pdf"), {})
+
+    def test_text_only_chat_extractors_include_answers(self):
+        from chat.pdf_attach import extract_pdf_pages_text
+        from chat.services import extract_pdf_text
+
+        self.assertIn("- Title: Eira", extract_pdf_text(_form_pdf()))
+        [(page_no, text)] = extract_pdf_pages_text(_form_pdf(), [0])
+        self.assertEqual(page_no, 1)
+        self.assertIn("- Name: Ola Nordmann", text)
+
+
+class PdfFormRenderTests(SimpleTestCase):
+    """Page images (the non-native PDF fallback) and page slices must show the
+    filled-in values, not an empty template."""
+
+    @staticmethod
+    def _ink(jpeg: bytes, box) -> int:
+        """Dark pixels inside *box* (PDF points on the 400x300 form page)."""
+        from PIL import Image
+
+        img = Image.open(io.BytesIO(jpeg)).convert("L")
+        sx, sy = img.width / 400, img.height / 300
+        x1, y1, x2, y2 = box
+        crop = img.crop((int(x1 * sx), int((300 - y2) * sy), int(x2 * sx), int((300 - y1) * sy)))
+        return sum(1 for p in crop.getdata() if p < 128)
+
+    def test_rendered_pages_draw_form_fields(self):
+        from chat.pdf_attach import render_pdf_pages_to_jpegs
+
+        [jpeg], total = render_pdf_pages_to_jpegs(_form_pdf(appearances=True), max_pages=1)
+        self.assertEqual(total, 1)
+        self.assertGreater(self._ink(jpeg, (72, 259, 268, 272)), 0)  # "Eira" inside the title field
+
+    def test_page_slice_keeps_the_form(self):
+        from pypdf import PdfReader
+
+        from chat.pdf_attach import extract_pdf_pages
+        from core.pdf import form_field_blocks
+
+        doc = _merge(_text_pdf("Cover page"), _form_pdf(appearances=True))
+        sliced = extract_pdf_pages(doc, [1])
+        reader = PdfReader(io.BytesIO(sliced))
+        self.assertEqual(len(reader.pages), 1)
+        self.assertIn("/AcroForm", reader.trailer["/Root"])
+        self.assertIn("- Title: Eira", form_field_blocks(sliced)[0])

@@ -109,6 +109,12 @@ def render_pdf_pages_to_jpegs(
         logger.info("Could not open PDF for page rendering", exc_info=True)
         return [], 0
     try:
+        # Without a form environment PDFium renders filled-in form fields
+        # blank — a filled form would reach the model as an empty template.
+        doc.init_forms()
+    except Exception:
+        logger.info("Could not initialise PDF forms; fields may render blank", exc_info=True)
+    try:
         total = len(doc)
         if page_indices is None:
             targets = list(range(min(total, max_pages)))
@@ -185,9 +191,12 @@ def extract_pdf_pages(pdf_bytes: bytes, indices: list[int]) -> bytes:
         reader = PdfReader(io.BytesIO(pdf_bytes))
         n = len(reader.pages)
         writer = PdfWriter()
-        for i in indices:
-            if 0 <= i < n:
-                writer.add_page(reader.pages[i])
+        selected = [i for i in indices if 0 <= i < n]
+        if selected:
+            # append() (unlike add_page) carries the /AcroForm over, trimmed to
+            # the selected pages' fields — without it a filled-in form renders
+            # with every field blank.
+            writer.append(reader, pages=selected)
         if len(writer.pages) == 0:
             return pdf_bytes
         buf = io.BytesIO()
@@ -216,6 +225,10 @@ def extract_pdf_pages_text(pdf_bytes: bytes, indices: list[int]) -> list[tuple[i
     except Exception:
         logger.info("Could not open PDF for page text extraction", exc_info=True)
         return []
+    from core.pdf import form_field_blocks
+
+    # Filled-in form answers live outside the page text (see core.pdf).
+    forms = form_field_blocks(pdf_bytes, [i for i in indices if 0 <= i < n])
     out: list[tuple[int, str]] = []
     for i in indices:
         if not 0 <= i < n:
@@ -225,6 +238,8 @@ def extract_pdf_pages_text(pdf_bytes: bytes, indices: list[int]) -> list[tuple[i
         except Exception:
             logger.info("PDF page %d text extraction failed", i + 1, exc_info=True)
             text = ""
+        if forms.get(i):
+            text = (text.rstrip() + "\n\n" + forms[i]) if text.strip() else forms[i]
         out.append((i + 1, text))
     return out
 

@@ -8,7 +8,7 @@ from unittest.mock import patch
 from django.test import TestCase, override_settings
 from PIL import Image
 
-from core.images import optimize_for_vision, sanitize_raster_image
+from core.images import optimize_for_vision, sanitize_raster_image, to_vision_format
 
 
 def _img_bytes(fmt="PNG", size=(4, 4), color=(255, 0, 0), mode="RGB"):
@@ -166,3 +166,46 @@ class OptimizeForVisionTests(TestCase):
 
     def test_garbage_rejected(self):
         self.assertIsNone(optimize_for_vision(b"not an image"))
+
+
+@override_settings(
+    VISION_IMAGE_MAX_EDGE=50, VISION_IMAGE_MAX_PIXELS=100_000, VISION_IMAGE_JPEG_QUALITY=82
+)
+class ToVisionFormatTests(TestCase):
+    """JPEG 2000 / TIFF / BMP (common inside scanned PDFs and Office files) are
+    accepted by no vision provider — they are converted to PNG/JPEG."""
+
+    def _open(self, data):
+        img = Image.open(io.BytesIO(data))
+        img.load()
+        return img
+
+    def test_jpeg2000_to_jpeg_downscaled(self):
+        out = to_vision_format(_noisy("JPEG2000", size=(400, 200)))
+        self.assertIsNotNone(out)
+        data, media = out
+        self.assertEqual(media, "image/jpeg")
+        img = self._open(data)
+        self.assertEqual(img.format, "JPEG")
+        self.assertLessEqual(max(img.size), 50)
+
+    def test_bilevel_tiff_scan_to_png(self):
+        buf = io.BytesIO()
+        Image.new("1", (120, 80), 1).save(buf, format="TIFF", compression="group4")
+        data, media = to_vision_format(buf.getvalue())
+        self.assertEqual(media, "image/png")
+        self.assertEqual(self._open(data).mode, "L")
+
+    def test_bmp_and_alpha(self):
+        self.assertEqual(to_vision_format(_img_bytes("BMP", size=(20, 20)))[1], "image/jpeg")
+        rgba = _img_bytes("TIFF", size=(20, 20), color=(1, 2, 3, 100), mode="RGBA")
+        self.assertEqual(to_vision_format(rgba)[1], "image/png")
+
+    def test_supported_formats_and_garbage_untouched(self):
+        self.assertIsNone(to_vision_format(_img_bytes("PNG")))
+        self.assertIsNone(to_vision_format(_img_bytes("JPEG")))
+        self.assertIsNone(to_vision_format(b"not an image"))
+
+    def test_pixel_bomb_rejected(self):
+        with patch("core.images._MAX_IMAGE_PIXELS", 100):
+            self.assertIsNone(to_vision_format(_img_bytes("TIFF", size=(50, 50))))

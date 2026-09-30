@@ -86,6 +86,34 @@ class AttachmentImageDescriberTests(TestCase):
             d.run_descriptions()
         self.assertEqual(describe.call_args.kwargs["conversation_id"], str(self.thread.id))
 
+    def test_jpeg2000_and_tiff_are_converted_then_described(self):
+        """Scanned PDFs embed JPEG 2000 / TIFF, which no vision provider accepts:
+        the describer must store and describe a PNG/JPEG conversion instead of
+        silently keeping a format-only "JP2 image" label."""
+        import io
+
+        from PIL import Image
+
+        def encode(fmt, mode):
+            buf = io.BytesIO()
+            Image.new(mode, (120, 80), 200 if mode == "L" else (200, 30, 30)).save(buf, format=fmt)
+            return buf.getvalue()
+
+        d = self._describer()
+        with patch("chat.services.describe_image", return_value="A scanned page") as describe:
+            t1 = d.sink(_FakeImg(encode("JPEG2000", "RGB"), content_type="image/jp2"), 1)
+            t2 = d.sink(_FakeImg(encode("TIFF", "L"), content_type="image/tiff"), 2)
+            described = d.run_descriptions()
+        self.assertEqual(describe.call_count, 2)
+        sent_types = sorted(c.args[1] for c in describe.call_args_list)
+        self.assertEqual(sent_types, ["image/jpeg", "image/png"])
+        self.assertEqual(
+            sorted(self._embedded().values_list("content_type", flat=True)), ["image/jpeg", "image/png"],
+        )
+        text = d.substitute(t1 + t2, described)
+        self.assertNotIn("JP2 image", text)
+        self.assertEqual(text.count("A scanned page"), 2)
+
     def test_dedupes_identical_pictures_and_numbers_unique_ones(self):
         d = self._describer()
         with patch("chat.services.describe_image", return_value="A logo") as describe:
