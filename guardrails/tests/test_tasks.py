@@ -382,6 +382,145 @@ class ScanDocumentChunksTest(TestCase):
         self.document.refresh_from_db()
         self.assertEqual(self.document.status, DataRoomDocument.Status.SCAN_FAILED)
         self.mock_finalize.assert_not_called()
+        # The omitted chunk got its own call before the scan failed closed.
+        self.assertEqual(mock_service.run_structured.call_count, 2)
+
+    # -- omitted chunks are retried individually ----------------------------------
+
+    @staticmethod
+    def _sent_indexes(request):
+        """chunk_index values in the JSON payload of a classifier request."""
+        import json
+
+        user = request.messages[1].content
+        payload = json.loads(user.split("```json\n", 1)[1].rsplit("\n```", 1)[0])
+        return [item["chunk_index"] for item in payload]
+
+    @staticmethod
+    def _clean(index):
+        from guardrails.schemas import ChunkClassification
+
+        return ChunkClassification(
+            chunk_index=index, is_suspicious=False, concern_tags=[],
+            confidence=0.05, reasoning="Clean.",
+        )
+
+    def _classifier(self, respond):
+        """A mock LLM service whose classifier replies ``respond(sent_indexes)``."""
+        from guardrails.schemas import BatchClassifierResult
+
+        calls = []
+
+        def fake_run_structured(request, schema):
+            sent = self._sent_indexes(request)
+            calls.append((sent, request.messages[1].content))
+            return BatchClassifierResult(results=respond(sent)), None
+
+        service = MagicMock()
+        service.run_structured.side_effect = fake_run_structured
+        return service, calls
+
+    @patch("llm.get_llm_service")
+    def test_classifier_prompt_states_expected_count_and_indexes(self, mock_get_service):
+        from guardrails.tasks import _classify_chunk_batch
+
+        service, calls = self._classifier(lambda sent: [self._clean(i) for i in sent])
+        mock_get_service.return_value = service
+        chunks = [{"id": i, "chunk_index": i, "text": f"Chunk {i}."} for i in (3, 4, 5)]
+
+        _classify_chunk_batch(self.document, chunks, "test/model")
+
+        self.assertEqual(len(calls), 1)
+        self.assertIn("exactly 3 chunk(s), with chunk_index values 3, 4, 5", calls[0][1])
+        self.assertIn("return exactly 3 results", calls[0][1])
+
+    @patch("core.preferences.resolve_org_feature_model", return_value="test/model")
+    @patch("llm.get_llm_service")
+    def test_omitted_chunk_retried_alone_and_scan_completes(self, mock_get_service, _mock_resolve):
+        """A batch reply that drops the last chunk is recovered by one call for just
+        that chunk; the scan then completes instead of failing the document."""
+        from documents.models import DataRoomDocumentChunk as Chunk
+        from guardrails.tasks import scan_document_version
+
+        for i in range(3):
+            self._create_chunk(i, f"Normal patent text {i}.")
+        # Batch call omits chunk 2; the single-chunk call answers it.
+        service, calls = self._classifier(
+            lambda sent: [self._clean(i) for i in sent if len(sent) == 1 or i != 2]
+        )
+        mock_get_service.return_value = service
+
+        scan_document_version(self.version.id)
+
+        self.assertEqual([sent for sent, _ in calls], [[0, 1, 2], [2]])
+        self.mock_finalize.assert_called_once_with(self.version.id)
+        self.assertFalse(
+            Chunk.objects.filter(version=self.version).exclude(guardrail_scan_state="done").exists()
+        )
+
+    @patch("llm.get_llm_service")
+    def test_retry_ignores_hallucinated_and_duplicate_indexes(self, mock_get_service):
+        """The single-chunk call's reply goes through the same filtering: a foreign
+        index can't fill the gap, and the first result for the chunk wins."""
+        from guardrails.tasks import _classify_chunk_batch
+
+        def respond(sent):
+            if len(sent) > 1:
+                return [self._clean(0)]  # omits 1
+            flagged = self._clean(1).model_copy(update={"is_suspicious": True})
+            return [self._clean(99), self._clean(1), flagged]
+
+        service, calls = self._classifier(respond)
+        mock_get_service.return_value = service
+        chunks = [{"id": i, "chunk_index": i, "text": f"Chunk {i}."} for i in (0, 1)]
+
+        with patch("guardrails.tasks._decide_flagged_chunk") as mock_decide:
+            _classify_chunk_batch(self.document, chunks, "test/model")
+
+        self.assertEqual(len(calls), 2)
+        mock_decide.assert_not_called()  # first (clean) result for chunk 1 won
+
+    @patch("guardrails.reviewer._get_llm_service")
+    @patch("core.preferences.resolve_org_feature_model", return_value="test/model")
+    @patch("llm.get_llm_service")
+    def test_chunk_flagged_on_individual_retry_is_escalated(
+        self, mock_get_service, _mock_resolve, mock_reviewer_service,
+    ):
+        """A chunk flagged in its single-chunk retry goes through the same
+        escalation/review path as a batch-flagged one."""
+        from guardrails.models import GuardrailEvent
+        from guardrails.schemas import ChunkReviewDecision
+        from guardrails.tasks import scan_document_version
+
+        self._create_chunk(0, "Normal patent text.")
+        self._create_chunk(1, "Borderline text.")
+
+        def respond(sent):
+            if len(sent) > 1:
+                return [self._clean(0)]  # omits 1
+            return [self._clean(1).model_copy(update={
+                "is_suspicious": True, "concern_tags": ["social_engineering"],
+                "confidence": 0.5, "reasoning": "Suspicious.",
+            })]
+
+        service, _calls = self._classifier(respond)
+        mock_get_service.return_value = service
+        reviewer_service = MagicMock()
+        reviewer_service.run_structured.return_value = (
+            ChunkReviewDecision(
+                action="allow", confidence=0.9, severity="low", reasoning="Benign.",
+            ),
+            None,
+        )
+        mock_reviewer_service.return_value = reviewer_service
+
+        scan_document_version(self.version.id)
+
+        self.assertTrue(GuardrailEvent.objects.filter(
+            trigger_source="document_chunk", check_type="classifier", action_taken="escalated",
+        ).exists())
+        reviewer_service.run_structured.assert_called_once()
+        self.mock_finalize.assert_called_once_with(self.version.id)
 
     @patch("core.preferences.resolve_org_feature_model", return_value="test/model")
     @patch("llm.get_llm_service")
