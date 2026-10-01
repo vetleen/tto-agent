@@ -28,6 +28,40 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 CANVAS_MAX_CHARS = 75_000
+
+
+def clip_to_canvas(content: str | None) -> tuple[str, int | None]:
+    """Cut *content* to CANVAS_MAX_CHARS.
+
+    Returns ``(content, original_chars)``; ``original_chars`` is None when nothing
+    was cut. Every canvas write path goes through this so truncation is never
+    silent — callers report it with :func:`truncation_result_fields` and record it
+    on ``ChatCanvas.truncated_from_chars``.
+    """
+    content = content or ""
+    if len(content) > CANVAS_MAX_CHARS:
+        return content[:CANVAS_MAX_CHARS], len(content)
+    return content, None
+
+
+def truncation_result_fields(original_chars: int, *, hint: str = "") -> dict:
+    """Standard tool-result keys telling the model its canvas content was cut."""
+    pct = max(1, round(CANVAS_MAX_CHARS * 100 / original_chars))
+    note = (
+        f"TRUNCATED: the canvas holds only the first {CANVAS_MAX_CHARS:,} of "
+        f"{original_chars:,} characters (~{pct}%); the rest is NOT in the canvas. "
+        f"Tell the user, and do not save this canvas over its source document."
+    )
+    if hint:
+        note = f"{note} {hint}"
+    return {
+        "truncated": True,
+        "original_chars": original_chars,
+        "kept_chars": CANVAS_MAX_CHARS,
+        "truncation_note": note,
+    }
+
+
 MAX_CANVASES_PER_THREAD = 10
 MAX_ACTIVE_CANVASES = 3
 EMAIL_BLOCK_RE = re.compile(r"```email\s*\n(.*?)```", re.DOTALL)
@@ -1116,13 +1150,14 @@ def generate_canvas_title(
         return None
 
 
-def import_docx_to_canvas(uploaded_file: UploadedFile, user, *, canvas=None) -> tuple[str, str, bool]:
+def import_docx_to_canvas(uploaded_file: UploadedFile, user, *, canvas=None) -> tuple[str, str, int | None]:
     """Convert a .docx upload to markdown for a canvas.
 
     When *canvas* is given, embedded images are stored as canvas-scoped
     Assets and referenced by ``[[image:uuid|...]]`` tokens (so they survive
     into the canvas and its export). Without a canvas, images are described
-    inline as ``[Image N: ...]`` text. Returns (title, content, truncated).
+    inline as ``[Image N: ...]`` text. Returns (title, content, original_chars),
+    where ``original_chars`` is the pre-truncation length, or None when it fit.
     """
     from core.docx import docx_to_markdown
 
@@ -1138,16 +1173,13 @@ def import_docx_to_canvas(uploaded_file: UploadedFile, user, *, canvas=None) -> 
         )
     content = docx_to_markdown(uploaded_file, image_sink=sink)
 
-    # Truncate to character limit
-    truncated = len(content) > CANVAS_MAX_CHARS
-    if truncated:
-        content = content[:CANVAS_MAX_CHARS]
+    content, original_chars = clip_to_canvas(content)
 
     # Derive title from filename
     original_name = uploaded_file.name or "document"
     title = original_name.rsplit(".", 1)[0][:255] or "Untitled document"
 
-    return title, content, truncated
+    return title, content, original_chars
 
 
 def _canvas_title_from_filename(uploaded_file) -> str:
@@ -1155,14 +1187,15 @@ def _canvas_title_from_filename(uploaded_file) -> str:
     return original_name.rsplit(".", 1)[0][:255] or "Untitled document"
 
 
-def import_file_to_canvas(uploaded_file: UploadedFile, user, *, canvas=None) -> tuple[str, str, bool]:
+def import_file_to_canvas(uploaded_file: UploadedFile, user, *, canvas=None) -> tuple[str, str, int | None]:
     """Convert a supported upload (docx / pdf / text) to markdown for a canvas.
 
     Dispatches by file kind, reusing the same extractors as chat attachments and
     the data-room pipeline. docx delegates to :func:`import_docx_to_canvas`; pdf
     uses ``core.pdf.pdf_to_text`` (embedded images become ``[[image:uuid|...]]``
     tokens when *canvas* is given, matching docx); text is decoded as UTF-8.
-    Returns ``(title, content, truncated)`` — ``content`` may be empty when a file
+    Returns ``(title, content, original_chars)`` (``original_chars`` is the
+    pre-truncation length, or None when it fit) — ``content`` may be empty when a file
     has no extractable text (e.g. a scanned PDF); the caller decides how to react.
     Raises ``ValueError`` for an unsupported kind (the view gates on
     ``CANVAS_IMPORT_KINDS`` first, so this is defensive).
@@ -1205,11 +1238,9 @@ def import_file_to_canvas(uploaded_file: UploadedFile, user, *, canvas=None) -> 
     else:
         raise ValueError(f"Unsupported file kind for canvas import: {kind!r}")
 
-    truncated = len(content) > CANVAS_MAX_CHARS
-    if truncated:
-        content = content[:CANVAS_MAX_CHARS]
+    content, original_chars = clip_to_canvas(content)
 
-    return _canvas_title_from_filename(uploaded_file), content, truncated
+    return _canvas_title_from_filename(uploaded_file), content, original_chars
 
 
 def list_pasteable_user_messages(thread_id):

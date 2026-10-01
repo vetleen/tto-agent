@@ -134,13 +134,16 @@ class SubagentCanvasWriteEditTests(TestCase):
     def test_write_truncates_at_cap(self):
         from chat.services import CANVAS_MAX_CHARS
 
-        _invoke(
+        out = _invoke(
             SubagentCanvasWriteTool,
             {"content": "x" * (CANVAS_MAX_CHARS + 50)},
             self.ctx,
         )
         self.run.refresh_from_db()
         self.assertEqual(len(self.run.canvas), CANVAS_MAX_CHARS)
+        # Reported, not silent.
+        self.assertTrue(out["truncated"])
+        self.assertEqual(out["original_chars"], CANVAS_MAX_CHARS + 50)
 
     def test_edit_applies_and_echoes_content(self):
         self.run.canvas = "The quick brown fox"

@@ -105,6 +105,7 @@ class CreateMinutesThreadTests(TestCase):
 
         canvas = ChatCanvas.objects.get(thread=thread)
         self.assertEqual(len(canvas.content), CANVAS_MAX_CHARS)  # canvas is capped
+        self.assertEqual(canvas.truncated_from_chars, len(self.meeting.transcript))
 
         seed = ChatMessage.objects.get(thread=thread, is_hidden_from_user=True)
         # The seed must state truncation, not claim the full transcript is preloaded.

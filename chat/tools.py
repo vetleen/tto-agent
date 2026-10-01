@@ -106,6 +106,14 @@ class CanvasSaveToDocumentInput(ReasonBaseModel):
         default="",
         description="Name for the new document when mode='new'.",
     )
+    acknowledge_truncation: bool = Field(
+        default=False,
+        description=(
+            "Only for mode='overwrite' of a TRUNCATED canvas: set true only after the "
+            "user has explicitly confirmed they want the document replaced by the "
+            "truncated content. Otherwise save with mode='new'."
+        ),
+    )
 
 
 class ListDocumentsInput(ReasonBaseModel):
@@ -843,6 +851,8 @@ class CanvasSaveToDocumentTool(ContextAwareTool):
     end_label: str = "Saved canvas to data room"
 
     def end_label_for_result(self, result: dict) -> str | None:
+        if result and result.get("status") == "confirmation_required":
+            return "Not saved: canvas is truncated"
         title = result.get("canvas_title")
         room = result.get("data_room_name")
         return f'Saved "{title}" to {room}' if title and room else None
@@ -853,13 +863,17 @@ class CanvasSaveToDocumentTool(ContextAwareTool):
         "— the document keeps its history and can be rolled back. The saved content is scanned for safety "
         "and PII AT SAVE TIME and the result comes back immediately: a clean save becomes searchable; if it "
         "is blocked (e.g. GDPR Article 9/10 data or a prompt injection) you get the reason back, so edit the "
-        "canvas to remove the flagged content and save again. Only available when a data room is attached."
+        "canvas to remove the flagged content and save again. A canvas whose content was TRUNCATED to fit "
+        "holds only part of its source: overwriting a document with it needs the user's explicit "
+        "confirmation (acknowledge_truncation=true) — prefer mode='new'. Only available when a data room "
+        "is attached."
     )
     args_schema: type[BaseModel] = CanvasSaveToDocumentInput
 
     def _run(self, mode: str, canvas_name: str = "", doc_index: int | None = None,
-             data_room_name: str = "", new_name: str = "", **kwargs) -> str:
-        from chat.services import resolve_canvas, save_canvas_to_data_room
+             data_room_name: str = "", new_name: str = "", acknowledge_truncation: bool = False,
+             **kwargs) -> str:
+        from chat.services import CANVAS_MAX_CHARS, resolve_canvas, save_canvas_to_data_room
         from documents.models import DataRoom, DataRoomDocumentVersion
         from documents.services.sync_scan import scan_version_synchronously
         from documents.services.versioning import create_version
@@ -883,6 +897,9 @@ class CanvasSaveToDocumentTool(ContextAwareTool):
         user = _get_user_ctx(context)
         if user is None:
             return json.dumps({"error": "User not found."})
+
+        original_chars = canvas.truncated_from_chars
+        kept_chars = min(len(canvas.content), CANVAS_MAX_CHARS)
 
         if mode == "new":
             data_room_ids = context.data_room_ids if context else []
@@ -930,6 +947,11 @@ class CanvasSaveToDocumentTool(ContextAwareTool):
                 result["data_room_name"] = target.name
                 result["filename"] = doc.original_filename
                 result["canvas_title"] = canvas.title
+                if original_chars:
+                    result["truncation_warning"] = (
+                        f"The saved document is a PARTIAL copy: the canvas held only the first "
+                        f"{kept_chars:,} of {original_chars:,} characters of its source. Tell the user."
+                    )
             return json.dumps(result)
 
         # mode == "overwrite"
@@ -941,6 +963,29 @@ class CanvasSaveToDocumentTool(ContextAwareTool):
         locked = _agent_edit_block_reason(doc)
         if locked:
             return json.dumps({"error": locked})
+        # A truncated canvas would replace the document's working content with only
+        # part of it. Don't save until the user has confirmed (warn, don't refuse).
+        if original_chars and not acknowledge_truncation:
+            name = doc.display_name or f"document #{doc_index}"
+            same_source = canvas.source_document_id == doc.pk
+            lead = (
+                f'This canvas is a TRUNCATED copy of "{name}" itself'
+                if same_source else f'This canvas is truncated, and "{name}" would be replaced by it'
+            )
+            return json.dumps({
+                "status": "confirmation_required",
+                "reason": "truncated_canvas",
+                "doc_index": doc_index,
+                "original_chars": original_chars,
+                "kept_chars": kept_chars,
+                "message": (
+                    f"Not saved. {lead}: the new version would hold only the first {kept_chars:,} "
+                    f"of {original_chars:,} characters, and the rest would be missing from the "
+                    f"document's working version. Tell the user and suggest saving as a new "
+                    f"document instead (mode='new'). Only overwrite if the user explicitly "
+                    f"confirms, by calling again with acknowledge_truncation=true."
+                ),
+            })
         prior_current_id = doc.current_version_id
         version = create_version(
             doc, content=canvas.content,
@@ -953,6 +998,12 @@ class CanvasSaveToDocumentTool(ContextAwareTool):
             discard_fn=lambda: _discard_rejected_version(doc, version, prior_current_id),
         )
         result["mode"] = "overwrite"
+        if original_chars and verdict.ok:
+            result["truncation_warning"] = (
+                f"The new version holds only the first {kept_chars:,} of {original_chars:,} "
+                f"characters (truncated canvas, overwrite confirmed). The previous version is "
+                f"in the document's history and can be rolled back."
+            )
         return json.dumps(result)
 
 
@@ -1045,10 +1096,11 @@ class OpenDocumentToCanvasTool(ContextAwareTool):
     def _run(self, doc_index: int, data_room_id: int | None = None, canvas_name: str = "", **kwargs) -> str:
         from chat.models import ChatCanvas
         from chat.services import (
-            CANVAS_MAX_CHARS,
             MAX_CANVASES_PER_THREAD,
             activate_canvas,
+            clip_to_canvas,
             create_canvas_checkpoint,
+            truncation_result_fields,
         )
         from documents.services.versioning import document_status, open_working_version
 
@@ -1080,17 +1132,22 @@ class OpenDocumentToCanvasTool(ContextAwareTool):
 
         content, version, warning = open_working_version(doc)
         title = (canvas_name or doc.display_name or f"Document {doc_index}")[:255]
-        content = (content or "")[:CANVAS_MAX_CHARS]
+        content, original_chars = clip_to_canvas(content)
 
         try:
             canvas = ChatCanvas.objects.get(thread_id=thread_id, title=title, deleted_at__isnull=True)
             canvas.content = content
-            canvas.save(update_fields=["content", "updated_at"])
+            canvas.truncated_from_chars = original_chars
+            canvas.source_document = doc
+            canvas.save(update_fields=["content", "truncated_from_chars", "source_document", "updated_at"])
             created = False
         except ChatCanvas.DoesNotExist:
             if ChatCanvas.objects.filter(thread_id=thread_id, deleted_at__isnull=True).count() >= MAX_CANVASES_PER_THREAD:
                 return json.dumps({"error": f"Maximum of {MAX_CANVASES_PER_THREAD} canvases per thread reached."})
-            canvas = ChatCanvas.objects.create(thread_id=thread_id, title=title, content=content)
+            canvas = ChatCanvas.objects.create(
+                thread_id=thread_id, title=title, content=content,
+                truncated_from_chars=original_chars, source_document=doc,
+            )
             created = True
 
         cp = create_canvas_checkpoint(canvas, source="import", description=f"Opened document #{doc_index}")
@@ -1108,6 +1165,11 @@ class OpenDocumentToCanvasTool(ContextAwareTool):
         }
         if warning:
             result["warning"] = warning
+        if original_chars:
+            result.update(truncation_result_fields(original_chars, hint=(
+                "For a document this large, work from its full content with "
+                "document_read / document_search instead of editing it in a canvas."
+            )))
         return json.dumps(result)
 
 
@@ -1159,12 +1221,13 @@ class AttachmentOpenToCanvasTool(ContextAwareTool):
 
         from chat.models import ChatCanvas
         from chat.services import (
-            CANVAS_MAX_CHARS,
             MAX_CANVASES_PER_THREAD,
             activate_canvas,
+            clip_to_canvas,
             create_canvas_checkpoint,
             get_or_extract_attachment_text,
             list_thread_attachments,
+            truncation_result_fields,
         )
 
         context = self.context
@@ -1209,7 +1272,7 @@ class AttachmentOpenToCanvasTool(ContextAwareTool):
         else:
             content = get_or_extract_attachment_text(att, file_bytes, user=user)
 
-        content = (content or "")[:CANVAS_MAX_CHARS]
+        content, original_chars = clip_to_canvas(content)
         if not content.strip():
             return json.dumps({"error": "That attachment has no extractable text."})
 
@@ -1217,14 +1280,19 @@ class AttachmentOpenToCanvasTool(ContextAwareTool):
         try:
             canvas = ChatCanvas.objects.get(thread_id=thread_id, title=title, deleted_at__isnull=True)
             canvas.content = content
-            canvas.save(update_fields=["content", "updated_at"])
+            canvas.truncated_from_chars = original_chars
+            canvas.source_document = None
+            canvas.save(update_fields=["content", "truncated_from_chars", "source_document", "updated_at"])
             created = False
         except ChatCanvas.DoesNotExist:
             if ChatCanvas.objects.filter(
                 thread_id=thread_id, deleted_at__isnull=True,
             ).count() >= MAX_CANVASES_PER_THREAD:
                 return json.dumps({"error": f"Maximum of {MAX_CANVASES_PER_THREAD} canvases per thread reached."})
-            canvas = ChatCanvas.objects.create(thread_id=thread_id, title=title, content=content)
+            canvas = ChatCanvas.objects.create(
+                thread_id=thread_id, title=title, content=content,
+                truncated_from_chars=original_chars,
+            )
             created = True
 
         cp = create_canvas_checkpoint(
@@ -1235,13 +1303,19 @@ class AttachmentOpenToCanvasTool(ContextAwareTool):
             canvas.save(update_fields=["accepted_checkpoint"])
         activate_canvas(thread_id, canvas)
 
-        return json.dumps({
+        result = {
             "status": "ok",
             "canvas_title": canvas.title,
             "canvas_id": str(canvas.pk),
             "attachment_number": attachment_number,
             "filename": att.original_filename,
-        })
+        }
+        if original_chars:
+            result.update(truncation_result_fields(original_chars, hint=(
+                "Read the rest with chat_attachment_view (mode='extracted', "
+                "char_offset) instead of editing it in a canvas."
+            )))
+        return json.dumps(result)
 
 
 class EditDocumentTool(ContextAwareTool):

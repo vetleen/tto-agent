@@ -243,7 +243,7 @@ def create_minutes_thread(user, meeting, summarizer_skill=_UNSET):
     """
     from chat.models import ChatCanvas, ChatMessage, ChatThread, ChatThreadSkill
     from chat.services import (
-        CANVAS_MAX_CHARS,
+        clip_to_canvas,
         create_canvas_checkpoint,
         set_active_canvas,
     )
@@ -272,11 +272,12 @@ def create_minutes_thread(user, meeting, summarizer_skill=_UNSET):
     # canvas (its content is injected into the per-turn prompt). Truncate to
     # the canvas character cap if the transcript is unusually long.
     canvas_title = f"Meeting transcript — {meeting.name}"[:255]
-    canvas_content = (meeting.transcript or "")[:CANVAS_MAX_CHARS]
+    canvas_content, original_chars = clip_to_canvas(meeting.transcript)
     canvas = ChatCanvas.objects.create(
         thread=thread,
         title=canvas_title,
         content=canvas_content,
+        truncated_from_chars=original_chars,
     )
     checkpoint = create_canvas_checkpoint(
         canvas, source="original", description="Meeting transcript",

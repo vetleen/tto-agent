@@ -205,6 +205,46 @@ class ConsumerMessageTests(TransactionTestCase):
 
         thread = await database_sync_to_async(ChatThread.objects.get)()
         self.assertEqual(thread.active_canvas_id, canvas.pk)
+        self.assertNotIn("truncated", canvas_evt)
+        self.assertIsNone(canvas.truncated_from_chars)
+
+        await communicator.disconnect()
+
+    @patch("llm.get_llm_service")
+    async def test_first_message_oversized_pasted_canvas_reports_truncation(self, mock_get_service):
+        from chat.services import CANVAS_MAX_CHARS
+
+        mock_service = MagicMock()
+
+        async def mock_astream(*args, **kwargs):
+            return
+            yield
+
+        mock_service.astream = mock_astream
+        mock_get_service.return_value = mock_service
+
+        communicator = await self._connect()
+        await communicator.send_json_to({
+            "type": "chat.message",
+            "content": "Tidy this up.",
+            "canvas_content": "p" * (CANVAS_MAX_CHARS + 20),
+            "canvas_title": "Untitled document",
+        })
+        created = await communicator.receive_json_from(timeout=5)
+        self.assertEqual(created["event_type"], "thread.created")
+        canvas_evt = None
+        for _ in range(6):
+            evt = await communicator.receive_json_from(timeout=5)
+            if evt.get("event_type") == "canvas.updated":
+                canvas_evt = evt
+                break
+        self.assertIsNotNone(canvas_evt, "expected a canvas.updated echo")
+        self.assertTrue(canvas_evt["truncated"])
+        self.assertEqual(canvas_evt["original_chars"], CANVAS_MAX_CHARS + 20)
+        self.assertEqual(len(canvas_evt["content"]), CANVAS_MAX_CHARS)
+
+        canvas = await database_sync_to_async(ChatCanvas.objects.get)()
+        self.assertEqual(canvas.truncated_from_chars, CANVAS_MAX_CHARS + 20)
 
         await communicator.disconnect()
 

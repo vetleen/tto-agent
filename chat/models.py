@@ -414,6 +414,19 @@ class ChatCanvas(models.Model):
     # the doc is deferred to a quarantined draft and the user is warned). See
     # CanvasSaveToDocumentTool / documents.services.sync_scan.
     dr_save_attempts = models.PositiveSmallIntegerField(default=0)
+    # Original length when the content was cut to CANVAS_MAX_CHARS on the way in
+    # (document/attachment open, import, oversized write); None = complete. A full
+    # rewrite that fits clears it. canvas_save_to_document requires the agent to
+    # acknowledge it before overwriting a document. See chat.services.clip_to_canvas.
+    truncated_from_chars = models.PositiveIntegerField(null=True, blank=True)
+    # The data-room document this canvas was opened from (document_open_to_canvas).
+    source_document = models.ForeignKey(
+        "documents.DataRoomDocument",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
     # Soft delete: a non-null timestamp hides the canvas from the agent (prompt +
     # tool lookups) and the UI tabs, as if deleted, while preserving content and
     # version history for an Undo/restore. Enumeration/lookup sites filter on

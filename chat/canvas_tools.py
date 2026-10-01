@@ -176,18 +176,21 @@ class WriteCanvasTool(ContextAwareTool):
 
         from chat.models import ChatCanvas
         from chat.services import (
-            CANVAS_MAX_CHARS,
             MAX_CANVASES_PER_THREAD,
             activate_canvas,
+            clip_to_canvas,
             create_canvas_checkpoint,
             snapshot_user_edits,
+            truncation_result_fields,
         )
 
         thread_id = self.context.conversation_id if self.context else None
         if not thread_id:
             return json.dumps({"status": "error", "message": "No thread context available."})
 
-        content = content[:CANVAS_MAX_CHARS]
+        # A full rewrite replaces whatever the canvas held, so it also replaces the
+        # truncation marker / source link: set when this write is cut, else cleared.
+        content, original_chars = clip_to_canvas(content)
         content, stripped_images = _strip_markdown_images(content)
         # Truncate to the column limit before the lookup so it matches stored titles
         title = title[:255]
@@ -203,7 +206,11 @@ class WriteCanvasTool(ContextAwareTool):
             # Update existing canvas
             canvas.title = title
             canvas.content = content
-            canvas.save(update_fields=["title", "content", "updated_at"])
+            canvas.truncated_from_chars = original_chars
+            canvas.source_document = None
+            canvas.save(update_fields=[
+                "title", "content", "truncated_from_chars", "source_document", "updated_at",
+            ])
             created = False
         except ChatCanvas.DoesNotExist:
             # Check canvas cap
@@ -218,6 +225,7 @@ class WriteCanvasTool(ContextAwareTool):
             try:
                 canvas = ChatCanvas.objects.create(
                     thread_id=thread_id, title=title, content=content,
+                    truncated_from_chars=original_chars,
                 )
                 created = True
             except IntegrityError:
@@ -226,7 +234,11 @@ class WriteCanvasTool(ContextAwareTool):
                     thread_id=thread_id, title=title, deleted_at__isnull=True,
                 )
                 canvas.content = content
-                canvas.save(update_fields=["content", "updated_at"])
+                canvas.truncated_from_chars = original_chars
+                canvas.source_document = None
+                canvas.save(update_fields=[
+                    "content", "truncated_from_chars", "source_document", "updated_at",
+                ])
                 created = False
 
         # An existing canvas with no diff baseline yet (user-created, never
@@ -250,6 +262,8 @@ class WriteCanvasTool(ContextAwareTool):
         result = {
             "status": "ok", "title": canvas.title, "canvas_id": str(canvas.pk),
         }
+        if original_chars:
+            result.update(truncation_result_fields(original_chars))
         if stripped_images:
             result["warning"] = _MD_IMAGE_WARNING % stripped_images
         return json.dumps(result)
@@ -329,16 +343,24 @@ class EditCanvasTool(ContextAwareTool):
         if canvas.accepted_checkpoint_id is None:
             pre_ai_cp = canvas.checkpoints.order_by("-order").first()
 
-        from chat.services import CANVAS_MAX_CHARS, activate_canvas, create_canvas_checkpoint
+        from chat.services import (
+            activate_canvas,
+            clip_to_canvas,
+            create_canvas_checkpoint,
+            truncation_result_fields,
+        )
 
         content, stripped_images = _strip_markdown_images(new_content)
-
-        truncated = len(content) > CANVAS_MAX_CHARS
-        if truncated:
-            content = content[:CANVAS_MAX_CHARS]
+        # An edit that doesn't overflow keeps any existing marker: the canvas is
+        # still derived from a truncated copy.
+        content, original_chars = clip_to_canvas(content)
 
         canvas.content = content
-        canvas.save(update_fields=["content", "updated_at"])
+        update_fields = ["content", "updated_at"]
+        if original_chars:
+            canvas.truncated_from_chars = original_chars
+            update_fields.append("truncated_from_chars")
+        canvas.save(update_fields=update_fields)
 
         activate_canvas(thread_id, canvas)
         create_canvas_checkpoint(
@@ -356,8 +378,8 @@ class EditCanvasTool(ContextAwareTool):
             "title": canvas.title,
             "canvas_id": str(canvas.pk),
         }
-        if truncated:
-            result["note"] = "Content truncated to %d character limit." % CANVAS_MAX_CHARS
+        if original_chars:
+            result.update(truncation_result_fields(original_chars))
         if stripped_images:
             result["warning"] = _MD_IMAGE_WARNING % stripped_images
         return json.dumps(result)
@@ -404,12 +426,17 @@ class ReadCanvasTool(ContextAwareTool):
                 "status": "error",
                 "message": err if canvas_name else "No canvas exists for this thread.",
             })
-        return json.dumps({
+        result = {
             "status": "ok",
             "title": canvas.title,
             "canvas_id": str(canvas.pk),
             "content": canvas.content,
-        })
+        }
+        if canvas.truncated_from_chars:
+            from chat.services import truncation_result_fields
+
+            result.update(truncation_result_fields(canvas.truncated_from_chars))
+        return json.dumps(result)
 
 
 class DeleteCanvasInput(ReasonBaseModel):
@@ -511,14 +538,15 @@ class PasteUserTextTool(ContextAwareTool):
         from chat.edit_utils import append_with_anchor
         from chat.models import ChatCanvas
         from chat.services import (
-            CANVAS_MAX_CHARS,
             MAX_CANVASES_PER_THREAD,
             activate_canvas,
+            clip_to_canvas,
             create_canvas_checkpoint,
             dedupe_canvas_title,
             list_pasteable_user_messages,
             resolve_canvas,
             snapshot_user_edits,
+            truncation_result_fields,
         )
 
         thread_id = self.context.conversation_id if self.context else None
@@ -569,15 +597,18 @@ class PasteUserTextTool(ContextAwareTool):
 
         was_empty = not canvas.content
         new_content, inserted = append_with_anchor(canvas.content, text, anchor)
-        truncated = len(new_content) > CANVAS_MAX_CHARS
-        if truncated:
-            new_content = new_content[:CANVAS_MAX_CHARS]
+        new_content, original_chars = clip_to_canvas(new_content)
+        update_fields = ["content", "updated_at"]
+        if original_chars:
+            # Otherwise keep any existing marker (still a truncated copy).
+            canvas.truncated_from_chars = original_chars
+            update_fields.append("truncated_from_chars")
 
         description = f"Pasted your message #{message_number}"
         if created:
             # Fresh canvas: establish an accepted baseline so later edits diff cleanly.
             canvas.content = new_content
-            canvas.save(update_fields=["content", "updated_at"])
+            canvas.save(update_fields=update_fields)
             cp = create_canvas_checkpoint(canvas, source="original", description=description)
             canvas.accepted_checkpoint = cp
             canvas.save(update_fields=["accepted_checkpoint"])
@@ -587,7 +618,7 @@ class PasteUserTextTool(ContextAwareTool):
             if canvas.accepted_checkpoint_id is None:
                 pre_ai_cp = canvas.checkpoints.order_by("-order").first()
             canvas.content = new_content
-            canvas.save(update_fields=["content", "updated_at"])
+            canvas.save(update_fields=update_fields)
             create_canvas_checkpoint(canvas, source="ai_edit", description=description)
             if pre_ai_cp is not None and canvas.accepted_checkpoint_id is None:
                 canvas.accepted_checkpoint = pre_ai_cp
@@ -604,8 +635,8 @@ class PasteUserTextTool(ContextAwareTool):
         }
         if anchor and not inserted and not was_empty:
             result["note"] = "Anchor text was not found (or not unique) — appended at the end instead."
-        if truncated:
-            result["truncated"] = True
+        if original_chars:
+            result.update(truncation_result_fields(original_chars))
         return json.dumps(result)
 
 

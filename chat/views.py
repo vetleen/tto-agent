@@ -1331,7 +1331,7 @@ def canvas_import(request, thread_id, canvas_id=None):
             except IntegrityError:
                 canvas = ChatCanvas.objects.get(thread=thread, title=title, deleted_at__isnull=True)
 
-    _title, content, truncated = import_file_to_canvas(uploaded, request.user, canvas=canvas)
+    _title, content, original_chars = import_file_to_canvas(uploaded, request.user, canvas=canvas)
 
     # No extractable text (e.g. a scanned/image-only PDF or an empty document).
     # Don't create an empty canvas or a checkpoint — tell the user why.
@@ -1344,7 +1344,9 @@ def canvas_import(request, thread_id, canvas_id=None):
         )
 
     canvas.content = content
-    canvas.save(update_fields=["title", "content", "updated_at"])
+    canvas.truncated_from_chars = original_chars or None
+    canvas.source_document = None
+    canvas.save(update_fields=["title", "content", "truncated_from_chars", "source_document", "updated_at"])
 
     from chat.services import create_canvas_checkpoint
     cp = create_canvas_checkpoint(canvas, source="import", description="Imported from file")
@@ -1365,8 +1367,9 @@ def canvas_import(request, thread_id, canvas_id=None):
     resp = {"title": title, "content": content}
     if generated_title:
         resp["thread_title"] = generated_title
-    if truncated:
+    if original_chars:
         resp["truncated"] = True
+        resp["original_chars"] = original_chars
     return JsonResponse(resp)
 
 
@@ -1562,13 +1565,20 @@ def canvas_save_to_data_room(request, thread_id, canvas_id=None):
     # accessible quarantined draft; the polled verdict carries the reason.
     doc, version = save_canvas_to_data_room_service(canvas, data_room, request.user, enqueue=True)
 
-    return JsonResponse({
+    resp = {
         **_queued_payload(data_room, doc, version),
         "saved": True,
         "document_id": doc.id,
         "filename": doc.original_filename,
         "data_room_name": data_room.name,
-    })
+    }
+    if canvas.truncated_from_chars:
+        # Always a new document here, so nothing is overwritten — but the user
+        # should know the saved copy is partial.
+        resp["truncated"] = True
+        resp["original_chars"] = canvas.truncated_from_chars
+        resp["kept_chars"] = len(canvas.content)
+    return JsonResponse(resp)
 
 
 @login_required

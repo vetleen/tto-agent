@@ -121,6 +121,21 @@ class CanvasImportViewWidenedTests(TestCase):
         self.assertEqual(resp.status_code, 400)
         self.assertFalse(ChatCanvas.objects.filter(thread=self.thread).exists())
 
+    def test_oversized_text_import_reports_and_records_truncation(self):
+        f = SimpleUploadedFile("long.txt", b"w" * (CANVAS_MAX_CHARS + 3), content_type="text/plain")
+        resp = self.client.post(self._url(), {"file": f}, format="multipart")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data["truncated"])
+        self.assertEqual(data["original_chars"], CANVAS_MAX_CHARS + 3)
+        canvas = ChatCanvas.objects.get(thread=self.thread, title="long")
+        self.assertEqual(canvas.truncated_from_chars, CANVAS_MAX_CHARS + 3)
+
+    def test_small_import_leaves_marker_empty(self):
+        f = SimpleUploadedFile("brief.txt", b"Body.", content_type="text/plain")
+        self.client.post(self._url(), {"file": f}, format="multipart")
+        self.assertIsNone(ChatCanvas.objects.get(thread=self.thread, title="brief").truncated_from_chars)
+
     @patch("chat.services.import_file_to_canvas", return_value=("scan", "   ", False))
     def test_blank_extraction_returns_400_and_no_canvas(self, _mock):
         f = SimpleUploadedFile("scan.pdf", b"%PDF fake", content_type="application/pdf")
@@ -311,8 +326,11 @@ class PasteUserTextToolTests(TestCase):
             PasteUserTextTool, {"message_number": 3, "canvas_name": "Big"}, self._ctx()
         )
         self.assertTrue(result.get("truncated"))
+        self.assertEqual(result["original_chars"], CANVAS_MAX_CHARS + 100)
+        self.assertIn("TRUNCATED", result["truncation_note"])
         canvas = ChatCanvas.objects.get(thread=self.thread, title="Big")
         self.assertEqual(len(canvas.content), CANVAS_MAX_CHARS)
+        self.assertEqual(canvas.truncated_from_chars, CANVAS_MAX_CHARS + 100)
 
 
 # ---------------------------------------------------------------------------
@@ -362,6 +380,22 @@ class AttachmentOpenToCanvasToolTests(TestCase):
         result = _invoke(AttachmentOpenToCanvasTool, {"attachment_number": 5}, self._ctx())
         self.assertIn("error", result)
         self.assertEqual(result["available_attachments"][0]["filename"], "notes.txt")
+
+    def test_oversized_attachment_reports_truncation(self):
+        self._make("big.txt", "text/plain", body=b"z" * (CANVAS_MAX_CHARS + 7))
+        result = _invoke(AttachmentOpenToCanvasTool, {"attachment_number": 1}, self._ctx())
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["truncated"])
+        self.assertEqual(result["original_chars"], CANVAS_MAX_CHARS + 7)
+        self.assertIn("chat_attachment_view", result["truncation_note"])
+        canvas = ChatCanvas.objects.get(thread=self.thread, title="big")
+        self.assertEqual(canvas.truncated_from_chars, CANVAS_MAX_CHARS + 7)
+
+    def test_small_attachment_has_no_truncation(self):
+        self._make("notes.txt", "text/plain", body=b"short")
+        result = _invoke(AttachmentOpenToCanvasTool, {"attachment_number": 1}, self._ctx())
+        self.assertNotIn("truncated", result)
+        self.assertIsNone(ChatCanvas.objects.get(thread=self.thread, title="notes").truncated_from_chars)
 
 
 # ---------------------------------------------------------------------------

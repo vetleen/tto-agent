@@ -1982,6 +1982,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
                         "content": canvas_echo["content"],
                         "accepted_content": canvas_echo["accepted_content"],
                         "pending_ai_review": canvas_echo["pending_ai_review"],
+                        **({
+                            "truncated": True,
+                            "original_chars": canvas_echo["original_chars"],
+                        } if canvas_echo["original_chars"] else {}),
                     }))
             else:
                 # Sync session state from the thread's persisted data to
@@ -3939,16 +3943,17 @@ class ChatConsumer(AsyncWebsocketConsumer):
         """
         from chat.models import ChatCanvas
         from chat.services import (
-            CANVAS_MAX_CHARS,
             canvas_diff_baseline,
+            clip_to_canvas,
             set_active_canvas,
         )
 
-        content = (content or "")[:CANVAS_MAX_CHARS]
+        content, original_chars = clip_to_canvas(content)
         title = (title or "Untitled document")[:255]
         candidate = self._dedupe_canvas_title(thread_id, title)
         canvas = ChatCanvas.objects.create(
             thread_id=thread_id, title=candidate, content=content,
+            truncated_from_chars=original_chars,
         )
         set_active_canvas(thread_id, canvas)
         accepted_content, pending_ai_review = canvas_diff_baseline(canvas)
@@ -3958,6 +3963,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "content": canvas.content,
             "accepted_content": accepted_content,
             "pending_ai_review": pending_ai_review,
+            "original_chars": original_chars,
         }
 
     @database_sync_to_async
@@ -4025,16 +4031,18 @@ class ChatConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def _canvas_save_version(self, thread_id, title, content, canvas_id=None):
         from chat.models import CanvasCheckpoint
-        from chat.services import CANVAS_MAX_CHARS, create_canvas_checkpoint
+        from chat.services import clip_to_canvas, create_canvas_checkpoint
         title = (title or "")[:255]  # column limit; longer is a DB error
         canvas = self._resolve_canvas_id(thread_id, canvas_id)
         if not canvas:
             return None
+        # Clip before the dedupe check: the checkpoint stores clipped content, so an
+        # over-cap save would otherwise never match and checkpoint on every click.
+        content, _original_chars = clip_to_canvas(content)
         # Skip if content matches latest checkpoint
         latest = CanvasCheckpoint.objects.filter(canvas=canvas).order_by("-order").first()
         if latest and latest.content == content and latest.title == title:
             return {"accepted_content": content, "canvas_id": str(canvas.pk)}
-        content = content[:CANVAS_MAX_CHARS]
         canvas.title = title or canvas.title
         canvas.content = content
         canvas.save(update_fields=["title", "content", "updated_at"])

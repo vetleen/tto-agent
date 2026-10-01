@@ -118,7 +118,7 @@ def load_skill_field_into_canvas(thread_id, skill, field_name: str, *, canvas_na
 
     from agent_skills.models import SkillTemplate
     from chat.models import ChatCanvas
-    from chat.services import CANVAS_MAX_CHARS, create_canvas_checkpoint, set_active_canvas
+    from chat.services import clip_to_canvas, create_canvas_checkpoint, set_active_canvas
 
     if field_name in ("instructions", "description"):
         content = getattr(skill, field_name) or ""
@@ -132,19 +132,22 @@ def load_skill_field_into_canvas(thread_id, skill, field_name: str, *, canvas_na
             ) from exc
 
     title = canvas_name or f"{skill.name} \u2014 {field_name}"
-    content = content[:CANVAS_MAX_CHARS]
+    content, original_chars = clip_to_canvas(content)
 
     try:
         canvas = ChatCanvas.objects.select_related("accepted_checkpoint").get(
             thread_id=thread_id, title=title, deleted_at__isnull=True,
         )
         canvas.content = content
-        canvas.save(update_fields=["content", "updated_at"])
+        canvas.truncated_from_chars = original_chars
+        canvas.source_document = None
+        canvas.save(update_fields=["content", "truncated_from_chars", "source_document", "updated_at"])
         created = False
     except ChatCanvas.DoesNotExist:
         try:
             canvas = ChatCanvas.objects.create(
                 thread_id=thread_id, title=title, content=content,
+                truncated_from_chars=original_chars,
             )
             created = True
         except IntegrityError:
@@ -152,7 +155,9 @@ def load_skill_field_into_canvas(thread_id, skill, field_name: str, *, canvas_na
                 thread_id=thread_id, title=title, deleted_at__isnull=True,
             )
             canvas.content = content
-            canvas.save(update_fields=["content", "updated_at"])
+            canvas.truncated_from_chars = original_chars
+            canvas.source_document = None
+            canvas.save(update_fields=["content", "truncated_from_chars", "source_document", "updated_at"])
             created = False
 
     cp = create_canvas_checkpoint(canvas, source="import", description=f"Loaded {field_name}")
@@ -535,11 +540,16 @@ class ShowSkillFieldInCanvasTool(ContextAwareTool):
         except ValueError as exc:
             return json.dumps({"status": "error", "message": str(exc)})
 
-        return json.dumps({
+        result = {
             "status": "ok",
             "title": canvas.title,
             "canvas_id": str(canvas.pk),
-        })
+        }
+        if canvas.truncated_from_chars:
+            from chat.services import truncation_result_fields
+
+            result.update(truncation_result_fields(canvas.truncated_from_chars))
+        return json.dumps(result)
 
 
 class EditSkillTool(ContextAwareTool):
@@ -1167,7 +1177,7 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
         from django.db import IntegrityError
 
         from chat.models import ChatCanvas
-        from chat.services import CANVAS_MAX_CHARS, create_canvas_checkpoint, set_active_canvas
+        from chat.services import clip_to_canvas, create_canvas_checkpoint, set_active_canvas
 
         thread_id = self.context.conversation_id if self.context else None
         if not thread_id:
@@ -1199,7 +1209,7 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
                 deck_name=deck_name, position=position, title=canvas_name,
             )
 
-        content = tmpl.content[:CANVAS_MAX_CHARS]
+        content, original_chars = clip_to_canvas(tmpl.content)
         title = canvas_name or tmpl.name
 
         try:
@@ -1207,12 +1217,15 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
                 thread_id=thread_id, title=title, deleted_at__isnull=True,
             )
             canvas.content = content
-            canvas.save(update_fields=["content", "updated_at"])
+            canvas.truncated_from_chars = original_chars
+            canvas.source_document = None
+            canvas.save(update_fields=["content", "truncated_from_chars", "source_document", "updated_at"])
             created = False
         except ChatCanvas.DoesNotExist:
             try:
                 canvas = ChatCanvas.objects.create(
                     thread_id=thread_id, title=title, content=content,
+                    truncated_from_chars=original_chars,
                 )
                 created = True
             except IntegrityError:
@@ -1220,7 +1233,9 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
                     thread_id=thread_id, title=title, deleted_at__isnull=True,
                 )
                 canvas.content = content
-                canvas.save(update_fields=["content", "updated_at"])
+                canvas.truncated_from_chars = original_chars
+                canvas.source_document = None
+                canvas.save(update_fields=["content", "truncated_from_chars", "source_document", "updated_at"])
                 created = False
 
         cp = create_canvas_checkpoint(canvas, source="import", description=f"Loaded template: {template_name}")
@@ -1237,6 +1252,10 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
         }
         if note:
             result["note"] = note
+        if original_chars:
+            from chat.services import truncation_result_fields
+
+            result.update(truncation_result_fields(original_chars))
         return json.dumps(result)
 
     def _load_to_deck(self, thread_id, tmpl, note, *, deck_name: str,

@@ -2467,3 +2467,105 @@ class ReadCanvasToolTests(TestCase):
         self.assertEqual(tool.section, "skills")
         self.assertEqual(tool.start_label, "Reading canvas...")
         self.assertIn("canvas_read", CANVAS_COLLABORATOR["tool_names"])
+
+
+# ---------------------------------------------------------------------------
+# Truncation to CANVAS_MAX_CHARS is reported and recorded
+# ---------------------------------------------------------------------------
+
+class CanvasTruncationReportingTests(TestCase):
+    def setUp(self):
+        from chat.services import CANVAS_MAX_CHARS
+
+        self.cap = CANVAS_MAX_CHARS
+        self.user = User.objects.create_user(email="trunc-canvas@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+        self.ctx = _ctx(self.user.pk, self.thread.id)
+
+    def test_clip_to_canvas(self):
+        from chat.services import clip_to_canvas
+
+        self.assertEqual(clip_to_canvas("short"), ("short", None))
+        self.assertEqual(clip_to_canvas(None), ("", None))
+        self.assertEqual(clip_to_canvas("x" * self.cap), ("x" * self.cap, None))
+        content, original = clip_to_canvas("x" * (self.cap + 1))
+        self.assertEqual(len(content), self.cap)
+        self.assertEqual(original, self.cap + 1)
+
+    def test_truncation_result_fields(self):
+        from chat.services import truncation_result_fields
+
+        fields = truncation_result_fields(self.cap * 4, hint="Use the read tools.")
+        self.assertTrue(fields["truncated"])
+        self.assertEqual(fields["original_chars"], self.cap * 4)
+        self.assertEqual(fields["kept_chars"], self.cap)
+        self.assertIn("~25%", fields["truncation_note"])
+        self.assertIn("Tell the user", fields["truncation_note"])
+        self.assertTrue(fields["truncation_note"].endswith("Use the read tools."))
+
+    def test_write_over_cap_reports_and_sets_marker(self):
+        result = _invoke(WriteCanvasTool, {"title": "Big", "content": "x" * (self.cap + 10)}, self.ctx)
+        self.assertTrue(result["truncated"])
+        self.assertEqual(result["original_chars"], self.cap + 10)
+        canvas = ChatCanvas.objects.get(thread=self.thread, title="Big")
+        self.assertEqual(canvas.truncated_from_chars, self.cap + 10)
+
+    def test_fitting_rewrite_clears_marker_and_source(self):
+        from documents.models import DataRoom
+        from documents.tests._helpers import make_document
+
+        room = DataRoom.objects.create(name="R", slug="r", created_by=self.user)
+        doc = make_document(room, self.user, chunks=["body"])
+        ChatCanvas.objects.create(
+            thread=self.thread, title="Big", content="x" * self.cap,
+            truncated_from_chars=self.cap + 10, source_document=doc,
+        )
+        result = _invoke(WriteCanvasTool, {"title": "Big", "content": "a fresh summary"}, self.ctx)
+        self.assertNotIn("truncated", result)
+        canvas = ChatCanvas.objects.get(thread=self.thread, title="Big")
+        self.assertIsNone(canvas.truncated_from_chars)
+        self.assertIsNone(canvas.source_document_id)
+
+    def test_edit_keeps_existing_marker(self):
+        ChatCanvas.objects.create(
+            thread=self.thread, title="Big", content="hello world", truncated_from_chars=self.cap + 10,
+        )
+        result = _invoke(
+            EditCanvasTool,
+            {"canvas_name": "Big", "edits": [{"old_text": "hello", "new_text": "goodbye"}]},
+            self.ctx,
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertNotIn("truncated", result)  # this edit didn't overflow
+        self.assertEqual(ChatCanvas.objects.get(thread=self.thread, title="Big").truncated_from_chars, self.cap + 10)
+
+    def test_edit_that_overflows_reports_standard_fields(self):
+        ChatCanvas.objects.create(thread=self.thread, title="Big", content="x" * (self.cap - 5) + "END")
+        result = _invoke(
+            EditCanvasTool,
+            {"canvas_name": "Big", "edits": [{"old_text": "END", "new_text": "END" + "y" * 50}]},
+            self.ctx,
+        )
+        self.assertTrue(result["truncated"])
+        self.assertEqual(result["original_chars"], self.cap + 48)
+        self.assertNotIn("note", result)
+        self.assertEqual(ChatCanvas.objects.get(thread=self.thread, title="Big").truncated_from_chars, self.cap + 48)
+
+    def test_canvas_read_reports_truncated_canvas(self):
+        from chat.canvas_tools import ReadCanvasTool
+
+        ChatCanvas.objects.create(
+            thread=self.thread, title="Big", content="partial", truncated_from_chars=self.cap + 10,
+        )
+        result = _invoke(ReadCanvasTool, {"canvas_name": "Big"}, self.ctx)
+        self.assertTrue(result["truncated"])
+        self.assertEqual(result["original_chars"], self.cap + 10)
+
+    def test_active_canvas_context_flags_truncation(self):
+        from chat.prompts import build_dynamic_context
+
+        truncated = ChatCanvas(title="Big", content="abc", truncated_from_chars=200_000)
+        complete = ChatCanvas(title="Small", content="abc")
+        ctx = build_dynamic_context(active_canvases=[truncated, complete])
+        self.assertIn("TRUNCATED: only the first 3 of 200,000 characters", ctx)
+        self.assertEqual(ctx.count("TRUNCATED"), 1)

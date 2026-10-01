@@ -3145,6 +3145,9 @@
     }
     if (et === "canvas.updated") {
       var cid = data.canvas_id;
+      if (data.truncated && data.original_chars) {
+        showToast("Only the first 75,000 of " + data.original_chars.toLocaleString() + " characters fit in the canvas; the rest was cut.");
+      }
       if (cid && !canvasStates[cid]) {
         // New canvas created by LLM — add tab
         canvasStates[cid] = { title: data.title, content: data.content, acceptedContent: data.accepted_content, pendingUpdate: null, aiUpdatePending: !!data.pending_ai_review };
@@ -5550,13 +5553,14 @@
     }
 
     // Terminal verdict (clean / warn / blocked / scan_failed) → button + status text.
-    function handleCanvasDrVerdict(data, roomName) {
+    // partialNote: set when the canvas was truncated, so the saved copy is partial.
+    function handleCanvasDrVerdict(data, roomName, partialNote) {
       finishCanvasDrSave();
       if (data.ok) {
         flashCanvasBtnSuccess(canvasSaveToDrBtn);
-        setCanvasSaveStatus(data.verdict === "warn"
+        setCanvasSaveStatus((data.verdict === "warn"
           ? "Saved to " + roomName + " (some sections flagged & excluded)"
-          : "Saved to " + roomName, 4000);
+          : "Saved to " + roomName) + (partialNote || ""), partialNote ? 9000 : 4000);
       } else if (data.verdict === "blocked") {
         // Kept as an accessible quarantined draft — show why it isn't searchable.
         flashCanvasBtnError(canvasSaveToDrBtn);
@@ -5569,7 +5573,7 @@
 
     // Poll document_version_verdict until the queued save has a verdict. Fetch
     // errors are transient (a dyno restart, a blip) — just try again next tick.
-    function pollCanvasDrVerdict(verdictUrl, roomName) {
+    function pollCanvasDrVerdict(verdictUrl, roomName, partialNote) {
       var ticks = 0;
       var timer = setInterval(function() {
         ticks += 1;
@@ -5589,7 +5593,7 @@
               return;
             }
             clearInterval(timer);
-            handleCanvasDrVerdict(data, roomName);
+            handleCanvasDrVerdict(data, roomName, partialNote);
           })
           .catch(function() {});
       }, CANVAS_DR_POLL_MS);
@@ -5654,13 +5658,17 @@
                 .then(function(r) { return r.json(); })
                 .then(function(data) {
                   var roomName = data.data_room_name || "data room";
+                  var partialNote = data.truncated
+                    ? " — partial copy: the canvas holds only the first " + (data.kept_chars || 0).toLocaleString() +
+                      " of " + (data.original_chars || 0).toLocaleString() + " characters"
+                    : "";
                   if (data.verdict === "queued" && data.verdict_url) {
                     // Saved; the scan runs async — keep spinning and poll for the verdict.
                     setCanvasSaveStatus("Saving to " + roomName + " — " + CANVAS_DR_PENDING_LABEL.queued);
-                    pollCanvasDrVerdict(data.verdict_url, roomName);
+                    pollCanvasDrVerdict(data.verdict_url, roomName, partialNote);
                     return;
                   }
-                  handleCanvasDrVerdict(data, roomName);
+                  handleCanvasDrVerdict(data, roomName, partialNote);
                 })
                 .catch(function() {
                   finishCanvasDrSave();
@@ -5726,7 +5734,9 @@
             }
           }
           if (data.truncated) {
-            showToast("Document was truncated to 75,000 characters.");
+            showToast(data.original_chars
+              ? "Only the first 75,000 of " + data.original_chars.toLocaleString() + " characters fit in the canvas; the rest was cut."
+              : "Document was truncated to 75,000 characters.");
           }
           flashCanvasBtnSuccess(importLabel);
           if (importLabel) importLabel.title = "Import a file (Word, PDF, or text)";

@@ -129,19 +129,22 @@ class SubagentCanvasWriteTool(ContextAwareTool):
         )}
 
     def _run(self, content: str, title: str = "", **kwargs) -> str:
-        from chat.services import CANVAS_MAX_CHARS
+        from chat.services import clip_to_canvas, truncation_result_fields
 
         run, err = _resolve_run(self.context)
         if err:
             return err
 
-        run.canvas = (content or "")[:CANVAS_MAX_CHARS]
+        run.canvas, original_chars = clip_to_canvas(content)
         update_fields = ["canvas"]
         if title:
             run.canvas_title = title[:255]
             update_fields.append("canvas_title")
         run.save(update_fields=update_fields)
-        return json.dumps({"status": "ok", "chars": len(run.canvas)})
+        result = {"status": "ok", "chars": len(run.canvas)}
+        if original_chars:
+            result.update(truncation_result_fields(original_chars))
+        return json.dumps(result)
 
 
 class SubagentCanvasEditTool(ContextAwareTool):
@@ -171,7 +174,7 @@ class SubagentCanvasEditTool(ContextAwareTool):
 
     def _run(self, edits: list[dict] | list[EditItem], **kwargs) -> str:
         from chat.edit_utils import apply_unique_text_edits
-        from chat.services import CANVAS_MAX_CHARS
+        from chat.services import clip_to_canvas, truncation_result_fields
 
         run, err = _resolve_run(self.context)
         if err:
@@ -198,17 +201,18 @@ class SubagentCanvasEditTool(ContextAwareTool):
                 }
             )
 
-        run.canvas = new_content[:CANVAS_MAX_CHARS]
+        run.canvas, original_chars = clip_to_canvas(new_content)
         run.save(update_fields=["canvas"])
         # Echo the full updated canvas so the model re-syncs after anchored edits.
-        return json.dumps(
-            {
-                "status": "ok",
-                "applied": applied,
-                "failed": failed,
-                "content": run.canvas,
-            }
-        )
+        result = {
+            "status": "ok",
+            "applied": applied,
+            "failed": failed,
+            "content": run.canvas,
+        }
+        if original_chars:
+            result.update(truncation_result_fields(original_chars))
+        return json.dumps(result)
 
 
 class SubagentCanvasLoadTemplateTool(ContextAwareTool):
@@ -228,7 +232,7 @@ class SubagentCanvasLoadTemplateTool(ContextAwareTool):
     args_schema: type[BaseModel] = SubagentCanvasLoadTemplateInput
 
     def _run(self, template_name: str, **kwargs) -> str:
-        from chat.services import CANVAS_MAX_CHARS
+        from chat.services import clip_to_canvas, truncation_result_fields
         from chat.subagent_service import get_run_specialization_skill
 
         run, err = _resolve_run(self.context)
@@ -255,10 +259,13 @@ class SubagentCanvasLoadTemplateTool(ContextAwareTool):
                 }
             )
 
-        run.canvas = (tmpl.content or "")[:CANVAS_MAX_CHARS]
+        run.canvas, original_chars = clip_to_canvas(tmpl.content)
         run.canvas_title = tmpl.name[:255]
         run.save(update_fields=["canvas", "canvas_title"])
-        return json.dumps({"status": "ok", "template": tmpl.name, "content": run.canvas})
+        result = {"status": "ok", "template": tmpl.name, "content": run.canvas}
+        if original_chars:
+            result.update(truncation_result_fields(original_chars))
+        return json.dumps(result)
 
 
 # Register on import

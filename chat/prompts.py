@@ -749,8 +749,16 @@ def build_dynamic_context(
     canvases_to_inject = active_canvases or ([active_canvas] if active_canvas else [canvas] if canvas else [])
     for ac in canvases_to_inject:
         if ac:
+            truncated_from = getattr(ac, "truncated_from_chars", None)
+            truncation_line = (
+                f"(TRUNCATED: only the first {len(ac.content or ''):,} of "
+                f"{truncated_from:,} characters of the source fit in this canvas; "
+                f"do not save it over its source document.)\n"
+                if isinstance(truncated_from, int) and truncated_from > 0 else ""
+            )
             parts.append(
                 f'# Active Canvas Content: "{ac.title}"\n'
+                f"{truncation_line}"
                 f"```markdown\n{ac.content}\n```"
             )
 

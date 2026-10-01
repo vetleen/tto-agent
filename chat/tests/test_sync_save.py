@@ -262,3 +262,134 @@ class CanvasBroadcastRegressionTests(TestCase):
         from chat.consumers import CANVAS_UPDATED_TOOLS
         self.assertIn("canvas_paste_user_text", CANVAS_UPDATED_TOOLS)
         self.assertIn("chat_attachment_open_to_canvas", CANVAS_UPDATED_TOOLS)
+
+
+class CanvasTruncationTests(TestCase):
+    """A canvas cut to CANVAS_MAX_CHARS says so, remembers it, and can't silently
+    replace a document with the partial copy (confirm first; warn on new saves)."""
+
+    def setUp(self):
+        from chat.services import CANVAS_MAX_CHARS
+
+        self.cap = CANVAS_MAX_CHARS
+        self.user = User.objects.create_user(email="trunc@x.io", password="p")
+        self.room = DataRoom.objects.create(name="R", slug="r", created_by=self.user)
+        self.thread = ChatThread.objects.create(created_by=self.user)
+        self.ctx = RunContext.create(
+            user_id=self.user.pk, conversation_id=str(self.thread.id), data_room_ids=[self.room.pk],
+        )
+        self.big_doc = make_document(self.room, self.user, chunks=["x" * (self.cap + 5_000)])
+        self.small_doc = make_document(self.room, self.user, chunks=["short body"])
+
+    def _tool(self, cls):
+        tool = cls()
+        tool.set_context(self.ctx)
+        return tool
+
+    def _open(self, doc, canvas_name="Big"):
+        return json.loads(self._tool(OpenDocumentToCanvasTool).invoke(
+            {"doc_index": doc.doc_index, "canvas_name": canvas_name},
+        ))
+
+    def _save(self, verdict="clean", **args):
+        with patch(_SYNC_SCAN, return_value=_verdict(verdict)) as scan:
+            res = json.loads(self._tool(CanvasSaveToDocumentTool).invoke({"canvas_name": "Big", **args}))
+        return res, scan
+
+    # -- document_open_to_canvas --------------------------------------------------
+
+    def test_open_oversized_document_reports_and_records_truncation(self):
+        res = self._open(self.big_doc)
+        self.assertEqual(res["status"], "ok")
+        self.assertTrue(res["truncated"])
+        self.assertEqual(res["original_chars"], self.cap + 5_000)
+        self.assertEqual(res["kept_chars"], self.cap)
+        self.assertIn("TRUNCATED", res["truncation_note"])
+        self.assertIn("document_read", res["truncation_note"])
+        canvas = ChatCanvas.objects.get(thread=self.thread, title="Big")
+        self.assertEqual(len(canvas.content), self.cap)
+        self.assertEqual(canvas.truncated_from_chars, self.cap + 5_000)
+        self.assertEqual(canvas.source_document_id, self.big_doc.pk)
+
+    def test_open_small_document_has_no_truncation(self):
+        res = self._open(self.small_doc, canvas_name="Small")
+        self.assertNotIn("truncated", res)
+        canvas = ChatCanvas.objects.get(thread=self.thread, title="Small")
+        self.assertIsNone(canvas.truncated_from_chars)
+        self.assertEqual(canvas.source_document_id, self.small_doc.pk)
+
+    def test_reopening_a_small_document_clears_the_marker(self):
+        self._open(self.big_doc)
+        self._open(self.small_doc)  # same canvas title "Big"
+        canvas = ChatCanvas.objects.get(thread=self.thread, title="Big")
+        self.assertIsNone(canvas.truncated_from_chars)
+        self.assertEqual(canvas.source_document_id, self.small_doc.pk)
+
+    # -- canvas_save_to_document ----------------------------------------------------
+
+    def test_overwrite_source_with_truncated_canvas_needs_confirmation(self):
+        self._open(self.big_doc)
+        prior_current = DataRoomDocument.objects.get(pk=self.big_doc.pk).current_version_id
+        versions_before = self.big_doc.versions.count()
+
+        res, scan = self._save(mode="overwrite", doc_index=self.big_doc.doc_index)
+
+        self.assertEqual(res["status"], "confirmation_required")
+        self.assertEqual(res["reason"], "truncated_canvas")
+        self.assertEqual(res["original_chars"], self.cap + 5_000)
+        self.assertIn("TRUNCATED copy of", res["message"])
+        self.assertIn("mode='new'", res["message"])
+        self.assertIn("acknowledge_truncation=true", res["message"])
+        scan.assert_not_called()
+        self.assertEqual(self.big_doc.versions.count(), versions_before)
+        self.assertEqual(DataRoomDocument.objects.get(pk=self.big_doc.pk).current_version_id, prior_current)
+        self.assertEqual(ChatCanvas.objects.get(thread=self.thread, title="Big").dr_save_attempts, 0)
+
+    def test_overwrite_other_document_with_truncated_canvas_needs_confirmation(self):
+        self._open(self.big_doc)
+        res, _scan = self._save(mode="overwrite", doc_index=self.small_doc.doc_index)
+        self.assertEqual(res["status"], "confirmation_required")
+        self.assertIn("would be replaced", res["message"])
+        self.assertEqual(self.small_doc.versions.count(), 1)
+
+    def test_acknowledged_overwrite_saves_with_warning(self):
+        self._open(self.big_doc)
+        res, scan = self._save(
+            mode="overwrite", doc_index=self.big_doc.doc_index, acknowledge_truncation=True,
+        )
+        self.assertEqual(res["verdict"], "clean")
+        scan.assert_called_once()
+        self.assertEqual(self.big_doc.versions.count(), 2)
+        self.assertIn("rolled back", res["truncation_warning"])
+
+    def test_new_mode_saves_truncated_canvas_with_partial_copy_warning(self):
+        self._open(self.big_doc)
+        res, _scan = self._save(mode="new", new_name="Partial")
+        self.assertEqual(res["verdict"], "clean")
+        self.assertIn("PARTIAL copy", res["truncation_warning"])
+
+    def test_complete_canvas_saves_without_truncation_keys(self):
+        self._open(self.small_doc, canvas_name="Big")
+        res, _scan = self._save(mode="overwrite", doc_index=self.small_doc.doc_index)
+        self.assertEqual(res["verdict"], "clean")
+        self.assertNotIn("truncation_warning", res)
+
+    def test_confirmation_result_has_a_not_saved_label(self):
+        label = CanvasSaveToDocumentTool().end_label_for_result({"status": "confirmation_required"})
+        self.assertEqual(label, "Not saved: canvas is truncated")
+
+    # -- UI save button -------------------------------------------------------------
+
+    @patch("documents.tasks.process_document_version_task.delay")
+    def test_button_save_reports_partial_copy(self, _mock_delay):
+        self.client.login(email="trunc@x.io", password="p")
+        canvas = ChatCanvas.objects.create(
+            thread=self.thread, title="Btn", content="y" * self.cap, truncated_from_chars=self.cap + 10,
+        )
+        url = f"/chat/api/threads/{self.thread.id}/canvas/{canvas.id}/save-to-data-room/"
+        data = self.client.post(url, data=json.dumps({"data_room_id": self.room.pk}),
+                                content_type="application/json").json()
+        self.assertTrue(data["saved"])
+        self.assertTrue(data["truncated"])
+        self.assertEqual(data["original_chars"], self.cap + 10)
+        self.assertEqual(data["kept_chars"], self.cap)
