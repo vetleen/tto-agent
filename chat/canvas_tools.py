@@ -351,9 +351,13 @@ class EditCanvasTool(ContextAwareTool):
         )
 
         content, stripped_images = _strip_markdown_images(new_content)
-        # An edit that doesn't overflow keeps any existing marker: the canvas is
-        # still derived from a truncated copy.
-        content, original_chars = clip_to_canvas(content)
+        # An edit keeps any existing marker: the canvas is still derived from a
+        # truncated copy. An edit that overflows must not shrink it either — the
+        # source's length (e.g. 84k) is what matters, not this edit's (75,032).
+        content, overflow_chars = clip_to_canvas(content)
+        original_chars = (
+            max(canvas.truncated_from_chars or 0, overflow_chars) if overflow_chars else None
+        )
 
         canvas.content = content
         update_fields = ["content", "updated_at"]
@@ -597,10 +601,13 @@ class PasteUserTextTool(ContextAwareTool):
 
         was_empty = not canvas.content
         new_content, inserted = append_with_anchor(canvas.content, text, anchor)
-        new_content, original_chars = clip_to_canvas(new_content)
+        new_content, overflow_chars = clip_to_canvas(new_content)
+        # Keep any existing marker (still a truncated copy); never shrink it.
+        original_chars = (
+            max(canvas.truncated_from_chars or 0, overflow_chars) if overflow_chars else None
+        )
         update_fields = ["content", "updated_at"]
         if original_chars:
-            # Otherwise keep any existing marker (still a truncated copy).
             canvas.truncated_from_chars = original_chars
             update_fields.append("truncated_from_chars")
 

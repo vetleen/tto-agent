@@ -2551,6 +2551,22 @@ class CanvasTruncationReportingTests(TestCase):
         self.assertNotIn("note", result)
         self.assertEqual(ChatCanvas.objects.get(thread=self.thread, title="Big").truncated_from_chars, self.cap + 48)
 
+    def test_overflowing_edit_does_not_shrink_existing_marker(self):
+        # Staging repro: canvas opened from an 84,248-char doc; a heading edit pushed
+        # 32 chars past the cap and replaced the marker with 75,032, so the save
+        # warning claimed ~100% was kept.
+        ChatCanvas.objects.create(
+            thread=self.thread, title="Big", content="x" * (self.cap - 5) + "END",
+            truncated_from_chars=84_248,
+        )
+        result = _invoke(
+            EditCanvasTool,
+            {"canvas_name": "Big", "edits": [{"old_text": "END", "new_text": "END" + "y" * 30}]},
+            self.ctx,
+        )
+        self.assertEqual(result["original_chars"], 84_248)
+        self.assertEqual(ChatCanvas.objects.get(thread=self.thread, title="Big").truncated_from_chars, 84_248)
+
     def test_canvas_read_reports_truncated_canvas(self):
         from chat.canvas_tools import ReadCanvasTool
 
