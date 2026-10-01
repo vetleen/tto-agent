@@ -369,6 +369,20 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if inner is not None:
             await self.send(text_data=json.dumps(inner))
 
+    async def subagent_status(self, event):
+        """Channel layer handler: a sub-agent was queued or started.
+
+        Display-only — re-send the run list so the user's sub-agent panel shows
+        the row (or flips it from "Queued" to a running timer). Runs while a
+        turn streams too: that is exactly when a blocking sub-agent is working.
+        """
+        if self._stopped:
+            return
+        thread_id = event.get("thread_id")
+        if not thread_id or str(self._current_thread_id) != str(thread_id):
+            return
+        await self.send(text_data=json.dumps(await self._subagents_updated_event(thread_id)))
+
     async def subagent_completed(self, event):
         """Channel layer handler: a sub-agent finished. Auto-trigger orchestrator turn."""
         if self._stopped:
@@ -378,13 +392,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             return
 
         # Always notify frontend so the status bar updates
-        active_count = await self._get_active_subagent_count(thread_id)
-        waiting_count = await self._get_waiting_subagent_count(thread_id)
-        await self.send(text_data=json.dumps({
-            "event_type": "subagents.updated",
-            "active_count": active_count,
-            "waiting_count": waiting_count,
-        }))
+        await self.send(text_data=json.dumps(await self._subagents_updated_event(thread_id)))
 
         # Self-heal: sibling completion events may get lost (the group_send is
         # at-most-once), so keep a watchdog alive until nothing is pending.
@@ -1256,16 +1264,17 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
             # Fetch skills, cost, canvases, tasks, and active subagents in parallel
             (
-                skills_data, thread_cost, canvases_data, task_list,
-                active_subagent_count, waiting_subagent_count,
+                skills_data, thread_cost, canvases_data, task_list, subagent_panel,
             ) = await asyncio.gather(
                 self._load_thread_skills(thread_id),
                 self._get_thread_cost(thread_id),
                 self._load_all_canvases(thread_id),
                 self._get_thread_tasks(thread_id),
-                self._get_active_subagent_count(thread_id),
-                self._get_waiting_subagent_count(thread_id),
+                self._get_subagent_panel(thread_id),
             )
+            subagent_runs = subagent_panel["runs"]
+            active_subagent_count = len(subagent_runs)
+            waiting_subagent_count = sum(1 for r in subagent_runs if r["state"] == "queued")
             self.active_skill_ids = [s["id"] for s in skills_data]
 
             # Effective model for the picker (honors the thread's stored model,
@@ -1287,6 +1296,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "thread_cost_usd": thread_cost,
                 "active_subagent_count": active_subagent_count,
                 "waiting_subagent_count": waiting_subagent_count,
+                "subagent_runs": subagent_runs,
+                "server_now": subagent_panel["server_now"],
                 "model": effective_model,
                 "model_display": get_display_name(effective_model) if effective_model else "",
             }))
@@ -1443,14 +1454,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if self._stream_task and not self._stream_task.done():
             return True
 
-        active_count = await self._get_active_subagent_count(thread_id)
-        waiting_count = await self._get_waiting_subagent_count(thread_id)
+        update = await self._subagents_updated_event(thread_id)
+        active_count = update["active_count"]
         try:
-            await self.send(text_data=json.dumps({
-                "event_type": "subagents.updated",
-                "active_count": active_count,
-                "waiting_count": waiting_count,
-            }))
+            await self.send(text_data=json.dumps(update))
         except Exception:
             # Socket gone; disconnect cleanup cancels this task shortly.
             return False
@@ -1782,6 +1789,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "event_type": "subagents.updated",
                 "active_count": 0,
                 "waiting_count": 0,
+                "runs": [],
             }))
 
         await self.send(text_data=json.dumps({"event_type": "stream.cancelled"}))
@@ -2398,14 +2406,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
             # stale. Best-effort; must not break the turn.
             if self._turn is turn and not self._stopped:
                 try:
-                    active_count = await self._get_active_subagent_count(str(thread.id))
-                    waiting_count = await self._get_waiting_subagent_count(str(thread.id))
-                    await self._sink.send_event({
-                        "event_type": "subagents.updated",
-                        "active_count": active_count,
-                        "waiting_count": waiting_count,
-                    })
-                    if active_count > 0:
+                    update = await self._subagents_updated_event(str(thread.id))
+                    await self._sink.send_event(update)
+                    if update["active_count"] > 0:
                         self._ensure_subagent_watch(str(thread.id))
                 except Exception:
                     logger.exception("Failed to resync sub-agent status")
@@ -3748,22 +3751,21 @@ class ChatConsumer(AsyncWebsocketConsumer):
         )
 
     @database_sync_to_async
-    def _get_active_subagent_count(self, thread_id) -> int:
-        from chat.models import SubAgentRun
-        return SubAgentRun.objects.filter(
-            thread_id=thread_id,
-            status__in=[SubAgentRun.Status.PENDING, SubAgentRun.Status.RUNNING],
-        ).count()
+    def _get_subagent_panel(self, thread_id) -> dict:
+        from chat.subagent_service import active_subagent_runs_payload
+        return active_subagent_runs_payload(thread_id)
 
-    @database_sync_to_async
-    def _get_waiting_subagent_count(self, thread_id) -> int:
-        """Active runs still waiting for a free execution slot (a subset of the active count)."""
-        from chat.models import SubAgentRun
-        return SubAgentRun.objects.filter(
-            thread_id=thread_id,
-            status=SubAgentRun.Status.PENDING,
-            dispatched_at__isnull=True,
-        ).count()
+    async def _subagents_updated_event(self, thread_id) -> dict:
+        """The ``subagents.updated`` frame: counts + the per-run list for the panel."""
+        panel = await self._get_subagent_panel(thread_id)
+        runs = panel["runs"]
+        return {
+            "event_type": "subagents.updated",
+            "active_count": len(runs),
+            "waiting_count": sum(1 for r in runs if r["state"] == "queued"),
+            "runs": runs,
+            "server_now": panel["server_now"],
+        }
 
     # -- Canvas helpers --
 

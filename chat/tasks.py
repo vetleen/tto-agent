@@ -15,13 +15,13 @@ from documents.services.page_render import RenderBusy, RenderUnavailable
 logger = logging.getLogger(__name__)
 
 
-def _notify_consumer(run_id: str, thread_id: str) -> None:
-    """Best-effort channel-layer notification that a subagent run finished.
+def _send_subagent_event(event_type: str, run_id: str, thread_id: str, what: str) -> None:
+    """Best-effort ``group_send`` of a sub-agent event to the thread's consumers.
 
-    Retries once after a short sleep: from a sync Celery thread each
-    ``async_to_sync`` call builds a fresh event loop (and thus a fresh pubsub
-    connection pool, torn down when the loop closes), so the retry can never
-    inherit the failed socket and holds no connection past the call.
+    Retries once after a short sleep: from a sync thread (Celery, or a tool's
+    worker thread) each ``async_to_sync`` call builds a fresh event loop (and thus
+    a fresh pubsub connection pool, torn down when the loop closes), so the retry
+    can never inherit the failed socket and holds no connection past the call.
     """
     from channels.layers import get_channel_layer
     from asgiref.sync import async_to_sync
@@ -32,7 +32,7 @@ def _notify_consumer(run_id: str, thread_id: str) -> None:
             async_to_sync(channel_layer.group_send)(
                 f"thread_{thread_id}",
                 {
-                    "type": "subagent.completed",
+                    "type": event_type,
                     "run_id": run_id,
                     "thread_id": thread_id,
                 },
@@ -42,16 +42,30 @@ def _notify_consumer(run_id: str, thread_id: str) -> None:
             if attempt == 0:
                 time.sleep(0.5)
                 continue
-            # Fires once per sub-agent completion, so an unthrottled WARNING is
+            # Fires once per sub-agent transition, so an unthrottled WARNING is
             # safe. A Redis blip that survives the retry is worth an alert: the
-            # run finished but the browser never hears about it, and only the
-            # consumer watchdog stands between the user and a hung sub-agent.
+            # browser never hears about it, and only the consumer watchdog
+            # stands between the user and a stale sub-agent panel.
             log_broadcast_failure(
                 logger,
                 exc,
-                "Could not notify consumer of sub-agent %s completion",
+                "Could not notify consumer of sub-agent %s " + what,
                 run_id,
             )
+
+
+def _notify_consumer(run_id: str, thread_id: str) -> None:
+    """Notify the thread's consumers that a sub-agent run finished."""
+    _send_subagent_event("subagent.completed", run_id, thread_id, "completion")
+
+
+def notify_subagent_status(thread_id: str, run_id: str) -> None:
+    """Notify the thread's consumers that a sub-agent was queued or started.
+
+    Display-only: the consumer re-sends the run list (``subagents.updated``) so
+    the panel row appears/updates without waiting for the watchdog tick.
+    """
+    _send_subagent_event("subagent.status", run_id, thread_id, "status change")
 
 
 def _capture_subagent_failure(exc: BaseException, run_id_str: str) -> None:

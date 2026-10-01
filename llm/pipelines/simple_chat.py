@@ -18,6 +18,7 @@ from llm.types.requests import ChatRequest
 from llm.types.responses import ChatResponse, Usage
 from llm.types.streaming import StreamEvent
 from llm.types.context import RunContext
+from llm.tools.display import parse_tool_result, tool_end_display
 from llm.tools.interfaces import ContextAwareTool
 from llm.tools.registry import get_tool_registry
 
@@ -83,18 +84,7 @@ def _iteration_notice(
     return Message(role="user", content=warning_text)
 
 
-def _safe_result_dict(result_str: str) -> dict | None:
-    """Best-effort parse of a tool result into a dict for label computation.
-
-    Returns None for non-JSON or non-dict results (e.g. tools that return
-    markdown), in which case the caller falls back to the tool's static
-    ``end_label``.
-    """
-    try:
-        value = json.loads(result_str)
-    except (ValueError, TypeError):
-        return None
-    return value if isinstance(value, dict) else None
+_safe_result_dict = parse_tool_result
 
 
 def _pipeline_call_meta(messages: List[Message]) -> dict:
@@ -880,15 +870,10 @@ class SimpleChatPipeline(BasePipeline):
             # Emit tool_end for all results and append to history
             for tc, result_str in results:
                 tool = tool_by_name.get(tc.name)
-                display_label = "Done"
-                parsed = _safe_result_dict(result_str)
-                if tool:
-                    dynamic = tool.end_label_for_result(parsed) if parsed is not None else None
-                    display_label = dynamic or tool.end_label
                 # Tools report failure as {"status": "error", ...}; the client
                 # keys the card's icon on this flag so a refusal never renders
-                # as a green check.
-                is_error = bool(parsed) and parsed.get("status") == "error"
+                # as a green check. Shared with the history view (reload).
+                display_label, is_error = tool_end_display(tool, result_str)
                 yield StreamEvent(
                     event_type="tool_end",
                     data={

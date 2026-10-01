@@ -93,11 +93,15 @@
   .wf-file-chip--unavailable { color: var(--wf-muted); border-style: dashed; cursor: default; font-style: italic; }
   .wf-file-chip--unavailable:hover { background: var(--wf-sunken); border-color: var(--wf-border-subtle); }
   .tool-card { transition: opacity 0.2s; }
-  .tool-cards-done { opacity: 0.5; transition: opacity 0.5s ease; }
-  /* A long tool run (TOOL_GROUP_THRESHOLD+) folds into a "Used n tools" toggle styled like
-     the thinking block; expanded, the calls are a compact list instead of pills. */
+  /* A reply's pre-answer activity is a chronological timeline: one collapsed row per
+     thinking round and one per tool batch ("Searched the web" / "Used n tools"), styled
+     like the thinking block; expanded, a batch's calls are a compact list. */
+  .wmsg__timeline > * + * { margin-top: 0.5rem; }
+  .wmsg__timeline:empty { display: none; }
+  /* Reloaded rounds are separate bubbles; match the in-bubble row gap (minus the body's 3px top padding). */
+  .wmsg[data-intermediate] { margin-block-end: calc(0.5rem - 3px) !important; }
+  .wmsg[data-intermediate] .wmsg__av { height: 0; border: 0; overflow: hidden; }
   .tool-cards.tool-cards--grouped { display: block; }
-  .tool-cards-done.tool-cards--grouped { opacity: 1; }
   .tool-cards-done.tool-cards--grouped .tool-group-list { opacity: 0.6; }
   .tool-cards--grouped .tool-group-chevron { transform: rotate(90deg); }
   .tool-cards--grouped.collapsed .tool-group-chevron { transform: rotate(0deg); }
@@ -105,6 +109,15 @@
   .tool-group-list { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; margin-top: 4px; padding-left: 12px; border-left: 2px solid var(--color-neutral-quaternary); max-height: 16rem; overflow-y: auto; scrollbar-width: thin; }
   .tool-group-list .tool { background: none; border: 0; border-radius: 0; padding: 2px 0; font-size: 12px; gap: 7px; }
   .tool-group-current { color: var(--wf-faint); }
+  /* Sub-agent panel rows: reason (ellipsized) + right-aligned mm:ss timer. */
+  .subagent-run-list { display: flex; flex-direction: column; gap: 3px; margin-top: 6px; padding-left: 22px; max-height: 7.5rem; overflow-y: auto; scrollbar-width: thin; }
+  .subagent-run-list:empty { display: none; }
+  .subagent-run { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .subagent-run::before { content: ""; flex-shrink: 0; width: 6px; height: 6px; border-radius: 9999px; background: currentColor; }
+  .subagent-run.is-queued { opacity: 0.65; }
+  .subagent-run.is-queued::before { background: transparent; border: 1px solid currentColor; }
+  .subagent-run-reason { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-style: italic; }
+  .subagent-run-time { flex-shrink: 0; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 
   /* ===== Chat redesign v2 (ledger) — token aliases + components ===== */
   /* Aliases point at project color tokens so dark mode flips automatically.
@@ -178,7 +191,6 @@
   .idref { font-family: var(--font-mono); font-size: 0.92em; color: var(--wf-accent); }
 
   /* --- Tool-call chips --- */
-  .tool-cards { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
   .tool { display: inline-flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--wf-muted); background: var(--wf-sunken); border: 1px solid var(--wf-border-subtle); border-radius: 9999px; padding: 6px 13px; }
   .tool b { color: var(--wf-heading); font-weight: 600; }
   .tool .ic { color: var(--wf-accent); display: inline-flex; }
@@ -433,16 +445,17 @@
     </div>
   </div>
 
-  {# Sub-agent status bar — visible when background sub-agents are active #}
+  {# Sub-agent panel — visible while any sub-agent (background or awaited) is active: one row per run with its reason and a live timer #}
   <div id="subagent-status-bar" class="hidden border-t border-default bg-brand-softer w-full">
-    <div class="max-w-4xl mx-auto w-full px-4 py-2">
-      <div class="flex items-start gap-2 text-xs text-fg-brand">
+    <div class="max-w-4xl mx-auto w-full px-4 py-2 text-xs text-fg-brand">
+      <div class="flex items-start gap-2">
         <svg class="w-3.5 h-3.5 shrink-0 animate-spin mt-0.5" fill="none" viewBox="0 0 24 24">
           <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
           <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
         </svg>
         <div id="subagent-status-text"></div>
       </div>
+      <ul id="subagent-run-list" class="subagent-run-list"></ul>
     </div>
   </div>
 
@@ -886,6 +899,8 @@
 
 {# "What model should I pick?" — benchmark guide, rendered by js/model-guide.js #}
 {{ model_guide|json_script:"model-guide-data" }}
+{# Active sub-agent runs for the sub-agent panel (rows + timers) #}
+{{ subagent_panel|json_script:"subagent-panel-data" }}
 <style>
   .mg-help-btn { display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; margin-left:6px; border:0; border-radius:999px; background:transparent; color:var(--color-body-subtle); cursor:pointer; }
   .mg-help-btn:hover { background:var(--color-neutral-tertiary); color:var(--color-heading); }
@@ -1102,10 +1117,14 @@
     attachedSkillsById[String(s.id)] = { id: String(s.id), name: s.name, emoji: s.emoji || "" };
   });
 
-  // -- Sub-agent status bar state --
-  let activeSubagentCount = {{ active_subagent_count|default:"0" }};
-  let waitingSubagentCount = {{ waiting_subagent_count|default:"0" }};
-  var subagentReasons = {};
+  // -- Sub-agent panel state --
+  // subagentRuns: the server's active runs ({id, reason, state, started_at});
+  // subagentPending: optimistic "Starting…" rows keyed by tool_call_id, shown from
+  // tool_start until the server's run list includes the run (or the call ends).
+  var subagentRuns = [];
+  var subagentPending = {};
+  var subagentClockOffset = 0;  // Date.now() − server time, so timers match the server
+  var subagentTimer = null;
 
   // -- Attachment state --
   let pendingAttachmentIds = [];
@@ -2850,39 +2869,89 @@
   renderTaskPlan(JSON.parse('{{ thread_tasks_json|escapejs }}'));
   {% endif %}
 
-  // -- Sub-agent status bar --
-  var subagentReasonList = [];
-  function updateSubagentStatusBar(count, newReason, waiting) {
-    activeSubagentCount = count;
-    // `count` includes runs still waiting for a free execution slot; `waiting`
-    // is how many of them are queued rather than running.
-    if (typeof waiting === "number") waitingSubagentCount = waiting;
-    if (count <= 0) waitingSubagentCount = 0;
-    if (newReason) subagentReasonList.push(newReason);
-    if (count <= 0) subagentReasonList = [];
+  // -- Sub-agent panel --
+  // One row per active sub-agent (background or awaited): its reason and a live
+  // mm:ss timer counted from the server's started_at. Rows come from the server's
+  // run list (subagents.updated / thread.loaded / page load); see subagentPending
+  // for the optimistic row shown between tool_start and the first server push.
+  function formatElapsed(ms) {
+    var s = Math.max(0, Math.floor(ms / 1000));
+    var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    var mmss = String(m).padStart(2, "0") + ":" + String(sec).padStart(2, "0");
+    return h ? h + ":" + mmss : mmss;
+  }
+  function setSubagentRuns(runs, serverNow) {
+    subagentRuns = Array.isArray(runs) ? runs : [];
+    if (serverNow) { var t = Date.parse(serverNow); if (!isNaN(t)) subagentClockOffset = Date.now() - t; }
+    // An optimistic row is superseded once the server lists its run: match on
+    // the reason, else on any unclaimed run created after the call began.
+    var claimed = {};
+    Object.keys(subagentPending).forEach(function(toolId) {
+      var p = subagentPending[toolId];
+      var match = subagentRuns.find(function(r) { return !claimed[r.id] && p.reason && r.reason === p.reason; })
+        || subagentRuns.find(function(r) { return !claimed[r.id] && Date.parse(r.created_at) + subagentClockOffset >= p.startedMs - 5000; });
+      if (match) { claimed[match.id] = true; delete subagentPending[toolId]; }
+    });
+    renderSubagentPanel();
+  }
+  function addPendingSubagentRow(toolId, reason) {
+    subagentPending[toolId] = { reason: String(reason || "").trim(), startedMs: Date.now() };
+    renderSubagentPanel();
+  }
+  function removePendingSubagentRow(toolId) {
+    if (!subagentPending[toolId]) return;
+    delete subagentPending[toolId]; renderSubagentPanel();
+  }
+  function clearSubagentPanel() { subagentPending = {}; setSubagentRuns([]); }
+  function subagentRows() {
+    var rows = subagentRuns.map(function(r) {
+      return { reason: r.reason || "Sub-agent", queued: r.state === "queued",
+               startMs: r.started_at ? Date.parse(r.started_at) + subagentClockOffset : null };
+    });
+    Object.keys(subagentPending).forEach(function(k) {
+      var p = subagentPending[k];
+      rows.push({ reason: p.reason || "Starting sub-agent…", queued: false, startMs: p.startedMs });
+    });
+    return rows;
+  }
+  function tickSubagentTimers() {
+    var now = Date.now();
+    document.querySelectorAll("#subagent-run-list .subagent-run-time[data-start]").forEach(function(el) {
+      el.textContent = formatElapsed(now - Number(el.getAttribute("data-start")));
+    });
+  }
+  function renderSubagentPanel() {
     var bar = document.getElementById("subagent-status-bar");
     var text = document.getElementById("subagent-status-text");
-    if (!bar || !text) return;
-    if (count > 0) {
-      var label = count === 1 ? "1 sub-agent working" : count + " sub-agents working";
-      if (waitingSubagentCount > 0) label += " (" + waitingSubagentCount + " queued)";
-      var pronoun = count === 1 ? "it" : "they";
-      var pickUp = count === 1
-        ? escapeHtml(ASSISTANT_NAME) + " will pick up when it reports back."
-        : escapeHtml(ASSISTANT_NAME) + " will pick up when they report back.";
-      text.innerHTML = label + ". " + pickUp;
-      if (subagentReasonList.length > 0) {
-        var items = subagentReasonList.map(function(r) {
-          return '<li>' + escapeHtml(r) + '</li>';
-        }).join('');
-        text.innerHTML += '<ul class="mt-1 list-disc list-inside italic">' + items + '</ul>';
-      }
-      bar.classList.remove("hidden");
-    } else {
-      bar.classList.add("hidden");
+    var list = document.getElementById("subagent-run-list");
+    if (!bar || !text || !list) return;
+    var rows = subagentRows();
+    var count = rows.length;
+    if (!count) {
+      bar.classList.add("hidden"); list.innerHTML = "";
+      if (subagentTimer) { clearInterval(subagentTimer); subagentTimer = null; }
+      return;
     }
+    var waiting = rows.filter(function(r) { return r.queued; }).length;
+    var label = count === 1 ? "1 sub-agent working" : count + " sub-agents working";
+    if (waiting > 0) label += " (" + waiting + " queued)";
+    text.textContent = label + ". " + ASSISTANT_NAME + (count === 1 ? " will pick up when it reports back." : " will pick up when they report back.");
+    list.innerHTML = rows.map(function(r) {
+      var time = (r.queued || r.startMs === null || isNaN(r.startMs))
+        ? '<span class="subagent-run-time">Queued</span>'
+        : '<span class="subagent-run-time" data-start="' + r.startMs + '"></span>';
+      return '<li class="subagent-run' + (r.queued ? ' is-queued' : '') + '"><span class="subagent-run-reason" title="' + escapeHtml(r.reason).replace(/"/g, "&quot;") + '">' + escapeHtml(r.reason) + '</span>' + time + '</li>';
+    }).join("");
+    tickSubagentTimers();
+    if (!subagentTimer) subagentTimer = setInterval(tickSubagentTimers, 1000);
+    bar.classList.remove("hidden");
   }
-  updateSubagentStatusBar(activeSubagentCount, null, waitingSubagentCount);
+  (function() {
+    var el = document.getElementById("subagent-panel-data");
+    var initial = null;
+    try { initial = el ? JSON.parse(el.textContent) : null; } catch (e) {}
+    if (initial) setSubagentRuns(initial.runs, initial.server_now);
+  })();
 
   // -- WebSocket --
   let ws = null;
@@ -3001,7 +3070,7 @@
   function hideWaitingIndicator() { if (!currentStreamingElement) return; const el = currentStreamingElement.querySelector(".waiting-indicator"); if (el) el.remove(); }
   function createThinkingBlock() {
     const block = document.createElement("div");
-    block.className = "thinking-block mt-2";
+    block.className = "thinking-block";
     block.innerHTML = '<button type="button" class="thinking-toggle flex items-center gap-1.5 text-xs text-body/70 hover:text-body cursor-pointer select-none"><svg class="thinking-chevron w-3 h-3 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg><span class="thinking-label">Thinking...</span></button><div class="thinking-content text-xs text-body/60 italic mt-1 pl-3 border-l-2 border-neutral-quaternary max-h-40 overflow-y-auto"></div>';
     block.querySelector(".thinking-toggle").addEventListener("click", function() { block.classList.toggle("collapsed"); });
     return block;
@@ -3014,37 +3083,93 @@
     currentThinkingBlock = null; thinkingStartTime = null;
   }
 
-  // Once a reply has made TOOL_GROUP_THRESHOLD tool calls, fold its chips into a
-  // collapsed "Used n tools" toggle (thinking-block style). While a call runs the
-  // header also names it, so the collapsed view still shows what is happening.
-  var TOOL_GROUP_THRESHOLD = 5;
-  function updateToolGroup(container) {
-    if (!container) return;
-    var cards = container.querySelectorAll(".tool-card");
-    if (cards.length < TOOL_GROUP_THRESHOLD) return;
-    var list = container.querySelector(".tool-group-list");
-    if (!list) {
-      container.classList.add("tool-cards--grouped", "collapsed");
-      var toggle = document.createElement("button");
-      toggle.type = "button";
-      toggle.className = "tool-group-toggle flex items-center gap-1.5 text-xs text-body/70 hover:text-body cursor-pointer select-none";
-      toggle.innerHTML = '<svg class="tool-group-chevron w-3 h-3 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg><span class="tool-group-label"></span>';
-      toggle.addEventListener("click", function() { container.classList.toggle("collapsed"); });
-      list = document.createElement("div"); list.className = "tool-group-list";
-      cards.forEach(function(c) { list.appendChild(c); });
-      container.appendChild(toggle); container.appendChild(list);
-    }
+  // Move the streamed text so far into a collapsed "Thought further" timeline row.
+  function flushNarration() {
+    if (!currentStreamingElement || !accumulatedContent.trim()) return;
+    const block = createThinkingBlock();
+    block.classList.add("collapsed");
+    const label = block.querySelector(".thinking-label"); if (label) label.textContent = "Thought further";
+    const contentEl = block.querySelector(".thinking-content");
+    if (contentEl) { contentEl.style.fontFamily = "inherit"; contentEl.style.fontStyle = "normal"; contentEl.innerHTML = renderMarkdown(accumulatedContent); }
+    appendToTimeline(block);
+    accumulatedContent = "";
+    const ce = currentStreamingElement.querySelector(".message-content"); if (ce) ce.innerHTML = "";
+  }
+
+  // Tool-group toggles: one delegated listener covers live, server-rendered and
+  // "load older" groups alike.
+  messagesContainer.addEventListener("click", function(e) {
+    var t = e.target.closest(".tool-group-toggle");
+    if (t) t.closest(".tool-cards").classList.toggle("collapsed");
+  });
+
+  // A reply's pre-answer activity (thinking rounds, "Thought further" narration, tool
+  // batches) is appended in arrival order to the bubble's .wmsg__timeline.
+  function bubbleTimeline(bubble) { return bubble ? bubble.querySelector(".wmsg__timeline") : null; }
+  function appendToTimeline(node) {
+    var tl = bubbleTimeline(currentStreamingElement);
+    if (tl) tl.appendChild(node);
+  }
+
+  // Every tool batch is a collapsed group (thinking-block style). The same DOM is
+  // server-rendered by chat/_tool_group.html for reloaded threads — keep in sync.
+  function buildToolGroup() {
+    var group = document.createElement("div");
+    group.className = "tool-cards tool-cards--grouped collapsed";
+    group.innerHTML = '<button type="button" class="tool-group-toggle flex items-center gap-1.5 text-xs text-body/70 hover:text-body cursor-pointer select-none"><svg class="tool-group-chevron w-3 h-3 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg><span class="tool-group-label"></span></button><div class="tool-group-list"></div>';
+    return group;
+  }
+  // The open batch is the timeline's last child when it is a tool group that is
+  // still open: parallel calls from one round share it; a new LLM round
+  // (message_start → closeToolBatch) or a thinking/narration row starts a new one.
+  // One group per round — the same grouping a reloaded thread shows.
+  function currentToolBatch() {
+    var tl = bubbleTimeline(currentStreamingElement);
+    if (!tl) return null;
+    var last = tl.lastElementChild;
+    if (last && last.classList.contains("tool-cards") && !last.hasAttribute("data-closed")) return last;
+    var group = buildToolGroup(); tl.appendChild(group);
+    return group;
+  }
+  function closeToolBatch() {
+    var tl = bubbleTimeline(currentStreamingElement);
+    var last = tl && tl.lastElementChild;
+    if (last && last.classList.contains("tool-cards")) last.setAttribute("data-closed", "");
+  }
+  // Header: a lone call shows its own label; a batch says "Using/Used n tools".
+  // While a call runs the header names it (bare label, never the reason), so the
+  // collapsed row still shows what is happening.
+  function updateToolGroup(group) {
+    if (!group) return;
+    var cards = group.querySelectorAll(".tool-card");
     var n = cards.length;
-    var running = list.querySelectorAll(".tool-card.is-running");
-    var failed = list.querySelectorAll(".tool-card.is-error").length;
-    var text = (running.length ? "Using " : "Used ") + n + " tools";
-    var html = escapeHtml(text);
-    if (failed) html += " · " + failed + " failed";
-    if (running.length) {
-      var cur = running[running.length - 1].querySelector(".tool-card-text");
-      if (cur) html += ' <span class="tool-group-current">· ' + escapeHtml(cur.textContent) + '</span>';
+    if (!n) return;
+    var running = group.querySelectorAll(".tool-card.is-running");
+    var failed = group.querySelectorAll(".tool-card.is-error").length;
+    var html;
+    if (n === 1) {
+      html = escapeHtml(cards[0].getAttribute("data-label") || "");
+      if (failed) html += " · failed";
+    } else {
+      html = escapeHtml((running.length ? "Using " : "Used ") + n + " tools");
+      if (failed) html += " · " + failed + " failed";
+      if (running.length) html += ' <span class="tool-group-current">· ' + escapeHtml(running[running.length - 1].getAttribute("data-label") || "") + '</span>';
     }
-    var label = container.querySelector(".tool-group-label"); if (label) label.innerHTML = html;
+    if (running.length) html = '<span style="display:inline-block;vertical-align:-2px;margin-right:4px">' + TOOL_SPINNER_SVG + '</span>' + html;
+    var label = group.querySelector(".tool-group-label"); if (label) label.innerHTML = html;
+  }
+  var TOOL_SPINNER_SVG = '<svg class="w-3 h-3 animate-spin shrink-0" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>';
+  function markToolGroupsDone(bubble) {
+    if (!bubble) return;
+    bubble.querySelectorAll(".tool-cards").forEach(function(g) {
+      g.classList.add("tool-cards-done");
+      // A turn cut short (error/timeout/stop) leaves cards mid-run: stop their spinners.
+      g.querySelectorAll(".tool-card.is-running").forEach(function(c) {
+        c.classList.remove("is-running");
+        var sp = c.querySelector("svg.animate-spin"); if (sp) sp.remove();
+      });
+      updateToolGroup(g);
+    });
   }
 
   function appendLoopUserMessage(text) {
@@ -3112,14 +3237,14 @@
       }
       return;
     }
-    if (et === "subagents.updated") { updateSubagentStatusBar(data.active_count || 0, null, data.waiting_count || 0); return; }
-    if (et === "stream.cancelled") { finishStreaming("Stopped."); updateSubagentStatusBar(0); enableInput(); return; }
+    if (et === "subagents.updated") { setSubagentRuns(data.runs, data.server_now); return; }
+    if (et === "stream.cancelled") { finishStreaming("Stopped."); clearSubagentPanel(); enableInput(); return; }
     if (et === "stream.degenerate") {
       var degenMsg = (data && data.message) ? data.message : "Wilfred started repeating itself and was stopped. Try rephrasing or resending.";
       if (currentStreamingElement) { var dc = currentStreamingElement.querySelector(".message-content"); if (dc) dc.innerHTML = '<span class="italic text-body">' + escapeHtml(degenMsg) + '</span>'; }
       accumulatedContent = "";
       finishStreaming();
-      updateSubagentStatusBar(0); enableInput(); return;
+      clearSubagentPanel(); enableInput(); return;
     }
     if (et === "tasks.updated" || et === "tasks.loaded") { renderTaskPlan(data.tasks || []); return; }
     if (et === "canvases.loaded") {
@@ -3331,7 +3456,7 @@
       // Task plan is refreshed by the tasks.loaded event that follows
       // Update thread cost and sub-agent status
       updateThreadCost(data.thread_cost_usd);
-      updateSubagentStatusBar(data.active_subagent_count || 0, null, data.waiting_subagent_count || 0);
+      setSubagentRuns(data.subagent_runs, data.server_now);
       // Restore the thread's model into the picker.
       if (data.model) {
         selectedModel = data.model;
@@ -3371,15 +3496,7 @@
       const isNewBubble = !currentStreamingElement;
       if (isNewBubble) { currentStreamingElement = createAssistantBubble(); messagesContainer.appendChild(currentStreamingElement); }
       if (currentThinkingBlock) collapseThinking();
-      if (!isNewBubble && accumulatedContent.trim()) {
-        const block = createThinkingBlock();
-        block.classList.add("collapsed");
-        const label = block.querySelector(".thinking-label"); if (label) label.textContent = "Thought further";
-        const contentEl = block.querySelector(".thinking-content");
-        if (contentEl) { contentEl.style.fontFamily = "inherit"; contentEl.style.fontStyle = "normal"; contentEl.innerHTML = renderMarkdown(accumulatedContent); }
-        const msgContent = currentStreamingElement.querySelector(".message-content");
-        if (msgContent) msgContent.parentNode.insertBefore(block, msgContent);
-      }
+      if (!isNewBubble) { flushNarration(); closeToolBatch(); }
       accumulatedContent = "";
       if (currentStreamingElement) { const ce = currentStreamingElement.querySelector(".message-content"); if (ce) ce.innerHTML = ""; }
       startStreamingTimeout(); scrollToBottom(); return;
@@ -3397,15 +3514,7 @@
           accumulatedContent = "";
           const ce = currentStreamingElement.querySelector(".message-content"); if (ce) ce.innerHTML = "";
         }
-        const msgContent = currentStreamingElement.querySelector(".message-content");
-        const existingCollapsed = currentStreamingElement.querySelector(".thinking-block.collapsed");
-        if (!existingCollapsed) {
-          const toolCards = currentStreamingElement.querySelector(".tool-cards");
-          if (toolCards) toolCards.parentNode.insertBefore(currentThinkingBlock, toolCards);
-          else if (msgContent) msgContent.parentNode.insertBefore(currentThinkingBlock, msgContent);
-        } else if (msgContent) {
-          msgContent.parentNode.insertBefore(currentThinkingBlock, msgContent);
-        }
+        appendToTimeline(currentThinkingBlock);
       }
       const contentEl = currentThinkingBlock.querySelector(".thinking-content");
       if (contentEl) contentEl.textContent += text;
@@ -3421,16 +3530,20 @@
     if (et === "tool_start") {
       const toolName = (data.data && data.data.tool_name) || "tool";
       const toolId = (data.data && data.data.tool_call_id) || "";
-      ensureBubble();
-      const container = currentStreamingElement.querySelector(".tool-cards");
-      if (container) {
+      ensureBubble(); hideWaitingIndicator(); if (currentThinkingBlock) collapseThinking();
+      // Text streamed before a tool call is narration, not the answer: file it
+      // as a "Thought further" row above this batch (stored order on reload).
+      flushNarration();
+      const group = currentToolBatch();
+      if (group) {
         const card = document.createElement("div"); card.className = "tool-card tool is-running"; card.setAttribute("data-tool-id", toolId);
-        let displayText = (data.data && data.data.display_label) || "Working...";
+        const displayText = (data.data && data.data.display_label) || "Working...";
+        card.setAttribute("data-label", displayText);
         const toolArgs = (data.data && data.data.arguments) || {}; const reasonText = (typeof toolArgs === "object" && toolArgs.reason) ? ' <span class="italic">(' + escapeHtml(toolArgs.reason) + ')</span>' : '';
-        if (toolName === "chat_subagent_create" && toolId && typeof toolArgs === "object" && toolArgs.reason) subagentReasons[toolId] = toolArgs.reason;
-        card.innerHTML = '<svg class="w-3 h-3 animate-spin shrink-0" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><span class="tool-card-text">' + displayText + reasonText + '</span>';
-        (container.querySelector(".tool-group-list") || container).appendChild(card);
-        updateToolGroup(container);
+        if (toolName === "chat_subagent_create" && toolId) addPendingSubagentRow(toolId, (typeof toolArgs === "object" && toolArgs.reason) || "");
+        card.innerHTML = TOOL_SPINNER_SVG + '<span class="tool-card-text">' + escapeHtml(displayText) + reasonText + '</span>';
+        group.querySelector(".tool-group-list").appendChild(card);
+        updateToolGroup(group);
       }
       scrollToBottom(); return;
     }
@@ -3438,6 +3551,9 @@
       const toolId = (data.data && data.data.tool_call_id) || "";
       const toolName = (data.data && data.data.tool_name) || "";
       const resultStr = (data.data && data.data.result) || "";
+      // The panel row itself comes from the server's run list (pushed when the
+      // run is created/started); the optimistic "Starting…" row is done here.
+      if (toolName === "chat_subagent_create") removePendingSubagentRow(toolId);
       if (currentStreamingElement) {
         const card = currentStreamingElement.querySelector('.tool-card[data-tool-id="' + toolId + '"]');
         if (card) {
@@ -3448,15 +3564,7 @@
           if (toolName === "chat_subagent_create") {
             try { subagentStatus = (JSON.parse(resultStr) || {}).status || null; } catch (e) {}
           }
-          var isSubagentActive = (subagentStatus === "queued" || subagentStatus === "started" || subagentStatus === "timeout");
-          if (isSubagentActive) {
-            var reason = subagentReasons[toolId] || null;
-            delete subagentReasons[toolId];
-            updateSubagentStatusBar(
-              activeSubagentCount + 1, reason,
-              waitingSubagentCount + (subagentStatus === "queued" ? 1 : 0)
-            );
-          }
+          var isSubagentActive = (subagentStatus === "queued" || subagentStatus === "started");
           // A failed tool call (result {"status":"error"} → is_error) gets a
           // warning mark, never the success check.
           var isToolError = !!(data.data && data.data.is_error);
@@ -3465,9 +3573,11 @@
             : isToolError
               ? '<svg class="w-3 h-3 shrink-0 text-fg-warning" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>'
               : '<svg class="w-3 h-3 shrink-0 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>';
-          var reasonSuffix = "";
-          if (isSubagentActive && subagentReasons[toolId]) { var rr = subagentReasons[toolId]; reasonSuffix = ' <span class="italic">(' + escapeHtml(rr.charAt(0).toLowerCase() + rr.slice(1)) + ')</span>'; }
+          // Keep the reason the card showed while running.
+          var reasonEl = card.querySelector(".tool-card-text .italic");
+          var reasonSuffix = reasonEl ? " " + reasonEl.outerHTML : "";
           card.innerHTML = iconSvg + '<span class="tool-card-text">' + escapeHtml(doneLabel) + reasonSuffix + '</span>';
+          card.setAttribute("data-label", doneLabel);
           card.classList.remove("is-running"); if (isToolError) card.classList.add("is-error");
           updateToolGroup(card.closest(".tool-cards"));
         }
@@ -3537,7 +3647,7 @@
       if (currentThinkingBlock) collapseThinking(); hideWaitingIndicator();
       if (currentStreamingElement) {
         const contentEl = currentStreamingElement.querySelector(".message-content"); if (contentEl && accumulatedContent) { contentEl.innerHTML = renderMarkdown(accumulatedContent); renderMermaidBlocks(contentEl); renderEmailBlocks(contentEl); renderImageBlocks(contentEl); renderFileChips(contentEl); }
-        const toolCards = currentStreamingElement.querySelector(".tool-cards"); if (toolCards && toolCards.children.length > 0) toolCards.classList.add("tool-cards-done");
+        markToolGroupsDone(currentStreamingElement);
         currentStreamingElement = null; accumulatedContent = "";
       }
       clearTimeout(streamingTimeout); enableInput(); scrollToBottom(); return;
@@ -3548,6 +3658,7 @@
     if (!currentStreamingElement) return; if (currentThinkingBlock) collapseThinking(); hideWaitingIndicator();
     const contentEl = currentStreamingElement.querySelector(".message-content");
     if (contentEl) { if (accumulatedContent) contentEl.innerHTML = renderMarkdown(accumulatedContent); if (suffix) contentEl.innerHTML += "<br><br>" + suffix; renderMermaidBlocks(contentEl); renderEmailBlocks(contentEl); renderImageBlocks(contentEl); renderFileChips(contentEl); }
+    markToolGroupsDone(currentStreamingElement);
     currentStreamingElement = null; accumulatedContent = ""; clearTimeout(streamingTimeout);
   }
   function enableInput() { locked = false; clearHandoff(); stopButton.classList.add("hidden"); button.classList.remove("hidden"); button.innerHTML = SEND_BTN_HTML; if (ws && ws.readyState === WebSocket.OPEN) { input.disabled = false; button.disabled = false; input.focus(); } syncSendReady(); renderTaskPlan(); }
@@ -3555,7 +3666,7 @@
 
   function createAssistantBubble() {
     const div = document.createElement("div"); div.className = "wmsg"; div.setAttribute("data-role", "assistant");
-    div.innerHTML = `<span class="wmsg__av">${escapeHtml(ASSISTANT_NAME.charAt(0).toUpperCase())}</span><div class="wmsg__body"><div class="tool-cards"></div><div class="waiting-indicator flex items-center gap-1.5 text-xs text-body/70 mt-1"><svg class="w-3 h-3 animate-spin shrink-0" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><span>Thinking...</span></div><div class="text-sm text-body mt-1 message-content markdown-content"></div>${COPY_BTN_HTML}</div>`;
+    div.innerHTML = `<span class="wmsg__av">${escapeHtml(ASSISTANT_NAME.charAt(0).toUpperCase())}</span><div class="wmsg__body"><div class="wmsg__timeline"></div><div class="waiting-indicator flex items-center gap-1.5 text-xs text-body/70 mt-1"><svg class="w-3 h-3 animate-spin shrink-0" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><span>Thinking...</span></div><div class="text-sm text-body mt-1 message-content markdown-content"></div>${COPY_BTN_HTML}</div>`;
     return div;
   }
 

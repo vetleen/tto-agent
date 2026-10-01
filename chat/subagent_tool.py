@@ -212,6 +212,7 @@ class CreateSubagentTool(ContextAwareTool):
             user,
             thread_id=thread_id,
             prompt=prompt,
+            reason=str(kwargs.get("reason") or "").strip()[:500],
             model_tier=model_tier,
             timeout=timeout,
             data_room_ids=data_room_ids,
@@ -234,6 +235,11 @@ class CreateSubagentTool(ContextAwareTool):
         # threads, and whichever dispatcher runs first hands out every waiting
         # run — including ours — leaving our own call nothing to return.
         started = not _is_waiting(run.id)
+        # Show the run in the user's sub-agent panel now (queued or dispatched),
+        # not only when it reports back — the turn may be blocking on it.
+        from chat.tasks import notify_subagent_status
+
+        notify_subagent_status(str(thread_id), str(run.id))
 
         if timeout == 0:
             if started:

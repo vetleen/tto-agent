@@ -69,10 +69,10 @@
       {% user_avatar user "chat" %}
     </div>
   {% elif m.role == "assistant" and m.is_intermediate %}
-    {# Hidden tool-loop message carrying narration/thinking — render as collapsed blocks, matching the live-streaming "Thought further" UI #}
-    <div class="wmsg" data-role="assistant">
+    {# Hidden tool-loop round (thinking → narration → tool calls) — render as collapsed rows in that order, matching the live-streaming timeline. data-intermediate tightens the gap to the next bubble. #}
+    <div class="wmsg" data-role="assistant" data-intermediate>
       <span class="wmsg__av" style="visibility:hidden">{{ assistant_name|first|upper }}</span>
-      <div class="wmsg__body">
+      <div class="wmsg__body wmsg__timeline">
         {% if m.metadata.thinking %}
         <div class="thinking-block collapsed" data-server-thinking>
           <button type="button" class="thinking-toggle flex items-center gap-1.5 text-xs text-body/70 hover:text-body cursor-pointer select-none"><svg class="thinking-chevron w-3 h-3 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg><span class="thinking-label">Thoughts</span></button>
@@ -80,11 +80,12 @@
         </div>
         {% endif %}
         {% if m.content.strip %}
-        <div class="thinking-block collapsed{% if m.metadata.thinking %} mt-2{% endif %}" data-server-thinking>
+        <div class="thinking-block collapsed" data-server-thinking>
           <button type="button" class="thinking-toggle flex items-center gap-1.5 text-xs text-body/70 hover:text-body cursor-pointer select-none"><svg class="thinking-chevron w-3 h-3 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg><span class="thinking-label">Thought further</span></button>
           <div class="thinking-content text-xs text-body/60 mt-1 pl-3 border-l-2 border-neutral-quaternary max-h-40 overflow-y-auto markdown-content md-pending" style="font-family:inherit;font-style:normal">{{ m.content }}</div>
         </div>
         {% endif %}
+        {% if m.tool_batch %}{% include "chat/_tool_group.html" with rows=m.tool_batch failed=m.tool_batch_failed %}{% endif %}
       </div>
     </div>
   {% elif m.role == "assistant" %}

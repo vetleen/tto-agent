@@ -75,6 +75,51 @@ def is_retryable_subagent_error(exc: BaseException) -> bool:
     ))
 
 
+_PANEL_PROMPT_FALLBACK_CHARS = 120
+
+
+def active_subagent_runs_payload(thread_id) -> dict:
+    """The thread's active sub-agent runs for the user's sub-agent panel.
+
+    Same scope as the consumer's active/waiting counts: PENDING or RUNNING runs
+    of the thread; a PENDING run not yet handed to Celery (``dispatched_at``
+    NULL) is "queued". Returns ``{"runs": [...], "server_now": iso}`` —
+    ``server_now`` lets the browser correct its clock before counting each
+    running row's timer up from ``started_at``. Sync (DB); oldest first.
+    """
+    from chat.models import SubAgentRun
+
+    qs = (
+        SubAgentRun.objects.filter(
+            thread_id=thread_id,
+            status__in=[SubAgentRun.Status.PENDING, SubAgentRun.Status.RUNNING],
+        )
+        .order_by("created_at")
+        .values("id", "status", "reason", "prompt", "created_at", "dispatched_at", "started_at")
+    )
+    runs = []
+    for r in qs:
+        queued = r["status"] == SubAgentRun.Status.PENDING and r["dispatched_at"] is None
+        reason = (r["reason"] or "").strip()
+        if not reason:
+            prompt = " ".join((r["prompt"] or "").split())
+            reason = prompt[:_PANEL_PROMPT_FALLBACK_CHARS] + (
+                "…" if len(prompt) > _PANEL_PROMPT_FALLBACK_CHARS else ""
+            )
+        runs.append({
+            "id": str(r["id"]),
+            "reason": reason,
+            "state": "queued" if queued else "running",
+            # Dispatched but not yet picked up by the worker: count from dispatch.
+            "started_at": (
+                None if queued
+                else (r["started_at"] or r["dispatched_at"] or r["created_at"]).isoformat()
+            ),
+            "created_at": r["created_at"].isoformat(),
+        })
+    return {"runs": runs, "server_now": timezone.now().isoformat()}
+
+
 def resolve_subagent_model(tier: str, prefs: ResolvedPreferences) -> str:
     """Map a tier name to the model configured for that sub-agent tier.
 
@@ -263,6 +308,10 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
         if not started:
             logger.info("Sub-agent run %s already terminal; skipping re-entry", run_id)
             return
+        # The user's sub-agent panel flips this row from "Queued" to a live timer.
+        from chat.tasks import notify_subagent_status
+
+        notify_subagent_status(str(run.thread_id), str(run_id))
 
         user = run.user
         prefs = get_preferences(user)

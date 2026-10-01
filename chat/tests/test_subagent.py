@@ -813,8 +813,23 @@ class CreateSubagentToolBackgroundTests(TestCase):
         self.assertEqual(run.model_used, "")
         self.assertEqual(run.tool_names, [])
 
+    @patch("chat.tasks.notify_subagent_status")
     @patch("chat.tasks.run_subagent_task")
-    def test_invalid_tier_defaults_to_mid(self, mock_task):
+    def test_reason_saved_and_panel_notified(self, mock_task, mock_notify):
+        mock_task.delay.return_value = MagicMock(id="t1")
+
+        ctx = _ctx(self.user.pk, self.thread.id)
+        _invoke(CreateSubagentTool, {
+            "prompt": "task", "reason": "  Check the licence terms  ",
+        }, ctx)
+
+        run = SubAgentRun.objects.first()
+        self.assertEqual(run.reason, "Check the licence terms")
+        mock_notify.assert_called_once_with(str(self.thread.id), str(run.id))
+
+    @patch("chat.tasks.notify_subagent_status")
+    @patch("chat.tasks.run_subagent_task")
+    def test_invalid_tier_defaults_to_mid(self, mock_task, _mock_notify):
         mock_task.delay.return_value = MagicMock(id="t1")
 
         ctx = _ctx(self.user.pk, self.thread.id)
@@ -824,6 +839,71 @@ class CreateSubagentToolBackgroundTests(TestCase):
 
         run = SubAgentRun.objects.first()
         self.assertEqual(run.model_tier, "mid")
+
+
+class ActiveSubagentRunsPayloadTests(TestCase):
+    """The run list behind the user's sub-agent panel."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="panel@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+
+    def _payload(self):
+        from chat.subagent_service import active_subagent_runs_payload
+        return active_subagent_runs_payload(self.thread.id)
+
+    def test_states_and_timestamps(self):
+        from django.utils import timezone
+
+        now = timezone.now()
+        queued = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="q", reason="Queued one",
+            status=SubAgentRun.Status.PENDING,
+        )
+        dispatched = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="d", reason="Dispatched one",
+            status=SubAgentRun.Status.PENDING, dispatched_at=now,
+        )
+        running = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="r", reason="Running one",
+            status=SubAgentRun.Status.RUNNING, dispatched_at=now, started_at=now,
+        )
+        for status in (SubAgentRun.Status.COMPLETED, SubAgentRun.Status.FAILED):
+            SubAgentRun.objects.create(
+                thread=self.thread, user=self.user, prompt="done", status=status,
+            )
+        other = ChatThread.objects.create(created_by=self.user)
+        SubAgentRun.objects.create(
+            thread=other, user=self.user, prompt="elsewhere",
+            status=SubAgentRun.Status.RUNNING,
+        )
+
+        payload = self._payload()
+        runs = {r["id"]: r for r in payload["runs"]}
+        self.assertEqual(set(runs), {str(queued.id), str(dispatched.id), str(running.id)})
+        self.assertEqual(runs[str(queued.id)]["state"], "queued")
+        self.assertIsNone(runs[str(queued.id)]["started_at"])
+        # Dispatched but not yet picked up by the worker counts as running.
+        self.assertEqual(runs[str(dispatched.id)]["state"], "running")
+        self.assertEqual(runs[str(dispatched.id)]["started_at"], now.isoformat())
+        self.assertEqual(runs[str(running.id)]["started_at"], now.isoformat())
+        self.assertEqual(runs[str(running.id)]["reason"], "Running one")
+        self.assertTrue(payload["server_now"])
+        # Oldest first.
+        self.assertEqual(payload["runs"][0]["id"], str(queued.id))
+
+    def test_reason_falls_back_to_prompt(self):
+        SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="  Look up\n" + "x" * 300,
+            status=SubAgentRun.Status.RUNNING,
+        )
+        reason = self._payload()["runs"][0]["reason"]
+        self.assertTrue(reason.startswith("Look up x"))
+        self.assertTrue(reason.endswith("…"))
+        self.assertEqual(len(reason), 121)
+
+    def test_empty(self):
+        self.assertEqual(self._payload()["runs"], [])
 
 
 class CreateSubagentToolLimitTests(TestCase):
@@ -1013,6 +1093,34 @@ class RunSubagentServiceTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="svc@test.com", password="pass")
         self.thread = ChatThread.objects.create(created_by=self.user)
+
+    @patch("chat.tasks.notify_subagent_status")
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
+    def test_start_notifies_sub_agent_panel(self, mock_prefs, mock_svc, mock_notify):
+        """Entering RUNNING pushes a panel update (Queued → live timer)."""
+        mock_prefs.return_value = _prefs()
+        mock_response = MagicMock()
+        mock_response.message.content = "Done"
+        mock_response.usage.total_tokens = 1
+        mock_response.usage.cost_usd = 0.0
+        mock_svc.return_value.run_via_stream.return_value = mock_response
+        run = SubAgentRun.objects.create(thread=self.thread, user=self.user, prompt="task")
+
+        from chat.subagent_service import run_subagent
+        run_subagent(run.id)
+
+        mock_notify.assert_called_once_with(str(self.thread.id), str(run.id))
+
+    @patch("chat.tasks.notify_subagent_status")
+    def test_terminal_run_does_not_notify(self, mock_notify):
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="task",
+            status=SubAgentRun.Status.COMPLETED,
+        )
+        from chat.subagent_service import run_subagent
+        run_subagent(run.id)
+        mock_notify.assert_not_called()
 
     @patch("llm.get_llm_service")
     @patch("core.preferences.get_preferences")
@@ -1860,6 +1968,38 @@ class SubagentWatchdogTests(TransactionTestCase):
         ]
         self.assertEqual(frames[0]["active_count"], 1)
         self.assertEqual(frames[0]["waiting_count"], 1)
+        # The panel's per-run list rides along.
+        self.assertEqual(len(frames[0]["runs"]), 1)
+        self.assertEqual(frames[0]["runs"][0]["state"], "queued")
+        self.assertIn("server_now", frames[0])
+
+    async def test_status_event_resends_run_list(self):
+        """subagent.status (queued/started push) → subagents.updated with runs,
+        even while a stream is live (a blocking sub-agent runs mid-turn)."""
+        import asyncio
+
+        run = await database_sync_to_async(SubAgentRun.objects.create)(
+            thread=self.thread, user=self.user, prompt="task", reason="Why",
+            status=SubAgentRun.Status.RUNNING,
+        )
+        self.consumer._stream_task = asyncio.create_task(asyncio.sleep(10))
+        try:
+            await self.consumer.subagent_status(
+                {"type": "subagent.status", "run_id": str(run.id), "thread_id": str(self.thread.id)}
+            )
+        finally:
+            self.consumer._stream_task.cancel()
+        frame = json.loads(self.consumer.send.call_args.kwargs["text_data"])
+        self.assertEqual(frame["event_type"], "subagents.updated")
+        self.assertEqual(frame["active_count"], 1)
+        self.assertEqual(frame["runs"][0]["reason"], "Why")
+        self.consumer._handle_chat_message.assert_not_awaited()
+
+    async def test_status_event_for_other_thread_ignored(self):
+        await self.consumer.subagent_status(
+            {"type": "subagent.status", "run_id": "x", "thread_id": str(uuid.uuid4())}
+        )
+        self.consumer.send.assert_not_awaited()
 
     async def test_tick_defers_to_live_stream(self):
         """While a stream runs, the post-stream claim owns delivery — the tick

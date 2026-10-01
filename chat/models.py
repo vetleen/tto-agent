@@ -679,6 +679,9 @@ class SubAgentRun(models.Model):
 
     # Task spec
     prompt = models.TextField()
+    # The orchestrator's one-line ``reason`` for the spawn — shown to the user in
+    # the sub-agent panel (never sent to the sub-agent itself).
+    reason = models.CharField(max_length=500, blank=True, default="")
     skill_slug = models.CharField(max_length=64, blank=True)
     model_tier = models.CharField(max_length=10, default="mid")
     model_used = models.CharField(max_length=128, blank=True)

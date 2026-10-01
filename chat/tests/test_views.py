@@ -60,13 +60,122 @@ class ChatHomeIntermediateMessagesTests(TestCase):
             thread=self.thread, role="user", content="Search for X",
         )
         empty_hidden = ChatMessage.objects.create(
-            thread=self.thread, role="assistant", content="",
-            metadata={"tool_calls": [{"id": "c1", "name": "web_search", "arguments": {}}]},
+            thread=self.thread, role="assistant", content="", metadata={},
             is_hidden_from_user=True,
         )
 
         _, messages = self._get_messages()
         self.assertNotIn(empty_hidden.pk, [m.pk for m in messages])
+
+    def test_tool_only_round_renders_single_tool_group(self):
+        """A round with tool calls but no thinking/narration is kept, and a lone
+        call's group header is the tool's own completion label."""
+        ChatMessage.objects.create(
+            thread=self.thread, role="user", content="Search for X",
+        )
+        tool_round = ChatMessage.objects.create(
+            thread=self.thread, role="assistant", content="",
+            metadata={"tool_calls": [
+                {"id": "c1", "name": "web_search", "arguments": {"reason": "find sources"}},
+            ]},
+            is_hidden_from_user=True,
+        )
+        ChatMessage.objects.create(
+            thread=self.thread, role="tool", content='{"results": []}',
+            tool_call_id="c1", is_hidden_from_user=True,
+        )
+
+        response, messages = self._get_messages()
+        ctx = next(m for m in messages if m.pk == tool_round.pk)
+        self.assertTrue(ctx.is_intermediate)
+        self.assertEqual(
+            ctx.tool_batch,
+            [{"label": "Searched the web", "is_error": False, "reason": "find sources"}],
+        )
+        self.assertEqual(ctx.tool_batch_failed, 0)
+        self.assertContains(response, '<span class="tool-group-label">Searched the web</span>', html=False)
+        self.assertContains(response, "(find sources)")
+
+    def test_multi_tool_round_counts_and_flags_failures(self):
+        """A batch says "Used n tools · k failed"; an unknown tool falls back to
+        "Done"; a result with status=error is marked failed."""
+        ChatMessage.objects.create(
+            thread=self.thread, role="user", content="Do things",
+        )
+        ChatMessage.objects.create(
+            thread=self.thread, role="assistant", content="",
+            metadata={
+                "thinking": "Plan the calls.",
+                "tool_calls": [
+                    {"id": "a", "name": "web_search", "arguments": {}},
+                    {"id": "b", "name": "retired_tool_xyz", "arguments": {}},
+                    {"id": "c", "name": "web_search", "arguments": {}},
+                ],
+            },
+            is_hidden_from_user=True,
+        )
+        ChatMessage.objects.create(
+            thread=self.thread, role="tool", content='{"results": []}',
+            tool_call_id="a", is_hidden_from_user=True,
+        )
+        ChatMessage.objects.create(
+            thread=self.thread, role="tool", content="plain text result",
+            tool_call_id="b", is_hidden_from_user=True,
+        )
+        ChatMessage.objects.create(
+            thread=self.thread, role="tool",
+            content='{"status": "error", "message": "boom"}',
+            tool_call_id="c", is_hidden_from_user=True,
+        )
+
+        response, messages = self._get_messages()
+        ctx = next(m for m in messages if getattr(m, "is_intermediate", False))
+        self.assertEqual(
+            [(r["label"], r["is_error"]) for r in ctx.tool_batch],
+            [("Searched the web", False), ("Done", False), ("Searched the web", True)],
+        )
+        self.assertContains(response, "Used 3 tools · 1 failed")
+        # Thinking renders before the tool group (live-stream order).
+        body = response.content.decode()
+        self.assertLess(body.index("Plan the calls."), body.index("Used 3 tools"))
+
+    def test_tool_group_label_uses_end_label_for_result(self):
+        """A dynamic completion label (end_label_for_result) survives reload."""
+        from llm.tools.registry import get_tool_registry
+
+        tool = get_tool_registry().get_tool("web_search")
+        ChatMessage.objects.create(
+            thread=self.thread, role="user", content="Search",
+        )
+        ChatMessage.objects.create(
+            thread=self.thread, role="assistant", content="",
+            metadata={"tool_calls": [{"id": "d1", "name": "web_search", "arguments": {}}]},
+            is_hidden_from_user=True,
+        )
+        ChatMessage.objects.create(
+            thread=self.thread, role="tool", content='{"results": [1, 2, 3]}',
+            tool_call_id="d1", is_hidden_from_user=True,
+        )
+        with patch.object(type(tool), "end_label_for_result", return_value="Found 3 results"):
+            _, messages = self._get_messages()
+        ctx = next(m for m in messages if getattr(m, "is_intermediate", False))
+        self.assertEqual(ctx.tool_batch[0]["label"], "Found 3 results")
+
+    def test_subagent_panel_data_in_page(self):
+        from chat.models import SubAgentRun
+
+        SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="Dig into X",
+            reason="Check the licence terms", status=SubAgentRun.Status.PENDING,
+        )
+        response, _ = self._get_messages()
+        panel = response.context["subagent_panel"]
+        self.assertEqual(len(panel["runs"]), 1)
+        self.assertEqual(panel["runs"][0]["reason"], "Check the licence terms")
+        self.assertEqual(panel["runs"][0]["state"], "queued")
+        self.assertContains(response, 'id="subagent-panel-data"')
+        self.assertEqual(response.context["active_subagent_count"], 1)
+        self.assertEqual(response.context["waiting_subagent_count"], 1)
 
     def test_hidden_tool_and_user_messages_stay_hidden(self):
         ChatMessage.objects.create(

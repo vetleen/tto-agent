@@ -376,6 +376,54 @@ def _group_threads_by_time(threads):
     return groups
 
 
+def _annotate_tool_batches(thread, rounds):
+    """Attach ``tool_batch`` (one row per tool call) to each tool-loop round.
+
+    Each row is ``{"label", "is_error"}``, computed from the stored result exactly as
+    the live ``tool_end`` event computed it (``llm.tools.display.tool_end_display``).
+    The results are hidden ``role="tool"`` messages, loaded in one query.
+    """
+    from chat.models import ChatMessage
+    from llm.tools.display import tool_end_display
+    from llm.tools.registry import get_tool_registry
+
+    calls_by_round = []
+    call_ids = []
+    for m in rounds:
+        calls = [
+            tc for tc in (m.metadata or {}).get("tool_calls") or []
+            if isinstance(tc, dict)
+        ]
+        calls_by_round.append(calls)
+        call_ids.extend(tc["id"] for tc in calls if tc.get("id"))
+    if not call_ids:
+        for m in rounds:
+            m.tool_batch = []
+            m.tool_batch_failed = 0
+        return
+
+    results = dict(
+        ChatMessage.objects.filter(
+            thread=thread, role="tool", tool_call_id__in=call_ids
+        ).values_list("tool_call_id", "content")
+    )
+    registry = get_tool_registry()
+    for m, calls in zip(rounds, calls_by_round):
+        batch = []
+        for tc in calls:
+            tool = registry.get_tool(tc.get("name") or "")
+            label, is_error = tool_end_display(tool, results.get(tc.get("id"), ""))
+            args = tc.get("arguments")
+            reason = args.get("reason") if isinstance(args, dict) else None
+            batch.append({
+                "label": label,
+                "is_error": is_error,
+                "reason": reason if isinstance(reason, str) else "",
+            })
+        m.tool_batch = batch
+        m.tool_batch_failed = sum(1 for row in batch if row["is_error"])
+
+
 def load_thread_message_page(thread, user, *, before=None, turns=20):
     """Load one turn-bounded page of a thread's messages for display.
 
@@ -433,19 +481,24 @@ def load_thread_message_page(thread, user, *, before=None, turns=20):
         disp = disp.filter(created_at__lt=before)
     chat_messages = list(disp.order_by("created_at"))
 
-    # Drop empty hidden-assistant narration; flag the rest as intermediate so they
-    # render as collapsed "Thought further" blocks.
+    # Hidden-assistant tool-loop rounds render as collapsed "Thoughts" / "Thought
+    # further" / tool-group rows, in the same order the live stream shows them.
+    # Drop rounds with nothing to show.
     filtered = []
     for m in chat_messages:
         if m.is_hidden_from_user:
-            has_narration = bool(m.content.strip()) or bool(
-                (m.metadata or {}).get("thinking")
+            meta = m.metadata or {}
+            has_content = (
+                bool(m.content.strip())
+                or bool(meta.get("thinking"))
+                or bool(meta.get("tool_calls"))
             )
-            if not has_narration:
+            if not has_content:
                 continue
             m.is_intermediate = True
         filtered.append(m)
     chat_messages = filtered
+    _annotate_tool_batches(thread, [m for m in chat_messages if getattr(m, "is_intermediate", False)])
 
     # Annotate user messages with attachments (id used for re-attach) and any
     # images extracted from their docx/pdf uploads (served via chat_image_asset).
@@ -640,20 +693,14 @@ def chat_home(request):
         thread_cost_usd = float(result["total"]) if result["total"] is not None else 0.0
 
     # Active sub-agents for status bar (waiting = still queued for an execution slot)
-    active_subagent_count = 0
-    waiting_subagent_count = 0
+    # + the per-run list for the panel's rows and timers.
+    subagent_panel = {"runs": [], "server_now": None}
     if thread:
-        from chat.models import SubAgentRun
+        from chat.subagent_service import active_subagent_runs_payload
 
-        active_subagent_count = SubAgentRun.objects.filter(
-            thread_id=thread.id,
-            status__in=[SubAgentRun.Status.PENDING, SubAgentRun.Status.RUNNING],
-        ).count()
-        waiting_subagent_count = SubAgentRun.objects.filter(
-            thread_id=thread.id,
-            status=SubAgentRun.Status.PENDING,
-            dispatched_at__isnull=True,
-        ).count()
+        subagent_panel = active_subagent_runs_payload(thread.id)
+    active_subagent_count = len(subagent_panel["runs"])
+    waiting_subagent_count = sum(1 for r in subagent_panel["runs"] if r["state"] == "queued")
 
     # If thread selected, get its attached data rooms
     thread_data_rooms = []
@@ -787,6 +834,7 @@ def chat_home(request):
             "allow_agent_attach_skills": prefs.allow_agent_attach_skills,
             "active_subagent_count": active_subagent_count,
             "waiting_subagent_count": waiting_subagent_count,
+            "subagent_panel": subagent_panel,
             "assistant_name": django_settings.ASSISTANT_NAME,
             # File-picker accept list derived from the unified capability table.
             # Includes image/* so iOS Safari offers the photo library instead of
