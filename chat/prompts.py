@@ -38,12 +38,43 @@ class RuntimeStats(TypedDict, total=False):
     estimated_input_tokens: int
 
 
+def _render_canvas_sharing(max_shared_canvases: dict[str, int] | None) -> tuple[str, str]:
+    """The sub-agent section's canvas-sharing wording.
+
+    Returns ``(delivered_suffix, canvases_bullet)``. *max_shared_canvases* maps
+    model tier → how many canvases a sub-agent of that tier may be handed; None
+    (no resolved budget) keeps the bullet without a number, and all-zero drops
+    the option entirely.
+    """
+    if max_shared_canvases is not None and not any(max_shared_canvases.values()):
+        return "", ""
+
+    def _n(count: int) -> str:
+        return f"{count} canvas" if count == 1 else f"{count} canvases"
+
+    limit = ""
+    if max_shared_canvases:
+        mid = max_shared_canvases.get("mid", 0)
+        top = max_shared_canvases.get("top", mid)
+        limit = f" You may share up to {_n(mid)} per sub-agent"
+        limit += f' ({top} with `model_tier="top"`).' if top != mid else "."
+    bullet = (
+        '- Optionally pass `canvases=["<title>", ...]` to give the sub-agent a read-only copy '
+        "of those canvases as they are now (e.g. to review or research a draft), instead of "
+        "pasting their text into the prompt. The sub-agent cannot change your canvases; to "
+        "have it draft a revision, ask it to build one in its working canvas, which is "
+        f"returned to you.{limit}\n"
+    )
+    return " (your prompt, plus any canvases you choose to share)", bullet
+
+
 def build_static_system_prompt(
     *,
     organization_name: str | None = None,
     has_subagent_tool: bool = False,
     has_task_tool: bool = False,
     parallel_subagents: bool = True,
+    max_shared_canvases: dict[str, int] | None = None,
 ) -> str:
     """Build the static portion of the system prompt.
 
@@ -140,9 +171,10 @@ Use `chat_task_update` to create and manage a task plan. Be proactive — create
 """
 
     if has_subagent_tool:
-        prompt += """
+        delivered, canvases_bullet = _render_canvas_sharing(max_shared_canvases)
+        prompt += f"""
 # Sub-agents
-You can delegate tasks to sub-agents using the `chat_subagent_create` tool. Sub-agents are independent AI workers that run with their own context and tools. They do not inherit any context except what you deliver directly (your prompt, plus any canvases you choose to share).
+You can delegate tasks to sub-agents using the `chat_subagent_create` tool. Sub-agents are independent AI workers that run with their own context and tools. They do not inherit any context except what you deliver directly{delivered}.
 
 ## When to use sub-agents
 - Tasks that require gathering context, but where you, the orchestrator, only need the synthesis. Almost any task involving searching the web would fall into this category.
@@ -168,8 +200,7 @@ and the same async reactivation path as described above kicks in.
 - A "queued" status is not a failure: the sub-agent is waiting for a free execution slot and starts automatically, and its result arrives the same way as a started one. Never create it again — re-submitting only adds a duplicate to the queue.
 - Choose `model_tier` based on task complexity: "mid" (default) for most tasks (research, summaries, lookups), "top" only for tasks that require exceptional intelligence (note: rarely relevant).
 - Optionally pass `type="<slug>"` to give the sub-agent a specialization (extra role-specific instructions and tools). Available specializations, if any, are listed under "Sub-agent specializations"; omit `type` for a general-purpose sub-agent.
-- Optionally pass `canvases=["<title>", ...]` to give the sub-agent a read-only copy of those canvases as they are now (e.g. to review or research a draft), instead of pasting their text into the prompt. The sub-agent cannot change your canvases; to have it draft a revision, ask it to build one in its working canvas, which is returned to you.
-- Write clear, specific task prompts — the sub-agent has no access to your current conversation history. You **must** provide all necessary information in your prompt to it.
+{canvases_bullet}- Write clear, specific task prompts — the sub-agent has no access to your current conversation history. You **must** provide all necessary information in your prompt to it.
 
 ## Checking results
 - Sub-agent status and results should appear automatically on every turn after a sub-agent completes.
@@ -950,6 +981,7 @@ def build_system_prompt(
     tasks: list[dict] | None = None,
     has_task_tool: bool = False,
     parallel_subagents: bool = True,
+    max_shared_canvases: dict[str, int] | None = None,
     runtime_stats: RuntimeStats | None = None,
 ) -> str:
     """Build the system prompt for a chat session.
@@ -974,6 +1006,7 @@ def build_system_prompt(
         has_subagent_tool=has_subagent_tool,
         has_task_tool=has_task_tool,
         parallel_subagents=parallel_subagents,
+        max_shared_canvases=max_shared_canvases,
     )
 
     semi_static = build_semi_static_prompt(

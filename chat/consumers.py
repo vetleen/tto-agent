@@ -2543,11 +2543,20 @@ class ChatConsumer(AsyncWebsocketConsumer):
         tasks = await self._get_thread_tasks(str(thread.id))
         subagent_runs = await self._get_subagent_runs(str(thread.id)) if self._has_tool("chat_subagent_create") else None
         parallel_subagents = prefs.parallel_subagents if prefs else True
+        shared_canvas_limits = None
+        if prefs and self._has_tool("chat_subagent_create"):
+            from chat.subagent_service import max_shared_canvases, subagent_context_budget
+
+            shared_canvas_limits = {
+                tier: max_shared_canvases(subagent_context_budget(prefs, tier))
+                for tier in ("mid", "top")
+            }
         static_system = build_static_system_prompt(
             organization_name=org_name,
             has_subagent_tool=self._has_tool("chat_subagent_create"),
             has_task_tool=self._has_tool("chat_task_update"),
             parallel_subagents=parallel_subagents,
+            max_shared_canvases=shared_canvas_limits,
         )
         available_skills_for_prompt = (
             prefs.allowed_skills

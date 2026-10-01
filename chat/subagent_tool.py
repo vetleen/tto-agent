@@ -22,24 +22,28 @@ def _is_waiting(run_id) -> bool:
     ).exists()
 
 
-# Total characters of canvas text one sub-agent may be handed (~25k tokens).
-# Sub-agents can run on a 50k-token context floor, so an uncapped share of
-# several full canvases (75k chars each) would crowd out the work itself.
-SUBAGENT_SHARED_CANVAS_MAX_CHARS = 100_000
-
-
-def _snapshot_canvases(thread_id, titles: list[str]) -> tuple[list[dict], str]:
+def _snapshot_canvases(thread_id, titles: list[str], max_canvases: int) -> tuple[list[dict], str]:
     """Copy the named canvases' current text for a sub-agent.
 
     Returns ``(snapshot, "")`` or ``([], error_message)``. The error is
-    actionable: an unknown title lists the canvases that do exist, and an
-    oversized share names each canvas's size.
+    actionable: too many titles states the limit, and an unknown title lists
+    the canvases that do exist.
     """
     from chat.models import ChatCanvas
     from chat.services import resolve_canvas
 
+    wanted = list(dict.fromkeys(t.strip() for t in titles if t and t.strip()))
+    if len(wanted) > max_canvases:
+        if max_canvases == 0:
+            return [], "Sharing canvases with sub-agents isn't available."
+        noun = "canvas" if max_canvases == 1 else "canvases"
+        return [], (
+            f"You may share up to {max_canvases} {noun} with a sub-agent at this "
+            f"model tier; you asked for {len(wanted)}."
+        )
+
     snapshot: list[dict] = []
-    for title in dict.fromkeys(t.strip() for t in titles if t and t.strip()):
+    for title in wanted:
         canvas, err = resolve_canvas(thread_id, title)
         if err:
             available = list(
@@ -50,15 +54,6 @@ def _snapshot_canvases(thread_id, titles: list[str]) -> tuple[list[dict], str]:
             listing = ", ".join(f'"{t}"' for t in available) if available else "(none)"
             return [], f"{err} Canvases in this conversation: {listing}."
         snapshot.append({"title": canvas.title, "content": canvas.content or ""})
-
-    total = sum(len(c["content"]) for c in snapshot)
-    if total > SUBAGENT_SHARED_CANVAS_MAX_CHARS:
-        sizes = ", ".join(f'"{c["title"]}" ({len(c["content"]):,} chars)' for c in snapshot)
-        return [], (
-            f"The canvases to share total {total:,} characters, over the "
-            f"{SUBAGENT_SHARED_CANVAS_MAX_CHARS:,}-character limit for one sub-agent: "
-            f"{sizes}. Share fewer canvases, or quote only the relevant part in the prompt."
-        )
     return snapshot, ""
 
 
@@ -82,8 +77,8 @@ class CreateSubagentInput(ReasonBaseModel):
             "sub-agent as a read-only copy of their current text. Use when the task "
             "concerns a draft (review it, fact-check it, research gaps in it). The "
             "sub-agent sees the text as it is now: it cannot edit your canvas or "
-            "see later changes. Omit when the task doesn't need it; shared text "
-            "uses up the sub-agent's context."
+            "see later changes. Omit when the task doesn't need it; the number "
+            "you may share is stated in your instructions."
         ),
     )
     model_tier: str = Field(
@@ -201,7 +196,13 @@ class CreateSubagentTool(ContextAwareTool):
 
         # Snapshot shared canvases now, not when the run executes: a queued or
         # retried run must see the text the orchestrator delegated against.
-        shared_canvases, err_msg = _snapshot_canvases(thread_id, kwargs.get("canvases") or [])
+        from chat.subagent_service import max_shared_canvases, subagent_context_budget
+
+        shared_canvases, err_msg = _snapshot_canvases(
+            thread_id,
+            kwargs.get("canvases") or [],
+            max_shared_canvases(subagent_context_budget(prefs, model_tier)),
+        )
         if err_msg:
             return json.dumps({"status": "error", "message": err_msg})
 

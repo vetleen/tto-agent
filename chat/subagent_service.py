@@ -17,6 +17,31 @@ logger = logging.getLogger(__name__)
 # the model pacing itself instead of hitting the cliff.
 SUBAGENT_MAX_TOOL_ITERATIONS = 35
 
+# How many of the orchestrator's canvases one sub-agent may be handed, by its
+# context budget (first threshold met wins). A canvas is at most
+# CANVAS_MAX_CHARS (~19k tokens), so these keep the worst case under ~40% of
+# the budget; below the floor nothing may be shared.
+_SHARED_CANVAS_STEPS = ((200_000, 3), (150_000, 2), (MIN_CONTEXT_TOKENS, 1))
+
+
+def subagent_context_budget(prefs: ResolvedPreferences, tier: str) -> int:
+    """Context aim (tokens) for a sub-agent of *tier*.
+
+    The org's per-tier sub-agent budget when set, else the org's context limit
+    (default 200k) — never the model's full hard window, which let a long run
+    re-send ~1M-token histories every round. Floored at MIN_CONTEXT_TOKENS.
+    """
+    budget = prefs.subagent_context_budgets.get(tier, 0) or prefs.max_context_tokens
+    return max(budget, MIN_CONTEXT_TOKENS)
+
+
+def max_shared_canvases(budget: int) -> int:
+    """How many canvases may be shared with a sub-agent whose budget is *budget*."""
+    for threshold, count in _SHARED_CANVAS_STEPS:
+        if budget >= threshold:
+            return count
+    return 0
+
 
 def is_retryable_subagent_error(exc: BaseException) -> bool:
     """Whether a sub-agent failure is transient and worth retrying the whole run.
@@ -338,16 +363,12 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
         def _is_cancelled():
             return SubAgentRun.objects.filter(pk=run_id, status=SubAgentRun.Status.FAILED).exists()
 
-        # Context aim the mid-turn pruner (llm/pipelines/edit_points.py) sizes to:
-        # the org's per-tier sub-agent budget when set, else the org's context
-        # limit (default 200k) — never the model's full hard window, which let a
-        # long run re-send ~1M-token histories every round.
+        # Context aim the mid-turn pruner (llm/pipelines/edit_points.py) sizes to.
         params = {
             "_cancel_check": _is_cancelled,
             "max_tool_iterations": SUBAGENT_MAX_TOOL_ITERATIONS,
+            "max_context_tokens": subagent_context_budget(prefs, run.model_tier),
         }
-        budget = prefs.subagent_context_budgets.get(run.model_tier, 0) or prefs.max_context_tokens
-        params["max_context_tokens"] = max(budget, MIN_CONTEXT_TOKENS)
 
         request = ChatRequest(
             messages=[

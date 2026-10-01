@@ -15,11 +15,28 @@ from django.utils import timezone
 
 from chat.models import ChatCanvas, ChatThread, SubAgentRun
 from chat.subagent_prompts import build_subagent_system_prompt
-from chat.subagent_tool import SUBAGENT_SHARED_CANVAS_MAX_CHARS, CreateSubagentTool
-from core.preferences import ResolvedPreferences
+from chat.subagent_service import max_shared_canvases, subagent_context_budget
+from chat.subagent_tool import CreateSubagentTool
+from core.preferences import MIN_CONTEXT_TOKENS, ResolvedPreferences
 from llm.types.context import RunContext
 
 User = get_user_model()
+
+
+def _prefs(**overrides):
+    defaults = dict(
+        top_model="openai/gpt-5",
+        mid_model="openai/gpt-5-mini",
+        cheap_model="openai/gpt-5-nano",
+        allowed_models=["openai/gpt-5", "openai/gpt-5-mini", "openai/gpt-5-nano"],
+        allowed_tools=["web_search"],
+        allowed_subagent_tools=["web_search"],
+        allowed_skills=[],
+        allowed_specializations=[],
+        theme="light",
+    )
+    defaults.update(overrides)
+    return ResolvedPreferences(**defaults)
 
 
 def _ctx(user_id, thread_id):
@@ -93,15 +110,52 @@ class CreateSubagentSharedCanvasTests(TestCase):
         self.assertEqual(result["status"], "error")
         self.assertFalse(SubAgentRun.objects.exists())
 
-    def test_over_total_cap_rejected(self, mock_task):
-        half = SUBAGENT_SHARED_CANVAS_MAX_CHARS // 2 + 1
-        ChatCanvas.objects.filter(title="Draft").update(content="a" * half)
-        ChatCanvas.objects.filter(title="Notes").update(content="b" * half)
-        result = _invoke({"prompt": "review", "canvases": ["Draft", "Notes"]}, self.ctx)
+    def test_over_count_limit_rejected(self, mock_task):
+        with patch("core.preferences.get_preferences", return_value=_prefs(max_context_tokens=50_000)):
+            result = _invoke({"prompt": "review", "canvases": ["Draft", "Notes"]}, self.ctx)
         self.assertEqual(result["status"], "error")
-        self.assertIn("Share fewer canvases", result["message"])
-        self.assertIn('"Draft"', result["message"])
+        self.assertIn("up to 1 canvas", result["message"])
+        self.assertIn("you asked for 2", result["message"])
         self.assertFalse(SubAgentRun.objects.exists())
+
+    def test_at_count_limit_accepted(self, mock_task):
+        mock_task.delay.return_value = MagicMock(id="t")
+        with patch("core.preferences.get_preferences", return_value=_prefs(max_context_tokens=50_000)):
+            result = _invoke({"prompt": "review", "canvases": ["Draft"]}, self.ctx)
+        self.assertIn(result["status"], ("started", "queued"))
+        self.assertEqual(len(SubAgentRun.objects.get().shared_canvases), 1)
+
+    def test_limit_follows_requested_tier(self, mock_task):
+        mock_task.delay.return_value = MagicMock(id="t")
+        ChatCanvas.objects.create(thread=self.thread, title="Third", content="3")
+        prefs = _prefs(max_context_tokens=50_000, subagent_context_budgets={"top": 200_000})
+        with patch("core.preferences.get_preferences", return_value=prefs):
+            mid = _invoke({"prompt": "r", "canvases": ["Draft", "Notes", "Third"]}, self.ctx)
+            top = _invoke(
+                {"prompt": "r", "canvases": ["Draft", "Notes", "Third"], "model_tier": "top"},
+                self.ctx,
+            )
+        self.assertEqual(mid["status"], "error")
+        self.assertIn(top["status"], ("started", "queued"))
+        self.assertEqual(len(SubAgentRun.objects.get().shared_canvases), 3)
+
+
+class SharedCanvasLimitTests(TestCase):
+    def test_max_shared_canvases_steps(self):
+        for budget, expected in (
+            (49_999, 0), (50_000, 1), (149_999, 1), (150_000, 2),
+            (199_999, 2), (200_000, 3), (1_000_000, 3),
+        ):
+            self.assertEqual(max_shared_canvases(budget), expected, budget)
+
+    def test_context_budget_prefers_tier_budget(self):
+        prefs = _prefs(max_context_tokens=200_000, subagent_context_budgets={"mid": 120_000})
+        self.assertEqual(subagent_context_budget(prefs, "mid"), 120_000)
+        self.assertEqual(subagent_context_budget(prefs, "top"), 200_000)
+
+    def test_context_budget_floored(self):
+        prefs = _prefs(subagent_context_budgets={"mid": 10_000})
+        self.assertEqual(subagent_context_budget(prefs, "mid"), MIN_CONTEXT_TOKENS)
 
 
 class SharedCanvasPromptTests(TestCase):
@@ -130,17 +184,7 @@ class RunSubagentSharedCanvasTests(TestCase):
     @patch("llm.get_llm_service")
     @patch("core.preferences.get_preferences")
     def test_shared_canvases_reach_system_prompt(self, mock_prefs, mock_svc):
-        mock_prefs.return_value = ResolvedPreferences(
-            top_model="openai/gpt-5",
-            mid_model="openai/gpt-5-mini",
-            cheap_model="openai/gpt-5-nano",
-            allowed_models=["openai/gpt-5", "openai/gpt-5-mini", "openai/gpt-5-nano"],
-            allowed_tools=["web_search"],
-            allowed_subagent_tools=["web_search"],
-            allowed_skills=[],
-            allowed_specializations=[],
-            theme="light",
-        )
+        mock_prefs.return_value = _prefs()
         resp = MagicMock()
         resp.message.content = "done"
         resp.usage.total_tokens = 1

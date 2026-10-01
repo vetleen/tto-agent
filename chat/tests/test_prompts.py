@@ -405,6 +405,34 @@ class BuildSystemPromptTests(TestCase):
         prompt = build_system_prompt(has_subagent_tool=True)
         self.assertIn('`canvases=["<title>", ...]`', prompt)
         self.assertIn("read-only copy", prompt)
+        self.assertNotIn("You may share up to", prompt)
+
+    def test_subagent_section_states_resolved_canvas_limit(self):
+        prompt = build_system_prompt(
+            has_subagent_tool=True, max_shared_canvases={"mid": 3, "top": 3},
+        )
+        self.assertIn("You may share up to 3 canvases per sub-agent.", prompt)
+
+    def test_subagent_section_canvas_limit_singular(self):
+        prompt = build_system_prompt(
+            has_subagent_tool=True, max_shared_canvases={"mid": 1, "top": 1},
+        )
+        self.assertIn("You may share up to 1 canvas per sub-agent.", prompt)
+
+    def test_subagent_section_canvas_limit_differs_by_tier(self):
+        prompt = build_system_prompt(
+            has_subagent_tool=True, max_shared_canvases={"mid": 1, "top": 3},
+        )
+        self.assertIn(
+            'You may share up to 1 canvas per sub-agent (3 with `model_tier="top"`).', prompt,
+        )
+
+    def test_subagent_section_omits_canvases_when_none_allowed(self):
+        prompt = build_system_prompt(
+            has_subagent_tool=True, max_shared_canvases={"mid": 0, "top": 0},
+        )
+        self.assertNotIn("canvases=", prompt)
+        self.assertNotIn("canvases you choose to share", prompt)
 
     def test_parallel_subagents_disabled_includes_sequential_instruction(self):
         prompt = build_system_prompt(
