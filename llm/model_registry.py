@@ -169,6 +169,22 @@ _MODELS: dict[str, ModelInfo] = {
         long_context_cache_write_price=Decimal("25.00"),
         long_context_output_price=Decimal("75.00"),
     ),
+    "openai/gpt-6.1-sol": ModelInfo(
+        display_name="GPT-6.1 Sol", provider="openai", api_model="gpt-6.1-sol",
+        stars=4,
+        # Like Astra, no "none" effort. Cache reads are 0.05x input, not 0.1x.
+        reasoning_levels=("low", "medium", "high", "xhigh", "max"),
+        default_reasoning_level="medium",
+        uses_responses_api=True, input_modalities=_MULTIMODAL,
+        context_window=1_050_000, max_output_tokens=128_000,
+        input_price=Decimal("2.00"), cached_input_price=Decimal("0.10"),
+        cache_write_price=Decimal("2.50"), output_price=Decimal("10.00"),
+        long_context_threshold=272_000,
+        long_context_input_price=Decimal("4.00"),
+        long_context_cached_input_price=Decimal("0.20"),
+        long_context_cache_write_price=Decimal("5.00"),
+        long_context_output_price=Decimal("15.00"),
+    ),
     "openai/gpt-6-sol": ModelInfo(
         display_name="GPT-6 Sol", provider="openai", api_model="gpt-6-sol",
         stars=4,

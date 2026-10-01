@@ -67,7 +67,8 @@ def _row(model_id, effort, score, source_label, ci=None, note=None):
 
 
 # Artificial Analysis rows are parsed from the model data embedded in
-# artificialanalysis.ai pages (fetched 2026-09-29); source_label is AA's slug.
+# artificialanalysis.ai pages (fetched 2026-09-29; GPT-6.1 Sol rows and AA's
+# re-runs of GPT-6 Sol/Luna max fetched 2026-10-01); source_label is AA's slug.
 # Unsuffixed OpenAI/Anthropic slugs are the max-effort runs; unsuffixed Gemini
 # Flash slugs are "high". "claude-4-5-haiku-reasoning" states no effort level.
 _AA_SCORES = {
@@ -77,18 +78,23 @@ _AA_SCORES = {
         _row("openai/gpt-6-astra", "high", 1485, "gpt-6-astra-high"),
         _row("openai/gpt-6-astra", "xhigh", 1516, "gpt-6-astra-xhigh"),
         _row("openai/gpt-6-astra", "max", 1542, "gpt-6-astra"),
+        _row("openai/gpt-6.1-sol", "low", 1297, "gpt-6-1-sol-low"),
+        _row("openai/gpt-6.1-sol", "medium", 1433, "gpt-6-1-sol-medium"),
+        _row("openai/gpt-6.1-sol", "high", 1486, "gpt-6-1-sol-high"),
+        _row("openai/gpt-6.1-sol", "xhigh", 1510, "gpt-6-1-sol-xhigh"),
+        _row("openai/gpt-6.1-sol", "max", 1575, "gpt-6-1-sol"),
         _row("openai/gpt-6-sol", "none", 1225, "gpt-6-sol-non-reasoning"),
         _row("openai/gpt-6-sol", "low", 1176, "gpt-6-sol-low"),
         _row("openai/gpt-6-sol", "medium", 1320, "gpt-6-sol-medium"),
         _row("openai/gpt-6-sol", "high", 1376, "gpt-6-sol-high"),
         _row("openai/gpt-6-sol", "xhigh", 1437, "gpt-6-sol-xhigh"),
-        _row("openai/gpt-6-sol", "max", 1487, "gpt-6-sol"),
+        _row("openai/gpt-6-sol", "max", 1505, "gpt-6-sol"),
         _row("openai/gpt-6-luna", "none", 1034, "gpt-6-luna-non-reasoning"),
         _row("openai/gpt-6-luna", "low", 992, "gpt-6-luna-low"),
         _row("openai/gpt-6-luna", "medium", 1218, "gpt-6-luna-medium"),
         _row("openai/gpt-6-luna", "high", 1290, "gpt-6-luna-high"),
         _row("openai/gpt-6-luna", "xhigh", 1297, "gpt-6-luna-xhigh"),
-        _row("openai/gpt-6-luna", "max", 1367, "gpt-6-luna"),
+        _row("openai/gpt-6-luna", "max", 1438, "gpt-6-luna"),
         _row("openai/gpt-5.6-sol", "none", 1226, "gpt-5-6-sol-non-reasoning"),
         _row("openai/gpt-5.6-sol", "low", 1289, "gpt-5-6-sol-low"),
         _row("openai/gpt-5.6-sol", "medium", 1403, "gpt-5-6-sol-medium"),
@@ -137,18 +143,23 @@ _AA_SCORES = {
         _row("openai/gpt-6-astra", "high", 31.0, "gpt-6-astra-high"),
         _row("openai/gpt-6-astra", "xhigh", 32.2, "gpt-6-astra-xhigh"),
         _row("openai/gpt-6-astra", "max", 31.0, "gpt-6-astra"),
+        _row("openai/gpt-6.1-sol", "low", 27.0, "gpt-6-1-sol-low"),
+        _row("openai/gpt-6.1-sol", "medium", 30.0, "gpt-6-1-sol-medium"),
+        _row("openai/gpt-6.1-sol", "high", 32.0, "gpt-6-1-sol-high"),
+        _row("openai/gpt-6.1-sol", "xhigh", 31.8, "gpt-6-1-sol-xhigh"),
+        _row("openai/gpt-6.1-sol", "max", 31.0, "gpt-6-1-sol"),
         _row("openai/gpt-6-sol", "none", 15.6, "gpt-6-sol-non-reasoning"),
         _row("openai/gpt-6-sol", "low", 21.8, "gpt-6-sol-low"),
         _row("openai/gpt-6-sol", "medium", 25.4, "gpt-6-sol-medium"),
         _row("openai/gpt-6-sol", "high", 28.0, "gpt-6-sol-high"),
         _row("openai/gpt-6-sol", "xhigh", 23.8, "gpt-6-sol-xhigh"),
-        _row("openai/gpt-6-sol", "max", 24.8, "gpt-6-sol"),
+        _row("openai/gpt-6-sol", "max", 25.2, "gpt-6-sol"),
         _row("openai/gpt-6-luna", "none", 5.4, "gpt-6-luna-non-reasoning"),
         _row("openai/gpt-6-luna", "low", 6.4, "gpt-6-luna-low"),
         _row("openai/gpt-6-luna", "medium", 14.0, "gpt-6-luna-medium"),
         _row("openai/gpt-6-luna", "high", 13.8, "gpt-6-luna-high"),
         _row("openai/gpt-6-luna", "xhigh", 16.8, "gpt-6-luna-xhigh"),
-        _row("openai/gpt-6-luna", "max", 20.4, "gpt-6-luna"),
+        _row("openai/gpt-6-luna", "max", 22.8, "gpt-6-luna"),
         _row("openai/gpt-5.6-sol", "none", 15.2, "gpt-5-6-sol-non-reasoning"),
         _row("openai/gpt-5.6-sol", "low", 21.0, "gpt-5-6-sol-low"),
         _row("openai/gpt-5.6-sol", "medium", 26.2, "gpt-5-6-sol-medium"),
@@ -196,6 +207,9 @@ _AA_SCORES = {
         _row("openai/gpt-6-astra", "high", 44.8, "gpt-6-astra-high"),
         _row("openai/gpt-6-astra", "xhigh", 48.3, "gpt-6-astra-xhigh"),
         _row("openai/gpt-6-astra", "max", 51.3, "gpt-6-astra"),
+        _row("openai/gpt-6.1-sol", "high", 49.4, "gpt-6-1-sol-high"),
+        _row("openai/gpt-6.1-sol", "xhigh", 50.9, "gpt-6-1-sol-xhigh"),
+        _row("openai/gpt-6.1-sol", "max", 54.3, "gpt-6-1-sol"),
         _row("openai/gpt-6-sol", "none", 84.0, "gpt-6-sol-non-reasoning"),
         _row("openai/gpt-6-sol", "low", 50.7, "gpt-6-sol-low"),
         _row("openai/gpt-6-sol", "medium", 56.8, "gpt-6-sol-medium"),
@@ -281,6 +295,8 @@ _ARENA_SCORES = (
 # set. Haiku 4.5 is not listed.
 _LIVEBENCH_IF_SCORES = (
     _row("openai/gpt-6-astra", "max", 75.58, "gpt-6-astra-max"),
+    _row("openai/gpt-6.1-sol", "max", 74.15, "gpt-6.1-sol-max"),
+    _row("openai/gpt-6.1-sol", "xhigh", 71.33, "gpt-6.1-sol-xhigh"),
     _row("openai/gpt-6-sol", "max", 68.57, "gpt-6-sol-max"),
     _row("openai/gpt-6-luna", "max", 55.93, "gpt-6-luna-max"),
     _row("openai/gpt-5.6-sol", "max", 71.85, "gpt-5.6-sol-max"),

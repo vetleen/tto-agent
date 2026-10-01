@@ -42,7 +42,11 @@ class BenchmarkDataTests(SimpleTestCase):
                 self.assertEqual(len(seen), len(set(seen)))
 
     def test_missing_models(self):
-        self.assertEqual(missing_models(BENCHMARK_ARENA_BUSINESS), ["anthropic/claude-sonnet-5-5"])
+        # GPT-6.1 Sol (2026-09-29) has no Arena votes yet.
+        self.assertEqual(
+            missing_models(BENCHMARK_ARENA_BUSINESS),
+            ["openai/gpt-6.1-sol", "anthropic/claude-sonnet-5-5"],
+        )
         self.assertEqual(missing_models(BENCHMARK_GDPVAL), [])
         for key in BENCHMARKS:
             covered = {s.model_id for s in get_scores(key)}

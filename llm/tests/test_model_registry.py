@@ -26,6 +26,7 @@ from llm.model_registry import (
 
 EXPECTED_IDS = [
     "openai/gpt-6-astra",
+    "openai/gpt-6.1-sol",
     "openai/gpt-6-sol",
     "openai/gpt-6-luna",
     "openai/gpt-5.6-sol",
@@ -69,6 +70,7 @@ class RegistryTests(SimpleTestCase):
     def test_exact_reasoning_capabilities(self):
         expected = {
             "openai/gpt-6-astra": (("low", "medium", "high", "xhigh", "max"), "medium"),
+            "openai/gpt-6.1-sol": (("low", "medium", "high", "xhigh", "max"), "medium"),
             "openai/gpt-5.6-sol": (("none", "low", "medium", "high", "xhigh", "max"), "medium"),
             "openai/gpt-5.6-terra": (("none", "low", "medium", "high", "xhigh", "max"), "medium"),
             "openai/gpt-6-sol": (("none", "low", "medium", "high", "xhigh", "max"), "medium"),
@@ -252,6 +254,7 @@ class TierTests(SimpleTestCase):
         self.assertEqual(
             get_models_by_tier(TIER_STANDARD),
             [
+                "openai/gpt-6.1-sol",
                 "openai/gpt-6-sol",
                 "openai/gpt-5.6-sol",
                 "anthropic/claude-opus-5-5",

@@ -26,6 +26,11 @@ class PricingLookupTests(SimpleTestCase):
             get_model_pricing("openai/gpt-6-sol"),
             (Decimal("2.00"), Decimal("0.20"), Decimal("2.50"), Decimal("10.00")),
         )
+        # Cache reads are 0.05x input on GPT-6.1 Sol (not the usual 0.1x).
+        self.assertEqual(
+            get_model_pricing("openai/gpt-6.1-sol"),
+            (Decimal("2.00"), Decimal("0.10"), Decimal("2.50"), Decimal("10.00")),
+        )
         self.assertEqual(
             get_model_pricing("openai/gpt-6-luna"),
             (Decimal("0.10"), Decimal("0.01"), Decimal("0.125"), Decimal("0.50")),
@@ -54,6 +59,10 @@ class PricingLookupTests(SimpleTestCase):
         self.assertEqual(
             get_model_pricing("gpt-6-sol", input_tokens=272_001),
             (Decimal("4.00"), Decimal("0.40"), Decimal("5.00"), Decimal("15.00")),
+        )
+        self.assertEqual(
+            get_model_pricing("gpt-6.1-sol", input_tokens=272_001),
+            (Decimal("4.00"), Decimal("0.20"), Decimal("5.00"), Decimal("15.00")),
         )
         self.assertEqual(
             get_model_pricing("gpt-6-luna", input_tokens=272_001),
