@@ -311,7 +311,12 @@
         });
         if (changed) renderStatusIcons();
         updateProcessingBanner(statuses);
-        if (!hasNonTerminal() && pollInterval) {
+        // Documents with no row yet (attachments split out of an email while it
+        // processed) keep polling alive; the reload below then shows them.
+        var unseenPending = Object.keys(statuses).some(function (id) {
+          return !TERMINAL[statuses[id]] && !document.querySelector('[data-doc-id="' + id + '"]');
+        });
+        if (!hasNonTerminal() && !unseenPending && pollInterval) {
           clearInterval(pollInterval);
           pollInterval = null;
           // Processing just finished. Freshly-added rows (and any rows that were

@@ -164,6 +164,11 @@ class EmailAttachment:
     filename: str
     size_str: str
     content: str | None  # Extracted text, or None if unsupported/failed
+    # Listed-attachment extras: an inline ``[[image:…]]`` token for a described
+    # image attachment, or a note on where the file went (split-out attachments,
+    # see documents.services.email_attachments) / why it was not added.
+    image_token: str | None = None
+    note: str | None = None
 
 
 # How many levels of nested emails (email attached to email attached to …) we
@@ -549,111 +554,101 @@ def _format_email_as_markdown(
             parts.append("")
             parts.append("**Attachments:**")
             for att in unextracted:
-                parts.append(f"- {att.filename} ({att.size_str})")
+                line = f"- {att.filename} ({att.size_str})"
+                if att.image_token:
+                    line += f": {att.image_token}"
+                if att.note:
+                    line += f" — {att.note}"
+                parts.append(line)
 
     return "\n".join(parts)
 
 
-def _load_msg_as_markdown(path: Path, *, _depth: int = 0, image_sink=None) -> list[Any]:
-    """Extract .msg (Outlook) email as a Markdown LangChain Document."""
-    import extract_msg
-    from langchain_core.documents import Document
-    from markdownify import markdownify as md
+def _email_attachments(
+    parts, *, _depth: int, image_sink=None, attachment_handler=None,
+) -> list[EmailAttachment]:
+    """Turn an email's parts into the ``EmailAttachment`` rows of its Markdown.
 
-    msg = extract_msg.Message(str(path))
-    try:
-        subject = msg.subject
-        from_addr = msg.sender
-        to_addr = msg.to
-        date = str(msg.date) if msg.date else None
-        cc = msg.cc
+    Image attachments are described inline through ``image_sink`` (when given).
+    With an ``attachment_handler`` every other part is handed to it — it becomes
+    its own document/attachment elsewhere — and only the handler's note is
+    listed. Without one (skill resources, backfill commands) supported parts are
+    extracted inline as before.
+    """
+    from core.file_types import canonical_mime_for_extension, is_image_extension
 
-        # Prefer HTML body, fall back to plain text
-        html_body = msg.htmlBody
-        plain_body = msg.body
-
-        if html_body:
-            if isinstance(html_body, bytes):
-                html_body = html_body.decode("utf-8", errors="replace")
-            body_md = md(html_body, heading_style="ATX")
-        elif plain_body:
-            body_md = plain_body
-        else:
-            raise ValueError("Email has no body content (no HTML, no plain text)")
-
-        # Extract attachments
-        attachments = []
-        for att in msg.attachments:
-            name = getattr(att, "longFilename", None) or getattr(att, "shortFilename", None) or "unnamed"
-            data = getattr(att, "data", None)
-            size = getattr(att, "dataLength", None) or (len(data) if data else 0)
-            size_str = _format_size(size)
-            extracted = (
-                _extract_attachment_content(data, name, _depth=_depth, image_sink=image_sink)
-                if data else None
-            )
-            attachments.append(EmailAttachment(filename=name, size_str=size_str, content=extracted))
-
-        content = _format_email_as_markdown(
-            subject=subject, from_addr=from_addr, to_addr=to_addr,
-            date=date, cc=cc, body_markdown=body_md, attachments=attachments,
-        )
-        return [Document(page_content=content)]
-    finally:
-        msg.close()
-
-
-def _load_eml_as_markdown(path: Path, *, _depth: int = 0, image_sink=None) -> list[Any]:
-    """Extract .eml (RFC 822) email as a Markdown LangChain Document."""
-    import email
-    import email.policy
-
-    from langchain_core.documents import Document
-    from markdownify import markdownify as md
-
-    with open(path, "rb") as f:
-        msg = email.message_from_binary_file(f, policy=email.policy.default)
-
-    subject = msg["subject"]
-    from_addr = msg["from"]
-    to_addr = msg["to"]
-    date = msg["date"]
-    cc = msg["cc"]
-
-    # Get body: prefer HTML, fall back to plain
-    body_part = msg.get_body(preferencelist=("html", "plain"))
-    if body_part is None:
-        raise ValueError("Email has no body content (no HTML, no plain text)")
-
-    body_content = body_part.get_content()
-    if body_part.get_content_type() == "text/html":
-        body_md = md(body_content, heading_style="ATX")
-    else:
-        body_md = body_content
-
-    # Extract attachments
-    attachments = []
-    for att in msg.iter_attachments():
-        filename = att.get_filename() or "unnamed"
-        data = att.get_payload(decode=True)
-        size = len(data) if data else 0
-        size_str = _format_size(size)
+    out: list[EmailAttachment] = []
+    img_n = 0
+    for part in parts:
+        size_str = _format_size(part.size)
+        if is_image_extension(part.ext):
+            token = None
+            if image_sink is not None and part.data:
+                img_n += 1
+                try:
+                    token = image_sink(
+                        _PptxImage(part.data, canonical_mime_for_extension(part.ext) or "image/png"), img_n,
+                    ) or None
+                except Exception:
+                    logger.exception("email image_sink failed for an image attachment; listing it only")
+            out.append(EmailAttachment(filename=part.filename, size_str=size_str, content=None, image_token=token))
+            continue
+        if attachment_handler is not None:
+            note = attachment_handler.handle(part)
+            out.append(EmailAttachment(filename=part.filename, size_str=size_str, content=None, note=note))
+            continue
         extracted = (
-            _extract_attachment_content(data, filename, _depth=_depth, image_sink=image_sink)
-            if data else None
+            _extract_attachment_content(part.data, part.filename, _depth=_depth, image_sink=image_sink)
+            if part.data else None
         )
-        attachments.append(EmailAttachment(filename=filename, size_str=size_str, content=extracted))
+        out.append(EmailAttachment(filename=part.filename, size_str=size_str, content=extracted))
+    return out
 
-    content = _format_email_as_markdown(
-        subject=subject, from_addr=from_addr, to_addr=to_addr,
-        date=str(date) if date else None, cc=cc,
-        body_markdown=body_md, attachments=attachments,
+
+def email_to_markdown(source, ext: str, *, _depth: int = 0, image_sink=None, attachment_handler=None) -> str:
+    """Render an .eml/.msg (*source*: a path or the raw bytes) as Markdown —
+    headers table, body, then its attachments (see ``_email_attachments``)."""
+    from documents.services.email_split import parse_email
+
+    parsed = parse_email(source, ext)
+    attachments = _email_attachments(
+        parsed.parts, _depth=_depth, image_sink=image_sink, attachment_handler=attachment_handler,
+    )
+    return _format_email_as_markdown(
+        subject=parsed.subject, from_addr=parsed.from_addr, to_addr=parsed.to_addr,
+        date=parsed.date, cc=parsed.cc, body_markdown=parsed.body_markdown, attachments=attachments,
+    )
+
+
+def _load_email_as_markdown(
+    path: Path, ext: str, *, _depth: int = 0, image_sink=None, attachment_handler=None,
+) -> list[Any]:
+    """Extract an .eml/.msg email as a Markdown LangChain Document."""
+    from langchain_core.documents import Document
+
+    content = email_to_markdown(
+        path, ext, _depth=_depth, image_sink=image_sink, attachment_handler=attachment_handler,
     )
     return [Document(page_content=content)]
 
 
+def _load_msg_as_markdown(path: Path, *, _depth: int = 0, image_sink=None, attachment_handler=None) -> list[Any]:
+    """Extract .msg (Outlook) email as a Markdown LangChain Document."""
+    return _load_email_as_markdown(
+        path, "msg", _depth=_depth, image_sink=image_sink, attachment_handler=attachment_handler,
+    )
+
+
+def _load_eml_as_markdown(path: Path, *, _depth: int = 0, image_sink=None, attachment_handler=None) -> list[Any]:
+    """Extract .eml (RFC 822) email as a Markdown LangChain Document."""
+    return _load_email_as_markdown(
+        path, "eml", _depth=_depth, image_sink=image_sink, attachment_handler=attachment_handler,
+    )
+
+
 def load_documents(
     file_path: str | Path, file_extension: str, *, image_sink=None, page_markers: bool = False,
+    attachment_handler=None,
 ) -> list[Any]:
     """
     Load a file into a list of LangChain Document objects.
@@ -661,6 +656,8 @@ def load_documents(
     ``image_sink`` (docx/pdf/pptx, and email attachments of those types)
     controls how embedded images are rendered. ``page_markers`` applies to PDFs
     only (see ``_load_pdf_as_documents``); email-nested PDFs never set it.
+    ``attachment_handler`` (emails only) takes over the email's non-image
+    attachments — see ``_email_attachments``.
     """
     path = Path(file_path)
     if not path.exists():
@@ -699,11 +696,11 @@ def load_documents(
         logger.debug("load_documents: ext=%s docs=%d", ext, len(docs))
         return docs
     if ext == "msg":
-        docs = _load_msg_as_markdown(path, image_sink=image_sink)
+        docs = _load_msg_as_markdown(path, image_sink=image_sink, attachment_handler=attachment_handler)
         logger.debug("load_documents: ext=%s docs=%d", ext, len(docs))
         return docs
     if ext == "eml":
-        docs = _load_eml_as_markdown(path, image_sink=image_sink)
+        docs = _load_eml_as_markdown(path, image_sink=image_sink, attachment_handler=attachment_handler)
         logger.debug("load_documents: ext=%s docs=%d", ext, len(docs))
         return docs
     if ext in ("txt", "md", "html", "csv", "json", "xml", "rst", "tex", "yaml", "yml", "log"):

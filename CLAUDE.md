@@ -234,6 +234,20 @@ attachment to its message concurrently. On the upload turn a deck's first
 `CHAT_ATTACHMENT_INITIAL_SLIDES` renders (per message) go in as image blocks after its text;
 later turns page through slides with `chat_attachment_view(pages=…)` (`representation: slides`).
 
+**Email attachments are split, never flattened**: one parser
+(`documents/services/email_split.py:parse_email` — skips cid/hidden inline images, serializes
+`message/rfc822` / embedded `.msg` forwards, numbers parts by `ordinal`) feeds both surfaces.
+*Data rooms*: processing an `.eml`/`.msg` hands each non-image part to
+`documents/services/email_attachments.py:EmailAttachmentSplitter`, which creates an ordinary
+document (`"<email> › <file>"`, same checks/dedupe/in-flight cap as `document_upload` via
+`documents/services/uploads.py`, v0 tags `source=email_attachment`/`email_parent_version`/
+`email_attachment_ordinal`/`email_depth` written before queueing; no FK, no cascade). Skips land in
+`processing_metadata["email_attachments"]` (warning pill in the list). *Chat/meetings*: split at
+upload (`chat/email_attachments.py:split_email_attachment`) into `ChatAttachment` rows with
+`parent` + `email_ordinal`; the email row's text lists them as "attached separately as #N".
+Image attachments stay inline (described via the image sink) on both surfaces. Without an
+`attachment_handler` (skill resources, backfills) `load_documents` keeps the old inline extraction.
+
 **Document page renders**: a data-room `.pptx` version (or a chat attachment) gets one JPEG per
 slide, stored as `chat.Asset` rows with `role=page_render` + `page_number` (owned by the version
 or the attachment), rendered by the external Gotenberg app (`deploy/gotenberg/`,

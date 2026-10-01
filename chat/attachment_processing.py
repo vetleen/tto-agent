@@ -1,6 +1,6 @@
 """Worker-side processing of chat attachments.
 
-Every pdf/docx/pptx attachment is processed once, right after upload (chat ``+``
+Every pdf/docx/pptx/email attachment is processed once, right after upload (chat ``+``
 menu) or copy (meeting → "minutes with Wilfred" thread), by the Celery task
 ``chat.tasks.process_chat_attachment``:
 
@@ -32,11 +32,19 @@ logger = logging.getLogger(__name__)
 
 
 def needs_processing(content_type: str) -> bool:
-    """Whether uploads of this type go through the worker task (pdf/docx/pptx)."""
-    from chat.services import SUPPORTED_DOCX_TYPES, SUPPORTED_PDF_TYPES, SUPPORTED_PPTX_TYPES
+    """Whether uploads of this type go through the worker task (pdf/docx/pptx/email)."""
+    from chat.services import (
+        SUPPORTED_DOCX_TYPES,
+        SUPPORTED_EMAIL_TYPES,
+        SUPPORTED_PDF_TYPES,
+        SUPPORTED_PPTX_TYPES,
+    )
 
     ct = content_type or ""
-    return ct in SUPPORTED_PDF_TYPES or ct in SUPPORTED_DOCX_TYPES or ct in SUPPORTED_PPTX_TYPES
+    return (
+        ct in SUPPORTED_PDF_TYPES or ct in SUPPORTED_DOCX_TYPES
+        or ct in SUPPORTED_PPTX_TYPES or ct in SUPPORTED_EMAIL_TYPES
+    )
 
 
 def initial_processing_state(content_type: str) -> str:

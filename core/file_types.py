@@ -6,7 +6,7 @@ services.  Every upload surface derives its allow-list by filtering this
 table on ``kind``:
 
 * data rooms (``documents``)        -> all kinds
-* chat attachments (``chat``)       -> all kinds **except** audio/email
+* chat attachments (``chat``)       -> all kinds **except** audio/spreadsheets
 * meeting attachments (``meetings``)-> the chat-compatible kinds
 
 Per file type we track two MIME sets:
@@ -124,7 +124,7 @@ FILE_TYPES: tuple[FileType, ...] = (
             "application/vnd.ms-excel",
         },
     ),
-    # --- Email (data-room only) ---
+    # --- Email ---
     _ft("msg", KIND_EMAIL, {"application/vnd.ms-outlook"}),
     _ft("eml", KIND_EMAIL, {"message/rfc822"}),
     # --- Audio / transcription (data-room only) ---
@@ -143,9 +143,10 @@ FILE_TYPES: tuple[FileType, ...] = (
 DATA_ROOM_KINDS = frozenset({KIND_IMAGE, KIND_PDF, KIND_DOCX, KIND_PPTX, KIND_SPREADSHEET, KIND_TEXT, KIND_EMAIL, KIND_AUDIO})
 # Chat shows images/PDFs natively, decodes text, extracts Word documents, and
 # extracts + renders presentations (.pptx) slide-by-slide on the worker
-# (chat/attachment_processing.py). It has no path for spreadsheets
-# (.xlsx/.xlsm), email (.msg/.eml), or audio, so those kinds are excluded.
-CHAT_KINDS = frozenset({KIND_IMAGE, KIND_PDF, KIND_DOCX, KIND_PPTX, KIND_TEXT})
+# (chat/attachment_processing.py). An email (.msg/.eml) is split at upload into
+# its text plus one attachment per file it carries (chat/email_attachments.py).
+# It has no path for spreadsheets (.xlsx/.xlsm) or audio, so those are excluded.
+CHAT_KINDS = frozenset({KIND_IMAGE, KIND_PDF, KIND_DOCX, KIND_PPTX, KIND_TEXT, KIND_EMAIL})
 # Meeting attachments are copied into the "minutes with Wilfred" chat thread,
 # so they accept exactly what chat can consume.
 MEETING_ATTACHMENT_KINDS = CHAT_KINDS

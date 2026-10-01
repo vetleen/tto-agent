@@ -381,6 +381,19 @@ class ChatAttachment(models.Model):
         choices=PageRenderState.choices,
         default=PageRenderState.NONE,
     )
+    # A file split out of an uploaded .eml/.msg (chat/email_attachments.py): the
+    # email row it came from, and its 1-based position among that email's
+    # attachments (documents.services.email_split.EmailPart.ordinal). Children are
+    # ordinary attachments; the link only groups the composer pill, follows the
+    # email on reattach/branch, and lets the email's text name them.
+    parent = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="children",
+    )
+    email_ordinal = models.PositiveSmallIntegerField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

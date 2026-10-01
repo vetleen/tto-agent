@@ -1,0 +1,22 @@
+{% comment %}
+Warning pill for an email whose attachments were not all added to the data room
+(documents.services.email_attachments). Expects `doc.email_attachment_warnings`
+— a list of {filename, reason} — set by the data_room_documents view.
+{% endcomment %}
+{% if doc.email_attachment_warnings %}
+<div class="hidden md:flex items-center shrink-0 ms-3">
+  <span tabindex="0" data-tooltip-target="email-att-tt-{{ doc.id }}" class="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full whitespace-nowrap cursor-default text-fg-warning bg-warning-soft border border-warning-subtle">
+    <svg class="w-3 h-3 shrink-0" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v4m0 4h.01M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>
+    {{ doc.email_attachment_warnings|length }} attachment{{ doc.email_attachment_warnings|length|pluralize }} not added
+  </span>
+  <div id="email-att-tt-{{ doc.id }}" role="tooltip" class="absolute z-50 invisible inline-block px-3 py-2 text-sm font-medium text-paper-50 bg-forest-900 rounded-lg shadow-sm opacity-0 tooltip transition-opacity duration-300 dark:bg-forest-700 max-w-xs">
+    <ul class="space-y-1">
+      {% for w in doc.email_attachment_warnings|slice:":10" %}
+      <li><span class="font-semibold">{{ w.filename }}</span>: {{ w.reason }}</li>
+      {% endfor %}
+      {% if doc.email_attachment_warnings|length > 10 %}<li>…and {{ doc.email_attachment_warnings|length|add:"-10" }} more</li>{% endif %}
+    </ul>
+    <div class="tooltip-arrow" data-popper-arrow></div>
+  </div>
+</div>
+{% endif %}

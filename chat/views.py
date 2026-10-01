@@ -300,7 +300,7 @@ def reattach_attachment(request, thread_id, attachment_id):
     """
     from django.core.files.base import ContentFile
 
-    from chat.services import MAX_THREAD_ATTACHMENT_BYTES, SUPPORTED_PPTX_TYPES
+    from chat.services import MAX_THREAD_ATTACHMENT_BYTES, SUPPORTED_EMAIL_TYPES, SUPPORTED_PPTX_TYPES
 
     thread = get_object_or_404(ChatThread, id=thread_id, created_by=request.user)
     old = get_object_or_404(ChatAttachment, id=attachment_id, thread=thread)
@@ -314,6 +314,32 @@ def reattach_attachment(request, thread_id, attachment_id):
             data = f.read()
     except Exception:
         return JsonResponse({"error": "That file is no longer available."}, status=404)
+
+    from chat.email_attachments import attachment_json
+
+    if old.content_type in SUPPORTED_EMAIL_TYPES:
+        # An email is re-split like a fresh upload: its files become new rows
+        # and its text is re-extracted so "#N" names them.
+        from chat.attachment_processing import dispatch_after_commit, initial_processing_state
+        from chat.email_attachments import split_email_attachment
+
+        new = ChatAttachment(
+            thread=thread,
+            uploaded_by=request.user,
+            original_filename=old.original_filename,
+            content_type=old.content_type,
+            size_bytes=old.size_bytes,
+            processing_state=initial_processing_state(old.content_type),
+        )
+        new.file.save(old.original_filename[:255] or "file", ContentFile(data), save=True)
+        budget = MAX_THREAD_ATTACHMENT_BYTES - _thread_attachment_bytes(thread)
+        split = split_email_attachment(new, data, byte_budget=budget)
+        dispatch_after_commit(new)
+        return JsonResponse({
+            **attachment_json(new),
+            "children": [attachment_json(c) for c in split.children],
+            "warnings": split.warnings,
+        })
 
     new = ChatAttachment(
         thread=thread,
@@ -331,13 +357,7 @@ def reattach_attachment(request, thread_id, attachment_id):
         from chat.attachment_processing import mark_for_reprocessing
 
         mark_for_reprocessing(new)
-    return JsonResponse({
-        "id": str(new.id),
-        "filename": new.original_filename,
-        "content_type": new.content_type,
-        "size_bytes": new.size_bytes,
-        "processing_state": new.processing_state,
-    })
+    return JsonResponse(attachment_json(new))
 
 
 def _group_threads_by_time(threads):
@@ -806,6 +826,7 @@ def chat_home(request):
             "attachment_pptx_max_bytes": max_size_for_content_type(
                 "application/vnd.openxmlformats-officedocument.presentationml.presentation"
             ),
+            "attachment_email_max_bytes": max_size_for_content_type("message/rfc822"),
             "attachment_other_max_bytes": MAX_ATTACHMENT_SIZE,
             "thread_loop_id": thread_loop_id,
             "threads": threads,
@@ -1524,6 +1545,7 @@ def thread_branch(request, thread_id):
         # reattach_attachment pattern). Branch is exempt from the per-thread cap —
         # it copies a subset of an already-compliant thread.
         copied_att_ids: dict = {}  # copied message -> {source att id: copy att id}
+        att_copies: dict = {}  # source att id -> (source parent id, copy)
         for att in ChatAttachment.objects.filter(message_id__in=id_map.keys()).order_by("created_at"):
             try:
                 with att.file.open("rb") as fh:
@@ -1543,14 +1565,21 @@ def thread_branch(request, thread_id):
                 size_bytes=att.size_bytes,
                 extracted_content=att.extracted_content,
                 page_count=att.page_count,
+                email_ordinal=att.email_ordinal,
             )
             copy.file.save(att.original_filename[:255] or "file", ContentFile(data), save=True)
+            att_copies[att.id] = (att.parent_id, copy)
             if att.page_render_state != ChatAttachment.PageRenderState.NONE:
                 # A deck's slide renders belong to the source row; re-render for the copy.
                 from chat.attachment_processing import mark_for_reprocessing
 
                 mark_for_reprocessing(copy)
             copied_att_ids.setdefault(copy.message_id, {})[str(att.id)] = str(copy.id)
+
+        # Files split out of an email follow their email onto the branch.
+        for parent_id, copy in att_copies.values():
+            if parent_id in att_copies:
+                ChatAttachment.objects.filter(pk=copy.pk).update(parent=att_copies[parent_id][1])
 
         # Point the copied messages' metadata at the copies (not the source
         # thread's rows), so enrichment and markers resolve on the branch.
@@ -1666,10 +1695,12 @@ def upload_attachments(request, thread_id):
     from django.core.files.base import ContentFile
 
     from chat.attachment_processing import dispatch_after_commit, initial_processing_state
+    from chat.email_attachments import attachment_json, split_email_attachment
     from chat.services import (
         MAX_THREAD_ATTACHMENT_BYTES,
         SUPPORTED_ATTACHMENT_TYPES,
         SUPPORTED_DOCX_TYPES,
+        SUPPORTED_EMAIL_TYPES,
         SUPPORTED_IMAGE_TYPES,
         max_size_for_content_type,
     )
@@ -1682,11 +1713,14 @@ def upload_attachments(request, thread_id):
         return JsonResponse({"error": "No files uploaded"}, status=400)
 
     results = []
+    # Files inside an uploaded email that could not be attached (with reasons).
+    warnings: list[str] = []
     for f in files:
         ct = f.content_type
-        # Browsers sometimes report .docx/.dotx/.pptx as application/octet-stream
+        # Browsers sometimes report .docx/.dotx/.pptx (and Outlook .msg) as
+        # application/octet-stream
         if ct not in SUPPORTED_ATTACHMENT_TYPES:
-            if f.name and f.name.lower().endswith((".docx", ".dotx", ".pptx")):
+            if f.name and f.name.lower().endswith((".docx", ".dotx", ".pptx", ".msg", ".eml")):
                 from core.file_types import canonical_mime_for_extension
 
                 ct = canonical_mime_for_extension(f.name.rsplit(".", 1)[-1]) or next(iter(SUPPORTED_DOCX_TYPES))
@@ -1739,16 +1773,10 @@ def upload_attachments(request, thread_id):
                     content_type=f.content_type,
                     size_bytes=len(raw),
                 )
-            results.append({
-                "id": str(att.id),
-                "filename": att.original_filename,
-                "content_type": att.content_type,
-                "size_bytes": att.size_bytes,
-                "processing_state": att.processing_state,
-            })
+            results.append(attachment_json(att))
             continue
-        # pdf/docx/pptx are processed on the worker (text extraction, page count,
-        # slide renders); the consumer holds the next turn until they are READY.
+        # pdf/docx/pptx/email are processed on the worker (text extraction, page
+        # count, slide renders); the consumer holds the next turn until they are READY.
         att = ChatAttachment.objects.create(
             thread=thread,
             uploaded_by=request.user,
@@ -1758,16 +1786,20 @@ def upload_attachments(request, thread_id):
             size_bytes=f.size,
             processing_state=initial_processing_state(f.content_type),
         )
+        results.append(attachment_json(att))
+        if att.content_type in SUPPORTED_EMAIL_TYPES:
+            # Split the email's files out into attachments of their own (listed
+            # after the email, carrying its id as parent_id) before its text is
+            # extracted, so the text can name them.
+            with att.file.open("rb") as fh:
+                data = fh.read()
+            budget = MAX_THREAD_ATTACHMENT_BYTES - _thread_attachment_bytes(thread)
+            split = split_email_attachment(att, data, byte_budget=budget)
+            results.extend(attachment_json(c) for c in split.children)
+            warnings.extend(split.warnings)
         dispatch_after_commit(att)
-        results.append({
-            "id": str(att.id),
-            "filename": att.original_filename,
-            "content_type": att.content_type,
-            "size_bytes": att.size_bytes,
-            "processing_state": att.processing_state,
-        })
 
-    return JsonResponse({"attachments": results})
+    return JsonResponse({"attachments": results, "warnings": warnings})
 
 
 @login_required

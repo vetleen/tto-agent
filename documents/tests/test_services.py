@@ -1215,32 +1215,27 @@ class ProcessDocumentServiceTests(TestCase):
 
     @override_settings(PGVECTOR_CONNECTION="")
     def test_process_document_eml_shared_image_across_attachments_deduped(self):
-        """One sink spans the whole email tree: the same image embedded in two
-        separate attachments is stored + described exactly once."""
-        from email import encoders
-        from email.mime.base import MIMEBase
+        """One sink spans the whole email: the same picture attached twice is
+        stored + described exactly once (image attachments stay inline)."""
+        from email.mime.image import MIMEImage
         from email.mime.multipart import MIMEMultipart
         from email.mime.text import MIMEText
 
         from django.core.files.base import ContentFile
 
         from chat.models import Asset
-        from chat.tests.test_attachments import _docx_with_image
         from documents.services.process_document import process_document
 
-        docx_bytes = _docx_with_image()
+        from chat.tests.test_attachment_view import _png_bytes
+
+        png = _png_bytes()
         msg = MIMEMultipart()
-        msg["Subject"] = "Two decks"
+        msg["Subject"] = "Two photos"
         msg["From"] = "a@b.com"
         msg["To"] = "c@d.com"
         msg.attach(MIMEText("See attached.", "plain"))
-        for name in ("first.docx", "second.docx"):
-            att = MIMEBase(
-                "application",
-                "vnd.openxmlformats-officedocument.wordprocessingml.document",
-            )
-            att.set_payload(docx_bytes)  # identical bytes in both attachments
-            encoders.encode_base64(att)
+        for name in ("first.png", "second.png"):
+            att = MIMEImage(png, "png")  # identical bytes in both attachments
             att.add_header("Content-Disposition", "attachment", filename=name)
             msg.attach(att)
         eml_bytes = msg.as_bytes()
@@ -1256,9 +1251,7 @@ class ProcessDocumentServiceTests(TestCase):
                 )
                 doc.original_file.save("mail.eml", ContentFile(eml_bytes), save=True)
 
-                with patch("chat.services.describe_image", return_value="A logo") as mock_describe, \
-                     patch("core.preferences.resolve_org_feature_model", return_value="anthropic/claude-opus-4-8"), \
-                     patch("guardrails.tasks.scan_document_version.delay"):
+                with patch("chat.services.describe_image", return_value="A logo") as mock_describe,                      patch("core.preferences.resolve_org_feature_model", return_value="anthropic/claude-opus-4-8"),                      patch("guardrails.tasks.scan_document_version.delay"):
                     process_document(doc.id)
 
                 doc.refresh_from_db()
@@ -1267,6 +1260,8 @@ class ProcessDocumentServiceTests(TestCase):
                 # Shared image across the two attachments -> one Asset, one vision call.
                 self.assertEqual(len(assets), 1)
                 self.assertEqual(mock_describe.call_count, 1)
+                # Images are never split into documents of their own.
+                self.assertEqual(DataRoomDocument.objects.filter(data_room=self.data_room).count(), 1)
 
     @override_settings(PGVECTOR_CONNECTION="")
     def test_process_document_image_only_pdf_no_longer_fails(self):
@@ -2930,7 +2925,7 @@ class EmailLoaderTests(TestCase):
 
         try:
             docs = load_documents(path, "msg")
-            mock_loader.assert_called_once_with(path, image_sink=None)
+            mock_loader.assert_called_once_with(path, image_sink=None, attachment_handler=None)
             self.assertEqual(len(docs), 1)
         finally:
             path.unlink()
@@ -2946,7 +2941,7 @@ class EmailLoaderTests(TestCase):
 
         try:
             docs = load_documents(path, "eml")
-            mock_loader.assert_called_once_with(path, image_sink=None)
+            mock_loader.assert_called_once_with(path, image_sink=None, attachment_handler=None)
             self.assertEqual(len(docs), 1)
         finally:
             path.unlink()

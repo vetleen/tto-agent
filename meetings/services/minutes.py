@@ -163,6 +163,7 @@ def _copy_meeting_attachments_to_thread(meeting, thread, user):
     from chat.services import (
         SUPPORTED_ATTACHMENT_TYPES,
         SUPPORTED_DOCX_TYPES,
+        SUPPORTED_EMAIL_TYPES,
         max_size_for_content_type,
     )
 
@@ -173,7 +174,7 @@ def _copy_meeting_attachments_to_thread(meeting, thread, user):
         ct = ma.content_type or ""
         # Meeting-side upload accepts any type with no content_type validation;
         # browsers also sometimes report .docx/.dotx as application/octet-stream.
-        if ct not in SUPPORTED_ATTACHMENT_TYPES and (ma.original_filename or "").lower().endswith((".docx", ".dotx")):
+        if ct not in SUPPORTED_ATTACHMENT_TYPES and (ma.original_filename or "").lower().endswith((".docx", ".dotx", ".msg", ".eml")):
             from core.file_types import canonical_mime_for_extension
 
             ct = canonical_mime_for_extension((ma.original_filename or "").rsplit(".", 1)[-1]) or next(iter(SUPPORTED_DOCX_TYPES))
@@ -199,9 +200,6 @@ def _copy_meeting_attachments_to_thread(meeting, thread, user):
                     size_bytes=ma.size_bytes or 0,
                     processing_state=initial_processing_state(ct),
                 )
-            # pdf/docx/pptx are extracted (and decks rendered) on the worker; the
-            # seed turn holds until they are READY (chat/consumers.py).
-            dispatch_after_commit(att)
             accepted.append(att)
         except Exception:
             logger.exception(
@@ -209,6 +207,26 @@ def _copy_meeting_attachments_to_thread(meeting, thread, user):
                 ma.id, ma.original_filename,
             )
             skipped.append((ma.original_filename, "copy failed"))
+            continue
+        if ct in SUPPORTED_EMAIL_TYPES:
+            # An email's files become attachments of their own (see
+            # chat/email_attachments.py), listed right after it — split before
+            # the email is processed, so its text can name them.
+            from chat.email_attachments import split_email_attachment
+            from chat.services import MAX_THREAD_ATTACHMENT_BYTES
+
+            try:
+                with att.file.open("rb") as fh:
+                    data = fh.read()
+                used = sum(a.size_bytes or 0 for a in accepted)
+                split = split_email_attachment(att, data, byte_budget=MAX_THREAD_ATTACHMENT_BYTES - used)
+                accepted.extend(split.children)
+                skipped.extend(tuple(w.split(": ", 1)) for w in split.warnings)
+            except Exception:
+                logger.exception("create_minutes_thread: failed to split email attachment %s", ma.id)
+        # pdf/docx/pptx/email are extracted (and decks rendered) on the worker;
+        # the seed turn holds until they are READY (chat/consumers.py).
+        dispatch_after_commit(att)
 
     return accepted, skipped
 

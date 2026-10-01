@@ -4616,6 +4616,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         from chat.models import ChatAttachment
         from chat.services import (
             SUPPORTED_DOCX_TYPES,
+            SUPPORTED_EMAIL_TYPES,
             SUPPORTED_IMAGE_TYPES,
             SUPPORTED_PDF_TYPES,
             SUPPORTED_PPTX_TYPES,
@@ -4843,7 +4844,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
                                 note = f"(No slide images are stored for '{name}'; extracted text only.)"
                         content_blocks.append({"type": "text", "text": note})
                         continue
-                    elif ct in SUPPORTED_DOCX_TYPES:
+                    elif ct in SUPPORTED_DOCX_TYPES or ct in SUPPORTED_EMAIL_TYPES:
+                        # An email's text lists its files, each attached as its
+                        # own row (chat/email_attachments.py) and enriched here too.
                         extracted = await self._attachment_text(att, file_bytes)
                         block = build_text_content_block(extracted, att.original_filename)
                     elif ct in SUPPORTED_TEXT_TYPES:

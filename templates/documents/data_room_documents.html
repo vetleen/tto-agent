@@ -138,7 +138,8 @@
       <div class="flex items-center w-full px-4 py-2.5 border-b border-default last:border-b-0 hover:bg-neutral-secondary-soft group {% if forloop.last %}rounded-b-base{% endif %}" data-doc-id="{{ doc.id }}" data-status="{{ doc.display_status }}" data-list="active"{% if doc.processing_error %} data-error="{{ doc.processing_error }}"{% endif %}>
         <input type="checkbox" class="doc-checkbox w-4 h-4 text-brand bg-neutral-secondary-soft border-default-medium rounded focus:ring-brand focus:ring-2 me-3 shrink-0{% if doc.is_quarantined %} opacity-60{% endif %}" aria-label="Select {{ doc.original_filename }}">
         <span class="doc-status-icon shrink-0 me-2{% if doc.is_quarantined %} opacity-60{% endif %}"></span>
-        <span class="flex-1 min-w-0 truncate font-medium text-heading{% if doc.is_quarantined %} opacity-60{% endif %}" title="{{ doc.original_filename }}">{{ doc.original_filename }}</span>
+        <span class="flex-1 min-w-0 truncate font-medium text-heading{% if doc.is_quarantined %} opacity-60{% endif %}" title="{{ doc.display_name }}">{{ doc.display_name }}</span>
+        {% include "documents/_email_attachment_warnings.html" with doc=doc %}
         {% include "documents/_pii_status_pills.html" with doc=doc %}
         <span class="shrink-0 ms-3 wf-mono text-xs text-body-subtle text-right{% if doc.is_quarantined %} opacity-60{% endif %}">{{ doc.relative_upload_display }}</span>
         <div class="relative shrink-0 ms-2">
@@ -157,7 +158,7 @@
             <button type="button" class="rename-document-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left"
                     data-rename-modal="rename-document-modal"
                     data-action="{% url 'document_rename' data_room_id=data_room.uuid document_id=doc.id %}"
-                    data-name="{{ doc.original_filename }}">
+                    data-name="{{ doc.display_name }}">
               Rename
             </button>
             <form method="post" action="{% url 'document_archive' data_room_id=data_room.uuid document_id=doc.id %}" class="p-0">
@@ -209,7 +210,7 @@
         <div class="flex items-center w-full px-4 py-2.5 border-b border-default last:border-b-0 hover:bg-neutral-secondary-soft group {% if forloop.last %}rounded-b-base{% endif %}" data-doc-id="{{ doc.id }}" data-status="{{ doc.display_status }}" data-list="archived"{% if doc.processing_error %} data-error="{{ doc.processing_error }}"{% endif %}>
           <input type="checkbox" class="doc-checkbox w-4 h-4 text-brand bg-neutral-secondary-soft border-default-medium rounded focus:ring-brand focus:ring-2 me-3 shrink-0" aria-label="Select {{ doc.original_filename }}">
           <span class="doc-status-icon shrink-0 me-2"></span>
-          <span class="flex-1 min-w-0 truncate font-medium text-heading opacity-70" title="{{ doc.original_filename }}">{{ doc.original_filename }}</span>
+          <span class="flex-1 min-w-0 truncate font-medium text-heading opacity-70" title="{{ doc.display_name }}">{{ doc.display_name }}</span>
           {% include "documents/_pii_status_pills.html" with doc=doc %}
           <span class="shrink-0 ms-3 wf-mono text-xs text-body-subtle text-right">{{ doc.relative_upload_display }}</span>
           <div class="relative shrink-0 ms-2">
@@ -226,7 +227,7 @@
               <button type="button" class="rename-document-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left"
                       data-rename-modal="rename-document-modal"
                       data-action="{% url 'document_rename' data_room_id=data_room.uuid document_id=doc.id %}"
-                      data-name="{{ doc.original_filename }}">
+                      data-name="{{ doc.display_name }}">
                 Rename
               </button>
               <form method="post" action="{% url 'document_archive' data_room_id=data_room.uuid document_id=doc.id %}" class="p-0">

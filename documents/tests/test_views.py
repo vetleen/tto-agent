@@ -277,7 +277,7 @@ class DocumentViewsTests(TestCase):
             "documents.services.process_document.ensure_initial_version",
             side_effect=RuntimeError("db exploded"),
         ):
-            with self.assertLogs("documents.views", level="ERROR"):
+            with self.assertLogs("documents.services.uploads", level="ERROR"):
                 response = self.client.post(
                     reverse("document_upload", kwargs={"data_room_id": self.data_room.uuid}),
                     {"file": f},

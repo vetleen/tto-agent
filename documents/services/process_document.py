@@ -311,13 +311,31 @@ def _extract_native(version, doc):
                 # per attachment.
                 from documents.services.image_assets import EmbeddedImageDescriber
                 describer = EmbeddedImageDescriber(version, doc)
+            # An email's non-image attachments become data-room documents of
+            # their own (same pipeline as a direct upload); the email's text only
+            # lists them. See documents.services.email_attachments.
+            splitter = None
+            if ext in ("msg", "eml"):
+                from documents.services.email_attachments import EmailAttachmentSplitter, email_depth_of
+
+                splitter = EmailAttachmentSplitter(doc, version, depth=email_depth_of(doc))
             # PDFs carry page boundary markers through cleaning + chunking so the
             # chunks get page numbers (assign_pdf_page_numbers strips them again).
             docs = load_documents(
                 file_path, ext,
                 image_sink=describer.sink if describer else None,
                 page_markers=(ext == "pdf"),
+                attachment_handler=splitter,
             )
+            if splitter is not None:
+                version.processing_metadata = {
+                    **(version.processing_metadata or {}),
+                    "email_attachments": splitter.outcomes,
+                }
+                if splitter.created:
+                    from documents.services.dispatch import safe_dispatch
+
+                    safe_dispatch("email_attachments")
             combined = "\n\n".join(getattr(d, "page_content", "") or "" for d in docs)
             del docs
             # Phase 2/3: describe the embedded images concurrently (I/O-bound), then

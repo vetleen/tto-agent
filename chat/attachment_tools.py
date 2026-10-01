@@ -92,8 +92,9 @@ class AttachmentViewTool(ContextAwareTool):
         "presentations (.pptx) can be shown to you natively — you see the page, "
         "image or slide as it actually looks (layout, charts, visuals); a deck's "
         "slides come as images, a few per call, selected with `pages`. Word "
-        "documents and text files can only be returned as extracted text, without "
-        "their visual design. The result states which form you received "
+        "documents, emails and text files can only be returned as extracted text, "
+        "without their visual design (an email's files are separate attachments, "
+        "numbered in its text). The result states which form you received "
         "(`representation`) and why, if it was degraded. Use `pages` to view part of "
         "a PDF or deck and mode='extracted' to read its text (long text is paged "
         "with `char_offset`). A native view is only visible to you during the reply "
@@ -136,7 +137,7 @@ class AttachmentViewTool(ContextAwareTool):
         char_offset: int = 0,
         **kwargs,
     ) -> str:
-        from core.file_types import KIND_DOCX, KIND_IMAGE, KIND_PDF, KIND_PPTX, KIND_TEXT
+        from core.file_types import KIND_DOCX, KIND_EMAIL, KIND_IMAGE, KIND_PDF, KIND_PPTX, KIND_TEXT
 
         from chat.services import attachment_kind, list_thread_attachments
 
@@ -170,7 +171,7 @@ class AttachmentViewTool(ContextAwareTool):
             )
 
         kind = attachment_kind(att)
-        if kind not in (KIND_IMAGE, KIND_PDF, KIND_PPTX, KIND_DOCX, KIND_TEXT):
+        if kind not in (KIND_IMAGE, KIND_PDF, KIND_PPTX, KIND_DOCX, KIND_TEXT, KIND_EMAIL):
             return _error(f"Can't view '{filename}': unsupported file type.")
 
         try:
@@ -198,7 +199,7 @@ class AttachmentViewTool(ContextAwareTool):
         reason = ""
         if mode == "native":
             reason = (
-                "Word documents and text files can't be shown natively; "
+                "Word documents, emails and text files can't be shown natively; "
                 "extracted text returned."
             )
         text = self._extracted_text(att, file_bytes, kind)

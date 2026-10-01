@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from core.file_types import (
     CHAT_KINDS,
     KIND_DOCX,
+    KIND_EMAIL,
     KIND_IMAGE,
     KIND_PDF,
     KIND_PPTX,
@@ -661,7 +662,7 @@ CANVAS_MAX_IMAGES = 25
 SUMMARY_TARGET_TOKENS = 2_000
 
 # Derived from the unified capability table (core/file_types.py). Chat accepts
-# image/pdf/docx/text kinds (no audio, no .msg/.eml email formats). Uses the
+# image/pdf/docx/pptx/text/email kinds (no audio, no spreadsheets). Uses the
 # canonical (official) MIME per type — not the broader browser-variant set used
 # for data-room cross-checks — so e.g. a real .xls labelled application/vnd.ms-
 # excel isn't silently accepted as text.
@@ -670,6 +671,7 @@ SUPPORTED_PDF_TYPES = frozenset(canonical_mimes_for_kinds({KIND_PDF}))
 SUPPORTED_TEXT_TYPES = frozenset(canonical_mimes_for_kinds({KIND_TEXT}))
 SUPPORTED_DOCX_TYPES = frozenset(canonical_mimes_for_kinds({KIND_DOCX}))
 SUPPORTED_PPTX_TYPES = frozenset(canonical_mimes_for_kinds({KIND_PPTX}))
+SUPPORTED_EMAIL_TYPES = frozenset(canonical_mimes_for_kinds({KIND_EMAIL}))
 SUPPORTED_ATTACHMENT_TYPES = frozenset(canonical_mimes_for_kinds(CHAT_KINDS))
 
 # Text/docx cap (these are NOT downscaled, so their bytes reach the model as-is).
@@ -700,6 +702,10 @@ def max_size_for_content_type(content_type: str) -> int:
         # Decks are rendered slide-by-slide on the worker (never sent as-is), so
         # they get the PDF-sized cap rather than the tight text/docx one.
         return getattr(settings, "CHAT_ATTACHMENT_PPTX_MAX_SIZE_BYTES", MAX_PDF_ATTACHMENT_SIZE)
+    if content_type in SUPPORTED_EMAIL_TYPES:
+        # An email is split into its text plus its attachments, each of which is
+        # then held to its own type's cap — so the envelope gets the PDF cap.
+        return getattr(settings, "CHAT_ATTACHMENT_EMAIL_MAX_SIZE_BYTES", MAX_PDF_ATTACHMENT_SIZE)
     return MAX_ATTACHMENT_SIZE
 
 
@@ -827,7 +833,7 @@ def _report_progress(progress, stage: str, current: int = 0, total: int = 0) -> 
 
 
 def extract_attachment_text(att, file_bytes: bytes, *, user, progress=None) -> str:
-    """Extract a docx/pdf/pptx chat attachment to text with inline
+    """Extract a docx/pdf/pptx/email chat attachment to text with inline
     ``[[image:uuid|Image N: description]]`` tokens, persisting embedded pictures
     as attachment-owned Assets.
 
@@ -855,6 +861,10 @@ def extract_attachment_text(att, file_bytes: bytes, *, user, progress=None) -> s
         from core.pdf import pdf_to_text
 
         text = pdf_to_text(file_bytes, image_sink=describer.sink)
+    elif kind == KIND_EMAIL:
+        from chat.email_attachments import email_attachment_text
+
+        text = email_attachment_text(att, file_bytes, image_sink=describer.sink)
     elif kind == KIND_PPTX:
         text = pptx_to_markdown(file_bytes, image_sink=describer.sink)
     else:
@@ -1286,6 +1296,7 @@ _ATTACHMENT_KIND_LABELS = {
     "docx": "Word document",
     "pptx": "presentation",
     "text": "text file",
+    "email": "email",
 }
 
 

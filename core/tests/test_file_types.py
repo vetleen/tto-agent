@@ -11,12 +11,14 @@ class FileTypeTableTests(SimpleTestCase):
         for e in ("png", "jpg", "jpeg", "gif", "webp"):
             self.assertIn(e, exts)
 
-    def test_chat_excludes_audio_and_email(self):
+    def test_chat_excludes_audio_and_spreadsheets_but_accepts_email(self):
         mimes = ft.accepted_mimes_for_kinds(ft.CHAT_KINDS)
         self.assertIn("image/png", mimes)
         self.assertNotIn("audio/mpeg", mimes)
-        self.assertNotIn("message/rfc822", mimes)
-        self.assertNotIn("application/vnd.ms-outlook", mimes)
+        self.assertNotIn("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", mimes)
+        # Emails are split into their text + files at upload (chat/email_attachments.py).
+        self.assertIn("message/rfc822", mimes)
+        self.assertIn("application/vnd.ms-outlook", mimes)
 
     def test_kind_lookups(self):
         self.assertEqual(ft.kind_for_extension("PNG"), ft.KIND_IMAGE)

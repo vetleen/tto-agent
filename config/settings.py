@@ -791,6 +791,9 @@ DOCUMENT_INLINE_EDIT_MAX_CHARS = _env_int("DOCUMENT_INLINE_EDIT_MAX_CHARS", "150
 # re-upload a revised file instead.
 DOCUMENT_BROWSER_EDIT_MAX_CHARS = _env_int("DOCUMENT_BROWSER_EDIT_MAX_CHARS", "1500000")
 DOCUMENT_ATTACHMENT_MAX_BYTES = _env_int("DOCUMENT_ATTACHMENT_MAX_BYTES", "20000000")  # 20 MB
+# How many attachments one email may split into separate documents (data rooms)
+# or attachments (chat); the rest are listed in the email's text as not added.
+DOCUMENT_EMAIL_MAX_SPLIT_ATTACHMENTS = _env_int("DOCUMENT_EMAIL_MAX_SPLIT_ATTACHMENTS", "25")
 # Spreadsheet (.xlsx/.xlsm) processing. The cell budget is the memory AND cost
 # cap: every stored cell becomes chunk text that is embedded and guardrail-
 # scanned — do not raise it without pricing the scan.

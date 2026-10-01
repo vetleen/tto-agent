@@ -335,6 +335,13 @@ def data_room_documents(request, data_room_id):
         doc.pii_summary = summarize_pii_keys(pii_by_version.get(vid, []))
         # File kind drives which viewer/editor the modal opens (text = editable).
         doc.file_kind = _document_file_kind(doc)
+        # Email attachments that couldn't be split out into documents of their
+        # own (documents.services.email_attachments) — shown as a warning pill.
+        meta = getattr(doc.current_version, "processing_metadata", None) or {}
+        doc.email_attachment_warnings = [
+            o for o in (meta.get("email_attachments") or [])
+            if isinstance(o, dict) and o.get("outcome") in ("skipped", "failed")
+        ]
     documents = _annotate_relative_dates([d for d in all_docs if not d.is_archived])
     archived_documents = _annotate_relative_dates([d for d in all_docs if d.is_archived])
 
@@ -378,65 +385,13 @@ def data_room_documents(request, data_room_id):
     )
 
 
-def _safe_original_filename(filename: str, max_length: int = 255) -> str:
-    """Normalize and cap client-provided file names for safe persistence/display.
-
-    Thin wrapper over the shared ``core.files.safe_filename`` (with a
-    document-flavoured fallback) so the documents and meetings apps can't drift.
-    """
-    return safe_filename(filename, fallback="document", max_length=max_length)
-
-
-def _allowed_extension(filename: str) -> bool:
-    ext = (filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
-    return ext in getattr(settings, "DOCUMENT_ALLOWED_EXTENSIONS", {"pdf", "txt", "md", "html"})
-
-
-def _allowed_mime(mime_type: str) -> bool:
-    allowed_mime_types = getattr(settings, "DOCUMENT_ALLOWED_MIME_TYPES", None)
-    # Empty/undefined allowlist means MIME checking is disabled.
-    if not allowed_mime_types:
-        return True
-    return mime_type in allowed_mime_types
-
-
-# Browsers send these for any type they don't recognize — they carry no signal,
-# so they always pass the extension cross-check.
-_GENERIC_MIME_TYPES = {"", "application/octet-stream"}
-
-
-def _live_documents_qs(data_room):
-    """Documents in *data_room* that count as "already uploaded".
-
-    Archived documents don't count — re-dropping a file you archived is a
-    deliberate way to bring it back. Neither do failed ones: re-uploading is the
-    normal way to retry a document whose processing broke. Shared by the upload
-    view and the pre-check endpoint so the two can't drift.
-    """
-    return DataRoomDocument.objects.filter(
-        data_room=data_room, is_archived=False
-    ).exclude(status=DataRoomDocument.Status.FAILED)
-
-
-def _duplicate_in_data_room(data_room, sha: str):
-    """Existing live document in *data_room* with identical bytes, or None."""
-    if not sha:
-        return None
-    return _live_documents_qs(data_room).filter(content_sha256=sha).order_by("id").first()
-
-
-def _mime_matches_extension(ext: str, mime_type: str) -> bool:
-    """Cross-check the browser-supplied MIME type against the file extension.
-
-    A mapped extension must carry one of its expected MIME types (or a generic
-    one); unmapped extensions fall back to the global allowlist.
-    """
-    if mime_type in _GENERIC_MIME_TYPES:
-        return True
-    allowed_for_ext = getattr(settings, "DOCUMENT_EXTENSION_MIME_MAP", {}).get(ext)
-    if allowed_for_ext is None:
-        return _allowed_mime(mime_type)
-    return mime_type in allowed_for_ext
+# The per-file upload rules live in documents.services.uploads (shared with the
+# email-attachment splitter); these aliases keep the view-local names.
+from documents.services.uploads import (  # noqa: E402
+    duplicate_in_data_room as _duplicate_in_data_room,
+    live_documents_qs as _live_documents_qs,
+    safe_original_filename as _safe_original_filename,
+)
 
 
 @login_required
@@ -472,11 +427,8 @@ def document_upload(request, data_room_id):
         messages.error(request, "No file selected. Please choose a file to upload.")
         return redirect("data_room_documents", data_room_id=data_room.uuid)
 
-    from core.file_types import is_image_extension
-    from llm.transcription_registry import AUDIO_EXTENSIONS
+    from documents.services.uploads import IN_FLIGHT_CAP_MESSAGE, check_file, in_flight_remaining
 
-    max_size = getattr(settings, "DOCUMENT_UPLOAD_MAX_SIZE_BYTES", 50_000_000)
-    audio_max_size = getattr(settings, "AUDIO_UPLOAD_MAX_SIZE_BYTES", 50_000_000)
     errors = []
     created_docs = []
     # Files not uploaded because their exact bytes are already in this data room
@@ -486,57 +438,19 @@ def document_upload(request, data_room_id):
     seen_shas = {}  # sha256 -> filename accepted earlier in this same request
 
     # In-flight cap: how many more this user may start right now, across all their
-    # data rooms. "In flight" = non-terminal (uploaded/processing/scanning or
-    # auto-retrying), which is what still consumes worker + Redis capacity. The
-    # client mirrors this best-effort, but the server is authoritative (a non-JS
-    # <form multiple> submit or the API bypasses the client entirely).
-    from documents.services.pii_scan import SCAN_DISPATCH_RETRY_MESSAGE
-
-    Status = DataRoomDocument.Status
-    in_flight_cap = getattr(settings, "DOCUMENT_MAX_IN_FLIGHT_PER_USER", 100)
-    in_flight = DataRoomDocument.objects.filter(uploaded_by=request.user).filter(
-        Q(status__in=[Status.UPLOADED, Status.PROCESSING, Status.SCANNING])
-        | Q(status=Status.SCAN_FAILED, processing_error=SCAN_DISPATCH_RETRY_MESSAGE)
-    ).count()
-    remaining_slots = max(0, in_flight_cap - in_flight)
+    # data rooms. The client mirrors this best-effort, but the server is
+    # authoritative (a non-JS <form multiple> submit or the API bypasses the
+    # client entirely).
+    remaining_slots = in_flight_remaining(request.user)
     cap_hit = False
-    IN_FLIGHT_CAP_MESSAGE = "You're uploading too many files — wait for some to finish before adding more."
 
     for file_obj in files:
         safe_filename = _safe_original_filename(file_obj.name, max_length=75)
-        file_ext = (safe_filename.rsplit(".", 1)[-1].lower()) if "." in safe_filename else ""
-        is_audio = file_ext in AUDIO_EXTENSIONS
-        is_image = is_image_extension(file_ext)
-
-        if file_obj.size <= 0:
-            errors.append(f"{safe_filename}: file is empty.")
-            continue
-        # Audio gets its own cap; the generic document cap must not also apply,
-        # or AUDIO_UPLOAD_MAX_SIZE_BYTES could never exceed the document cap.
-        if is_audio and file_obj.size > audio_max_size:
-            errors.append(f"{safe_filename}: audio file is too large (max {audio_max_size / 1_000_000:.0f} MB).")
-            continue
-        if not is_audio and file_obj.size > max_size:
-            errors.append(f"{safe_filename}: file is too large (max {max_size / 1_000_000:.0f} MB).")
-            continue
-        if not _allowed_extension(safe_filename):
-            errors.append(f"{safe_filename}: unsupported file type.")
-            continue
         mime = getattr(file_obj, "content_type", "") or ""
-        if not _mime_matches_extension(file_ext, mime):
-            errors.append(f"{safe_filename}: file content doesn't match its extension.")
+        reason = check_file(request.user, safe_filename, file_obj.size, mime)
+        if reason:
+            errors.append(f"{safe_filename}: {reason}")
             continue
-        if is_audio:
-            from core.preferences import get_preferences
-            prefs = get_preferences(request.user)
-            if not prefs.allowed_transcription_models:
-                errors.append(f"{safe_filename}: audio transcription is not enabled for your organization.")
-                continue
-        if is_image:
-            from core.preferences import feature_is_available
-            if not feature_is_available(request.user, "document_image_description"):
-                errors.append(f"{safe_filename}: image uploads require a vision-capable model, which isn't enabled for your organization.")
-                continue
         # Content-identity dedupe, before the cap check (a skipped file consumes
         # no slot) and before create (so the bytes never reach storage and no
         # processing task is enqueued). The client pre-checks hashes to avoid
@@ -579,25 +493,16 @@ def document_upload(request, data_room_id):
     # Provenance is recorded by the v0 version's origin=uploaded (set when
     # process_document creates it); no separate "source" tag is needed.
 
-    # Create v0 eagerly and put it in the dispatch queue (the document dispatch
-    # gate hands at most DOCUMENT_WORKER_SLOTS versions to the worker at once —
-    # see documents.services.dispatch). A broker blip no longer fails the
-    # document: the row simply stays queued and the beat backstop dispatches it.
-    # Only a genuine DB failure writing the queue row marks the document FAILED.
-    from documents.services.dispatch import mark_version_queued, safe_dispatch
-    from documents.services.process_document import ensure_initial_version
+    # Create v0 eagerly and put it in the dispatch queue (see
+    # documents.services.uploads.queue_new_document).
+    from documents.services.dispatch import safe_dispatch
+    from documents.services.uploads import queue_new_document
 
     queued_any = False
     for doc in created_docs:
-        try:
-            version = ensure_initial_version(doc)
-            mark_version_queued(version.id)
+        if queue_new_document(doc):
             queued_any = True
-        except Exception as exc:
-            logger.exception("document_upload: failed to queue processing for document_id=%s", doc.id)
-            doc.status = DataRoomDocument.Status.FAILED
-            doc.processing_error = str(exc)[:2000]
-            doc.save(update_fields=["status", "processing_error", "updated_at"])
+        else:
             errors.append(f"{doc.original_filename}: processing could not be started.")
     if queued_any:
         safe_dispatch("document_upload")

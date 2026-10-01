@@ -1502,6 +1502,9 @@
       pendingAttachmentNames.push(att.filename);
       pendingAttachmentTypes.push(att.content_type);
       addAttachmentPill(att.id, att.filename, att.content_type, att.processing_state || 'ready');
+      // A re-attached email is re-split: its files ride along under its pill.
+      (att.children || []).forEach(addEmailChildAttachment);
+      showAttachmentWarnings(att.warnings);
       btn.disabled = false;
     }).catch(function(err) {
       btn.disabled = false;
@@ -2264,22 +2267,29 @@
   var SUPPORTED_TEXT_TYPES = ['text/plain', 'text/markdown', 'text/csv', 'text/html', 'application/json', 'text/xml', 'application/xml', 'text/x-rst', 'application/x-tex', 'application/x-yaml', 'text/yaml'];
   var SUPPORTED_DOCX_TYPES = ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.openxmlformats-officedocument.wordprocessingml.template'];
   var SUPPORTED_PPTX_TYPES = ['application/vnd.openxmlformats-officedocument.presentationml.presentation'];
-  var ALL_SUPPORTED_TYPES = SUPPORTED_IMAGE_TYPES.concat(SUPPORTED_PDF_TYPES, SUPPORTED_TEXT_TYPES, SUPPORTED_DOCX_TYPES, SUPPORTED_PPTX_TYPES);
+  var SUPPORTED_EMAIL_TYPES = ['message/rfc822', 'application/vnd.ms-outlook'];
+  var ALL_SUPPORTED_TYPES = SUPPORTED_IMAGE_TYPES.concat(SUPPORTED_PDF_TYPES, SUPPORTED_TEXT_TYPES, SUPPORTED_DOCX_TYPES, SUPPORTED_PPTX_TYPES, SUPPORTED_EMAIL_TYPES);
   var MAX_IMAGE_SIZE = {{ attachment_image_max_bytes }};
   var MAX_PDF_SIZE = {{ attachment_pdf_max_bytes }};
   var MAX_PPTX_SIZE = {{ attachment_pptx_max_bytes }};
+  var MAX_EMAIL_SIZE = {{ attachment_email_max_bytes }};
   var MAX_OTHER_SIZE = {{ attachment_other_max_bytes }};
 
   function getMaxSizeForType(contentType) {
     if (SUPPORTED_PDF_TYPES.indexOf(contentType) !== -1) return MAX_PDF_SIZE;
     if (SUPPORTED_IMAGE_TYPES.indexOf(contentType) !== -1) return MAX_IMAGE_SIZE;
     if (SUPPORTED_PPTX_TYPES.indexOf(contentType) !== -1) return MAX_PPTX_SIZE;
+    if (SUPPORTED_EMAIL_TYPES.indexOf(contentType) !== -1) return MAX_EMAIL_SIZE;
     return MAX_OTHER_SIZE;
   }
 
   function getAttachmentIcon(contentType) {
     if (contentType && contentType.indexOf('image/') === 0) {
       return '<svg class="w-3.5 h-3.5 shrink-0 text-body-subtle" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>';
+    }
+    if (SUPPORTED_EMAIL_TYPES.indexOf(contentType) !== -1) {
+      // Email: an envelope.
+      return '<svg class="w-3.5 h-3.5 shrink-0 text-body-subtle" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.24a2.25 2.25 0 01-1.07 1.92l-7.5 4.61a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.92V6.75"/></svg>';
     }
     if (SUPPORTED_PPTX_TYPES.indexOf(contentType) !== -1) {
       // Presentation: a slide on an easel.
@@ -2328,6 +2338,7 @@
     pill.innerHTML =
       '<span class="attachment-lead shrink-0 inline-flex items-center"></span>' +
       '<span class="attachment-name">' + escapeHtml(filename) + '</span>' +
+      '<span class="attachment-children text-body-subtle hidden"></span>' +
       '<span class="attachment-note text-body-subtle italic hidden"></span>';
     attachedImagesContainer.appendChild(pill);
     return pill;
@@ -2413,11 +2424,46 @@
     pills.forEach(function(el) { if (!el.hasAttribute('data-attachment-id')) el.remove(); });
   }
 
-  function removeImagePill(id) {
+  function dropPendingAttachment(id) {
     var idx = pendingAttachmentIds.indexOf(id);
     if (idx !== -1) { pendingAttachmentIds.splice(idx, 1); pendingAttachmentNames.splice(idx, 1); pendingAttachmentTypes.splice(idx, 1); }
+  }
+
+  function removeImagePill(id) {
     var pill = attachedImagesContainer.querySelector('[data-attachment-id="' + id + '"]');
+    dropPendingAttachment(id);
+    // An email's split-out files go with it.
+    if (pill && pill.dataset.childIds) pill.dataset.childIds.split(',').forEach(dropPendingAttachment);
     if (pill) pill.remove();
+  }
+
+  // A file split out of an uploaded email (chat/email_attachments.py): it rides
+  // along with the email (pending ids and the sent-message badges include it)
+  // but has no pill of its own; the email's pill counts it ("+ 2 files").
+  // Nested emails' files roll up to the top-level email's pill.
+  function addEmailChildAttachment(att) {
+    pendingAttachmentIds.push(att.id);
+    pendingAttachmentNames.push(att.filename);
+    pendingAttachmentTypes.push(att.content_type);
+    var pill = attachedImagesContainer.querySelector('[data-attachment-id="' + att.parent_id + '"]');
+    if (!pill) {
+      pill = Array.prototype.find.call(attachedImagesContainer.querySelectorAll('.image-pill'), function(el) {
+        return (el.dataset.childIds || '').split(',').indexOf(att.parent_id) !== -1;
+      });
+    }
+    if (!pill) return;
+    var ids = pill.dataset.childIds ? pill.dataset.childIds.split(',') : [];
+    ids.push(att.id);
+    pill.dataset.childIds = ids.join(',');
+    var label = pill.querySelector('.attachment-children');
+    if (label) {
+      label.textContent = '+ ' + ids.length + (ids.length === 1 ? ' file' : ' files');
+      label.classList.remove('hidden');
+    }
+  }
+
+  function showAttachmentWarnings(warnings) {
+    if (warnings && warnings.length) showToast(warnings.join(' '));
   }
 
   function clearImagePills() {
@@ -2446,13 +2492,17 @@
     var hasImages = false;
     for (var i = 0; i < files.length; i++) {
       var ft = files[i].type;
-      // Browsers sometimes report .docx/.dotx/.pptx as application/octet-stream
+      // Browsers sometimes report .docx/.dotx/.pptx/.msg as application/octet-stream
       if (ALL_SUPPORTED_TYPES.indexOf(ft) === -1) {
         var lowerName = (files[i].name || '').toLowerCase();
         if (lowerName.endsWith('.docx') || lowerName.endsWith('.dotx')) {
           ft = SUPPORTED_DOCX_TYPES[0];
         } else if (lowerName.endsWith('.pptx')) {
           ft = SUPPORTED_PPTX_TYPES[0];
+        } else if (lowerName.endsWith('.eml')) {
+          ft = SUPPORTED_EMAIL_TYPES[0];
+        } else if (lowerName.endsWith('.msg')) {
+          ft = SUPPORTED_EMAIL_TYPES[1];
         } else {
           showToast("{{ assistant_name|escapejs }} can't read that file type yet: " + files[i].name);
           return;
@@ -2490,17 +2540,23 @@
         return r.json();
       }).then(function(data) {
         var atts = data.attachments || [];
-        // The server answers in upload order; bind each pill to its row in
-        // place. If the counts ever differ, start the pills over.
-        var sameOrder = atts.length === uploadingPills.length;
+        // The server answers in upload order (an email's split-out files right
+        // after it, carrying parent_id); bind each uploaded file's pill to its
+        // row in place. If the counts ever differ, start the pills over.
+        var topLevel = atts.filter(function(att) { return !att.parent_id; });
+        var sameOrder = topLevel.length === uploadingPills.length;
         if (!sameOrder) removeUploadingPills(uploadingPills);
-        atts.forEach(function(att, i) {
+        var i = 0;
+        atts.forEach(function(att) {
+          if (att.parent_id) { addEmailChildAttachment(att); return; }
           pendingAttachmentIds.push(att.id);
           pendingAttachmentNames.push(att.filename);
           pendingAttachmentTypes.push(att.content_type);
           var pill = sameOrder ? uploadingPills[i] : createAttachmentPill(att.filename, att.content_type);
+          i++;
           bindAttachmentPill(pill, att.id, att.filename, att.content_type, att.processing_state || 'ready');
         });
+        showAttachmentWarnings(data.warnings);
       }).catch(function(err) {
         removeUploadingPills(uploadingPills);
         showToast("Couldn't upload that file. " + err.message);
