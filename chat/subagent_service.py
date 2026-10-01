@@ -313,6 +313,7 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
             specialization_skill=specialization_skill,
             canvas_content=run.canvas,
             canvas_title=run.canvas_title,
+            shared_canvases=run.shared_canvases,
         )
 
         # Build LLM request

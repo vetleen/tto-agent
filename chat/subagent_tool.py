@@ -22,6 +22,46 @@ def _is_waiting(run_id) -> bool:
     ).exists()
 
 
+# Total characters of canvas text one sub-agent may be handed (~25k tokens).
+# Sub-agents can run on a 50k-token context floor, so an uncapped share of
+# several full canvases (75k chars each) would crowd out the work itself.
+SUBAGENT_SHARED_CANVAS_MAX_CHARS = 100_000
+
+
+def _snapshot_canvases(thread_id, titles: list[str]) -> tuple[list[dict], str]:
+    """Copy the named canvases' current text for a sub-agent.
+
+    Returns ``(snapshot, "")`` or ``([], error_message)``. The error is
+    actionable: an unknown title lists the canvases that do exist, and an
+    oversized share names each canvas's size.
+    """
+    from chat.models import ChatCanvas
+    from chat.services import resolve_canvas
+
+    snapshot: list[dict] = []
+    for title in dict.fromkeys(t.strip() for t in titles if t and t.strip()):
+        canvas, err = resolve_canvas(thread_id, title)
+        if err:
+            available = list(
+                ChatCanvas.objects.filter(thread_id=thread_id, deleted_at__isnull=True)
+                .order_by("title")
+                .values_list("title", flat=True)
+            )
+            listing = ", ".join(f'"{t}"' for t in available) if available else "(none)"
+            return [], f"{err} Canvases in this conversation: {listing}."
+        snapshot.append({"title": canvas.title, "content": canvas.content or ""})
+
+    total = sum(len(c["content"]) for c in snapshot)
+    if total > SUBAGENT_SHARED_CANVAS_MAX_CHARS:
+        sizes = ", ".join(f'"{c["title"]}" ({len(c["content"]):,} chars)' for c in snapshot)
+        return [], (
+            f"The canvases to share total {total:,} characters, over the "
+            f"{SUBAGENT_SHARED_CANVAS_MAX_CHARS:,}-character limit for one sub-agent: "
+            f"{sizes}. Share fewer canvases, or quote only the relevant part in the prompt."
+        )
+    return snapshot, ""
+
+
 # --- Input schemas ---
 
 class CreateSubagentInput(ReasonBaseModel):
@@ -33,6 +73,17 @@ class CreateSubagentInput(ReasonBaseModel):
             "the specializations listed in your instructions (under 'Sub-agent "
             "specializations'). Gives the sub-agent extra instructions and tools "
             "for that role. Omit for a general-purpose sub-agent."
+        ),
+    )
+    canvases: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Optional titles of canvases in this conversation to share with the "
+            "sub-agent as a read-only copy of their current text. Use when the task "
+            "concerns a draft (review it, fact-check it, research gaps in it). The "
+            "sub-agent sees the text as it is now: it cannot edit your canvas or "
+            "see later changes. Omit when the task doesn't need it; shared text "
+            "uses up the sub-agent's context."
         ),
     )
     model_tier: str = Field(
@@ -68,7 +119,8 @@ class CreateSubagentTool(ContextAwareTool):
     description: str = (
         "Delegate a task to an independent sub-agent that runs with its own context and tools. "
         "Use for tasks requiring extensive research, parallel analysis, or focused work. "
-        "Set timeout=0 for background, 30-60 for quick tasks, 120 for research."
+        "Set timeout=0 for background, 30-60 for quick tasks, 120 for research. "
+        "Pass canvases to give it a read-only copy of canvas text."
     )
     args_schema: type[BaseModel] = CreateSubagentInput
 
@@ -147,6 +199,12 @@ class CreateSubagentTool(ContextAwareTool):
             if active:
                 return json.dumps({"status": "error", "message": "Sub-agents must run one at a time. Wait for the current one to complete."})
 
+        # Snapshot shared canvases now, not when the run executes: a queued or
+        # retried run must see the text the orchestrator delegated against.
+        shared_canvases, err_msg = _snapshot_canvases(thread_id, kwargs.get("canvases") or [])
+        if err_msg:
+            return json.dumps({"status": "error", "message": err_msg})
+
         # Atomically check limits and create the run record.
         # The service resolves model_used and tool_names when it executes.
         run, err_msg = create_subagent_run_if_allowed(
@@ -157,6 +215,7 @@ class CreateSubagentTool(ContextAwareTool):
             timeout=timeout,
             data_room_ids=data_room_ids,
             skill_slug=specialization,
+            shared_canvases=shared_canvases,
         )
         if run is None:
             return json.dumps({"status": "error", "message": err_msg})

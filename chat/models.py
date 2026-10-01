@@ -710,6 +710,12 @@ class SubAgentRun(models.Model):
     # during the run / a retry).
     scratchpad = models.TextField(blank=True, default="")
 
+    # Read-only copies of the orchestrator's canvases it chose to share
+    # (chat_subagent_create ``canvases``): ``[{"title", "content"}, ...]``.
+    # Snapshot taken at spawn — a queued or retried run sees the same text —
+    # and never refreshed.
+    shared_canvases = models.JSONField(default=list, blank=True)
+
     # Metrics
     tokens_used = models.PositiveIntegerField(default=0)
     cost_usd = models.FloatField(default=0.0)

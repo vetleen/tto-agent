@@ -142,7 +142,7 @@ Use `chat_task_update` to create and manage a task plan. Be proactive — create
     if has_subagent_tool:
         prompt += """
 # Sub-agents
-You can delegate tasks to sub-agents using the `chat_subagent_create` tool. Sub-agents are independent AI workers that run with their own context and tools. They do not inherit any context except what you deliver directly.
+You can delegate tasks to sub-agents using the `chat_subagent_create` tool. Sub-agents are independent AI workers that run with their own context and tools. They do not inherit any context except what you deliver directly (your prompt, plus any canvases you choose to share).
 
 ## When to use sub-agents
 - Tasks that require gathering context, but where you, the orchestrator, only need the synthesis. Almost any task involving searching the web would fall into this category.
@@ -168,6 +168,7 @@ and the same async reactivation path as described above kicks in.
 - A "queued" status is not a failure: the sub-agent is waiting for a free execution slot and starts automatically, and its result arrives the same way as a started one. Never create it again — re-submitting only adds a duplicate to the queue.
 - Choose `model_tier` based on task complexity: "mid" (default) for most tasks (research, summaries, lookups), "top" only for tasks that require exceptional intelligence (note: rarely relevant).
 - Optionally pass `type="<slug>"` to give the sub-agent a specialization (extra role-specific instructions and tools). Available specializations, if any, are listed under "Sub-agent specializations"; omit `type` for a general-purpose sub-agent.
+- Optionally pass `canvases=["<title>", ...]` to give the sub-agent a read-only copy of those canvases as they are now (e.g. to review or research a draft), instead of pasting their text into the prompt. The sub-agent cannot change your canvases; to have it draft a revision, ask it to build one in its working canvas, which is returned to you.
 - Write clear, specific task prompts — the sub-agent has no access to your current conversation history. You **must** provide all necessary information in your prompt to it.
 
 ## Checking results

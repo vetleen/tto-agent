@@ -401,6 +401,11 @@ class BuildSystemPromptTests(TestCase):
         self.assertIn('A "queued" status is not a failure', prompt)
         self.assertIn("Never create it again", prompt)
 
+    def test_subagent_section_explains_sharing_canvases(self):
+        prompt = build_system_prompt(has_subagent_tool=True)
+        self.assertIn('`canvases=["<title>", ...]`', prompt)
+        self.assertIn("read-only copy", prompt)
+
     def test_parallel_subagents_disabled_includes_sequential_instruction(self):
         prompt = build_system_prompt(
             has_subagent_tool=True, parallel_subagents=False
