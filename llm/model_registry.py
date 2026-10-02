@@ -202,8 +202,9 @@ _MODELS: dict[str, ModelInfo] = {
     "openai/gpt-6-luna": ModelInfo(
         display_name="GPT-6 Luna", provider="openai", api_model="gpt-6-luna",
         stars=2,
-        # Product choice: second-highest effort (provider default is medium).
-        reasoning_levels=_GPT56_LEVELS, default_reasoning_level="xhigh",
+        # Product choice: high effort (provider default is medium; xhigh
+        # benchmarks only marginally better at ~20% more tokens).
+        reasoning_levels=_GPT56_LEVELS, default_reasoning_level="high",
         uses_responses_api=True, input_modalities=_MULTIMODAL,
         context_window=1_050_000, max_output_tokens=128_000,
         input_price=Decimal("0.10"), cached_input_price=Decimal("0.01"),

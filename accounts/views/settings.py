@@ -442,6 +442,9 @@ def org_settings_page(request):
     # model_options["features"] below, so the client's live re-populate still works.
     _SUBAGENT_MODEL_KEYS = ("subagent_mid", "subagent_top")
     subagent_model_rows = [r for r in org_features if r["key"] in _SUBAGENT_MODEL_KEYS]
+    for row in subagent_model_rows:
+        tier = next(t for t, f in _SUBAGENT_TIER_FEATURES.items() if f == row["key"])
+        row["reasoning"] = _subagent_reasoning_row(org, tier)
     org_features = [r for r in org_features if r["key"] not in _SUBAGENT_MODEL_KEYS]
 
     # Full (allowed-independent) eligible model lists per tier and per feature.
@@ -1453,6 +1456,91 @@ def org_max_context_update(request):
     return JsonResponse({"ok": True, "max_context_tokens": value})
 
 
+_SUBAGENT_TIER_FEATURES = {"mid": "subagent_mid", "top": "subagent_top"}
+
+
+def _subagent_reasoning_row(org, tier: str) -> dict:
+    """Reasoning-level control state for one sub-agent tier.
+
+    ``model`` is the tier's effective model (org override, else the org's tier
+    default). ``current`` is the stored level only while it was chosen for that
+    same model — mirroring chat.subagent_service.subagent_thinking_level, so the
+    page never shows a level that the run would ignore.
+    """
+    from core.preferences import resolve_org_feature_model
+    from llm.display import reasoning_level_label
+    from llm.model_registry import get_model_info
+
+    model = resolve_org_feature_model(org.id, _SUBAGENT_TIER_FEATURES[tier])
+    info = get_model_info(model) if model else None
+    levels = list(info.reasoning_levels) if info else []
+    entry = (((org.preferences or {}).get("subagents") or {}).get("reasoning") or {}).get(tier) or {}
+    current = ""
+    if isinstance(entry, dict) and entry.get("model") == model and entry.get("level") in levels:
+        current = entry["level"]
+    default_level = (info.default_reasoning_level or "") if info else ""
+    return {
+        "tier": tier,
+        "model": model,
+        "model_display": info.display_name if info else model,
+        "levels": levels,
+        "level_options": [{"value": lv, "label": reasoning_level_label(lv)} for lv in levels],
+        "default_level": default_level,
+        "default_label": reasoning_level_label(default_level) if default_level else "",
+        "current": current,
+    }
+
+
+@login_required
+@require_POST
+@org_admin_required
+def org_subagent_reasoning_update(request):
+    """Set the reasoning level for one sub-agent tier ("" = model default).
+
+    The level is validated against — and stored with — the tier's current
+    effective model, resolved server-side. A later model change makes the
+    stored level inert (see chat.subagent_service.subagent_thinking_level).
+    """
+    membership = request.org_membership
+
+    data, err = _parse_json_body(request)
+    if err:
+        return err
+
+    tier = _str_field(data, "tier")
+    if tier not in _SUBAGENT_TIER_FEATURES:
+        return JsonResponse({"error": "Unknown sub-agent tier"}, status=400)
+    level = _str_field(data, "level")
+
+    row = _subagent_reasoning_row(membership.org, tier)
+    if level and not row["levels"]:
+        return JsonResponse(
+            {"error": f"{row['model_display']} does not support configurable reasoning"}, status=400
+        )
+    if level and level not in row["levels"]:
+        return JsonResponse(
+            {"error": f"Reasoning level '{level}' is not available for {row['model_display']}. "
+                      f"Choose one of: {', '.join(row['levels'])}."},
+            status=400,
+        )
+    # Choosing the model's default is the same as "use default": store nothing.
+    store = bool(level) and level != row["default_level"]
+
+    def mutate(prefs):
+        subagents = prefs.get("subagents", {})
+        reasoning = subagents.get("reasoning", {})
+        if store:
+            reasoning[tier] = {"model": row["model"], "level": level}
+        else:
+            reasoning.pop(tier, None)
+        subagents["reasoning"] = reasoning
+        prefs["subagents"] = subagents
+
+    update_org_preferences(membership.org_id, mutate)
+
+    return JsonResponse({"ok": True, **row, "current": level if store else ""})
+
+
 @login_required
 @require_POST
 @org_admin_required
@@ -1626,14 +1714,28 @@ def org_feature_model_update(request):
         if info and info.capability_stars < min_stars:
             return JsonResponse({"error": f"Model tier too low for this feature (minimum: {min_stars} stars)"}, status=400)
 
+    tier = next((t for t, f in _SUBAGENT_TIER_FEATURES.items() if f == feature), None)
+
     def mutate(prefs):
         feature_models = prefs.get("feature_models", {})
         feature_models[feature] = model
         prefs["feature_models"] = feature_models
+        if tier:
+            # A sub-agent tier's reasoning level belongs to its model: a model
+            # change resets the tier to the new model's default.
+            subagents = prefs.get("subagents", {})
+            reasoning = subagents.get("reasoning", {})
+            if reasoning.pop(tier, None) is not None:
+                subagents["reasoning"] = reasoning
+                prefs["subagents"] = subagents
 
     update_org_preferences(membership.org_id, mutate)
 
-    return JsonResponse({"ok": True, "feature": feature, "model": model})
+    response = {"ok": True, "feature": feature, "model": model}
+    if tier:
+        membership.org.refresh_from_db(fields=["preferences"])
+        response["reasoning"] = _subagent_reasoning_row(membership.org, tier)
+    return JsonResponse(response)
 
 
 # ---- User Profile ----

@@ -363,22 +363,48 @@
           <div class="border-t border-default px-5 pt-4">
             <h3 class="text-sm font-semibold text-heading">Sub-agent models</h3>
             <p class="mt-0.5 text-sm text-body">By default, mid-tier sub-agents use your Mid model and top-tier sub-agents use your Primary model (see Model defaults). Pick a model here to override that for sub-agents only.</p>
+            <p class="mt-1 text-sm text-body">Reasoning sets how long the model thinks before acting. Lower is faster and cheaper; higher can help on hard tasks. Changing the model resets it to that model's default.</p>
           </div>
           <div class="divide-y divide-default">
             {% for row in subagent_model_rows %}
             <div class="px-5 py-4">
               <label class="block text-sm font-medium text-heading" for="subagent-model-{{ row.key }}">{{ row.label }}</label>
               {% if row.desc %}<p class="text-xs text-body mt-0.5">{{ row.desc }}</p>{% endif %}
-              <select
-                id="subagent-model-{{ row.key }}"
-                data-feature="{{ row.key }}"
-                class="org-feature-model-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
-              >
-                <option value="">Use organization default {{ row.default_slot }} model (recommended)</option>
-                {% for model in row.eligible_models %}
-                <option value="{{ model }}" {% if row.current == model %}selected{% endif %}>{{ model }}</option>
-                {% endfor %}
-              </select>
+              <div class="mt-2 flex flex-col gap-2 sm:flex-row">
+                <div class="flex-1 min-w-0">
+                  <span class="block text-xs font-medium text-body mb-1">Model</span>
+                  <select
+                    id="subagent-model-{{ row.key }}"
+                    data-feature="{{ row.key }}"
+                    data-reasoning-tier="{{ row.reasoning.tier }}"
+                    aria-label="{{ row.label }} model"
+                    class="org-feature-model-select block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+                  >
+                    <option value="">Use organization default {{ row.default_slot }} model (recommended)</option>
+                    {% for model in row.eligible_models %}
+                    <option value="{{ model }}" {% if row.current == model %}selected{% endif %}>{{ model }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div class="sm:w-56">
+                  <label class="block text-xs font-medium text-body mb-1" for="subagent-reasoning-{{ row.reasoning.tier }}">Reasoning</label>
+                  <select
+                    id="subagent-reasoning-{{ row.reasoning.tier }}"
+                    data-tier="{{ row.reasoning.tier }}"
+                    class="org-subagent-reasoning-select block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium disabled:opacity-60"
+                    {% if not row.reasoning.levels %}disabled{% endif %}
+                  >
+                    {% if row.reasoning.levels %}
+                    <option value="">Model default ({{ row.reasoning.default_label }})</option>
+                    {% for opt in row.reasoning.level_options %}
+                    <option value="{{ opt.value }}" {% if row.reasoning.current == opt.value %}selected{% endif %}>{{ opt.label }}</option>
+                    {% endfor %}
+                    {% else %}
+                    <option value="">Not adjustable</option>
+                    {% endif %}
+                  </select>
+                </div>
+              </div>
             </div>
             {% endfor %}
           </div>
@@ -944,7 +970,49 @@
         if (data.error) {
           alert(data.error);
           sel.value = '';
+          return;
         }
+        if (data.reasoning) renderSubagentReasoning(data.reasoning);
+      });
+    });
+  });
+
+  // Sub-agent reasoning level per tier. The server resolves the tier's model
+  // and returns its levels, so the select is always redrawn from a response.
+  function renderSubagentReasoning(row) {
+    var sel = document.getElementById('subagent-reasoning-' + row.tier);
+    if (!sel) return;
+    while (sel.options.length) { sel.remove(0); }
+    var first = document.createElement('option');
+    first.value = '';
+    first.textContent = row.levels.length ? 'Model default (' + row.default_label + ')' : 'Not adjustable';
+    sel.appendChild(first);
+    row.level_options.forEach(function(o) {
+      var opt = document.createElement('option');
+      opt.value = o.value;
+      opt.textContent = o.label;
+      sel.appendChild(opt);
+    });
+    sel.disabled = !row.levels.length;
+    sel.value = row.current || '';
+    sel.dataset.saved = sel.value;
+  }
+
+  document.querySelectorAll('.org-subagent-reasoning-select').forEach(function(sel) {
+    sel.dataset.saved = sel.value;
+    sel.addEventListener('change', function() {
+      fetch('{% url "accounts:org_subagent_reasoning_update" %}', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tier: sel.dataset.tier, level: sel.value }),
+        credentials: 'same-origin',
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.error) {
+          alert(data.error);
+          sel.value = sel.dataset.saved || '';
+          return;
+        }
+        renderSubagentReasoning(data);
       });
     });
   });

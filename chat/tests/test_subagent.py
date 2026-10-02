@@ -1260,6 +1260,56 @@ class RunSubagentServiceTests(TestCase):
         run.refresh_from_db()
         self.assertEqual(run.model_used, "openai/gpt-5-nano")
 
+    def _run_params(self, mock_prefs, mock_svc, **pref_overrides):
+        mock_prefs.return_value = _prefs(
+            feature_models={"subagent_mid": "openai/gpt-6-luna"}, **pref_overrides,
+        )
+        mock_response = MagicMock()
+        mock_response.message.content = "Done"
+        mock_response.usage.total_tokens = 1
+        mock_response.usage.cost_usd = 0.0
+        mock_svc.return_value.run_via_stream.return_value = mock_response
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="task", model_tier="mid",
+        )
+        from chat.subagent_service import run_subagent
+        run_subagent(run.id)
+        return mock_svc.return_value.run_via_stream.call_args[0][1].params
+
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
+    def test_org_tier_reasoning_level_sets_thinking_level(self, mock_prefs, mock_svc):
+        params = self._run_params(mock_prefs, mock_svc, subagent_reasoning={
+            "mid": {"model": "openai/gpt-6-luna", "level": "medium"},
+        })
+        self.assertEqual(params.get("thinking_level"), "medium")
+
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
+    def test_reasoning_level_for_another_model_is_ignored(self, mock_prefs, mock_svc):
+        """A level chosen for a model the tier no longer runs on falls back to
+        the registry default (no thinking_level key)."""
+        params = self._run_params(mock_prefs, mock_svc, subagent_reasoning={
+            "mid": {"model": "anthropic/claude-sonnet-5-5", "level": "medium"},
+        })
+        self.assertNotIn("thinking_level", params)
+
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
+    def test_reasoning_level_invalid_for_model_is_ignored(self, mock_prefs, mock_svc):
+        params = self._run_params(mock_prefs, mock_svc, subagent_reasoning={
+            "mid": {"model": "openai/gpt-6-luna", "level": "bogus"},
+        })
+        self.assertNotIn("thinking_level", params)
+
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
+    def test_no_reasoning_entry_leaves_registry_default(self, mock_prefs, mock_svc):
+        params = self._run_params(mock_prefs, mock_svc, subagent_reasoning={
+            "top": {"model": "openai/gpt-6-luna", "level": "low"},
+        })
+        self.assertNotIn("thinking_level", params)
+
     @patch("llm.get_llm_service")
     @patch("core.preferences.get_preferences")
     def test_creates_hidden_message_on_completion(self, mock_prefs, mock_svc):

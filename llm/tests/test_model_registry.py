@@ -74,7 +74,7 @@ class RegistryTests(SimpleTestCase):
             "openai/gpt-5.6-sol": (("none", "low", "medium", "high", "xhigh", "max"), "medium"),
             "openai/gpt-5.6-terra": (("none", "low", "medium", "high", "xhigh", "max"), "medium"),
             "openai/gpt-6-sol": (("none", "low", "medium", "high", "xhigh", "max"), "medium"),
-            "openai/gpt-6-luna": (("none", "low", "medium", "high", "xhigh", "max"), "xhigh"),
+            "openai/gpt-6-luna": (("none", "low", "medium", "high", "xhigh", "max"), "high"),
             "openai/gpt-5.4-nano": (("none", "low", "medium", "high", "xhigh"), "none"),
             "anthropic/claude-fable-5-1": (("low", "medium", "high", "xhigh", "max"), "high"),
             "anthropic/claude-fable-5": (("low", "medium", "high", "xhigh", "max"), "high"),

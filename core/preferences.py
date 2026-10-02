@@ -50,6 +50,11 @@ class ResolvedPreferences:
     # SubAgentRun.model_tier values ("mid"/"top"); each value is the aim handed
     # to the mid-turn pruner for that tier. Absent/0 = unlimited (model window).
     subagent_context_budgets: dict[str, int] = field(default_factory=dict)
+    # Per-tier sub-agent reasoning levels (org-only), keyed by tier. Each entry
+    # is {"model": <model the level was chosen for>, "level": <level>}; it only
+    # applies while the tier still runs on that model (see
+    # chat.subagent_service.subagent_thinking_level). Absent = registry default.
+    subagent_reasoning: dict[str, dict] = field(default_factory=dict)
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
     transcription_model: str = ""
     allowed_transcription_models: list[str] = field(default_factory=list)
@@ -525,6 +530,14 @@ def get_preferences(user) -> ResolvedPreferences:
         for tier in ("mid", "top")
         if isinstance((v := raw_budgets.get(tier)), int) and v > 0
     }
+    raw_reasoning = org_subagent_prefs.get("reasoning", {}) or {}
+    subagent_reasoning = {
+        tier: {"model": e["model"], "level": e["level"]}
+        for tier in ("mid", "top")
+        if isinstance((e := raw_reasoning.get(tier)), dict)
+        and isinstance(e.get("model"), str) and e.get("model")
+        and isinstance(e.get("level"), str) and e.get("level")
+    }
 
     # Resolve max context tokens: org-only. The individual-user override was
     # removed — the organization's limit governs every member.
@@ -576,6 +589,7 @@ def get_preferences(user) -> ResolvedPreferences:
         theme=user_theme,
         parallel_subagents=parallel_subagents,
         subagent_context_budgets=subagent_context_budgets,
+        subagent_reasoning=subagent_reasoning,
         max_context_tokens=max_context_tokens,
         transcription_model=transcription_model,
         allowed_transcription_models=effective_transcription_allowed,

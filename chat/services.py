@@ -1067,7 +1067,7 @@ def describe_image(
     ]
 
     # Transcribing an image is mechanical: the model's curated chat default
-    # (e.g. Luna's xhigh) spends ~90% of the output tokens — and the wait —
+    # (e.g. Luna's high) spends ~90% of the output tokens — and the wait —
     # on reasoning, so ask for the least reasoning the model accepts.
     params: dict = {}
     minimal_level = get_minimal_thinking_level(model)

@@ -1,4 +1,5 @@
 """Tests for accounts settings views (theme_update, preferences, org settings)."""
+import dataclasses
 import json
 from unittest.mock import patch
 
@@ -2310,3 +2311,138 @@ class BaseTemplateAssetLoadingTests(TestCase):
         self.assertLess(
             html.index(static("src/output.css")), html.index('rel="icon"')
         )
+
+
+_REASONING_SYSTEM_MODELS = [
+    "openai/gpt-6-sol", "openai/gpt-6-luna", "anthropic/claude-sonnet-5-5",
+]
+
+
+@override_settings(
+    ALLOWED_HOSTS=["testserver"],
+    LLM_DEFAULT_MODEL="openai/gpt-6-sol",
+    LLM_DEFAULT_MID_MODEL="anthropic/claude-sonnet-5-5",
+    LLM_DEFAULT_CHEAP_MODEL="openai/gpt-6-luna",
+)
+@patch("llm.service.policies.get_allowed_models", return_value=_REASONING_SYSTEM_MODELS)
+class OrgSubagentReasoningUpdateTests(TestCase):
+    """Per-tier sub-agent reasoning level: stored with — and only valid for —
+    the tier's effective model; a model change resets it."""
+
+    def setUp(self):
+        self.password = "test-pass-123"
+        self.admin_user = User.objects.create_user(
+            email="reasonadmin@example.com", password=self.password,
+        )
+        self.admin_user.email_verified = True
+        self.admin_user.save(update_fields=["email_verified"])
+        self.member_user = User.objects.create_user(
+            email="reasonmember@example.com", password=self.password,
+        )
+        self.member_user.email_verified = True
+        self.member_user.save(update_fields=["email_verified"])
+        self.org = Organization.objects.create(name="ReasonOrg", slug="reasonorg", preferences={
+            "feature_models": {"subagent_mid": "openai/gpt-6-luna"},
+        })
+        Membership.objects.create(user=self.admin_user, org=self.org, role=Membership.Role.ADMIN)
+        Membership.objects.create(user=self.member_user, org=self.org, role=Membership.Role.MEMBER)
+        self.url = reverse("accounts:org_subagent_reasoning_update")
+
+    def _post(self, body, user=None):
+        self.client.login(email=(user or self.admin_user).email, password=self.password)
+        return self.client.post(self.url, json.dumps(body), content_type="application/json")
+
+    def _reasoning(self):
+        self.org.refresh_from_db()
+        return (self.org.preferences.get("subagents") or {}).get("reasoning") or {}
+
+    def test_saves_level_with_effective_override_model(self, _models):
+        response = self._post({"tier": "mid", "level": "medium"})
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["model"], "openai/gpt-6-luna")
+        self.assertEqual(data["current"], "medium")
+        self.assertEqual(data["default_level"], "high")
+        self.assertEqual(self._reasoning(), {"mid": {"model": "openai/gpt-6-luna", "level": "medium"}})
+
+    def test_saves_level_with_tier_default_model_when_no_override(self, _models):
+        # No subagent_top override: the tier runs on the org's primary model.
+        self._post({"tier": "top", "level": "low"})
+        self.assertEqual(self._reasoning()["top"], {"model": "openai/gpt-6-sol", "level": "low"})
+
+    def test_rejects_level_not_offered_by_model(self, _models):
+        # Sonnet 5.5 has no "none"; Luna does — validated against the tier model.
+        self.org.preferences["feature_models"]["subagent_mid"] = "anthropic/claude-sonnet-5-5"
+        self.org.save(update_fields=["preferences"])
+        response = self._post({"tier": "mid", "level": "none"})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self._reasoning(), {})
+
+    def test_rejects_unknown_tier(self, _models):
+        response = self._post({"tier": "cheap", "level": "low"})
+        self.assertEqual(response.status_code, 400)
+
+    def test_rejects_level_for_model_without_reasoning_control(self, _models):
+        from llm.model_registry import get_model_info as real_get_model_info
+
+        def _no_levels(model_id):
+            info = real_get_model_info(model_id)
+            if model_id == "openai/gpt-6-luna":
+                return dataclasses.replace(info, reasoning_levels=(), default_reasoning_level=None)
+            return info
+
+        with patch("llm.model_registry.get_model_info", side_effect=_no_levels):
+            response = self._post({"tier": "mid", "level": "low"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("does not support configurable reasoning", response.json()["error"])
+
+    def test_member_forbidden(self, _models):
+        response = self._post({"tier": "mid", "level": "low"}, user=self.member_user)
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(self._reasoning(), {})
+
+    def test_empty_or_default_level_clears_entry(self, _models):
+        self._post({"tier": "mid", "level": "medium"})
+        self._post({"tier": "mid", "level": ""})
+        self.assertEqual(self._reasoning(), {})
+        # Picking the model's own default stores nothing either.
+        response = self._post({"tier": "mid", "level": "high"})
+        self.assertEqual(response.json()["current"], "")
+        self.assertEqual(self._reasoning(), {})
+
+    def test_model_change_resets_tier_level(self, _models):
+        self._post({"tier": "mid", "level": "medium"})
+        self._post({"tier": "top", "level": "low"})
+        response = self.client.post(
+            reverse("accounts:org_feature_model_update"),
+            json.dumps({"feature": "subagent_mid", "model": "anthropic/claude-sonnet-5-5"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        reasoning = response.json()["reasoning"]
+        self.assertEqual(reasoning["model"], "anthropic/claude-sonnet-5-5")
+        self.assertEqual(reasoning["current"], "")
+        self.assertNotIn("none", reasoning["levels"])
+        # Only the changed tier is reset.
+        self.assertEqual(self._reasoning(), {"top": {"model": "openai/gpt-6-sol", "level": "low"}})
+
+    def test_stale_level_not_shown_on_page(self, _models):
+        """A level stored for a model the tier no longer runs on renders as
+        "model default" — the run ignores it too."""
+        self.org.preferences["subagents"] = {"reasoning": {
+            "mid": {"model": "openai/gpt-6-luna", "level": "medium"},
+            "top": {"model": "anthropic/claude-sonnet-5-5", "level": "low"},
+        }}
+        self.org.save(update_fields=["preferences"])
+        self.client.login(email=self.admin_user.email, password=self.password)
+        with patch("llm.tools.registry.get_tool_registry") as mock_reg:
+            mock_reg.return_value.list_tools.return_value = {}
+            response = self.client.get(reverse("accounts:org_settings"))
+        self.assertEqual(response.status_code, 200)
+        rows = {r["key"]: r["reasoning"] for r in response.context["subagent_model_rows"]}
+        self.assertEqual(rows["subagent_mid"]["current"], "medium")
+        self.assertEqual(rows["subagent_mid"]["default_label"], "High")
+        self.assertEqual(rows["subagent_top"]["model"], "openai/gpt-6-sol")
+        self.assertEqual(rows["subagent_top"]["current"], "")
+        self.assertContains(response, 'id="subagent-reasoning-mid"')
+        self.assertContains(response, "Model default (High)")

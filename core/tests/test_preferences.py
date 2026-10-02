@@ -565,6 +565,35 @@ class MaxContextTokensTest(TestCase):
         user = _create_user(email="ctx-budget-none@example.com")
         prefs = get_preferences(user)
         self.assertEqual(prefs.subagent_context_budgets, {})
+        self.assertEqual(prefs.subagent_reasoning, {})
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5.4",
+        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_CHEAP_MODEL="",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_subagent_reasoning_resolved(self, mock_registry, mock_allowed):
+        """Per-tier sub-agent reasoning entries come from org prefs; malformed
+        entries and unknown tiers are dropped."""
+        mock_registry.return_value.list_tools.return_value = {}
+
+        user = _create_user(email="sa-reasoning@example.com")
+        org = Organization.objects.create(name="ReasonOrg", slug="reasonorg", preferences={
+            "subagents": {"reasoning": {
+                "mid": {"model": "openai/gpt-6-luna", "level": "medium"},
+                "top": {"model": "openai/gpt-6-luna"},
+                "bogus": {"model": "openai/gpt-6-luna", "level": "low"},
+            }},
+        })
+        Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
+
+        prefs = get_preferences(user)
+        self.assertEqual(
+            prefs.subagent_reasoning,
+            {"mid": {"model": "openai/gpt-6-luna", "level": "medium"}},
+        )
 
 
 class TranscriptionModelCascadeTest(TestCase):

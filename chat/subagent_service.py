@@ -138,6 +138,26 @@ def resolve_subagent_model(tier: str, prefs: ResolvedPreferences) -> str:
     return {"mid": prefs.mid_model, "top": prefs.top_model}.get(tier, prefs.mid_model)
 
 
+def subagent_thinking_level(prefs: ResolvedPreferences, tier: str, model: str) -> str | None:
+    """The org's reasoning level for a sub-agent of *tier* running on *model*.
+
+    A level is stored with the model it was chosen for and only applies while
+    the tier still runs on that exact model — any model change (override, slot
+    default, allow-list fallback, retirement) reverts to the registry default.
+    Returns None for "use the model's default".
+    """
+    from llm.model_registry import get_model_info
+
+    entry = prefs.subagent_reasoning.get(tier)
+    if not entry or entry.get("model") != model:
+        return None
+    info = get_model_info(model)
+    level = entry.get("level")
+    if not info or level not in info.reasoning_levels:
+        return None
+    return level
+
+
 def resolve_subagent_tools(
     prefs: ResolvedPreferences,
     data_room_ids: list[int],
@@ -418,6 +438,11 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
             "max_tool_iterations": SUBAGENT_MAX_TOOL_ITERATIONS,
             "max_context_tokens": subagent_context_budget(prefs, run.model_tier),
         }
+        # Org-chosen reasoning level for this tier; absent = registry default
+        # (LLMService._apply_default_reasoning).
+        thinking_level = subagent_thinking_level(prefs, run.model_tier, model)
+        if thinking_level:
+            params["thinking_level"] = thinking_level
 
         request = ChatRequest(
             messages=[
