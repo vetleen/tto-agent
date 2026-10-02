@@ -1967,6 +1967,9 @@
   // The skills selected inside the modal (select-then-confirm), as a Set.
   // Kept in sync with the attached set whenever pills change.
   var selectedSkillIds = new Set(activeSkillIds);
+  // The attached set as of the last pill render, so an update that lands while
+  // the modal is open can be applied as a delta (see updateSkillModalChecks).
+  var lastSyncedSkillIds = activeSkillIds.slice();
 
   function refreshSkillSelection() {
     var atCap = selectedSkillIds.size >= MAX_THREAD_SKILLS;
@@ -1999,8 +2002,20 @@
 
   function updateSkillModalChecks() {
     // Called when the attached set changes outside the modal — keep the
-    // modal's pending selection aligned with reality.
-    selectedSkillIds = new Set(activeSkillIds);
+    // modal's pending selection aligned with reality. While the modal is
+    // open, apply only the delta: the server's echo of the previous apply can
+    // land after the user has started checking skills again, and a wholesale
+    // reset would silently drop those checks.
+    var skillModalEl = document.getElementById('skill-modal');
+    if (skillModalEl && !skillModalEl.classList.contains('hidden')) {
+      var prev = new Set(lastSyncedSkillIds);
+      var next = new Set(activeSkillIds);
+      next.forEach(function(id) { if (!prev.has(id)) selectedSkillIds.add(id); });
+      prev.forEach(function(id) { if (!next.has(id)) selectedSkillIds.delete(id); });
+    } else {
+      selectedSkillIds = new Set(activeSkillIds);
+    }
+    lastSyncedSkillIds = activeSkillIds.slice();
     refreshSkillSelection();
   }
 
@@ -2238,6 +2253,10 @@
       if (s.approved === false && !activeSkillIds.includes(id)) return;
       desired.push({ id: id, name: s.name, emoji: s.emoji || '' });
     });
+    // Dismissing the modal applies too, so skip the round-trip when nothing changed.
+    var unchanged = desired.length === activeSkillIds.length &&
+      desired.every(function(d) { return activeSkillIds.includes(d.id); });
+    if (unchanged) { closeSkillModal(); return; }
     setActiveSkills(desired);
     sendSetSkills();
     closeSkillModal();
@@ -2253,10 +2272,15 @@
       if (dd) dd.classList.add('hidden');
     });
   }
-  if (closeSkillModalBtn) { closeSkillModalBtn.addEventListener('click', closeSkillModal); }
+  // A checked skill is attached however the modal is dismissed (X, backdrop,
+  // Escape, "Use skills"); only Cancel discards the changes.
+  if (closeSkillModalBtn) { closeSkillModalBtn.addEventListener('click', applySkillSelection); }
   skillModal.querySelectorAll('.skill-modal-cancel').forEach(function(b) { b.addEventListener('click', closeSkillModal); });
   if (skillModalUseBtn) { skillModalUseBtn.addEventListener('click', applySkillSelection); }
-  skillModal.addEventListener('click', function(e) { if (e.target === skillModal) closeSkillModal(); });
+  skillModal.addEventListener('click', function(e) { if (e.target === skillModal) applySkillSelection(); });
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape' && !skillModal.classList.contains('hidden')) applySkillSelection();
+  });
 
   // -- File attachments --
   var imageUploadInput = document.getElementById('image-upload-input');
