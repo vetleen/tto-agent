@@ -961,6 +961,34 @@ class DocumentViewsTests(TestCase):
         self.assertIn(str(active.id), data["statuses"])
         self.assertNotIn(str(archived.id), data["statuses"])
 
+    def test_document_status_rows_name_only_unfinished_docs(self):
+        """Non-terminal docs carry a display name so the page can draw a row for
+        one it hasn't seen (attachments split out of an email mid-processing)."""
+        self.client.force_login(self.user)
+        ready = self._make_doc()
+        failed = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="fail.txt", status=DataRoomDocument.Status.FAILED,
+        )
+        named = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="deck.pptx", name="mail.eml › deck.pptx",
+            status=DataRoomDocument.Status.PROCESSING,
+        )
+        unnamed = DataRoomDocument.objects.create(
+            data_room=self.data_room, uploaded_by=self.user,
+            original_filename="notes.pdf", status=DataRoomDocument.Status.UPLOADED,
+        )
+        data = self.client.get(
+            reverse("document_status", kwargs={"data_room_id": self.data_room.uuid}),
+        ).json()
+        self.assertEqual(data["rows"], {
+            str(named.id): {"name": "mail.eml › deck.pptx"},
+            str(unnamed.id): {"name": "notes.pdf"},
+        })
+        self.assertEqual(data["statuses"][str(ready.id)], "ready")
+        self.assertEqual(data["statuses"][str(failed.id)], "failed")
+
     def test_document_status_blocks_other_user(self):
         self.client.force_login(self.other)
         response = self.client.get(

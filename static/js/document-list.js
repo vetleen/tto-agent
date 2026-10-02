@@ -170,6 +170,48 @@
   renderStatusIcons();
   window.renderStatusIcons = renderStatusIcons;
 
+  // ── Client-side rows ────────────────────────────────────────────────
+  // A minimal row for a document still processing: one the user just
+  // uploaded, or an attachment split out of an email by the worker. The
+  // reload once everything is done swaps in the full server-rendered row.
+  function addDocumentRow(doc) {
+    var listContainer = document.querySelector('section.mt-6 .w-full.text-sm');
+    if (!listContainer) return;
+    var emptyMsg = listContainer.querySelector('p.text-body');
+    if (emptyMsg) emptyMsg.remove();
+    var row = document.createElement('div');
+    row.className = 'flex items-center w-full px-4 py-2.5 border-b border-default last:border-b-0 hover:bg-neutral-secondary-soft group';
+    row.dataset.docId = doc.id;
+    row.dataset.status = doc.status;
+    row.dataset.list = 'active';
+
+    // Build the row with DOM APIs (textContent / setAttribute) instead of an
+    // innerHTML string: doc.filename is user-controlled and lands in both
+    // attribute (aria-label/title) and text contexts. setAttribute and
+    // textContent are injection-safe for any value, including quotes.
+    var checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.className = 'doc-checkbox w-4 h-4 text-brand bg-neutral-secondary-soft border-default-medium rounded focus:ring-brand focus:ring-2 me-3 shrink-0';
+    checkbox.setAttribute('aria-label', 'Select ' + doc.filename);
+
+    var statusIcon = document.createElement('span');
+    statusIcon.className = 'doc-status-icon shrink-0 me-2';
+
+    var nameSpan = document.createElement('span');
+    nameSpan.className = 'flex-1 min-w-0 truncate font-medium text-heading';
+    nameSpan.title = doc.filename;
+    nameSpan.textContent = doc.filename;
+
+    var dateSpan = document.createElement('span');
+    dateSpan.className = 'shrink-0 ms-3 wf-mono text-xs text-body-subtle text-right';
+    dateSpan.textContent = 'Just now';
+
+    row.append(checkbox, statusIcon, nameSpan, dateSpan);
+    listContainer.appendChild(row);
+    renderStatusIcons();
+  }
+  window.addDocumentRow = addDocumentRow;
+
   // ── Retry scan ──────────────────────────────────────────────────────
   document.addEventListener('click', function (e) {
     var btn = e.target.closest('.retry-scan-btn');
@@ -300,6 +342,15 @@
       .then(function (data) {
         var statuses = data.statuses || {};
         var progress = data.progress || {};
+        var newRows = data.rows || {};
+        // Documents that appeared since the page loaded (attachments the worker
+        // split out of an email) get a row right away, and join the upload
+        // banner's count so it doesn't read "ready" while they still process.
+        Object.keys(newRows).forEach(function (id) {
+          if (TERMINAL[statuses[id]] || document.querySelector('[data-doc-id="' + id + '"]')) return;
+          addDocumentRow({ id: id, filename: newRows[id].name, status: statuses[id] });
+          if (trackedDocIds && trackedDocIds.map(String).indexOf(id) === -1) trackedDocIds.push(id);
+        });
         var changed = false;
         document.querySelectorAll('[data-doc-id]').forEach(function (row) {
           var newStatus = statuses[row.dataset.docId];
@@ -311,8 +362,8 @@
         });
         if (changed) renderStatusIcons();
         updateProcessingBanner(statuses);
-        // Documents with no row yet (attachments split out of an email while it
-        // processed) keep polling alive; the reload below then shows them.
+        // Fallback for a document with no row (none drawn above): keep polling
+        // alive; the reload below then shows it.
         var unseenPending = Object.keys(statuses).some(function (id) {
           return !TERMINAL[statuses[id]] && !document.querySelector('[data-doc-id="' + id + '"]');
         });

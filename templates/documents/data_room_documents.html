@@ -733,40 +733,8 @@
     }
 
     function addDocumentRow(doc) {
-      var listContainer = document.querySelector('section.mt-6 .w-full.text-sm');
-      if (!listContainer) return;
-      var emptyMsg = listContainer.querySelector('p.text-body');
-      if (emptyMsg) emptyMsg.remove();
-      var row = document.createElement('div');
-      row.className = 'flex items-center w-full px-4 py-2.5 border-b border-default last:border-b-0 hover:bg-neutral-secondary-soft group';
-      row.dataset.docId = doc.id;
-      row.dataset.status = doc.status;
-      row.dataset.list = 'active';
-
-      // Build the row with DOM APIs (textContent / setAttribute) instead of an
-      // innerHTML string: doc.filename is user-controlled and lands in both
-      // attribute (aria-label/title) and text contexts. setAttribute and
-      // textContent are injection-safe for any value, including quotes.
-      var checkbox = document.createElement('input');
-      checkbox.type = 'checkbox';
-      checkbox.className = 'doc-checkbox w-4 h-4 text-brand bg-neutral-secondary-soft border-default-medium rounded focus:ring-brand focus:ring-2 me-3 shrink-0';
-      checkbox.setAttribute('aria-label', 'Select ' + doc.filename);
-
-      var statusIcon = document.createElement('span');
-      statusIcon.className = 'doc-status-icon shrink-0 me-2';
-
-      var nameSpan = document.createElement('span');
-      nameSpan.className = 'flex-1 min-w-0 truncate font-medium text-heading';
-      nameSpan.title = doc.filename;
-      nameSpan.textContent = doc.filename;
-
-      var dateSpan = document.createElement('span');
-      dateSpan.className = 'shrink-0 ms-3 wf-mono text-xs text-body-subtle text-right';
-      dateSpan.textContent = 'Just now';
-
-      row.append(checkbox, statusIcon, nameSpan, dateSpan);
-      listContainer.appendChild(row);
-      if (typeof window.renderStatusIcons === 'function') window.renderStatusIcons();
+      // Shared with the status poll (static/js/document-list.js).
+      if (typeof window.addDocumentRow === 'function') window.addDocumentRow(doc);
     }
 
     async function uploadFiles(fileList) {

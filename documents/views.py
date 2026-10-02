@@ -1067,19 +1067,25 @@ def document_status(request, data_room_id):
 
     _TERMINAL = {"ready", "failed", "scan_failed"}
     statuses = {}
+    rows = {}
     version_by_doc = {}
-    for pk, status, err, q_at, d_at, cur_vid in data_room.documents.filter(
+    for pk, status, err, q_at, d_at, cur_vid, name, orig in data_room.documents.filter(
         is_archived=False,
     ).values_list(
         "id", "status", "processing_error",
         "current_version__queued_at", "current_version__dispatched_at",
-        "current_version_id",
+        "current_version_id", "name", "original_filename",
     ):
         pres = DataRoomDocument.presentation_status(status, err, waiting=bool(q_at and not d_at))
         statuses[str(pk)] = pres
+        if pres in _TERMINAL:
+            continue
+        # Enough to draw a row for a document the page hasn't seen yet — the
+        # attachments split out of an email while it processes appear live.
+        rows[str(pk)] = {"name": name or orig}
         # Only non-terminal docs can have a live progress dict — skip the rest so
         # the cache read stays small.
-        if pres not in _TERMINAL and cur_vid is not None:
+        if cur_vid is not None:
             version_by_doc[pk] = cur_vid
 
     progress_by_version = read_many(version_by_doc.values())
@@ -1088,7 +1094,7 @@ def document_status(request, data_room_id):
         for pk, vid in version_by_doc.items()
         if vid in progress_by_version
     }
-    return JsonResponse({"statuses": statuses, "progress": progress})
+    return JsonResponse({"statuses": statuses, "progress": progress, "rows": rows})
 
 
 @login_required
