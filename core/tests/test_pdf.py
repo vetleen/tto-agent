@@ -237,6 +237,184 @@ class PdfToTextTests(SimpleTestCase):
             pdf_to_text(b"this is not a pdf", image_sink=sink)
 
 
+def _jpeg_layer(w, h, color=(240, 236, 228)):
+    """An RGB DCT image layer for :func:`_layered_pdf`."""
+    buf = io.BytesIO()
+    _img(w, h, color).save(buf, format="JPEG", quality=80)
+    return {"kind": "jpeg", "w": w, "h": h, "data": buf.getvalue()}
+
+
+def _mask_layer(w, h, seed=1):
+    """A 1-bit stencil mask (``/ImageMask true``) layer with a seeded pattern,
+    so distinct seeds give distinct bytes."""
+    import random
+    import zlib
+
+    rng = random.Random(seed)
+    row = (w + 7) // 8
+    raw = bytes(rng.getrandbits(8) for _ in range(row * h))
+    return {"kind": "mask", "w": w, "h": h, "data": zlib.compress(raw)}
+
+
+def _layered_pdf(pages, *, size=(595, 842)) -> bytes:
+    """A hand-rolled PDF whose pages paint image layers, the way an MRC
+    ("compact PDF") scanner does. ``pages`` is a list of ``(layers, text)``:
+    the first layer is painted over the whole page, the rest as small patches;
+    ``text`` (or None) adds a selectable text run."""
+    pw, ph = size
+    objs: list = [b"<</Type/Catalog/Pages 2 0 R>>", None, b"<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>"]
+    page_ids = []
+
+    def add(body) -> int:
+        objs.append(body)
+        return len(objs)
+
+    for layers, text in pages:
+        names, ops = [], []
+        for n, layer in enumerate(layers):
+            if layer["kind"] == "jpeg":
+                head = b"/ColorSpace/DeviceRGB/BitsPerComponent 8/Filter/DCTDecode"
+            else:
+                head = b"/ImageMask true/BitsPerComponent 1/Filter/FlateDecode"
+            oid = add(
+                b"<</Type/XObject/Subtype/Image/Width " + str(layer["w"]).encode()
+                + b"/Height " + str(layer["h"]).encode() + head
+                + b"/Length " + str(len(layer["data"])).encode() + b">>stream\n" + layer["data"] + b"\nendstream"
+            )
+            names.append(b"/Im%d %d 0 R" % (n, oid))
+            if n == 0:
+                ops.append(b"q %d 0 0 %d 0 0 cm /Im0 Do Q" % (pw, ph))
+            else:
+                ops.append(b"0.2 0.2 0.6 rg q %d 0 0 %d %d %d cm /Im%d Do Q" % (layer["w"], layer["h"], 40 * n, 60 * n, n))
+        if text:
+            ops.append(b"BT /F1 12 Tf 40 800 Td (" + text.encode("latin-1") + b") Tj ET")
+        stream = b"\n".join(ops)
+        cid = add(b"<</Length " + str(len(stream)).encode() + b">>stream\n" + stream + b"\nendstream")
+        page_ids.append(add(
+            b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 %d %d]/Contents %d 0 R" % (pw, ph, cid)
+            + b"/Resources<</Font<</F1 3 0 R>>/XObject<<" + b"".join(names) + b">>>>>>"
+        ))
+    kids = b" ".join(b"%d 0 R" % i for i in page_ids)
+    objs[1] = b"<</Type/Pages/Kids[" + kids + b"]/Count " + str(len(page_ids)).encode() + b">>"
+
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for i, body in enumerate(objs, start=1):
+        offsets.append(len(out))
+        out += str(i).encode() + b" 0 obj" + body + b"endobj\n"
+    xref_pos = len(out)
+    n = len(objs) + 1
+    out += b"xref\n0 " + str(n).encode() + b"\n0000000000 65535 f \n"
+    for off in offsets:
+        out += ("%010d 00000 n \n" % off).encode()
+    out += b"trailer<</Size " + str(n).encode() + b"/Root 1 0 R>>\nstartxref\n" + str(xref_pos).encode() + b"\n%%EOF"
+    return bytes(out)
+
+
+def _mrc_page(seed=1, text=None):
+    """One MRC page: an A4-aspect background plus two stencil masks."""
+    return ([_jpeg_layer(620, 877), _mask_layer(200, 60, seed), _mask_layer(120, 48, seed + 100)], text)
+
+
+def _sized_sink():
+    """A recording sink that also captures alt text and decoded pixel size."""
+    from PIL import Image
+
+    calls = []
+
+    def sink(image, idx):
+        with image.open() as f:
+            data = f.read()
+        calls.append({
+            "idx": idx, "content_type": image.content_type, "alt_text": image.alt_text,
+            "size": Image.open(io.BytesIO(data)).size,
+        })
+        return f"[[image:fake-{idx}|Image {idx}: desc]]"
+
+    return sink, calls
+
+
+class PdfLayeredScanTests(SimpleTestCase):
+    """MRC scans (background + stencil masks) and textless image collages are
+    rendered as ONE picture per page; ordinary pages keep their embedded images."""
+
+    def test_mrc_page_renders_as_one_picture_without_decoding_fragments(self):
+        from unittest import mock
+
+        from pypdf import PageObject
+
+        sink, calls = _sized_sink()
+        with mock.patch.object(PageObject, "images", new_callable=mock.PropertyMock) as images:
+            out = pdf_to_text(_layered_pdf([_mrc_page()]), image_sink=sink)
+        images.assert_not_called()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["content_type"], "image/jpeg")
+        self.assertEqual(calls[0]["alt_text"], "Scanned page 1")
+        self.assertEqual(max(calls[0]["size"]), 1568)
+        self.assertIn("[[image:fake-1|", out)
+
+    def test_each_mrc_page_is_one_picture(self):
+        sink, calls = _sized_sink()
+        pdf_to_text(_layered_pdf([_mrc_page(1), _mrc_page(2), _mrc_page(3)]), image_sink=sink)
+        self.assertEqual([c["alt_text"] for c in calls], ["Scanned page 1", "Scanned page 2", "Scanned page 3"])
+
+    def test_mrc_page_with_ocr_text_keeps_text_and_renders_once(self):
+        sink, calls = _sized_sink()
+        out = pdf_to_text(_layered_pdf([_mrc_page(text="Agreement between the parties")]), image_sink=sink)
+        self.assertIn("Agreement between the parties", out)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["alt_text"], "Scanned page 1")
+
+    def test_textless_collage_renders_once(self):
+        layers = [_jpeg_layer(300, 200, (200, 30, 30)), _jpeg_layer(150, 150, (30, 30, 200))]
+        sink, calls = _sized_sink()
+        pdf_to_text(_layered_pdf([(layers, None)]), image_sink=sink)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["alt_text"], "Scanned page 1")
+
+    def test_text_page_with_figures_keeps_embedded_images(self):
+        layers = [_jpeg_layer(300, 200, (200, 30, 30)), _jpeg_layer(150, 150, (30, 30, 200))]
+        sink, calls = _sized_sink()
+        out = pdf_to_text(_layered_pdf([(layers, "Figure 1 and Figure 2 show the results")]), image_sink=sink)
+        self.assertIn("Figure 1 and Figure 2", out)
+        self.assertEqual(sorted(c["size"] for c in calls), [(150, 150), (300, 200)])
+        self.assertTrue(all(c["alt_text"] == "" for c in calls))
+
+    def test_mask_without_page_sized_background_is_not_a_scan(self):
+        # A stencil icon next to a small figure on a text page: not MRC.
+        layers = [_jpeg_layer(300, 200), _mask_layer(64, 64)]
+        sink, calls = _sized_sink()
+        pdf_to_text(_layered_pdf([(layers, "Ordinary page with an icon and a figure")]), image_sink=sink)
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all(c["alt_text"] == "" for c in calls))
+
+    def test_single_image_scan_passes_through(self):
+        sink, calls = _sized_sink()
+        pdf_to_text(_layered_pdf([([_jpeg_layer(620, 877)], None)]), image_sink=sink)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["size"], (620, 877))
+        self.assertEqual(calls[0]["alt_text"], "")
+
+    def test_render_failure_falls_back_to_embedded_images(self):
+        from unittest import mock
+
+        sink, calls = _sized_sink()
+        with mock.patch("core.pdf._PdfiumDoc.render_page_jpeg", return_value=None):
+            pdf_to_text(_layered_pdf([_mrc_page()]), image_sink=sink)
+        self.assertEqual(len(calls), 3)
+
+    def test_page_markers_and_cap_apply_to_rendered_pages(self):
+        sink, calls = _sized_sink()
+        out = pdf_to_text(_layered_pdf([_mrc_page(1), _mrc_page(2)]), image_sink=sink, page_markers=True)
+        self.assertLess(out.index(page_marker(1)), out.index("[[image:fake-1|"))
+        self.assertLess(out.index(page_marker(2)), out.index("[[image:fake-2|"))
+        with override_settings(PDF_MAX_EMBEDDED_IMAGES=1):
+            sink, calls = _sized_sink()
+            with self.assertLogs("core.pdf", level="WARNING"):
+                pdf_to_text(_layered_pdf([_mrc_page(1), _mrc_page(2)]), image_sink=sink)
+        self.assertEqual(len(calls), 1)
+
+
 def _form_pdf(*, with_acroform: bool = True, appearances: bool = False) -> bytes:
     """A one-page filled-in form: printed labels in the content stream, answers
     only in AcroForm widgets (what a PDF filled in Acrobat looks like).

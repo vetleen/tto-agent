@@ -8,8 +8,13 @@ placeholder) work unchanged. pypdf gives no positional layout for images, so a
 page's image tokens are appended after that page's text, keeping each image in
 its page context for retrieval.
 
-Only embedded images are handled (figures, and the single full-page image a
-typical *scanned* page contains). True page rasterization / OCR is out of scope.
+Embedded images are handled as figures, and a simple *scanned* page's single
+full-page image passes through as-is. A **layered scan** is different: MRC
+("compact PDF") scanners store a page as a low-res page-sized background plus
+many 1-bit stencil masks (one per text block, stamp, signature), so no single
+image is the page. Such pages (``_is_layered_scan``) are rendered once with
+PDFium and handed to the sink as ONE page picture instead of their fragments —
+the describer's transcription-first prompt then effectively OCRs the page.
 
 Filled-in form fields (AcroForm widgets) are not part of the page text; each
 page's filled values are appended after its text as a labelled
@@ -38,6 +43,17 @@ PDF_MIN_IMAGE_BYTES = 1024
 # pathological deck can't fan out into thousands of assets. Beyond this, images
 # are dropped (logged once) — described-image caps live in the sinks themselves.
 PDF_MAX_EMBEDDED_IMAGES = 200
+
+# Layered-scan detection (see ``_is_layered_scan``). A page with fewer extracted
+# characters than this counts as having no text.
+PDF_SCAN_TEXT_MAX_CHARS = 20
+# A background image matches the page when its aspect ratio is within this
+# relative tolerance of the mediabox's and its long edge is at least this big.
+_SCAN_ASPECT_TOLERANCE = 0.03
+_SCAN_BACKGROUND_MIN_LONG_EDGE = 500
+# Long edge of a rendered layered-scan page, in pixels — the vision sweet spot
+# (mirrors chat.pdf_attach.PDF_RENDER_MAX_DIMENSION; core must not import chat).
+PDF_SCAN_RENDER_MAX_DIMENSION = 1568
 
 # Opt-in page boundary markers (``pdf_to_text(..., page_markers=True)``): each
 # page's text is prefixed with ``page_marker(n)``, e.g. "3" for page
@@ -119,6 +135,63 @@ def _too_small(pil_image, data: bytes, min_dim: int) -> bool:
         return size[0] < min_dim or size[1] < min_dim
     # Dimensions unknown — fall back to a raw-byte guard.
     return len(data) < PDF_MIN_IMAGE_BYTES
+
+
+def _page_image_xobjects(page) -> list[dict]:
+    """``[{"w", "h", "mask"}]`` for the page's top-level image XObjects, read
+    from their dictionaries only — no stream is decoded."""
+    resources = page.get("/Resources")
+    resources = resources.get_object() if resources is not None else None
+    xobjects = resources.get("/XObject") if resources is not None else None
+    xobjects = xobjects.get_object() if xobjects is not None else None
+    out: list[dict] = []
+    for name in xobjects or ():
+        obj = xobjects[name].get_object()
+        if obj.get("/Subtype") != "/Image":
+            continue
+        out.append({
+            "w": int(obj.get("/Width") or 0),
+            "h": int(obj.get("/Height") or 0),
+            "mask": bool(obj.get("/ImageMask", False)),
+        })
+    return out
+
+
+def _is_layered_scan(page, text: str, min_dim: int) -> bool:
+    """True when the page is built from image layers that only make sense
+    together, so it should be rendered as one picture:
+
+    (a) MRC scan — a page-aspect background image plus at least one 1-bit
+        stencil mask (holds even when the scanner added an OCR text layer);
+    (b) textless collage — no meaningful text and two or more images.
+
+    A textless page with ONE image (a plain scan) is not layered: that image is
+    already the page. Top-level XObjects only; any failure means "not layered".
+    """
+    try:
+        images = [i for i in _page_image_xobjects(page) if min(i["w"], i["h"]) >= min_dim]
+        if not images:
+            return False
+        if len(text.strip()) < PDF_SCAN_TEXT_MAX_CHARS and len(images) >= 2:
+            return True
+        if not any(i["mask"] for i in images):
+            return False
+        box = page.mediabox
+        page_w, page_h = abs(float(box.width)), abs(float(box.height))
+        if not page_w or not page_h:
+            return False
+        # Either orientation: a /Rotate'd page may carry a sideways background.
+        aspects = (page_w / page_h, page_h / page_w)
+        for i in images:
+            if i["mask"] or max(i["w"], i["h"]) < _SCAN_BACKGROUND_MIN_LONG_EDGE:
+                continue
+            img_aspect = i["w"] / i["h"]
+            if any(abs(img_aspect - a) <= _SCAN_ASPECT_TOLERANCE * a for a in aspects):
+                return True
+        return False
+    except Exception:  # noqa: BLE001 — detection is an optimisation; never fail extraction
+        logger.debug("pdf: layered-scan detection failed on a page", exc_info=True)
+        return False
 
 
 def _release_decoded_streams(page, image_refs) -> None:
@@ -453,33 +526,97 @@ def _form_block(widgets: list[dict], lines: _PageLines | None, page_width: float
     return FORM_BLOCK_HEADER + "\n" + "\n".join(e[2] for e in entries)
 
 
-class _FormFieldReader:
-    """Per-document helper: ``block(page_index, pypdf_page)`` returns the page's
-    filled-field block ("" when none). PDFium is opened lazily, only once a page
-    actually has filled fields — most PDFs never pay for it. Label lookup is
-    best-effort: if PDFium can't read the file, fields fall back to their
-    tooltip/name."""
+class _PdfiumDoc:
+    """Per-document lazy PDFium handle shared by the form-field labeller and
+    the layered-scan renderer. Opened only once a page actually needs it — most
+    PDFs never pay for it — and a failed open is not retried."""
 
     def __init__(self, source):
-        self._source = source  # path str or PDF bytes
+        # Path str, PDF bytes, or a zero-arg callable returning bytes (so an
+        # in-memory PDF is only copied if PDFium is actually opened).
+        self._source = source
         self._pdf = None
-        self._pdf_failed = False
+        self._failed = False
+        self._forms_ready = False
 
-    def _pdfium_page(self, index: int):
-        if self._pdf is None and not self._pdf_failed:
+    def _doc(self):
+        if self._pdf is None and not self._failed:
             try:
                 import pypdfium2 as pdfium
 
-                self._pdf = pdfium.PdfDocument(self._source)
+                source = self._source() if callable(self._source) else self._source
+                self._pdf = pdfium.PdfDocument(source)
             except Exception:  # noqa: BLE001
-                logger.info("pdf form fields: PDFium could not open the file; using field names", exc_info=True)
-                self._pdf_failed = True
-        if self._pdf is None:
+                logger.info("pdf: PDFium could not open the file", exc_info=True)
+                self._failed = True
+        return self._pdf
+
+    def page(self, index: int):
+        doc = self._doc()
+        if doc is None:
             return None
         try:
-            return self._pdf[index]
+            return doc[index]
         except Exception:  # noqa: BLE001
             return None
+
+    def render_page_jpeg(self, index: int) -> bytes | None:
+        """The page rendered to one JPEG (long edge ≈ ``PDF_SCAN_RENDER_MAX_DIMENSION``),
+        or None on any failure."""
+        doc = self._doc()
+        if doc is None:
+            return None
+        if not self._forms_ready:
+            self._forms_ready = True
+            try:
+                # Without a form environment PDFium renders filled fields blank.
+                doc.init_forms()
+            except Exception:  # noqa: BLE001
+                logger.info("pdf: could not initialise PDF forms; fields may render blank", exc_info=True)
+        page = bitmap = None
+        try:
+            from django.conf import settings
+
+            page = doc[index]
+            width_pt, height_pt = page.get_size()
+            long_edge_pt = max(float(width_pt or 0), float(height_pt or 0)) or 842.0
+            scale = PDF_SCAN_RENDER_MAX_DIMENSION / long_edge_pt
+            bitmap = page.render(scale=scale)
+            pil = bitmap.to_pil().convert("RGB")
+            if max(pil.size) > PDF_SCAN_RENDER_MAX_DIMENSION:
+                pil.thumbnail((PDF_SCAN_RENDER_MAX_DIMENSION, PDF_SCAN_RENDER_MAX_DIMENSION))
+            buf = io.BytesIO()
+            pil.save(buf, format="JPEG", quality=getattr(settings, "VISION_IMAGE_JPEG_QUALITY", 82))
+            return buf.getvalue()
+        except Exception:  # noqa: BLE001 — caller falls back to the embedded images
+            logger.warning("pdf: failed to render a layered-scan page", exc_info=True)
+            return None
+        finally:
+            for obj in (bitmap, page):
+                if obj is not None:
+                    try:
+                        obj.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+
+    def close(self) -> None:
+        if self._pdf is not None:
+            try:
+                self._pdf.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._pdf = None
+
+
+class _FormFieldReader:
+    """Per-document helper: ``block(page_index, pypdf_page)`` returns the page's
+    filled-field block ("" when none). PDFium (a shared :class:`_PdfiumDoc`) is
+    only touched once a page actually has filled fields. Label lookup is
+    best-effort: if PDFium can't read the file, fields fall back to their
+    tooltip/name."""
+
+    def __init__(self, pdfium_doc: _PdfiumDoc):
+        self._pdfium = pdfium_doc
 
     def block(self, index: int, page) -> str:
         try:
@@ -487,7 +624,7 @@ class _FormFieldReader:
             if not any(w["filled"] for w in widgets):
                 return ""
             lines = None
-            pdfium_page = self._pdfium_page(index)
+            pdfium_page = self._pdfium.page(index)
             if pdfium_page is not None:
                 try:
                     lines = _PageLines(pdfium_page)
@@ -503,14 +640,6 @@ class _FormFieldReader:
         except Exception:  # noqa: BLE001 — form fields are additive; never fail extraction
             logger.warning("pdf form fields: failed to read a page's form fields", exc_info=True)
             return ""
-
-    def close(self) -> None:
-        if self._pdf is not None:
-            try:
-                self._pdf.close()
-            except Exception:  # noqa: BLE001
-                pass
-            self._pdf = None
 
 
 def _has_acroform(reader) -> bool:
@@ -530,7 +659,8 @@ def form_field_blocks(pdf_bytes: bytes, indices=None) -> dict[int, str]:
         reader = PdfReader(io.BytesIO(pdf_bytes))
         if not _has_acroform(reader):
             return {}
-        forms = _FormFieldReader(pdf_bytes)
+        pdfium_doc = _PdfiumDoc(pdf_bytes)
+        forms = _FormFieldReader(pdfium_doc)
         try:
             n = len(reader.pages)
             out = {}
@@ -541,7 +671,7 @@ def form_field_blocks(pdf_bytes: bytes, indices=None) -> dict[int, str]:
                         out[i] = block
             return out
         finally:
-            forms.close()
+            pdfium_doc.close()
     except Exception:  # noqa: BLE001
         logger.info("pdf form fields: could not read form fields", exc_info=True)
         return {}
@@ -582,14 +712,43 @@ def pdf_to_text(
 
     # Filled form fields are appended after each page's text (the answers of a
     # filled-in form live in widget annotations, not in the page content).
-    forms = None
-    if _has_acroform(reader):
-        forms = _FormFieldReader(source if isinstance(source, str) else source.getvalue())
+    # One lazy PDFium handle per document, shared by the form-field labeller and
+    # the layered-scan renderer; never opened for a PDF that needs neither.
+    pdfium_doc = _PdfiumDoc(source if isinstance(source, str) else source.getvalue)
+    forms = _FormFieldReader(pdfium_doc) if _has_acroform(reader) else None
 
     seen: dict[str, str] = {}  # sha256 -> token (dedup within the document)
     idx = 0  # 1-indexed count of images actually handed to the sink
     capped = False
+    rendered_pages = 0
     pages_out: list[str] = []
+
+    def emit(img_bytes: bytes, content_type: str, alt_text: str = "") -> str | None:
+        """Hand one picture to the sink (sha dedup + stored cap); its token, or
+        None when it was dropped."""
+        nonlocal idx, capped
+        sha = hashlib.sha256(img_bytes).hexdigest()
+        existing = seen.get(sha)
+        if existing is not None:
+            return existing
+        if len(seen) >= max_images:
+            if not capped:
+                logger.warning(
+                    "pdf_to_text: more than %d distinct embedded images; "
+                    "storing the first %d and dropping the rest",
+                    max_images, max_images,
+                )
+                capped = True
+            return None
+        idx += 1
+        try:
+            token = image_sink(_PdfImage(img_bytes, content_type, alt_text), idx)
+        except Exception:
+            logger.exception("pdf_to_text: image_sink failed for an embedded image; skipping")
+            idx -= 1
+            return None
+        seen[sha] = token
+        return token
 
     try:
         for page_no, page in enumerate(reader.pages, start=1):
@@ -598,6 +757,8 @@ def pdf_to_text(
             except Exception:
                 logger.warning("pdf_to_text: failed to extract text from a page", exc_info=True)
                 text = ""
+            # Measured before the form block: filled answers are not page text.
+            layered = _is_layered_scan(page, text, min_dim)
             if forms is not None:
                 block = forms.block(page_no - 1, page)
                 if block:
@@ -605,14 +766,24 @@ def pdf_to_text(
 
             tokens: list[str] = []
             image_refs: list = []
-            # Iterate lazily: list(page.images) would decode every raster on the
-            # page (PIL buffers included) before the first one is handled; one at
-            # a time, the previous image is released as the next is decoded.
-            try:
-                image_iter = iter(page.images)
-            except Exception:
-                logger.warning("pdf_to_text: failed to enumerate images on a page", exc_info=True)
+            page_jpeg = pdfium_doc.render_page_jpeg(page_no - 1) if layered else None
+            if page_jpeg is not None:
+                # One picture for the whole page; its fragments are never decoded.
+                rendered_pages += 1
+                token = emit(page_jpeg, "image/jpeg", f"Scanned page {page_no}")
+                if token is not None:
+                    tokens.append(token)
+                page_jpeg = None
                 image_iter = iter(())
+            else:
+                # Iterate lazily: list(page.images) would decode every raster on
+                # the page (PIL buffers included) before the first one is handled;
+                # one at a time, the previous image is released as the next is decoded.
+                try:
+                    image_iter = iter(page.images)
+                except Exception:
+                    logger.warning("pdf_to_text: failed to enumerate images on a page", exc_info=True)
+                    image_iter = iter(())
             while True:
                 try:
                     image_file = next(image_iter)
@@ -630,32 +801,9 @@ def pdf_to_text(
                     continue
                 if not img_bytes or _too_small(pil_image, img_bytes, min_dim):
                     continue
-
-                sha = hashlib.sha256(img_bytes).hexdigest()
-                existing = seen.get(sha)
-                if existing is not None:
-                    tokens.append(existing)
-                    continue
-                if len(seen) >= max_images:
-                    if not capped:
-                        logger.warning(
-                            "pdf_to_text: more than %d distinct embedded images; "
-                            "storing the first %d and dropping the rest",
-                            max_images, max_images,
-                        )
-                        capped = True
-                    continue
-
-                idx += 1
-                content_type = _content_type_for(image_file, pil_image)
-                try:
-                    token = image_sink(_PdfImage(img_bytes, content_type), idx)
-                except Exception:
-                    logger.exception("pdf_to_text: image_sink failed for an embedded image; skipping")
-                    idx -= 1
-                    continue
-                seen[sha] = token
-                tokens.append(token)
+                token = emit(img_bytes, _content_type_for(image_file, pil_image))
+                if token is not None:
+                    tokens.append(token)
             image_file = pil_image = img_bytes = None  # noqa: F841 — drop the last raster
 
             if tokens:
@@ -673,8 +821,7 @@ def pdf_to_text(
             # keeps every decoded image of the document resident until we return.
             _release_decoded_streams(page, image_refs)
     finally:
-        if forms is not None:
-            forms.close()
+        pdfium_doc.close()
         close = getattr(reader, "close", None)
         if callable(close):
             try:
@@ -687,4 +834,6 @@ def pdf_to_text(
         del reader
         gc.collect()
 
+    if rendered_pages:
+        logger.info("pdf_to_text: rendered %d layered-scan page(s) as one picture each", rendered_pages)
     return "\n\n".join(pages_out).strip()
