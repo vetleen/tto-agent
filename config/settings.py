@@ -163,6 +163,12 @@ if _sentry_dsn and not _is_test_run and not _is_shell and not DEBUG:
     # parses the file; these are recoverable, not errors — keep them out of Sentry.
     ignore_logger("pypdf")
     ignore_logger("pypdf.*")
+    # web_fetch: trafilatura logs at ERROR when a page has nothing lxml can parse
+    # ("Document is empty", WILFRED-94/95), so the level bump in web_fetch.py
+    # doesn't catch it. _extract_content falls back to readability → bs4, so
+    # nothing trafilatura logs is actionable for us.
+    ignore_logger("trafilatura")
+    ignore_logger("trafilatura.*")
 
 # SECURITY: SECRET_KEY must be set in production (no fallback when DEBUG is False).
 _secret_key = os.environ.get("DJANGO_SECRET_KEY", "").strip()

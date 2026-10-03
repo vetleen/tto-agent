@@ -52,9 +52,10 @@ _IGNORED_LOGGERS_PROBE = (
     "from sentry_sdk.integrations.logging import EventHandler; "
     "h = EventHandler(); "
     "names = ['pypdf', 'pypdf._reader', 'pypdf.generic._data_structures', "
-    "'weasyprint', 'weasyprint.css', 'fontTools', 'fontTools.subset', 'chat.views']; "
+    "'weasyprint', 'weasyprint.css', 'fontTools', 'fontTools.subset', "
+    "'trafilatura', 'trafilatura.utils', 'chat.views']; "
     "print('RECORDED:' + ','.join(n for n in names if h._can_record("
-    "logging.LogRecord(n, logging.WARNING, 'probe.py', 0, 'm', None, None))))"
+    "logging.LogRecord(n, logging.ERROR, 'probe.py', 0, 'm', None, None))))"
 )
 
 
@@ -160,5 +161,6 @@ class SentryIgnoredLoggersTests(SimpleTestCase):
         out = _probe_sentry(
             {"DJANGO_DEBUG": "False", "SENTRY_DSN": _FAKE_DSN}, probe=_IGNORED_LOGGERS_PROBE,
         )
-        # Only our own logger still records; every pypdf/weasyprint/fontTools name is dropped.
+        # Only our own logger still records; every pypdf/weasyprint/fontTools/trafilatura
+        # name is dropped (trafilatura.utils logs at ERROR — WILFRED-94/95).
         self.assertEqual(out, "RECORDED:chat.views")
