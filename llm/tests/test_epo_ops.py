@@ -1363,7 +1363,9 @@ class SearchToolPagingTests(TestCase):
     def test_count_only(self, mock_get):
         mock_get.return_value = _mock_ok(COUNT_FIXTURE)
         out = self._tool().invoke({"concepts": [{"cpc": _C1}, {"cpc": _C2}], "count_only": True})
-        self.assertEqual(out, "46 publications match. Query: cpc=A61K31/549/low and cpc=A61K9/209/low")
+        self.assertEqual(
+            out, "46 results (patent families) match. Query: cpc=A61K31/549/low and cpc=A61K9/209/low"
+        )
         self.assertTrue(mock_get.call_args.args[0].endswith("published-data/search"))
         self.assertEqual(mock_get.call_args.kwargs["params"]["Range"], "1-1")
 
@@ -1371,7 +1373,21 @@ class SearchToolPagingTests(TestCase):
     def test_count_only_404_is_zero(self, mock_get):
         mock_get.return_value = _mock_http_error(404)
         out = self._tool().invoke({"keywords": "zzqx", "count_only": True})
-        self.assertTrue(out.startswith("0 publications match."))
+        self.assertTrue(out.startswith("0 results (patent families) match."))
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_publication_membership_check(self, mock_get):
+        # Each row shows one family member; pn= finds the family of a known number.
+        mock_get.return_value = _mock_ok({"ops:world-patent-data": {"ops:biblio-search": {"@total-result-count": "1"}}})
+        out = self._tool().invoke({
+            "concepts": [{"cpc": _C1}, {"cpc": _C2}], "publication": "WO 2003/059327 A1", "count_only": True,
+        })
+        self.assertEqual(
+            out, "1 results (patent families) match. Query: cpc=A61K31/549/low and cpc=A61K9/209/low and pn=WO03059327"
+        )
+
+    def test_publication_validated(self):
+        self.assertIn("not a publication number (publication)", self._tool().invoke({"publication": "???"}))
 
     @patch("llm.tools.epo_ops.requests.get")
     def test_offset_and_view_caps(self, mock_get):
@@ -1394,8 +1410,8 @@ class SearchToolPagingTests(TestCase):
     def test_header_and_family_lines(self, mock_get):
         mock_get.return_value = _mock_ok(FAMILY_PAGE)
         out = self._tool().invoke({"keywords": "tablet", "view": "list", "count": 3})
-        self.assertIn("150 publications match. Positions 1-3, grouped into 2 families.", out)
-        self.assertIn("Sorted newest first, NOT by relevance.", out)
+        self.assertIn("150 results — one per patent family", out)
+        self.assertIn("Positions 1-3. Ordered by family, newest families first — NOT by relevance.", out)
         self.assertIn("repeat the search with offset=3", out)
         self.assertIn('Query: ta="tablet"', out)
         self.assertIn("[1] EP3000001A1 (20200101) Bilayer tablet — ACME — CPC: A61K9/209", out)
@@ -1510,3 +1526,27 @@ class CitationParsingTests(TestCase):
         )
         self.assertIn("Cited references", out)
         self.assertIn("category X/Y", out)
+
+
+@override_settings(EPO_OPS_KEY="k", EPO_OPS_SECRET="s", CACHES=_DUMMY_CACHE)
+class GetClaimsNotFoundTests(TestCase):
+    def setUp(self):
+        p = patch("llm.tools.epo_ops._ops_rate_limiter")
+        p.start()
+        self.addCleanup(p.stop)
+        p2 = patch("llm.tools.epo_ops._get_access_token", return_value="tok")
+        p2.start()
+        self.addCleanup(p2.stop)
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_claims_404_points_to_wo_member(self, mock_get):
+        mock_get.return_value = _mock_http_error(404)
+        out = PatentEpoOpsGetTool().invoke({"publication_number": "EP2252273A1", "parts": "claims"})
+        self.assertIn("No claims text at EPO for EP2252273A1", out)
+        self.assertIn("patent_epoops_family", out)
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_biblio_404_unchanged(self, mock_get):
+        mock_get.return_value = _mock_http_error(404)
+        out = PatentEpoOpsGetTool().invoke({"publication_number": "EP2252273A1"})
+        self.assertIn("No matching patent record was found", out)

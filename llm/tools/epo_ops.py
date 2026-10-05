@@ -651,6 +651,7 @@ def _build_cql(
     concepts: list[dict] | None = None,
     keyword_field: str = "title_abstract",
     cites: str = "",
+    publication: str = "",
 ) -> str:
     """Build an OPS CQL query string from structured inputs.
 
@@ -690,6 +691,11 @@ def _build_cql(
     cited = _citation_number(cites)
     if cited:
         clauses.append(f"ct={cited}")
+    # pn= matches the family result that contains this publication, whichever
+    # member OPS shows for it (probed: pn=WO03059327 AND the case-study union → 1).
+    pub = _citation_number(publication)
+    if pub:
+        clauses.append(f"pn={pub}")
 
     df = _sanitize_date(date_from, is_end=False)
     dt = _sanitize_date(date_to, is_end=True)
@@ -1104,8 +1110,9 @@ def _search_header(total: int, offset: int, shown_pubs: int, families: int, cql:
     lines: list[str] = []
     if shown_pubs:
         lines.append(
-            f"{total} publications match. Positions {offset + 1}-{offset + shown_pubs}, grouped into "
-            f"{families} famil{'y' if families == 1 else 'ies'}. Sorted newest first, NOT by relevance."
+            f"{total} results — one per patent family, shown under one member's number (maybe not "
+            f"the number you know). Positions {offset + 1}-{offset + shown_pubs}. Ordered by family, "
+            "newest families first — NOT by relevance."
         )
     end = offset + shown_pubs
     if end < min(total, _MAX_POSITION):
@@ -1606,6 +1613,15 @@ class PatentEpoOpsSearchInput(ReasonBaseModel):
             "Combine with concepts to find later documents building on a close hit."
         ),
     )
+    publication: str = Field(
+        default="",
+        description=(
+            "Restrict to the family of this publication number, e.g. 'WO03059327'. With "
+            "count_only=true and your other filters it answers 'is this document in my result "
+            "set?' (1 = yes, 0 = no) — needed because each result row shows only one family "
+            "member's number."
+        ),
+    )
     date_from: str = Field(default="", description="Earliest publication date, YYYY or YYYYMMDD.")
     date_to: str = Field(
         default="",
@@ -1613,7 +1629,10 @@ class PatentEpoOpsSearchInput(ReasonBaseModel):
     )
     count_only: bool = Field(
         default=False,
-        description="Only return how many publications match (cheap). Use it to size a search before listing it.",
+        description=(
+            "Only return how many results (patent families) match — cheap. Use it to size a "
+            "search before listing it, and to record what each strategy contributes."
+        ),
     )
     view: Literal["abstracts", "list"] = Field(
         default="abstracts",
@@ -1660,11 +1679,15 @@ class PatentEpoOpsSearchTool(ContextAwareTool):
         "- union of all four in one search: give each concept both its keywords and its codes.\n"
         "Run the separate strategies with count_only=true to see what each contributes; list "
         "the union to screen the documents.\n"
-        "Results are sorted NEWEST FIRST, not by relevance, so a large result set is not "
-        "'best first': size it with count_only, narrow it (add a concept, a narrower subgroup, "
-        "date_to) until it can be read in full, then page with offset. One invention appears "
-        "once per family member — results are grouped by family. [seen] marks families shown "
-        "earlier in this conversation; hide_seen=true leaves them out.\n"
+        "Each result is one patent FAMILY, shown under one member's number — which may differ "
+        "from the number you know (the paper's WO03059327 appears as EP1467712A1). To check "
+        "whether a known document is in a result set, rerun it with count_only=true and "
+        "publication='<number>' (1 = yes).\n"
+        "Results are ordered newest family first, NOT by relevance or publication date, so a "
+        "large result set is not 'best first': size it with count_only, narrow it (add a "
+        "concept, a narrower subgroup, date_to) until it can be read in full, then page with "
+        "offset. [seen] marks families shown earlier in this conversation; hide_seen=true "
+        "leaves them out.\n"
         "Each hit shows its CPC codes: codes recurring on relevant hits are classes worth "
         "searching. Use patent_epoops_get for a full record and its cited references, "
         "patent_epoops_classification to check a CPC code, and cites= for later documents "
@@ -1682,6 +1705,7 @@ class PatentEpoOpsSearchTool(ContextAwareTool):
         cpc: list[str] | str | None = None,
         include_subgroups: bool = True,
         cites: str = "",
+        publication: str = "",
         date_from: str = "",
         date_to: str = "",
         count_only: bool = False,
@@ -1694,7 +1718,7 @@ class PatentEpoOpsSearchTool(ContextAwareTool):
         concept_dicts = [
             c.model_dump() if hasattr(c, "model_dump") else dict(c or {}) for c in (concepts or [])
         ]
-        error = _validate_search_input(concept_dicts, _split_cpc(cpc), cites)
+        error = _validate_search_input(concept_dicts, _split_cpc(cpc), cites, publication)
         if error:
             return f"Patent search error: {error}"
         try:
@@ -1704,6 +1728,7 @@ class PatentEpoOpsSearchTool(ContextAwareTool):
                 concepts=concept_dicts,
                 keyword_field=keyword_field,
                 cites=cites,
+                publication=publication,
             )
         except ValueError as e:
             return f"Patent search error: {e}"
@@ -1826,10 +1851,12 @@ class PatentEpoOpsSearchTool(ContextAwareTool):
                 cache.set(cache_key, total, timeout=900)
             except Exception:
                 logger.debug("epo_ops count: cache write failed, continuing")
-        return f"{total} publications match. Query: {cql}"
+        return f"{total} results (patent families) match. Query: {cql}"
 
 
-def _validate_search_input(concepts: list[dict], legacy_cpc: list[str], cites: str) -> str:
+def _validate_search_input(
+    concepts: list[dict], legacy_cpc: list[str], cites: str, publication: str = ""
+) -> str:
     """Error message for invalid structured input, or "" — checked before OPS is called."""
     if len(concepts) > _MAX_CONCEPTS:
         return f"at most {_MAX_CONCEPTS} concepts per search (got {len(concepts)})."
@@ -1855,6 +1882,8 @@ def _validate_search_input(concepts: list[dict], legacy_cpc: list[str], cites: s
         )
     if (cites or "").strip() and not _citation_number(cites):
         return f"{cites!r} is not a publication number (cites)."
+    if (publication or "").strip() and not _citation_number(publication):
+        return f"{publication!r} is not a publication number (publication)."
     return ""
 
 
@@ -1930,6 +1959,14 @@ class PatentEpoOpsGetTool(ContextAwareTool):
                 cache.set(cache_key, json.dumps(data), timeout=3600)
             except Exception:
                 logger.debug("epo_ops get: cache write failed, continuing")
+        elif parts in ("claims", "description") and "404" in data["error"]:
+            # Seen live: EP2252273A1 claims → 404 while its WO member had them.
+            return (
+                f"No {parts} text at EPO for {display}. EPO holds full text mainly for EP and WO "
+                "publications, and an EP application that entered from a PCT application has its "
+                "text under the WO number — use patent_epoops_family to find the WO (or another "
+                "EP/WO) member and request its claims."
+            )
         return _format_get(data, display, parts)
 
 
