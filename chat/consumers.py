@@ -3063,10 +3063,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
                 # Accumulate thinking/reasoning content
                 elif event.event_type == "thinking":
-                    # Reclaim any content that leaked as tokens before thinking started
-                    if accumulated_content and not accumulated_thinking:
-                        accumulated_thinking = accumulated_content
-                        accumulated_content = ""
+                    # Text streamed before thinking in the same round stays text:
+                    # interleaved-thinking models write user-facing prose, then reason.
                     accumulated_thinking += event.data.get("text", "")
 
                 # Track tool calls for persistence
@@ -5035,8 +5033,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
         (``is_hidden_from_user=True``). ``content`` carries any narration text
         the model streamed before calling tools, and ``thinking`` any
         reasoning — both are preserved so the LLM keeps its own words in
-        history and the chat view can surface them as collapsed
-        "Thought further" blocks on reload.
+        history and the chat view can surface them in the turn's activity
+        timeline on reload.
         """
         # 1. Assistant message requesting tools (narration in body, tool_calls in metadata)
         tc_data = [

@@ -444,6 +444,145 @@ def _annotate_tool_batches(thread, rounds):
         m.tool_batch_failed = sum(1 for row in batch if row["is_error"])
 
 
+# A turn's activity timeline (thinking, narration, tool batches) folds into one
+# collapsed history block once it has more rows than this. Mirrored into chat.html's
+# JS as TIMELINE_COLLAPSE_AFTER so live streams and reloads agree.
+TIMELINE_COLLAPSE_AFTER = 5
+NARRATION_SNIPPET_CHARS = 80
+
+
+def _plural(n, word):
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
+def _format_duration(seconds):
+    """``45s`` / ``2m 14s`` / ``1h 3m`` — same format as chat.html's formatDuration()."""
+    s = max(0, int(round(seconds)))
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m {s % 60}s"
+    return f"{s // 3600}h {(s % 3600) // 60}m"
+
+
+def _narration_snippet(text):
+    flat = " ".join(text.split())
+    if len(flat) > NARRATION_SNIPPET_CHARS:
+        flat = flat[:NARRATION_SNIPPET_CHARS].rstrip() + "…"
+    return f"“{flat}”"
+
+
+def _round_rows(m):
+    """Timeline rows for one hidden tool-loop round, in live-stream order."""
+    rows = []
+    thinking = (m.metadata or {}).get("thinking")
+    if thinking:
+        rows.append({"kind": "thinking", "text": thinking})
+    if m.content.strip():
+        rows.append({"kind": "narration", "text": m.content, "snippet": _narration_snippet(m.content)})
+    batch = getattr(m, "tool_batch", None)
+    if batch:
+        rows.append({"kind": "tools", "rows": list(batch), "failed": m.tool_batch_failed})
+    return rows
+
+
+def _build_activity(rows, *, start=None, end=None):
+    """Summarise a turn's timeline rows. Past TIMELINE_COLLAPSE_AFTER rows the whole
+    timeline sits in one collapsed history block, where adjacent tool batches merge."""
+    thoughts = sum(1 for r in rows if r["kind"] == "thinking")
+    tools = sum(len(r["rows"]) for r in rows if r["kind"] == "tools")
+    failed = sum(r["failed"] for r in rows if r["kind"] == "tools")
+    collapsed = len(rows) > TIMELINE_COLLAPSE_AFTER
+    if collapsed:
+        merged = []
+        for r in rows:
+            if r["kind"] == "tools" and merged and merged[-1]["kind"] == "tools":
+                prev = merged[-1]
+                merged[-1] = {
+                    "kind": "tools",
+                    "rows": prev["rows"] + r["rows"],
+                    "failed": prev["failed"] + r["failed"],
+                }
+            else:
+                merged.append(r)
+        rows = merged
+    parts = []
+    if start and end:
+        parts.append(f"Worked for {_format_duration((end - start).total_seconds())}")
+    if thoughts:
+        parts.append(_plural(thoughts, "thought"))
+    if tools:
+        parts.append(_plural(tools, "tool"))
+    if failed:
+        parts.append(f"{failed} failed")
+    return {
+        "rows": rows,
+        "collapsed": collapsed,
+        "thoughts": thoughts,
+        "tools": tools,
+        "summary": " · ".join(parts),
+    }
+
+
+class _ActivityItem:
+    """A turn's tool-loop rounds with no final answer to hang them on (a stopped or
+    failed turn, or one still in flight): renders as a timeline-only bubble."""
+
+    role = "activity"
+    is_redacted = False
+    pk = None
+
+    def __init__(self, activity, created_at, is_boundary=False):
+        self.activity = activity
+        self.created_at = created_at
+        self.is_boundary = is_boundary
+
+
+def _fold_turn_activity(messages):
+    """Fold hidden tool-loop rounds (``is_intermediate``) into ``activity`` on the
+    turn's final assistant message, so a turn renders as ONE bubble: its activity
+    timeline, then the answer — the same DOM the live stream builds. The final
+    message's own thinking is the timeline's last row. Rounds with no final answer
+    become an ``_ActivityItem``. "Worked for" runs from the turn's visible user
+    message to the answer; turns without one (seeded continuations) omit it."""
+    out = []
+    pending = []
+    anchor = None
+
+    def flush_pending():
+        rows = [r for m in pending for r in _round_rows(m)]
+        if rows:
+            out.append(_ActivityItem(
+                _build_activity(rows, start=anchor, end=pending[-1].created_at),
+                pending[-1].created_at,
+                is_boundary=any(getattr(m, "is_boundary", False) for m in pending),
+            ))
+        pending.clear()
+
+    for m in messages:
+        if getattr(m, "is_intermediate", False):
+            pending.append(m)
+            continue
+        if m.role == "assistant" and not m.is_redacted:
+            rows = [r for p in pending for r in _round_rows(p)]
+            thinking = (m.metadata or {}).get("thinking")
+            if thinking:
+                rows.append({"kind": "thinking", "text": thinking})
+            m.activity = _build_activity(rows, start=anchor, end=m.created_at) if rows else None
+            if any(getattr(p, "is_boundary", False) for p in pending):
+                m.is_boundary = True
+            pending.clear()
+            anchor = None
+            out.append(m)
+            continue
+        flush_pending()
+        if m.role == "user":
+            anchor = m.created_at
+        out.append(m)
+    flush_pending()
+    return out
+
+
 def load_thread_message_page(thread, user, *, before=None, turns=20):
     """Load one turn-bounded page of a thread's messages for display.
 
@@ -454,7 +593,8 @@ def load_thread_message_page(thread, user, *, before=None, turns=20):
     the ``turns`` turns immediately older than a prior page.
 
     Returns ``(messages, cursor, has_more, compressed_above)``:
-      * ``messages`` — oldest-first, annotated with ``is_intermediate``,
+      * ``messages`` — oldest-first; hidden tool-loop rounds are folded into the
+        turn's final message as ``activity`` (see ``_fold_turn_activity``), plus
         ``attachment_items`` / ``attachment_images``, and ``is_summarized`` /
         ``is_boundary`` (compression-divider flags), as the template expects.
       * ``cursor`` — the ``created_at`` of the oldest loaded turn's user message
@@ -569,6 +709,7 @@ def load_thread_message_page(thread, user, *, before=None, turns=20):
             elif chat_messages:
                 compressed_above = True
 
+    chat_messages = _fold_turn_activity(chat_messages)
     return chat_messages, cursor, has_more, compressed_above
 
 
@@ -833,6 +974,7 @@ def chat_home(request):
             "thread_groups": thread_groups,
             "archived_threads": archived_threads,
             "messages": chat_messages,
+            "timeline_collapse_after": TIMELINE_COLLAPSE_AFTER,
             "history_compressed_above": history_compressed_above,
             "history_cursor": history_cursor,
             "history_has_more": history_has_more,

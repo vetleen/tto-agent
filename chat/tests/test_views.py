@@ -17,8 +17,8 @@ User = get_user_model()
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
 class ChatHomeIntermediateMessagesTests(TestCase):
-    """Hidden tool-loop assistant messages with narration/thinking render as
-    collapsed blocks on reload; empty ones stay hidden."""
+    """Hidden tool-loop assistant messages fold into their turn's activity
+    timeline on reload; empty ones stay hidden."""
 
     def setUp(self):
         self.user = User.objects.create_user(email="inter@example.com", password="testpass")
@@ -34,7 +34,7 @@ class ChatHomeIntermediateMessagesTests(TestCase):
         self.assertEqual(response.status_code, 200)
         return response, list(response.context["messages"])
 
-    def test_narration_message_included_and_flagged(self):
+    def test_narration_folds_into_final_answer_activity(self):
         ChatMessage.objects.create(
             thread=self.thread, role="user", content="Search for X",
         )
@@ -44,16 +44,21 @@ class ChatHomeIntermediateMessagesTests(TestCase):
             metadata={"tool_calls": [{"id": "c1", "name": "web_search", "arguments": {}}]},
             is_hidden_from_user=True,
         )
-        ChatMessage.objects.create(
+        final = ChatMessage.objects.create(
             thread=self.thread, role="assistant", content="Final answer.",
         )
 
         response, messages = self._get_messages()
-        included_pks = [m.pk for m in messages]
-        self.assertIn(narration.pk, included_pks)
-        narration_ctx = next(m for m in messages if m.pk == narration.pk)
-        self.assertTrue(narration_ctx.is_intermediate)
-        self.assertContains(response, "Thought further")
+        self.assertNotIn(narration.pk, [m.pk for m in messages])
+        final_ctx = next(m for m in messages if m.pk == final.pk)
+        self.assertEqual(
+            [r["kind"] for r in final_ctx.activity["rows"]], ["narration", "tools"],
+        )
+        self.assertEqual(final_ctx.activity["rows"][0]["snippet"], "“Let me search the documents...”")
+        self.assertFalse(final_ctx.activity["collapsed"])
+        self.assertContains(response, "“Let me search the documents...”")
+        self.assertNotContains(response, "Thought further")
+        self.assertContains(response, "wmsg__answer")
 
     def test_empty_tool_loop_message_excluded(self):
         ChatMessage.objects.create(
@@ -86,13 +91,15 @@ class ChatHomeIntermediateMessagesTests(TestCase):
         )
 
         response, messages = self._get_messages()
-        ctx = next(m for m in messages if m.pk == tool_round.pk)
-        self.assertTrue(ctx.is_intermediate)
+        # No final answer: the round renders as a timeline-only activity bubble.
+        self.assertNotIn(tool_round.pk, [m.pk for m in messages])
+        ctx = next(m for m in messages if m.role == "activity")
         self.assertEqual(
-            ctx.tool_batch,
-            [{"label": "Searched the web", "is_error": False, "reason": "find sources"}],
+            ctx.activity["rows"],
+            [{"kind": "tools", "failed": 0, "rows": [
+                {"label": "Searched the web", "is_error": False, "reason": "find sources"},
+            ]}],
         )
-        self.assertEqual(ctx.tool_batch_failed, 0)
         self.assertContains(response, '<span class="tool-group-label">Searched the web</span>', html=False)
         self.assertContains(response, "(find sources)")
 
@@ -129,9 +136,10 @@ class ChatHomeIntermediateMessagesTests(TestCase):
         )
 
         response, messages = self._get_messages()
-        ctx = next(m for m in messages if getattr(m, "is_intermediate", False))
+        ctx = next(m for m in messages if m.role == "activity")
+        tools_row = ctx.activity["rows"][-1]
         self.assertEqual(
-            [(r["label"], r["is_error"]) for r in ctx.tool_batch],
+            [(r["label"], r["is_error"]) for r in tools_row["rows"]],
             [("Searched the web", False), ("Done", False), ("Searched the web", True)],
         )
         self.assertContains(response, "Used 3 tools · 1 failed")
@@ -158,8 +166,8 @@ class ChatHomeIntermediateMessagesTests(TestCase):
         )
         with patch.object(type(tool), "end_label_for_result", return_value="Found 3 results"):
             _, messages = self._get_messages()
-        ctx = next(m for m in messages if getattr(m, "is_intermediate", False))
-        self.assertEqual(ctx.tool_batch[0]["label"], "Found 3 results")
+        ctx = next(m for m in messages if m.role == "activity")
+        self.assertEqual(ctx.activity["rows"][0]["rows"][0]["label"], "Found 3 results")
 
     def test_subagent_panel_data_in_page(self):
         from chat.models import SubAgentRun
@@ -223,6 +231,141 @@ class ChatHomeIntermediateMessagesTests(TestCase):
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
+class TurnActivityFoldTests(TestCase):
+    """A turn renders as one bubble: its tool-loop rounds fold into an activity
+    timeline on the final answer; past TIMELINE_COLLAPSE_AFTER rows the timeline is
+    one collapsed history block with adjacent tool batches merged."""
+
+    def setUp(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        self.user = User.objects.create_user(email="fold@example.com", password="testpass")
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+        self.client.force_login(self.user)
+        self.thread = ChatThread.objects.create(created_by=self.user)
+        self._clock = timezone.now() - timedelta(days=1)
+        self._call = 0
+
+    def _msg(self, role, content="", seconds=1, **kw):
+        from datetime import timedelta
+
+        m = ChatMessage.objects.create(thread=self.thread, role=role, content=content, **kw)
+        self._clock += timedelta(seconds=seconds)
+        ChatMessage.objects.filter(pk=m.pk).update(created_at=self._clock)
+        return m
+
+    def _round(self, *, thinking="", narration="", tools=1, seconds=1):
+        calls = []
+        for _ in range(tools):
+            self._call += 1
+            calls.append({"id": f"c{self._call}", "name": "web_search", "arguments": {}})
+        meta = {"tool_calls": calls}
+        if thinking:
+            meta["thinking"] = thinking
+        m = self._msg("assistant", narration, seconds=seconds, metadata=meta, is_hidden_from_user=True)
+        for c in calls:
+            self._msg("tool", '{"results": []}', seconds=0, tool_call_id=c["id"], is_hidden_from_user=True)
+        return m
+
+    def _messages(self):
+        response = self.client.get(reverse("chat_home"), {"thread": str(self.thread.id)})
+        self.assertEqual(response.status_code, 200)
+        return response, list(response.context["messages"])
+
+    def test_short_turn_stays_flat_in_order(self):
+        self._msg("user", "Q")
+        self._round(thinking="t1", narration="Looking it up.")
+        final = self._msg("assistant", "Answer.", metadata={"thinking": "t-final"})
+        response, messages = self._messages()
+        self.assertEqual([m.role for m in messages], ["user", "assistant"])
+        act = next(m for m in messages if m.pk == final.pk).activity
+        self.assertFalse(act["collapsed"])
+        self.assertEqual(
+            [r["kind"] for r in act["rows"]], ["thinking", "narration", "tools", "thinking"],
+        )
+        self.assertNotContains(response, '<div class="activity-history collapsed">')
+        # One bubble per turn: the timeline precedes the answer inside it.
+        body = response.content.decode()
+        self.assertLess(body.index("t-final"), body.index("Answer."))
+
+    def test_long_turn_collapses_merges_tool_batches_and_counts(self):
+        self._msg("user", "Q")
+        self._round(thinking="t1", tools=2, seconds=10)
+        self._round(tools=1, seconds=10)       # tools right after tools → merged
+        self._round(tools=1, seconds=10)       # merged again
+        self._round(thinking="t2", tools=1, seconds=10)
+        self._round(narration="Checking the PDF.", tools=1, seconds=10)
+        final = self._msg("assistant", "Answer.", seconds=14, metadata={"thinking": "t3"})
+        response, messages = self._messages()
+        act = next(m for m in messages if m.pk == final.pk).activity
+        self.assertTrue(act["collapsed"])
+        self.assertEqual(
+            [(r["kind"], len(r.get("rows", []))) for r in act["rows"]],
+            [("thinking", 0), ("tools", 4), ("thinking", 0), ("tools", 1),
+             ("narration", 0), ("tools", 1), ("thinking", 0)],
+        )
+        self.assertEqual((act["thoughts"], act["tools"]), (3, 6))
+        self.assertEqual(act["summary"], "Worked for 1m 4s · 3 thoughts · 6 tools")
+        self.assertContains(response, "activity-history collapsed")
+        self.assertContains(response, "Worked for 1m 4s · 3 thoughts · 6 tools")
+        self.assertContains(response, "Used 4 tools")
+
+    def test_turn_without_user_anchor_omits_duration(self):
+        """A seeded continuation (no visible user message) has no start to measure from."""
+        self._msg("user", "Q")
+        self._msg("assistant", "First answer.")
+        self._msg("user", "[Sub-agent result]", is_hidden_from_user=True)
+        for _ in range(6):
+            self._round(thinking="t")
+        final = self._msg("assistant", "Follow-up.")
+        _, messages = self._messages()
+        act = next(m for m in messages if m.pk == final.pk).activity
+        self.assertEqual(act["summary"], "6 thoughts · 6 tools")
+
+    def test_rounds_without_final_answer_become_activity_item(self):
+        self._msg("user", "Q")
+        self._round(thinking="t1")
+        _, messages = self._messages()
+        self.assertEqual([m.role for m in messages], ["user", "activity"])
+        self.assertEqual([r["kind"] for r in messages[1].activity["rows"]], ["thinking", "tools"])
+
+    def test_redacted_final_answer_gets_no_activity(self):
+        self._msg("user", "Q")
+        self._round(thinking="t1")
+        redacted = self._msg("assistant", "x", is_redacted=True)
+        _, messages = self._messages()
+        self.assertEqual([m.role for m in messages], ["user", "activity", "assistant"])
+        self.assertFalse(getattr(messages[2], "activity", None))
+        self.assertEqual(messages[2].pk, redacted.pk)
+
+    def test_answer_without_rounds_or_thinking_has_no_timeline(self):
+        self._msg("user", "Q")
+        final = self._msg("assistant", "Plain answer.")
+        response, messages = self._messages()
+        self.assertIsNone(next(m for m in messages if m.pk == final.pk).activity)
+        self.assertContains(response, 'class="text-sm text-body wmsg__answer markdown-content')
+        self.assertNotContains(response, 'data-server-thinking>')
+
+    def test_narration_snippet_truncates(self):
+        from chat.views import NARRATION_SNIPPET_CHARS, _narration_snippet
+
+        snippet = _narration_snippet("word  \n" * 40)
+        self.assertTrue(snippet.startswith("“word word"))
+        self.assertTrue(snippet.endswith("…”"))
+        self.assertLessEqual(len(snippet), NARRATION_SNIPPET_CHARS + 3)
+
+    def test_format_duration(self):
+        from chat.views import _format_duration
+
+        self.assertEqual(_format_duration(45), "45s")
+        self.assertEqual(_format_duration(134), "2m 14s")
+        self.assertEqual(_format_duration(3780), "1h 3m")
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
 class ChatHistoryPaginationTests(TestCase):
     """Turn-based history paging: newest 20 turns initially, "Show earlier
     messages" prepends the previous 20. A turn = a visible user message plus its
@@ -257,7 +400,7 @@ class ChatHistoryPaginationTests(TestCase):
 
     def _turn(self, n, *, narration=1):
         """Emit one turn: visible user msg → `narration` hidden-assistant narration
-        blocks (with content, so they survive as "Thought further") → final answer."""
+        blocks (with content, so they survive as narration rows) → final answer."""
         u = self._msg("user", f"user-{n}")
         for k in range(narration):
             self._msg(
@@ -297,10 +440,9 @@ class ChatHistoryPaginationTests(TestCase):
         for n in range(1, 22):  # 21 turns => paginates
             self._turn(n, narration=2)
         resp = self._home()
-        contents = {m.content for m in resp.context["messages"]}
         # Oldest turn on the initial page (turn 2) keeps ALL of its messages.
         for c in ("user-2", "narr-2-0", "narr-2-1", "answer-2"):
-            self.assertIn(c, contents)
+            self.assertContains(resp, c)
         # The older page (turn 1) must not contain any of turn 2's messages.
         older = self._older(resp.context["history_cursor"]).json()
         self.assertIn("user-1", older["html"])
@@ -349,11 +491,11 @@ class ChatHistoryPaginationTests(TestCase):
         self._msg("assistant", "answer-1")
         resp = self._home()
         self.assertFalse(resp.context["history_has_more"])
-        contents = {m.content for m in resp.context["messages"]}
-        self.assertIn("user-1", contents)
-        self.assertIn("answer-1", contents)
-        self.assertIn("narr-1-49", contents)
-        self.assertEqual(len(resp.context["messages"]), 52)
+        # The 50 rounds fold into the answer's activity: one user msg + one bubble.
+        messages = resp.context["messages"]
+        self.assertEqual([m.content for m in messages], ["user-1", "answer-1"])
+        self.assertEqual(messages[1].activity["tools"], 50)
+        self.assertContains(resp, "narr-1-49")
 
     def test_few_turns_show_no_control(self):
         for n in range(1, 16):  # 15 turns

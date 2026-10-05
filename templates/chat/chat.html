@@ -98,9 +98,13 @@
      like the thinking block; expanded, a batch's calls are a compact list. */
   .wmsg__timeline > * + * { margin-top: 0.5rem; }
   .wmsg__timeline:empty { display: none; }
-  /* Reloaded rounds are separate bubbles; match the in-bubble row gap (minus the body's 3px top padding). */
-  .wmsg[data-intermediate] { margin-block-end: calc(0.5rem - 3px) !important; }
-  .wmsg[data-intermediate] .wmsg__av { height: 0; border: 0; overflow: hidden; }
+  /* Past TIMELINE_COLLAPSE_AFTER rows, finished rounds fold into one collapsed,
+     chronological history block; only the current round stays below it. */
+  .activity-history .activity-history-chevron { transform: rotate(90deg); }
+  .activity-history.collapsed .activity-history-chevron { transform: rotate(0deg); }
+  .activity-history.collapsed .activity-history-list { display: none; }
+  .activity-history-list { margin-top: 0.5rem; padding-left: 12px; border-left: 2px solid var(--color-neutral-quaternary); }
+  .activity-history-list > * + * { margin-top: 0.5rem; }
   .tool-cards.tool-cards--grouped { display: block; }
   .tool-cards-done.tool-cards--grouped .tool-group-list { opacity: 0.6; }
   .tool-cards--grouped .tool-group-chevron { transform: rotate(90deg); }
@@ -1034,6 +1038,9 @@
     return `<span class="wf-avatar" style="${USER_AVATAR_STYLE}">${escapeHtml(USER_INITIAL)}</span>`;
   }
   const ASSISTANT_NAME = "{{ assistant_name|escapejs }}";
+  // Keep in sync with chat.views.TIMELINE_COLLAPSE_AFTER / NARRATION_SNIPPET_CHARS.
+  const TIMELINE_COLLAPSE_AFTER = {{ timeline_collapse_after|default:5 }};
+  const NARRATION_SNIPPET_CHARS = 80;
   const STREAM_TIMEOUT_MS = 660000;
   const CHAT_HOME = "{% url 'chat_home' %}";
   const PENDING_INITIAL_TURN = {{ pending_initial_turn|yesno:"true,false" }};
@@ -1423,7 +1430,7 @@
     if (role === 'user') {
       contentEl = msgDiv.querySelector('.whitespace-pre-wrap');
     } else {
-      contentEl = msgDiv.querySelector('.message-content') || msgDiv.querySelector('.markdown-content');
+      contentEl = msgDiv.querySelector('.wmsg__answer') || msgDiv.querySelector('.markdown-content');
     }
     if (!contentEl) return;
     var plainText = contentEl.innerText || contentEl.textContent;
@@ -1798,7 +1805,7 @@
     root = root || messagesContainer;
     const els = root.querySelectorAll('.markdown-content');
     els.forEach(function(el) { const text = el.textContent || el.innerText; if (text) { el.innerHTML = renderMarkdown(text); renderMermaidBlocks(el); renderEmailBlocks(el); renderImageBlocks(el); renderFileChips(el); } });
-    // Server-rendered "Thought further"/"Thoughts" blocks need their toggle
+    // Server-rendered thinking/narration rows need their toggle
     // wired up (live-streamed blocks get it in createThinkingBlock).
     root.querySelectorAll('[data-server-thinking] .thinking-toggle').forEach(function(btn) {
       btn.addEventListener('click', function() { btn.closest('.thinking-block').classList.toggle('collapsed'); });
@@ -3163,12 +3170,19 @@
     currentThinkingBlock = null; thinkingStartTime = null;
   }
 
-  // Move the streamed text so far into a collapsed "Thought further" timeline row.
+  // Text streamed before a tool call is narration, not the answer: move it into a
+  // narration row, shown open while its round is current and collapsed (labelled with
+  // a quoted snippet) once folded. Same DOM as chat/_activity_rows.html.
+  function narrationSnippet(text) {
+    var flat = text.split(/\s+/).filter(Boolean).join(" ");
+    if (flat.length > NARRATION_SNIPPET_CHARS) flat = flat.slice(0, NARRATION_SNIPPET_CHARS).trimEnd() + "…";
+    return "“" + flat + "”";
+  }
   function flushNarration() {
     if (!currentStreamingElement || !accumulatedContent.trim()) return;
     const block = createThinkingBlock();
-    block.classList.add("collapsed");
-    const label = block.querySelector(".thinking-label"); if (label) label.textContent = "Thought further";
+    block.classList.add("narration-row");
+    const label = block.querySelector(".thinking-label"); if (label) label.textContent = narrationSnippet(accumulatedContent);
     const contentEl = block.querySelector(".thinking-content");
     if (contentEl) { contentEl.style.fontFamily = "inherit"; contentEl.style.fontStyle = "normal"; contentEl.innerHTML = renderMarkdown(accumulatedContent); }
     appendToTimeline(block);
@@ -3176,14 +3190,72 @@
     const ce = currentStreamingElement.querySelector(".message-content"); if (ce) ce.innerHTML = "";
   }
 
+  // Past TIMELINE_COLLAPSE_AFTER rows, every finished round folds into one collapsed,
+  // chronological history block at the top of the timeline (adjacent tool batches
+  // merge); only the current round stays below it. At turn end (done) everything
+  // folds and the header gains "Worked for …". Same DOM as chat/_activity.html.
+  function formatDuration(ms) {
+    var s = Math.max(0, Math.round(ms / 1000));
+    if (s < 60) return s + "s";
+    if (s < 3600) return Math.floor(s / 60) + "m " + (s % 60) + "s";
+    return Math.floor(s / 3600) + "h " + Math.floor((s % 3600) / 60) + "m";
+  }
+  function plural(n, word) { return n + " " + word + (n === 1 ? "" : "s"); }
+  function buildHistoryBlock() {
+    var h = document.createElement("div");
+    h.className = "activity-history collapsed";
+    h.innerHTML = '<button type="button" class="activity-history-toggle flex items-center gap-1.5 text-xs text-body/70 hover:text-body cursor-pointer select-none"><svg class="activity-history-chevron w-3 h-3 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg><span class="activity-history-label"></span></button><div class="activity-history-list"></div>';
+    return h;
+  }
+  function updateHistoryLabel(history, workedMs) {
+    var list = history.querySelector(".activity-history-list");
+    var thoughts = list.querySelectorAll(".thinking-block:not(.narration-row)").length;
+    var tools = list.querySelectorAll(".tool-card").length;
+    var failed = list.querySelectorAll(".tool-card.is-error").length;
+    var parts = [];
+    if (workedMs != null) parts.push("Worked for " + formatDuration(workedMs));
+    if (thoughts) parts.push(plural(thoughts, "thought"));
+    if (tools) parts.push(plural(tools, "tool"));
+    if (failed) parts.push(failed + " failed");
+    history.querySelector(".activity-history-label").textContent = parts.join(" · ") || "Activity";
+  }
+  function foldTimeline(bubble, done) {
+    var tl = bubbleTimeline(bubble);
+    if (!tl) return;
+    var history = null;
+    var rows = [];
+    Array.prototype.forEach.call(tl.children, function(c) {
+      if (c.classList.contains("activity-history")) history = c; else rows.push(c);
+    });
+    if (done) rows.forEach(function(r) { if (r.classList.contains("narration-row")) r.classList.add("collapsed"); });
+    if (!history && rows.length <= TIMELINE_COLLAPSE_AFTER) return;
+    if (!history) { history = buildHistoryBlock(); tl.insertBefore(history, tl.firstChild); }
+    var list = history.querySelector(".activity-history-list");
+    rows.forEach(function(r) {
+      if (r.classList.contains("narration-row")) r.classList.add("collapsed");
+      var last = list.lastElementChild;
+      if (r.classList.contains("tool-cards") && last && last.classList.contains("tool-cards")) {
+        var dst = last.querySelector(".tool-group-list");
+        r.querySelectorAll(".tool-card").forEach(function(card) { dst.appendChild(card); });
+        r.remove();
+        updateToolGroup(last);
+      } else {
+        list.appendChild(r);
+      }
+    });
+    updateHistoryLabel(history, done && bubble._turnStart ? Date.now() - bubble._turnStart : null);
+  }
+
   // Tool-group toggles: one delegated listener covers live, server-rendered and
   // "load older" groups alike.
   messagesContainer.addEventListener("click", function(e) {
     var t = e.target.closest(".tool-group-toggle");
     if (t) t.closest(".tool-cards").classList.toggle("collapsed");
+    var h = e.target.closest(".activity-history-toggle");
+    if (h) h.closest(".activity-history").classList.toggle("collapsed");
   });
 
-  // A reply's pre-answer activity (thinking rounds, "Thought further" narration, tool
+  // A reply's pre-answer activity (thinking rounds, narration rows, tool
   // batches) is appended in arrival order to the bubble's .wmsg__timeline.
   function bubbleTimeline(bubble) { return bubble ? bubble.querySelector(".wmsg__timeline") : null; }
   function appendToTimeline(node) {
@@ -3576,7 +3648,7 @@
       const isNewBubble = !currentStreamingElement;
       if (isNewBubble) { currentStreamingElement = createAssistantBubble(); messagesContainer.appendChild(currentStreamingElement); }
       if (currentThinkingBlock) collapseThinking();
-      if (!isNewBubble) { flushNarration(); closeToolBatch(); }
+      if (!isNewBubble) { flushNarration(); closeToolBatch(); foldTimeline(currentStreamingElement, false); }
       accumulatedContent = "";
       if (currentStreamingElement) { const ce = currentStreamingElement.querySelector(".message-content"); if (ce) ce.innerHTML = ""; }
       startStreamingTimeout(); scrollToBottom(); return;
@@ -3587,13 +3659,8 @@
       if (!currentThinkingBlock) {
         currentThinkingBlock = createThinkingBlock();
         thinkingStartTime = Date.now();
-        // Reclaim any leaked thinking tokens that arrived as token events before this thinking event
-        if (accumulatedContent.trim()) {
-          const reclaimed = currentThinkingBlock.querySelector(".thinking-content");
-          if (reclaimed) reclaimed.textContent = accumulatedContent;
-          accumulatedContent = "";
-          const ce = currentStreamingElement.querySelector(".message-content"); if (ce) ce.innerHTML = "";
-        }
+        // Text already streamed this round stays text (interleaved-thinking models
+        // write user-facing prose, then reason) — the consumer persists it that way too.
         appendToTimeline(currentThinkingBlock);
       }
       const contentEl = currentThinkingBlock.querySelector(".thinking-content");
@@ -3612,7 +3679,7 @@
       const toolId = (data.data && data.data.tool_call_id) || "";
       ensureBubble(); hideWaitingIndicator(); if (currentThinkingBlock) collapseThinking();
       // Text streamed before a tool call is narration, not the answer: file it
-      // as a "Thought further" row above this batch (stored order on reload).
+      // as a narration row above this batch (stored order on reload).
       flushNarration();
       const group = currentToolBatch();
       if (group) {
@@ -3688,7 +3755,7 @@
       // Redact the last assistant bubble
       var lastAssistant = messagesContainer.querySelector("[data-role='assistant']:last-of-type");
       if (lastAssistant) {
-        var contentEl = lastAssistant.querySelector(".markdown-content") || lastAssistant.querySelector(".message-content");
+        var contentEl = lastAssistant.querySelector(".wmsg__answer") || lastAssistant.querySelector(".message-content");
         if (contentEl) contentEl.innerHTML = redactNotice;
         var copyBtn = lastAssistant.querySelector(".copy-msg-btn"); if (copyBtn) copyBtn.remove();
         lastAssistant.classList.add("opacity-60");
@@ -3728,6 +3795,7 @@
       if (currentStreamingElement) {
         const contentEl = currentStreamingElement.querySelector(".message-content"); if (contentEl && accumulatedContent) { contentEl.innerHTML = renderMarkdown(accumulatedContent); renderMermaidBlocks(contentEl); renderEmailBlocks(contentEl); renderImageBlocks(contentEl); renderFileChips(contentEl); }
         markToolGroupsDone(currentStreamingElement);
+        foldTimeline(currentStreamingElement, true);
         currentStreamingElement = null; accumulatedContent = "";
       }
       clearTimeout(streamingTimeout); enableInput(); scrollToBottom(); return;
@@ -3739,6 +3807,7 @@
     const contentEl = currentStreamingElement.querySelector(".message-content");
     if (contentEl) { if (accumulatedContent) contentEl.innerHTML = renderMarkdown(accumulatedContent); if (suffix) contentEl.innerHTML += "<br><br>" + suffix; renderMermaidBlocks(contentEl); renderEmailBlocks(contentEl); renderImageBlocks(contentEl); renderFileChips(contentEl); }
     markToolGroupsDone(currentStreamingElement);
+    foldTimeline(currentStreamingElement, true);
     currentStreamingElement = null; accumulatedContent = ""; clearTimeout(streamingTimeout);
   }
   function enableInput() { locked = false; clearHandoff(); stopButton.classList.add("hidden"); button.classList.remove("hidden"); button.innerHTML = SEND_BTN_HTML; if (ws && ws.readyState === WebSocket.OPEN) { input.disabled = false; button.disabled = false; input.focus(); } syncSendReady(); renderTaskPlan(); }
@@ -3746,7 +3815,8 @@
 
   function createAssistantBubble() {
     const div = document.createElement("div"); div.className = "wmsg"; div.setAttribute("data-role", "assistant");
-    div.innerHTML = `<span class="wmsg__av">${escapeHtml(ASSISTANT_NAME.charAt(0).toUpperCase())}</span><div class="wmsg__body"><div class="wmsg__timeline"></div><div class="waiting-indicator flex items-center gap-1.5 text-xs text-body/70 mt-1"><svg class="w-3 h-3 animate-spin shrink-0" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><span>Thinking...</span></div><div class="text-sm text-body mt-1 message-content markdown-content"></div>${COPY_BTN_HTML}</div>`;
+    div.innerHTML = `<span class="wmsg__av">${escapeHtml(ASSISTANT_NAME.charAt(0).toUpperCase())}</span><div class="wmsg__body"><div class="wmsg__timeline"></div><div class="waiting-indicator flex items-center gap-1.5 text-xs text-body/70 mt-1"><svg class="w-3 h-3 animate-spin shrink-0" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><span>Thinking...</span></div><div class="text-sm text-body mt-1 message-content wmsg__answer markdown-content"></div>${COPY_BTN_HTML}</div>`;
+    div._turnStart = Date.now();
     return div;
   }
 

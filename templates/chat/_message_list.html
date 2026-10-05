@@ -68,40 +68,25 @@
       </div>
       {% user_avatar user "chat" %}
     </div>
-  {% elif m.role == "assistant" and m.is_intermediate %}
-    {# Hidden tool-loop round (thinking → narration → tool calls) — render as collapsed rows in that order, matching the live-streaming timeline. data-intermediate tightens the gap to the next bubble. #}
-    <div class="wmsg" data-role="assistant" data-intermediate>
-      <span class="wmsg__av" style="visibility:hidden">{{ assistant_name|first|upper }}</span>
-      <div class="wmsg__body wmsg__timeline">
-        {% if m.metadata.thinking %}
-        <div class="thinking-block collapsed" data-server-thinking>
-          <button type="button" class="thinking-toggle flex items-center gap-1.5 text-xs text-body/70 hover:text-body cursor-pointer select-none"><svg class="thinking-chevron w-3 h-3 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg><span class="thinking-label">Thoughts</span></button>
-          <div class="thinking-content text-xs text-body/60 italic mt-1 pl-3 border-l-2 border-neutral-quaternary max-h-40 overflow-y-auto">{{ m.metadata.thinking }}</div>
-        </div>
-        {% endif %}
-        {% if m.content.strip %}
-        <div class="thinking-block collapsed" data-server-thinking>
-          <button type="button" class="thinking-toggle flex items-center gap-1.5 text-xs text-body/70 hover:text-body cursor-pointer select-none"><svg class="thinking-chevron w-3 h-3 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg><span class="thinking-label">Thought further</span></button>
-          <div class="thinking-content text-xs text-body/60 mt-1 pl-3 border-l-2 border-neutral-quaternary max-h-40 overflow-y-auto markdown-content md-pending" style="font-family:inherit;font-style:normal">{{ m.content }}</div>
-        </div>
-        {% endif %}
-        {% if m.tool_batch %}{% include "chat/_tool_group.html" with rows=m.tool_batch failed=m.tool_batch_failed %}{% endif %}
-      </div>
-    </div>
-  {% elif m.role == "assistant" %}
+  {% elif m.role == "activity" %}
+    {# A turn's tool-loop rounds with no final answer (stopped, failed, or still running). #}
     <div class="wmsg" data-role="assistant">
       <span class="wmsg__av">{{ assistant_name|first|upper }}</span>
       <div class="wmsg__body">
-        {% if m.metadata.thinking %}
-        <div class="thinking-block collapsed mb-2" data-server-thinking>
-          <button type="button" class="thinking-toggle flex items-center gap-1.5 text-xs text-body/70 hover:text-body cursor-pointer select-none"><svg class="thinking-chevron w-3 h-3 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg><span class="thinking-label">Thoughts</span></button>
-          <div class="thinking-content text-xs text-body/60 italic mt-1 pl-3 border-l-2 border-neutral-quaternary max-h-40 overflow-y-auto">{{ m.metadata.thinking }}</div>
-        </div>
-        {% endif %}
+        <div class="wmsg__timeline">{% include "chat/_activity.html" with activity=m.activity %}</div>
+      </div>
+    </div>
+  {% elif m.role == "assistant" %}
+    {# One bubble per turn: the activity timeline (hidden tool-loop rounds + this #}
+    {# message's thinking, folded in by the view), then the answer — the live DOM. #}
+    <div class="wmsg" data-role="assistant">
+      <span class="wmsg__av">{{ assistant_name|first|upper }}</span>
+      <div class="wmsg__body">
+        {% if m.activity %}<div class="wmsg__timeline">{% include "chat/_activity.html" with activity=m.activity %}</div>{% endif %}
         {# md-pending: this ships RAW markdown as text and is rewritten to HTML by #}
         {# renderServerMarkdown(). The class keeps it hidden until then — see the #}
         {# html.md-gate rule in chat.html's extra_head block. #}
-        <div class="text-sm text-body markdown-content md-pending">{{ m.content }}</div>
+        <div class="text-sm text-body{% if m.activity %} mt-1{% endif %} wmsg__answer markdown-content md-pending">{{ m.content }}</div>
         <div class="self-end mt-1 flex items-center gap-1">
           <button type="button" class="branch-msg-btn p-1 text-body/40 hover:text-body/70 cursor-pointer transition-colors" data-message-id="{{ m.id }}" title="Branch this chat"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg></button>
           <button type="button" class="copy-msg-btn p-1 text-body/40 hover:text-body/70 cursor-pointer transition-colors" title="Copy message"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg></button>

@@ -471,6 +471,60 @@ class ConsumerMessageTests(TransactionTestCase):
         await communicator.disconnect()
 
     @patch("llm.get_llm_service")
+    async def test_text_before_thinking_stays_text(self, mock_get_service):
+        """Interleaved thinking: prose streamed BEFORE a thinking event in the same
+        round is user-facing text, not leaked reasoning — it must persist as the
+        round's content, never be folded into metadata["thinking"]."""
+        from llm.types.streaming import StreamEvent
+
+        events = [
+            StreamEvent(event_type="message_start", data={}, sequence=0, run_id="r1"),
+            StreamEvent(event_type="token", data={"text": "You're right, fixing it now."}, sequence=1, run_id="r1"),
+            StreamEvent(event_type="thinking", data={"text": "Which section changes?"}, sequence=2, run_id="r1"),
+            StreamEvent(event_type="tool_start", data={"tool_call_id": "c1", "tool_name": "web_search", "arguments": {}}, sequence=3, run_id="r1"),
+            StreamEvent(event_type="tool_end", data={"tool_call_id": "c1", "tool_name": "web_search", "result": "{}"}, sequence=4, run_id="r1"),
+            StreamEvent(event_type="message_start", data={}, sequence=5, run_id="r1"),
+            StreamEvent(event_type="token", data={"text": "Done."}, sequence=6, run_id="r1"),
+            StreamEvent(event_type="message_end", data={}, sequence=7, run_id="r1"),
+        ]
+
+        mock_service = MagicMock()
+
+        async def mock_astream(*args, **kwargs):
+            for e in events:
+                yield e
+
+        mock_service.astream = mock_astream
+        mock_get_service.return_value = mock_service
+
+        communicator = await self._connect()
+        await communicator.send_json_to({"type": "chat.message", "content": "Fix it"})
+        for _ in range(20):
+            resp = await communicator.receive_json_from(timeout=10)
+            if resp.get("event_type") == "message_end":
+                break
+
+        @database_sync_to_async
+        def get_messages():
+            return list(ChatMessage.objects.order_by("created_at"))
+
+        import asyncio
+        for _ in range(20):
+            msgs = await get_messages()
+            if len(msgs) >= 4:
+                break
+            await asyncio.sleep(0.1)
+
+        tool_loop_msg = next(
+            m for m in msgs
+            if m.role == "assistant" and m.metadata.get("tool_calls")
+        )
+        self.assertEqual(tool_loop_msg.content, "You're right, fixing it now.")
+        self.assertEqual(tool_loop_msg.metadata.get("thinking"), "Which section changes?")
+
+        await communicator.disconnect()
+
+    @patch("llm.get_llm_service")
     async def test_error_event_strips_raw_details(self, mock_get_service):
         """The raw provider exception (`details`) must not reach the client; the
         curated `message` and `error_code` are kept."""
