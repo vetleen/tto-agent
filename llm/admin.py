@@ -3,7 +3,7 @@ import json
 from django.contrib import admin
 from django.utils.html import format_html
 
-from llm.models import LLMCallLog
+from llm.models import LLMCallLog, OpsUsageLog
 
 
 def _pretty_json_html(value, fallback="(empty)"):
@@ -133,6 +133,31 @@ class LLMCallLogAdmin(admin.ModelAdmin):
             except (KeyError, AttributeError):
                 pass
         return response
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(OpsUsageLog)
+class OpsUsageLogAdmin(admin.ModelAdmin):
+    list_display = [
+        "created_at",
+        "tool_name",
+        "outcome",
+        "http_status",
+        "error_code",
+        "org_id",
+        "user_id",
+        "attempts",
+        "duration_ms",
+        "response_bytes",
+    ]
+    list_filter = ["outcome", "tool_name", "error_code", ("created_at", admin.DateFieldListFilter)]
+    date_hierarchy = "created_at"
+    search_fields = ["query", "request_path", "error_code", "error_message"]
 
     def has_add_permission(self, request):
         return False

@@ -176,22 +176,86 @@ def _invalidate_token() -> None:
 # --------------------------------------------------------------------------- #
 # Request core.
 # --------------------------------------------------------------------------- #
+_FAULT_CODE_RE = re.compile(r"<(?:[\w-]+:)?code>\s*([^<]*?)\s*</", re.IGNORECASE)
+_FAULT_MESSAGE_RE = re.compile(r"<(?:[\w-]+:)?message>\s*([^<]*?)\s*</", re.IGNORECASE)
+
+# OPS answers a query it cannot evaluate (malformed CPC, sentinel dates, ...)
+# with 500 SERVER.DomainAccess "please try again later" — deterministically, so
+# retrying the same query only burns minutes of backoff.
+_BAD_QUERY_FAULT = "SERVER.DomainAccess"
+
+
+def _parse_ops_fault(response) -> tuple[str, str, str]:
+    """``(code, message, rejection)`` from an OPS error response.
+
+    ``code``/``message`` come from the OPS XML fault body (e.g.
+    ``SERVER.DomainAccess``); ``rejection`` is the ``X-Rejection-Reason`` header
+    OPS sets when a fair-use quota or throttle refused the call. Any part may be
+    "". Never raises.
+    """
+    try:
+        text = response.text or ""
+    except Exception:
+        text = ""
+    if not isinstance(text, str):
+        text = ""
+    code_m = _FAULT_CODE_RE.search(text)
+    msg_m = _FAULT_MESSAGE_RE.search(text)
+    try:
+        rejection = (response.headers or {}).get("X-Rejection-Reason", "") or ""
+    except Exception:
+        rejection = ""
+    return (
+        code_m.group(1).strip() if code_m else "",
+        msg_m.group(1).strip() if msg_m else "",
+        str(rejection).strip(),
+    )
+
+
 def _ops_request(path: str, params: dict, tool_name: str, context=None) -> dict:
     """GET an OPS rest-service and return parsed JSON, or ``{"error": ...}``.
 
     ``path`` is relative to ``{base}/rest-services`` (e.g.
     ``published-data/search/biblio``). Never raises to the caller: HTTP/parse
-    failures return a graceful error dict.
+    failures return a graceful error dict. Every exit writes one
+    ``OpsUsageLog`` row with the outcome (and OPS's fault code on failure).
     """
     url = f"{_base_url()}/{_REST_PREFIX}/{path.lstrip('/')}"
+    started = time.monotonic()
+    attempts = 0
+
+    def _done(result: dict, outcome: str, *, http_status=None, error_code="", error_message="",
+              response_bytes=0) -> dict:
+        _log_ops_usage(
+            context,
+            tool_name,
+            response_bytes,
+            outcome=outcome,
+            http_status=http_status,
+            error_code=error_code,
+            error_message=error_message,
+            request_path=path,
+            query=str((params or {}).get("q", "")),
+            attempts=max(attempts, 1),
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+        return result
 
     last_exc = None
+    last_status = None
+    last_code = ""
+    last_message = ""
     refreshed = False
     for attempt in range(1 + _MAX_RETRIES):
         token = _get_access_token(force_refresh=refreshed)
         if not token:
-            return {"error": "EPO OPS authentication failed. Patent search is temporarily unavailable."}
+            return _done(
+                {"error": "EPO OPS authentication failed. Patent search is temporarily unavailable."},
+                "error",
+                error_code="AuthFailed",
+            )
 
+        attempts += 1
         try:
             _ops_rate_limiter.acquire()
             response = requests.get(
@@ -209,23 +273,52 @@ def _ops_request(path: str, params: dict, tool_name: str, context=None) -> dict:
             from llm.tools.web_fetch import _enforce_size_and_buffer, _max_response_bytes
 
             _enforce_size_and_buffer(response, _max_response_bytes())
-            _log_ops_usage(context, tool_name, len(response.content or b""))
-            return response.json()
+            data = response.json()
+            return _done(data, "ok", http_status=response.status_code,
+                         response_bytes=len(response.content or b""))
 
         except requests.exceptions.HTTPError as e:
             last_exc = e
             status = getattr(response, "status_code", None)
+            code, message, rejection = _parse_ops_fault(response)
+            last_status, last_code, last_message = status, code, message
+            if status == 403 and rejection:
+                # Fair-use quota / throttle refusal — a fresh token won't help.
+                logger.warning("EPO OPS rejected request (%s) path=%s", rejection, path)
+                return _done(
+                    {"error": (
+                        f"EPO OPS refused the request: fair-use quota or throttle reached "
+                        f"({rejection}). Try again later and tell the user patent search is limited right now."
+                    )},
+                    "error",
+                    http_status=status,
+                    error_code=code or "Rejected",
+                    error_message=f"X-Rejection-Reason: {rejection}. {message}".strip(),
+                )
             if status in (401, 403) and not refreshed:
                 # Token may have been revoked before its TTL — refresh once.
                 logger.info("EPO OPS %s, refreshing token and retrying", status)
                 _invalidate_token()
                 refreshed = True
                 continue
+            if status == 500 and code == _BAD_QUERY_FAULT:
+                logger.warning("EPO OPS could not process query (%s) path=%s", code, path)
+                return _done(
+                    {"error": (
+                        f"EPO OPS could not process this query ({code}). This is almost always "
+                        "the query itself, not an outage, so retrying it unchanged will not help: "
+                        "use fewer keywords, check the CPC symbol (e.g. A61B8/06), or drop a filter."
+                    )},
+                    "error",
+                    http_status=status,
+                    error_code=code,
+                    error_message=message,
+                )
             if status == 429 or (status is not None and status >= 500):
                 wait = _RATE_LIMIT_BACKOFF_SCHEDULE[min(attempt, len(_RATE_LIMIT_BACKOFF_SCHEDULE) - 1)]
                 # Per-attempt retry chatter stays at INFO (Sentry breadcrumb);
                 # the terminal "failed after retries" WARNING is the event.
-                logger.info("EPO OPS %s (attempt %d), waiting %.1fs", status, attempt + 1, wait)
+                logger.info("EPO OPS %s %s (attempt %d), waiting %.1fs", status, code or "-", attempt + 1, wait)
                 if attempt < _MAX_RETRIES:
                     nap, may_retry = _deadline_capped_wait(wait, context)
                     if nap > 0:
@@ -241,23 +334,51 @@ def _ops_request(path: str, params: dict, tool_name: str, context=None) -> dict:
                 if status == 404:
                     # A missing record is a normal search outcome, not a fault.
                     logger.info("EPO OPS client error %s path=%s", status, path)
-                    return {"error": "No matching patent record was found (EPO OPS 404)."}
-                logger.warning("EPO OPS client error %s path=%s", status, path)
-                return {"error": f"EPO OPS request failed ({status}). This will not resolve by retrying."}
+                    return _done(
+                        {"error": "No matching patent record was found (EPO OPS 404)."},
+                        "no_results",
+                        http_status=status,
+                        error_code=code,
+                        error_message=message,
+                    )
+                logger.warning("EPO OPS client error %s %s path=%s", status, code or "-", path)
+                detail = " ".join(p for p in (str(status), code) if p)
+                if message:
+                    detail = f"{detail}: {message}"
+                return _done(
+                    {"error": f"EPO OPS request failed ({detail}). This will not resolve by retrying."},
+                    "error",
+                    http_status=status,
+                    error_code=code,
+                    error_message=message,
+                )
         except requests.exceptions.Timeout as e:
             last_exc = e
+            last_status, last_code, last_message = None, "Timeout", str(e)
             logger.info("EPO OPS timeout (attempt %d) path=%s", attempt + 1, path)
         except requests.exceptions.RequestException as e:
             last_exc = e
+            last_status, last_code, last_message = None, type(e).__name__, str(e)
             logger.info("EPO OPS request error (attempt %d) path=%s: %s", attempt + 1, path, e)
         except Exception as e:
             from llm.tools.web_fetch import _ResponseTooLarge
 
             if isinstance(e, _ResponseTooLarge):
                 logger.warning("EPO OPS response too large path=%s: %s", path, e)
-                return {"error": "EPO OPS returned an unexpectedly large response."}
+                return _done(
+                    {"error": "EPO OPS returned an unexpectedly large response."},
+                    "error",
+                    http_status=200,
+                    error_code="TooLarge",
+                    error_message=str(e),
+                )
             logger.warning("EPO OPS unexpected error path=%s: %s", path, e)
-            return {"error": "EPO OPS returned an unreadable response."}
+            return _done(
+                {"error": "EPO OPS returned an unreadable response."},
+                "error",
+                error_code="Unreadable",
+                error_message=f"{type(e).__name__}: {e}",
+            )
 
         if attempt < _MAX_RETRIES:
             nap, may_retry = _deadline_capped_wait(_BACKOFF_BASE * (2 ** attempt), context)
@@ -268,12 +389,32 @@ def _ops_request(path: str, params: dict, tool_name: str, context=None) -> dict:
 
     # WARNING (one Sentry event per exhausted call), not ERROR: the tool
     # degrades gracefully and the model reports the outage to the user.
-    logger.warning("EPO OPS failed after retries path=%s", path, exc_info=last_exc)
-    return {"error": "EPO OPS is currently unavailable after retries. Consider reporting this to the user."}
+    logger.warning("EPO OPS failed after retries path=%s code=%s", path, last_code or "-", exc_info=last_exc)
+    suffix = f" (last error: {last_code})" if last_code else ""
+    return _done(
+        {"error": f"EPO OPS is currently unavailable after retries{suffix}. Consider reporting this to the user."},
+        "error",
+        http_status=last_status,
+        error_code=last_code,
+        error_message=last_message,
+    )
 
 
-def _log_ops_usage(context, tool_name: str, response_bytes: int) -> None:
-    """Best-effort per-org usage log. Never raises into the tool."""
+def _log_ops_usage(
+    context,
+    tool_name: str,
+    response_bytes: int = 0,
+    *,
+    outcome: str = "ok",
+    http_status: int | None = None,
+    error_code: str = "",
+    error_message: str = "",
+    request_path: str = "",
+    query: str = "",
+    attempts: int = 1,
+    duration_ms: int = 0,
+) -> None:
+    """Best-effort per-org usage/outcome log. Never raises into the tool."""
     try:
         user_id = getattr(context, "user_id", None) if context else None
         org_id = None
@@ -292,6 +433,14 @@ def _log_ops_usage(context, tool_name: str, response_bytes: int) -> None:
             user_id=int(user_id) if user_id else None,
             tool_name=tool_name,
             response_bytes=response_bytes,
+            outcome=outcome,
+            http_status=http_status,
+            error_code=(error_code or "")[:64],
+            error_message=(error_message or "")[:500],
+            request_path=(request_path or "")[:255],
+            query=(query or "")[:1000],
+            attempts=min(max(int(attempts), 1), 32767),
+            duration_ms=max(int(duration_ms), 0),
         )
     except Exception:
         logger.debug("EPO OPS: usage log write failed (non-fatal)")
@@ -328,6 +477,27 @@ def _sanitize_date(value: str, *, is_end: bool) -> str:
     return ""
 
 
+# Section/class/subclass, optionally main group and subgroup: H01M, A61B8,
+# A61B8/06, G01S15/8984. Validated after whitespace is removed.
+_CPC_RE = re.compile(r"^[A-HY]\d{2}[A-Z](\d{1,4}(/\d{1,6})?)?$")
+
+
+def _normalize_cpc(raw: str) -> str:
+    """Return a CPC symbol in OPS form (``A61B8/06``), or "" if it isn't one.
+
+    The slash is significant: OPS answers ``cpc="A61B8 06"`` (what the generic
+    sanitizer used to produce) with a 500 SERVER.DomainAccess.
+    """
+    if not raw:
+        return ""
+    # Only the conventional gaps are dropped ("A61B 8/06", "A61B8 / 06"); a space
+    # between digits ("A61B8 06") is ambiguous and rejected, not glued into 806.
+    cpc = raw.strip().upper()
+    cpc = re.sub(r"^([A-HY]\d{2}[A-Z])\s+(?=\d)", r"\1", cpc)
+    cpc = re.sub(r"\s*/\s*", "/", cpc)
+    return cpc if _CPC_RE.match(cpc) else ""
+
+
 def _build_cql(
     keywords: str = "",
     applicant: str = "",
@@ -338,29 +508,37 @@ def _build_cql(
 ) -> str:
     """Build an OPS CQL query string from structured inputs.
 
-    Field codes (validate against OPS reference): txt (title+abstract+claims),
-    pa (applicant), in (inventor), cpc (CPC classification), pd (publication
-    date). Clauses are ANDed.
+    Field codes: txt (title+abstract+claims), pa (applicant), in (inventor),
+    cpc (CPC classification), pd (publication date). Clauses are ANDed.
+    Verified live against OPS 3.2 (2026-10-05):
+
+    - Multi-word keywords use ``txt all "a b c"`` (every word, any order);
+      ``txt="a b c"`` is an exact-phrase search and usually finds nothing.
+    - CPC is emitted unquoted with its slash (``cpc=A61B8/06``); an invalid
+      symbol is dropped (the tool rejects it before calling OPS).
+    - A one-sided date range is ``pd>=`` / ``pd<=``. Padding it with a sentinel
+      year (``pd within "20000101 30001231"``) makes OPS 500.
     """
     clauses: list[str] = []
-    for field, raw in (
-        ("txt", keywords),
-        ("pa", applicant),
-        ("in", inventor),
-        ("cpc", cpc),
-    ):
+    kw = _sanitize_cql_value(keywords or "")
+    if kw:
+        clauses.append(f'txt all "{kw}"' if " " in kw else f'txt="{kw}"')
+    for field, raw in (("pa", applicant), ("in", inventor)):
         val = _sanitize_cql_value(raw or "")
         if val:
             clauses.append(f'{field}="{val}"')
+    cpc_val = _normalize_cpc(cpc)
+    if cpc_val:
+        clauses.append(f"cpc={cpc_val}")
 
     df = _sanitize_date(date_from, is_end=False)
     dt = _sanitize_date(date_to, is_end=True)
     if df and dt:
         clauses.append(f'pd within "{df} {dt}"')
     elif df:
-        clauses.append(f'pd within "{df} 30001231"')
+        clauses.append(f"pd>={df}")
     elif dt:
-        clauses.append(f'pd within "10000101 {dt}"')
+        clauses.append(f"pd<={dt}")
 
     return " and ".join(clauses)[:_MAX_CQL_LEN]
 
@@ -739,11 +917,18 @@ def _format_family(data: dict, publication_number: str) -> str:
 class PatentEpoOpsSearchInput(ReasonBaseModel):
     keywords: str = Field(
         default="",
-        description="Free-text keywords searched across title, abstract and claims.",
+        description=(
+            "Free-text keywords searched across title, abstract and claims. Every word "
+            "must appear (any order), so 2-5 distinctive terms recall far better than a "
+            "long sentence; run several searches rather than one long one."
+        ),
     )
     applicant: str = Field(default="", description="Applicant / assignee name to filter by.")
     inventor: str = Field(default="", description="Inventor name to filter by.")
-    cpc: str = Field(default="", description="CPC classification code to filter by (e.g. H01M).")
+    cpc: str = Field(
+        default="",
+        description="One CPC classification symbol to filter by, e.g. H01M, A61B8 or A61B8/06.",
+    )
     date_from: str = Field(default="", description="Earliest publication date, YYYY or YYYYMMDD.")
     date_to: str = Field(default="", description="Latest publication date, YYYY or YYYYMMDD.")
     count: int = Field(default=10, description="Number of results to return (1-25, default 10).")
@@ -779,6 +964,11 @@ class PatentEpoOpsSearchTool(ContextAwareTool):
     ) -> str:
         from django.core.cache import cache
 
+        if (cpc or "").strip() and not _normalize_cpc(cpc):
+            return (
+                f"Patent search error: {cpc!r} is not a CPC symbol. Pass one code like "
+                "H01M, A61B8 or A61B8/06 (or leave cpc empty)."
+            )
         cql = _build_cql(keywords, applicant, inventor, cpc, date_from, date_to)
         if not cql:
             return "Patent search error: provide at least one of keywords, applicant, inventor or cpc."

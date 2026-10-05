@@ -114,13 +114,35 @@ class OpsUsageLog(models.Model):
     ``GROUP BY`` needs no join and survives a user later changing orgs. Written
     best-effort by ``llm.tools.epo_ops._log_ops_usage`` — a failure here must
     never break a tool call.
+
+    One row per tool call that reaches OPS (not per HTTP attempt), whatever the
+    outcome: failures carry OPS's own fault code/message plus the request path
+    and query so a broken query can be reproduced against OPS directly.
     """
+
+    class Outcome(models.TextChoices):
+        OK = "ok"
+        NO_RESULTS = "no_results"  # OPS 404 — a normal search outcome
+        ERROR = "error"
 
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     org_id = models.PositiveIntegerField(null=True, blank=True, db_index=True)
     user_id = models.PositiveIntegerField(null=True, blank=True)
     tool_name = models.CharField(max_length=64, db_index=True)
     response_bytes = models.PositiveIntegerField(default=0)
+    outcome = models.CharField(
+        max_length=16, choices=Outcome.choices, default=Outcome.OK, db_index=True
+    )
+    http_status = models.PositiveSmallIntegerField(null=True, blank=True)
+    # OPS fault code (e.g. SERVER.DomainAccess) or a local failure class
+    # (Timeout, ConnectionError, TooLarge, Unreadable, AuthFailed).
+    error_code = models.CharField(max_length=64, blank=True, default="")
+    error_message = models.CharField(max_length=500, blank=True, default="")
+    request_path = models.CharField(max_length=255, blank=True, default="")
+    # The CQL for searches; empty for get/family (the number is in request_path).
+    query = models.CharField(max_length=1000, blank=True, default="")
+    attempts = models.PositiveSmallIntegerField(default=1)
+    duration_ms = models.PositiveIntegerField(default=0)
 
     class Meta:
         ordering = ["-created_at"]
@@ -131,7 +153,7 @@ class OpsUsageLog(models.Model):
         verbose_name_plural = "OPS Usage Logs"
 
     def __str__(self):
-        return f"{self.tool_name} org={self.org_id} @ {self.created_at}"
+        return f"{self.tool_name} {self.outcome} org={self.org_id} @ {self.created_at}"
 
 
 __all__ = ["LLMCallLog", "OpsUsageLog"]
