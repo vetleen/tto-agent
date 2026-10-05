@@ -15,12 +15,18 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 
 from llm.tools.epo_ops import (
+    PatentEpoOpsClassificationTool,
     PatentEpoOpsFamilyTool,
     PatentEpoOpsGetTool,
     PatentEpoOpsSearchTool,
     _as_list,
     _build_cql,
     _collect_text,
+    _cpc_codes,
+    _cpc_line,
+    _cpc_lookup_symbol,
+    _parse_cpc_scheme,
+    _split_cpc,
     _docdb_ref,
     _espacenet_url,
     _format_family,
@@ -42,6 +48,19 @@ from llm.tools.epo_ops import (
 
 User = get_user_model()
 
+def _cpc_entry(section, cls, subclass, main_group, subgroup, value="I", office="EP", scheme="CPCI"):
+    return {
+        "classification-scheme": {"@office": "EP", "@scheme": scheme},
+        "section": {"$": section},
+        "class": {"$": cls},
+        "subclass": {"$": subclass},
+        "main-group": {"$": main_group},
+        "subgroup": {"$": subgroup},
+        "classification-value": {"$": value},
+        "generating-office": {"$": office},
+    }
+
+
 _DUMMY_CACHE = {"default": {"BACKEND": "django.core.cache.backends.dummy.DummyCache"}}
 _LOCMEM_CACHE = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
 
@@ -62,6 +81,15 @@ _EXCHANGE_DOC = {
         "parties": {
             "applicants": {"applicant": [{"applicant-name": {"name": {"$": "ACME Corp"}}}]},
             "inventors": {"inventor": {"inventor-name": {"name": {"$": "Jane Doe"}}}},
+        },
+        # Real OPS shape: CPC as parts, repeated per generating office.
+        "patent-classifications": {
+            "patent-classification": [
+                _cpc_entry("A", "61", "B", "8", "06", "I", "US"),
+                _cpc_entry("A", "61", "B", "8", "06", "I", "EP"),
+                _cpc_entry("A", "61", "B", "8", "4254", "I", "US"),
+                _cpc_entry("G", "01", "S", "15", "8979", "A", "EP"),
+            ]
         },
     },
     "abstract": {"@lang": "en", "p": {"$": "An improved widget."}},
@@ -200,8 +228,33 @@ class BuildCqlTests(TestCase):
         self.assertEqual(_build_cql(keywords="x", date_to="2021"), 'txt="x" and pd<=20211231')
 
     def test_cpc_keeps_slash_and_drops_spaces(self):
-        self.assertEqual(_build_cql(cpc="A61B 8/06"), "cpc=A61B8/06")
-        self.assertEqual(_build_cql(cpc="g01s15/8984"), "cpc=G01S15/8984")
+        self.assertEqual(_build_cql(cpc="A61B 8/06", include_subgroups=False), "cpc=A61B8/06")
+        self.assertEqual(_build_cql(cpc="g01s15/8984", include_subgroups=False), "cpc=G01S15/8984")
+
+    def test_subgroups_included_by_default_only_on_subgroup_codes(self):
+        # /low widens a subgroup; main groups/subclasses already include theirs.
+        self.assertEqual(_build_cql(cpc="A61B8/06"), "cpc=A61B8/06/low")
+        self.assertEqual(_build_cql(cpc="A61B8"), "cpc=A61B8")
+        self.assertEqual(_build_cql(cpc="A61B"), "cpc=A61B")
+
+    def test_several_codes_or_ed_in_parentheses(self):
+        self.assertEqual(
+            _build_cql(keywords="doppler angle", cpc=["A61B8/06", "G01S15/8984", "A61B8"], date_from="2000"),
+            'txt all "doppler angle" and (cpc=A61B8/06/low or cpc=G01S15/8984/low or cpc=A61B8)'
+            " and pd>=20000101",
+        )
+
+    def test_never_emits_cpc_any_with_low(self):
+        # OPS 400s on `cpc any "X/low …"` (CLIENT.InvalidClassificationRelation).
+        cql = _build_cql(cpc=["A61B8/06", "G01S15/8984"])
+        self.assertNotIn("any", cql)
+
+    def test_duplicate_codes_collapsed(self):
+        self.assertEqual(_build_cql(cpc=["A61B8/06", "a61b 8/06"]), "cpc=A61B8/06/low")
+
+    def test_codes_capped(self):
+        codes = [f"A61B8/{n:02d}" for n in range(2, 30, 2)]  # 14 codes
+        self.assertEqual(_build_cql(cpc=codes).count("cpc="), 10)
 
     def test_invalid_cpc_dropped(self):
         self.assertEqual(_build_cql(keywords="x", cpc="not a cpc"), 'txt="x"')
@@ -634,7 +687,7 @@ class PatentToolTests(TestCase):
     @patch("llm.tools.epo_ops.requests.get")
     def test_search_invalid_cpc_rejected_without_calling_ops(self, mock_get):
         result = PatentEpoOpsSearchTool().invoke({"keywords": "pile", "cpc": "E02D5 30 OR E02D5/24"})
-        self.assertIn("not a CPC symbol", result)
+        self.assertIn("not CPC symbols: 'E02D5 30'", result)
         mock_get.assert_not_called()
 
     @patch("llm.tools.epo_ops.requests.get")
@@ -645,8 +698,48 @@ class PatentToolTests(TestCase):
         )
         self.assertEqual(
             mock_get.call_args.kwargs["params"]["q"],
-            'txt all "blood flow vessel" and cpc=G01S15/8984 and pd>=20000101',
+            'txt all "blood flow vessel" and cpc=G01S15/8984/low and pd>=20000101',
         )
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_search_accepts_cpc_as_string_or_list(self, mock_get):
+        mock_get.return_value = _mock_ok(SEARCH_FIXTURE)
+        expected = "(cpc=A61B8/06/low or cpc=G01S15/8984/low)"
+        for cpc in ("A61B8/06, G01S15/8984", "A61B8/06 or G01S15/8984", ["A61B8/06", "G01S15/8984"]):
+            PatentEpoOpsSearchTool().invoke({"cpc": cpc})
+            self.assertEqual(mock_get.call_args.kwargs["params"]["q"], expected, cpc)
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_search_include_subgroups_false(self, mock_get):
+        mock_get.return_value = _mock_ok(SEARCH_FIXTURE)
+        PatentEpoOpsSearchTool().invoke({"cpc": ["A61B8/06"], "include_subgroups": False})
+        self.assertEqual(mock_get.call_args.kwargs["params"]["q"], "cpc=A61B8/06")
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_search_names_every_invalid_code(self, mock_get):
+        result = PatentEpoOpsSearchTool().invoke({"cpc": ["A61B8/06", "doppler", "Z99"]})
+        self.assertIn("'doppler'", result)
+        self.assertIn("'Z99'", result)
+        mock_get.assert_not_called()
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_search_rejects_more_than_ten_codes(self, mock_get):
+        codes = [f"A61B8/{n:02d}" for n in range(2, 30, 2)]
+        result = PatentEpoOpsSearchTool().invoke({"cpc": codes})
+        self.assertIn("at most 10", result)
+        mock_get.assert_not_called()
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_search_hits_show_cpc_line(self, mock_get):
+        mock_get.return_value = _mock_ok(SEARCH_FIXTURE)
+        result = PatentEpoOpsSearchTool().invoke({"keywords": "widget"})
+        self.assertIn("CPC: A61B8/06, A61B8/4254 (additional: G01S15/8979)", result)
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_get_shows_cpc_line(self, mock_get):
+        mock_get.return_value = _mock_ok(GET_FIXTURE)
+        result = PatentEpoOpsGetTool().invoke({"publication_number": "EP1000000A1"})
+        self.assertIn("CPC: A61B8/06, A61B8/4254 (additional: G01S15/8979)", result)
 
     def test_search_requires_an_input(self):
         result = PatentEpoOpsSearchTool().invoke({"keywords": ""})
@@ -827,3 +920,283 @@ class OpsOutcomeLogTests(TestCase):
             self.assertEqual(
                 _ops_request(self.PATH, {"q": "x"}, tool_name="patent_epoops_search"), {"ok": 1}
             )
+
+
+# --------------------------------------------------------------------------- #
+# CPC codes on documents.
+# --------------------------------------------------------------------------- #
+class CpcCodesTests(TestCase):
+    def test_parts_joined_deduped_and_split(self):
+        biblio = _EXCHANGE_DOC["bibliographic-data"]
+        self.assertEqual(
+            _cpc_codes(biblio),
+            {"inventive": ["A61B8/06", "A61B8/4254"], "additional": ["G01S15/8979"]},
+        )
+
+    def test_inventive_wins_over_additional(self):
+        biblio = {"patent-classifications": {"patent-classification": [
+            _cpc_entry("A", "61", "B", "8", "06", "A"),
+            _cpc_entry("A", "61", "B", "8", "06", "I"),
+        ]}}
+        self.assertEqual(_cpc_codes(biblio), {"inventive": ["A61B8/06"], "additional": []})
+
+    def test_non_cpc_schemes_and_incomplete_entries_skipped(self):
+        biblio = {"patent-classifications": {"patent-classification": [
+            _cpc_entry("A", "61", "B", "8", "06", scheme="UC"),
+            {"section": {"$": "A"}, "class": {"$": "61"}},
+            "junk",
+        ]}}
+        self.assertEqual(_cpc_codes(biblio), {"inventive": [], "additional": []})
+
+    def test_missing_block(self):
+        self.assertEqual(_cpc_codes({}), {"inventive": [], "additional": []})
+
+    def test_search_line_capped(self):
+        cpc = {"inventive": [f"A61B8/{n}" for n in range(10)], "additional": []}
+        self.assertIn("… (+4)", _cpc_line(cpc, max_inventive=6))
+
+
+class SplitCpcTests(TestCase):
+    def test_variants(self):
+        self.assertEqual(_split_cpc("A61B8/06, G01S15/8984"), ["A61B8/06", "G01S15/8984"])
+        self.assertEqual(_split_cpc("A61B8/06; G01S15/8984"), ["A61B8/06", "G01S15/8984"])
+        self.assertEqual(_split_cpc("A61B8/06 OR G01S15/8984"), ["A61B8/06", "G01S15/8984"])
+        self.assertEqual(_split_cpc("A61B8/06 G01S15/8984"), ["A61B8/06", "G01S15/8984"])
+        self.assertEqual(
+            _split_cpc(["A61B8/06", "G01S15/8984, H01M"]), ["A61B8/06", "G01S15/8984", "H01M"]
+        )
+
+    def test_space_inside_one_symbol_kept(self):
+        self.assertEqual(_split_cpc("A61B 8/06"), ["A61B 8/06"])
+
+    def test_empty(self):
+        self.assertEqual(_split_cpc(""), [])
+        self.assertEqual(_split_cpc(None), [])
+
+
+# --------------------------------------------------------------------------- #
+# Classification tool.
+# --------------------------------------------------------------------------- #
+def _cpc_item(symbol, level, title_xml, children="", **attrs):
+    extra = " ".join(f'{k.replace("_", "-")}="{v}"' for k, v in attrs.items())
+    return (
+        f'<cpc:classification-item level="{level}" sort-key="{symbol}" {extra}>'
+        f"<cpc:classification-symbol>{symbol}</cpc:classification-symbol>"
+        f"<cpc:class-title>{title_xml}</cpc:class-title>{children}"
+        "<cpc:meta-data>+</cpc:meta-data></cpc:classification-item>"
+    )
+
+
+def _tp(text):
+    return f"<cpc:title-part><cpc:text>{text}</cpc:text></cpc:title-part>"
+
+
+_A61B_TITLE = (
+    "<cpc:title-part><cpc:text>IDENTIFICATION </cpc:text><cpc:explanation><cpc:text>"
+    'usefulness limited to only animals <cpc:class-ref scheme="cpc">A61D</cpc:class-ref>'
+    "</cpc:text></cpc:explanation></cpc:title-part>"
+)
+_A61B8_065_TITLE = (
+    "<cpc:title-part><cpc:comment><cpc:text>to determine blood output from the heart"
+    "</cpc:text></cpc:comment></cpc:title-part>"
+)
+
+# Trimmed from the live response to classification/cpc/A61B8/06?ancestors=true&depth=1.
+_A61B8_06 = _cpc_item(
+    "A61B8/06", 8, _tp("Measuring blood flow"), has_children="true",
+    children=_cpc_item("A61B8/065", 9, _A61B8_065_TITLE),
+)
+_A61B8_00 = _cpc_item(
+    "A61B8/00", 7, _tp("Diagnosis using ultrasonic, sonic or infrasonic waves"),
+    has_children="true", children=_A61B8_06,
+)
+_A61B1_00 = _cpc_item(
+    "A61B1/00", 6, _tp("Diagnosis"), has_children="true", not_allocatable="true", children=_A61B8_00,
+)
+_A61B = _cpc_item("A61B", 5, _A61B_TITLE, has_children="true", children=_A61B1_00)
+_A61_4 = _cpc_item("A61", 4, _tp("MEDICAL OR VETERINARY SCIENCE"), has_children="true", children=_A61B)
+_A61_3 = _cpc_item("A61", 3, _tp("HEALTH") + _tp("AMUSEMENT"), has_children="true", children=_A61_4)
+_A = _cpc_item("A", 2, _tp("HUMAN NECESSITIES"), has_children="true", children=_A61_3)
+CPC_SCHEME_XML = (
+    '<?xml version="1.0" encoding="utf-8" standalone="yes"?>'
+    "<?xml-stylesheet type='text/xsl' href='../../../../style/cpc.xsl' ?>"
+    '<ops:world-patent-data xmlns:ops="http://ops.epo.org" xmlns:cpc="http://www.epo.org/cpcexport">'
+    '<ops:classification-scheme><ops:cpc><cpc:class-scheme scheme-type="cpc">'
+    + _A
+    + "</cpc:class-scheme></ops:cpc></ops:classification-scheme></ops:world-patent-data>"
+)
+
+
+def _cpc_stat(symbol, score, title):
+    return {
+        "@classification-symbol": symbol,
+        "@percentage": score,
+        "cpc:class-title": {"cpc:title-part": {"cpc:text": {"$": title}}},
+    }
+
+
+CPC_SEARCH_FIXTURE = {
+    "ops:world-patent-data": {
+        "ops:classification-search": {
+            "@total-result-count": "2",
+            "ops:search-result": {
+                "ops:classification-statistics": [
+                    _cpc_stat(
+                        "Y02A90/00", "0.5243757",
+                        "Technologies having an indirect contribution to adaptation to climate change",
+                    ),
+                    _cpc_stat("A61B8/00", "0.2364201", "Diagnosis using ultrasonic, sonic or infrasonic waves"),
+                ]
+            },
+        }
+    }
+}
+
+
+def _mock_xml_ok(text):
+    m = MagicMock()
+    m.status_code = 200
+    m.headers = {}
+    m.content = text.encode()
+    m.text = text
+    m.raise_for_status = MagicMock()
+    return m
+
+
+class CpcLookupSymbolTests(TestCase):
+    def test_main_group_gets_00(self):
+        self.assertEqual(_cpc_lookup_symbol("A61B8"), "A61B8/00")
+        self.assertEqual(_cpc_lookup_symbol("A61B"), "A61B")
+        self.assertEqual(_cpc_lookup_symbol("a61b 8/06"), "A61B8/06")
+        self.assertEqual(_cpc_lookup_symbol("doppler"), "")
+
+
+class ParseCpcSchemeTests(TestCase):
+    def test_path_entry_children(self):
+        parsed = _parse_cpc_scheme(CPC_SCHEME_XML, "A61B8/06")
+        self.assertEqual(parsed["entry"]["symbol"], "A61B8/06")
+        self.assertEqual(parsed["entry"]["title"], "Measuring blood flow")
+        self.assertTrue(parsed["entry"]["has_children"])
+        self.assertEqual(
+            [p["symbol"] for p in parsed["path"]], ["A", "A61", "A61B", "A61B1/00", "A61B8/00"]
+        )
+        # The two A61 levels fold into one step.
+        self.assertEqual(parsed["path"][1]["title"], "HEALTH; AMUSEMENT; MEDICAL OR VETERINARY SCIENCE")
+        self.assertEqual(
+            parsed["path"][2]["title"], "IDENTIFICATION (usefulness limited to only animals A61D)"
+        )
+        self.assertTrue(parsed["path"][3]["not_allocatable"])
+        # Subgroup titles often sit in cpc:comment.
+        self.assertEqual(
+            parsed["children"],
+            [{"symbol": "A61B8/065", "title": "to determine blood output from the heart",
+              "has_children": False, "not_allocatable": False}],
+        )
+
+    def test_symbol_absent(self):
+        self.assertIsNone(_parse_cpc_scheme(CPC_SCHEME_XML, "A61B8/999"))
+
+    def test_garbage(self):
+        self.assertIsNone(_parse_cpc_scheme("not xml <", "A61B8/06"))
+        self.assertIsNone(_parse_cpc_scheme("", "A61B8/06"))
+
+    def test_entities_not_expanded(self):
+        evil = (
+            '<?xml version="1.0"?><!DOCTYPE x [<!ENTITY e SYSTEM "file:///etc/passwd">]>'
+            '<x xmlns:cpc="http://www.epo.org/cpcexport"><cpc:classification-item>'
+            "<cpc:classification-symbol>A61B8/06</cpc:classification-symbol>"
+            "<cpc:class-title><cpc:title-part><cpc:text>&e;</cpc:text></cpc:title-part></cpc:class-title>"
+            "</cpc:classification-item></x>"
+        )
+        parsed = _parse_cpc_scheme(evil, "A61B8/06")
+        self.assertNotIn("root:", (parsed or {}).get("entry", {}).get("title", ""))
+
+
+@override_settings(EPO_OPS_KEY="k", EPO_OPS_SECRET="s", CACHES=_DUMMY_CACHE)
+class PatentClassificationToolTests(TestCase):
+    def setUp(self):
+        p = patch("llm.tools.epo_ops._ops_rate_limiter")
+        p.start()
+        self.addCleanup(p.stop)
+        p2 = patch("llm.tools.epo_ops._get_access_token", return_value="tok")
+        p2.start()
+        self.addCleanup(p2.stop)
+
+    def test_metadata(self):
+        tool = PatentEpoOpsClassificationTool()
+        self.assertEqual(tool.name, "patent_epoops_classification")
+        self.assertEqual(tool.section, "skills")
+        self.assertEqual(tool.audience, "shared")
+        self.assertEqual(tool.start_label, "Looking up patent classification...")
+        self.assertEqual(tool.end_label, "Looked up patent classification")
+
+    def test_exactly_one_mode(self):
+        tool = PatentEpoOpsClassificationTool()
+        self.assertIn("exactly one", tool.invoke({}))
+        self.assertIn("exactly one", tool.invoke({"query": "x", "symbol": "A61B8"}))
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_symbol_mode(self, mock_get):
+        mock_get.return_value = _mock_xml_ok(CPC_SCHEME_XML)
+        result = PatentEpoOpsClassificationTool().invoke({"symbol": "a61b8/06"})
+        self.assertIn("CPC A61B8/06 — Measuring blood flow [has narrower subgroups]", result)
+        self.assertIn("- A61B8/00 — Diagnosis using ultrasonic", result)
+        self.assertIn("- A61B1/00 — Diagnosis", result)
+        self.assertIn("- A61B8/065 — to determine blood output from the heart", result)
+        self.assertIn("classification/cpc/A61B8/06", mock_get.call_args.args[0])
+        self.assertEqual(mock_get.call_args.kwargs["headers"]["Accept"], "application/cpc+xml")
+        self.assertEqual(mock_get.call_args.kwargs["params"], {"ancestors": "true", "depth": "1"})
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_main_group_requested_with_00(self, mock_get):
+        mock_get.return_value = _mock_xml_ok(CPC_SCHEME_XML.replace("A61B8/06", "A61B8/0X"))
+        PatentEpoOpsClassificationTool().invoke({"symbol": "A61B8"})
+        self.assertTrue(mock_get.call_args.args[0].endswith("classification/cpc/A61B8/00"))
+
+    def test_invalid_symbol(self):
+        result = PatentEpoOpsClassificationTool().invoke({"symbol": "doppler"})
+        self.assertIn("not a CPC symbol", result)
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_unknown_symbol_404(self, mock_get):
+        mock_get.return_value = _mock_http_error(404)
+        result = PatentEpoOpsClassificationTool().invoke({"symbol": "A61B8/999"})
+        self.assertIn("No CPC entry for A61B8/999", result)
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_symbol_missing_from_200_response(self, mock_get):
+        mock_get.return_value = _mock_xml_ok("<x/>")
+        result = PatentEpoOpsClassificationTool().invoke({"symbol": "A61B8/999"})
+        self.assertIn("No CPC entry for A61B8/999", result)
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_query_mode(self, mock_get):
+        mock_get.return_value = _mock_ok(CPC_SEARCH_FIXTURE)
+        result = PatentEpoOpsClassificationTool().invoke({"query": "doppler angle correction", "count": 50})
+        self.assertIn("- Y02A90/00 — Technologies having an indirect contribution", result)
+        self.assertIn(
+            "- A61B8/00 — Diagnosis using ultrasonic, sonic or infrasonic waves (score 0.24)", result
+        )
+        self.assertIn("candidates to verify", result)
+        self.assertIn("classification/cpc/search", mock_get.call_args.args[0])
+        self.assertEqual(
+            mock_get.call_args.kwargs["params"], {"q": "doppler angle correction", "Range": "1-20"}
+        )
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_query_no_results(self, mock_get):
+        mock_get.return_value = _mock_ok({"ops:world-patent-data": {"ops:classification-search": {}}})
+        result = PatentEpoOpsClassificationTool().invoke({"query": "zzqxqzz"})
+        self.assertIn("No CPC groups found", result)
+
+    @patch("llm.tools.epo_ops.time.sleep")
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_ops_error_passthrough_and_logged(self, mock_get, _sleep):
+        from llm.models import OpsUsageLog
+
+        mock_get.return_value = _mock_http_error(503)
+        result = PatentEpoOpsClassificationTool().invoke({"query": "doppler"})
+        self.assertIn("Classification lookup error", result)
+        row = OpsUsageLog.objects.get(tool_name="patent_epoops_classification")
+        self.assertEqual(row.outcome, "error")
+        self.assertEqual(row.request_path, "classification/cpc/search")

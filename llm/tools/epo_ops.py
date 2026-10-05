@@ -1,10 +1,11 @@
-"""EPO Open Patent Services (OPS) patent tools — search, retrieve, family.
+"""EPO Open Patent Services (OPS) patent tools — search, retrieve, family, CPC.
 
-Three skill-gated tools (`patent_epoops_search`, `patent_epoops_get`,
-`patent_epoops_family`) backed by the European Patent Office's OPS REST API — the
-API behind Espacenet, covering DOCDB bibliographic data, INPADOC families and
-legal status, and EP/WO full text. Exposed through the `patent-searcher` seed
-subagent skill.
+Four skill-gated tools (`patent_epoops_search`, `patent_epoops_get`,
+`patent_epoops_family`, `patent_epoops_classification`) backed by the European
+Patent Office's OPS REST API — the API behind Espacenet, covering DOCDB
+bibliographic data, INPADOC families and legal status, EP/WO full text and the
+CPC scheme. The first three are exposed through the `patent-searcher` seed
+subagent skill; the classification tool is for skills that list it.
 
 Auth is OAuth2 client-credentials with a single shared Wilfred credential
 (read-only public data). The tools register only when EPO_OPS_KEY and
@@ -30,7 +31,7 @@ import threading
 import time
 
 import requests
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from llm.tools.interfaces import ContextAwareTool, ReasonBaseModel
 from llm.tools._throttle import (
@@ -212,13 +213,18 @@ def _parse_ops_fault(response) -> tuple[str, str, str]:
     )
 
 
-def _ops_request(path: str, params: dict, tool_name: str, context=None) -> dict:
+def _ops_request(
+    path: str, params: dict, tool_name: str, context=None, accept: str = "application/json"
+) -> dict:
     """GET an OPS rest-service and return parsed JSON, or ``{"error": ...}``.
 
     ``path`` is relative to ``{base}/rest-services`` (e.g.
     ``published-data/search/biblio``). Never raises to the caller: HTTP/parse
     failures return a graceful error dict. Every exit writes one
     ``OpsUsageLog`` row with the outcome (and OPS's fault code on failure).
+
+    A non-JSON ``accept`` (the CPC scheme service only speaks XML) returns the
+    body as ``{"_xml": text}`` instead of parsed JSON.
     """
     url = f"{_base_url()}/{_REST_PREFIX}/{path.lstrip('/')}"
     started = time.monotonic()
@@ -262,7 +268,7 @@ def _ops_request(path: str, params: dict, tool_name: str, context=None) -> dict:
                 url,
                 headers={
                     "Authorization": f"Bearer {token}",
-                    "Accept": "application/json",
+                    "Accept": accept,
                 },
                 params=params,
                 timeout=15,
@@ -273,7 +279,7 @@ def _ops_request(path: str, params: dict, tool_name: str, context=None) -> dict:
             from llm.tools.web_fetch import _enforce_size_and_buffer, _max_response_bytes
 
             _enforce_size_and_buffer(response, _max_response_bytes())
-            data = response.json()
+            data = response.json() if accept == "application/json" else {"_xml": response.text}
             return _done(data, "ok", http_status=response.status_code,
                          response_bytes=len(response.content or b""))
 
@@ -498,13 +504,66 @@ def _normalize_cpc(raw: str) -> str:
     return cpc if _CPC_RE.match(cpc) else ""
 
 
+_MAX_CPC_CODES = 10
+_CPC_SPLIT_RE = re.compile(r"\s*(?:[,;]|\bor\b)\s*", re.IGNORECASE)
+
+
+def _split_cpc(value) -> list[str]:
+    """Raw CPC entries from a list or a free-form string.
+
+    Accepts ``["A61B8/06", "G01S15/8984"]`` as well as the strings models tend
+    to send instead: ``"A61B8/06, G01S15/8984"``, ``"A61B8/06 or G01S15/8984"``
+    and ``"A61B8/06 G01S15/8984"``. A space inside one symbol (``"A61B 8/06"``)
+    is kept together — whitespace only splits when every piece is a symbol.
+    """
+    if not value:
+        return []
+    items = value if isinstance(value, (list, tuple)) else [value]
+    out: list[str] = []
+    for item in items:
+        for piece in _CPC_SPLIT_RE.split(str(item or "")):
+            piece = piece.strip()
+            if not piece:
+                continue
+            words = piece.split()
+            if len(words) > 1 and not _normalize_cpc(piece) and all(_normalize_cpc(w) for w in words):
+                out.extend(words)
+            else:
+                out.append(piece)
+    return out
+
+
+def _cpc_clause(codes: list[str], include_subgroups: bool = True) -> str:
+    """CQL for one or more (already valid) CPC symbols, OR-ed.
+
+    ``/low`` widens a subgroup to everything filed beneath it (A61B8/06 also
+    matches A61B8/065); main groups and subclasses already include theirs.
+    OPS rejects ``/low`` inside ``cpc any "…"`` (400
+    CLIENT.InvalidClassificationRelation), hence the parenthesised OR.
+    """
+    terms = []
+    for code in codes:
+        sym = _normalize_cpc(code)
+        if not sym:
+            continue
+        if include_subgroups and "/" in sym:
+            sym += "/low"
+        term = f"cpc={sym}"
+        if term not in terms:
+            terms.append(term)
+    if not terms:
+        return ""
+    return terms[0] if len(terms) == 1 else "(" + " or ".join(terms) + ")"
+
+
 def _build_cql(
     keywords: str = "",
     applicant: str = "",
     inventor: str = "",
-    cpc: str = "",
+    cpc: str | list[str] = "",
     date_from: str = "",
     date_to: str = "",
+    include_subgroups: bool = True,
 ) -> str:
     """Build an OPS CQL query string from structured inputs.
 
@@ -514,8 +573,9 @@ def _build_cql(
 
     - Multi-word keywords use ``txt all "a b c"`` (every word, any order);
       ``txt="a b c"`` is an exact-phrase search and usually finds nothing.
-    - CPC is emitted unquoted with its slash (``cpc=A61B8/06``); an invalid
-      symbol is dropped (the tool rejects it before calling OPS).
+    - CPC is emitted unquoted with its slash (``cpc=A61B8/06``), several codes
+      as ``(cpc=X or cpc=Y)``; invalid symbols are dropped (the tool rejects
+      them before calling OPS). See ``_cpc_clause``.
     - A one-sided date range is ``pd>=`` / ``pd<=``. Padding it with a sentinel
       year (``pd within "20000101 30001231"``) makes OPS 500.
     """
@@ -527,9 +587,9 @@ def _build_cql(
         val = _sanitize_cql_value(raw or "")
         if val:
             clauses.append(f'{field}="{val}"')
-    cpc_val = _normalize_cpc(cpc)
-    if cpc_val:
-        clauses.append(f"cpc={cpc_val}")
+    cpc_clause = _cpc_clause(_split_cpc(cpc)[:_MAX_CPC_CODES], include_subgroups)
+    if cpc_clause:
+        clauses.append(cpc_clause)
 
     df = _sanitize_date(date_from, is_end=False)
     dt = _sanitize_date(date_to, is_end=True)
@@ -736,6 +796,39 @@ def _abstract_text(doc: dict) -> str:
     return "\n".join(parts)
 
 
+def _cpc_codes(biblio: dict) -> dict[str, list[str]]:
+    """CPC symbols assigned to a document, split into inventive / additional.
+
+    OPS lists them under ``patent-classifications/patent-classification`` as
+    parts (section, class, subclass, main-group, subgroup) with
+    ``classification-value`` I (inventive) or A (additional), repeated once per
+    generating office — so symbols are de-duplicated, first occurrence wins.
+    A symbol seen as inventive anywhere is reported as inventive only.
+    """
+    inventive: list[str] = []
+    additional: list[str] = []
+    group = biblio.get("patent-classifications", {}) or {}
+    for entry in _as_list(group.get("patent-classification") if isinstance(group, dict) else None):
+        if not isinstance(entry, dict):
+            continue
+        scheme = entry.get("classification-scheme", {}) or {}
+        if isinstance(scheme, dict) and not str(scheme.get("@scheme", "CPC")).upper().startswith("CPC"):
+            continue
+        parts = [_text(entry.get(k)).strip() for k in ("section", "class", "subclass", "main-group", "subgroup")]
+        section, cls, subclass, main_group, subgroup = parts
+        if not (section and cls and subclass and main_group and subgroup):
+            continue
+        symbol = f"{section}{cls}{subclass}{main_group}/{subgroup}"
+        if _text(entry.get("classification-value")).strip().upper() == "A":
+            if symbol not in additional and symbol not in inventive:
+                additional.append(symbol)
+        elif symbol not in inventive:
+            inventive.append(symbol)
+            if symbol in additional:
+                additional.remove(symbol)
+    return {"inventive": inventive, "additional": additional}
+
+
 def _parse_exchange_document(doc: dict) -> dict:
     biblio = doc.get("bibliographic-data", {}) or {}
     pubnum = _pubnumber_from_attrs(doc)
@@ -749,6 +842,7 @@ def _parse_exchange_document(doc: dict) -> dict:
         "inventors": _party_names(biblio, "inventors", "inventor"),
         "date": _publication_date(biblio),
         "abstract": _abstract_text(doc),
+        "cpc": _cpc_codes(biblio),
     }
 
 
@@ -851,11 +945,34 @@ def _format_search(data: dict) -> str:
             lines.append(f"Applicant(s): {_clean(', '.join(r['applicants']))}")
         if r["date"]:
             lines.append(f"Published: {r['date']}")
+        cpc_line = _cpc_line(r.get("cpc"), max_inventive=6, max_additional=4)
+        if cpc_line:
+            lines.append(cpc_line)
         abstract = _clean(r["abstract"])
         if abstract:
             lines.append(abstract[:600] + ("…" if len(abstract) > 600 else ""))
         lines.append("")
     return _wrap(lines)
+
+
+def _cpc_line(cpc: dict | None, *, max_inventive: int | None = None, max_additional: int | None = None) -> str:
+    """``CPC: A61B8/06, A61B8/4254 (additional: G01S15/8979)`` or ""."""
+    if not cpc:
+        return ""
+
+    def _take(codes: list[str], cap: int | None) -> str:
+        if cap is None or len(codes) <= cap:
+            return ", ".join(codes)
+        return ", ".join(codes[:cap]) + f", … (+{len(codes) - cap})"
+
+    inventive = cpc.get("inventive") or []
+    additional = cpc.get("additional") or []
+    if not inventive and not additional:
+        return ""
+    line = "CPC: " + (_take(inventive, max_inventive) if inventive else "(none inventive)")
+    if additional:
+        line += f" (additional: {_take(additional, max_additional)})"
+    return line
 
 
 def _format_get(data: dict, publication_number: str, parts: str) -> str:
@@ -879,6 +996,9 @@ def _format_get(data: dict, publication_number: str, parts: str) -> str:
             lines.append(f"Inventor(s): {_clean(', '.join(r['inventors']))}")
         if r["date"]:
             lines.append(f"Published: {r['date']}")
+        cpc_line = _cpc_line(r.get("cpc"))
+        if cpc_line:
+            lines.append(cpc_line)
         if r["abstract"]:
             lines.append("")
             lines.append("Abstract:")
@@ -912,6 +1032,170 @@ def _format_family(data: dict, publication_number: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# CPC classification scheme (classification/cpc/...).
+# --------------------------------------------------------------------------- #
+_CPC_NS = "http://www.epo.org/cpcexport"
+_CPC_ITEM = f"{{{_CPC_NS}}}classification-item"
+
+
+def _cpc_lookup_symbol(raw: str) -> str:
+    """Symbol in the form the scheme service expects, or "".
+
+    The service wants main groups as ``A61B8/00`` (``A61B8`` → 404); subclasses
+    (``A61B``) and subgroups are passed through.
+    """
+    sym = _normalize_cpc(raw)
+    if sym and "/" not in sym and len(sym) > 4:
+        sym += "/00"
+    return sym
+
+
+def _cpc_item_title(item) -> str:
+    """Title of one ``classification-item``: its title-parts joined by "; ",
+    each with any explanation (e.g. "A61B8/02 … take precedence") in parens.
+
+    The text sits in ``cpc:text`` or, for many subgroups, ``cpc:comment/cpc:text``
+    — so everything that isn't an explanation counts as the title.
+    """
+    title = item.find(f"{{{_CPC_NS}}}class-title")
+    if title is None:
+        return ""
+    explanation_tag = f"{{{_CPC_NS}}}explanation"
+    parts: list[str] = []
+    for tp in title.findall(f"{{{_CPC_NS}}}title-part"):
+        main_bits: list[str] = []
+        expl_bits: list[str] = []
+        for child in tp:
+            (expl_bits if child.tag == explanation_tag else main_bits).append("".join(child.itertext()))
+        main = " ".join(main_bits)
+        expl = " ".join(expl_bits)
+        main = re.sub(r"\s+", " ", main).strip()
+        expl = re.sub(r"\s+", " ", expl).strip()
+        if main and expl:
+            parts.append(f"{main} ({expl})")
+        elif main or expl:
+            parts.append(main or expl)
+    return "; ".join(parts)
+
+
+def _cpc_item_info(item) -> dict:
+    sym_el = item.find(f"{{{_CPC_NS}}}classification-symbol")
+    return {
+        "symbol": (sym_el.text or "").strip() if sym_el is not None else "",
+        "title": _cpc_item_title(item),
+        "has_children": item.get("has-children") == "true",
+        "not_allocatable": item.get("not-allocatable") == "true",
+    }
+
+
+def _parse_cpc_scheme(xml_text: str, symbol: str) -> dict | None:
+    """Path, entry and direct children for ``symbol`` from a scheme response
+    fetched with ``ancestors=true&depth=1``. None when the symbol isn't there."""
+    from lxml import etree
+
+    if not xml_text:
+        return None
+    try:
+        parser = etree.XMLParser(resolve_entities=False, no_network=True, huge_tree=False)
+        root = etree.fromstring(xml_text.encode("utf-8"), parser)
+    except Exception:
+        logger.info("EPO OPS: unparseable CPC scheme response for %s", symbol)
+        return None
+
+    target = None
+    for item in root.iter(_CPC_ITEM):
+        sym_el = item.find(f"{{{_CPC_NS}}}classification-symbol")
+        if sym_el is not None and (sym_el.text or "").strip() == symbol:
+            target = item
+            break
+    if target is None:
+        return None
+
+    path: list[dict] = []
+    for anc in reversed(list(target.iterancestors(_CPC_ITEM))):
+        info = _cpc_item_info(anc)
+        # The scheme repeats a class symbol on two levels (A61: HEALTH /
+        # MEDICAL…); fold those into one path step.
+        if path and path[-1]["symbol"] == info["symbol"]:
+            path[-1]["title"] = "; ".join(t for t in (path[-1]["title"], info["title"]) if t)
+        else:
+            path.append(info)
+    children = [_cpc_item_info(c) for c in target.findall(_CPC_ITEM)]
+    return {"path": path, "entry": _cpc_item_info(target), "children": children}
+
+
+def _cpc_marks(info: dict) -> str:
+    marks = []
+    if info.get("not_allocatable"):
+        marks.append("heading only, not assigned to documents")
+    if info.get("has_children"):
+        marks.append("has narrower subgroups")
+    return f" [{'; '.join(marks)}]" if marks else ""
+
+
+def _format_cpc_symbol(parsed: dict | None, symbol: str) -> str:
+    if not parsed:
+        return (
+            f"No CPC entry for {symbol}. Check the symbol (e.g. A61B8/06), or look up its "
+            "parent group, or find candidates with query=."
+        )
+    entry = parsed["entry"]
+    lines = [f"CPC {entry['symbol']} — {_clean(entry['title'])}{_cpc_marks(entry)}", ""]
+    if parsed["path"]:
+        lines.append("Place in the scheme (broadest first):")
+        for step in parsed["path"]:
+            lines.append(f"- {step['symbol']} — {_clean(step['title'])}")
+        lines.append("")
+    if parsed["children"]:
+        lines.append("Narrower groups directly below it:")
+        for child in parsed["children"]:
+            lines.append(f"- {child['symbol']} — {_clean(child['title'])}{_cpc_marks(child)}")
+    else:
+        lines.append("No narrower groups below this one.")
+    return _wrap(lines)
+
+
+def _parse_cpc_search(data: dict) -> list[dict]:
+    root = _unwrap(data)
+    search = root.get("ops:classification-search", {}) or {}
+    result = search.get("ops:search-result", {}) or {}
+    hits: list[dict] = []
+    for stat in _as_list(result.get("ops:classification-statistics") if isinstance(result, dict) else None):
+        if not isinstance(stat, dict):
+            continue
+        symbol = (stat.get("@classification-symbol") or "").strip()
+        if not symbol:
+            continue
+        acc: list[str] = []
+        _collect_text(stat.get("cpc:class-title"), acc)
+        try:
+            score = float(stat.get("@percentage") or 0)
+        except (TypeError, ValueError):
+            score = 0.0
+        hits.append({"symbol": symbol, "title": " ".join(a.strip() for a in acc if a.strip()), "score": score})
+    return hits
+
+
+def _format_cpc_search(data: dict, query: str) -> str:
+    hits = _parse_cpc_search(data)
+    if not hits:
+        return f"No CPC groups found for {query!r}. Try different or fewer technical words."
+    lines = [
+        f"CPC main groups where documents mentioning {query!r} are most often classified "
+        "(statistical, highest score first — candidates to verify, not answers):",
+        "",
+    ]
+    for h in hits:
+        lines.append(f"- {h['symbol']} — {_clean(h['title'])} (score {h['score']:.2f})")
+    lines.append("")
+    lines.append(
+        "Next: look up a plausible candidate with symbol= to read its definition and narrower "
+        "subgroups; discard unrelated groups."
+    )
+    return _wrap(lines)
+
+
+# --------------------------------------------------------------------------- #
 # Tools.
 # --------------------------------------------------------------------------- #
 class PatentEpoOpsSearchInput(ReasonBaseModel):
@@ -925,13 +1209,33 @@ class PatentEpoOpsSearchInput(ReasonBaseModel):
     )
     applicant: str = Field(default="", description="Applicant / assignee name to filter by.")
     inventor: str = Field(default="", description="Inventor name to filter by.")
-    cpc: str = Field(
-        default="",
-        description="One CPC classification symbol to filter by, e.g. H01M, A61B8 or A61B8/06.",
+    cpc: list[str] = Field(
+        default_factory=list,
+        description=(
+            f"CPC classification symbols to restrict to (up to {_MAX_CPC_CODES}; a document "
+            "matching ANY of them qualifies). Levels: subclass 'A61B' (very broad), main group "
+            "'A61B8' (broad), subgroup 'A61B8/06' (precise). Take codes from the CPC line of "
+            "relevant hits or confirm them with patent_epoops_classification; don't guess "
+            "deep subgroups from memory."
+        ),
+    )
+    include_subgroups: bool = Field(
+        default=True,
+        description=(
+            "Also match documents filed in the narrower groups below each cpc subgroup "
+            "(A61B8/06 then also matches A61B8/065). Keep true for prior-art recall; set "
+            "false to search exactly the listed groups."
+        ),
     )
     date_from: str = Field(default="", description="Earliest publication date, YYYY or YYYYMMDD.")
     date_to: str = Field(default="", description="Latest publication date, YYYY or YYYYMMDD.")
     count: int = Field(default=10, description="Number of results to return (1-25, default 10).")
+
+    @field_validator("cpc", mode="before")
+    @classmethod
+    def _coerce_cpc(cls, value):
+        # Models often send "A61B8/06, G01S15/8984" instead of a list.
+        return _split_cpc(value)
 
 
 class PatentEpoOpsSearchTool(ContextAwareTool):
@@ -945,9 +1249,19 @@ class PatentEpoOpsSearchTool(ContextAwareTool):
     description: str = (
         "Search the EPO/Espacenet patent database (Open Patent Services) for published "
         "patents by keywords, applicant, inventor, CPC classification and/or publication "
-        "date range. Returns a ranked list of publications with numbers, titles, "
-        "applicants and abstract snippets. Use patent_epoops_get to read a specific "
-        "publication in full."
+        "date range (all given filters must match). Returns a ranked list with publication "
+        "numbers, titles, applicants, dates, each hit's CPC codes and an abstract snippet; "
+        "use patent_epoops_get to read one in full.\n"
+        "How to aim it:\n"
+        "- Broad recall: 2-4 core keywords, optionally one main group (cpc=['A61B8']).\n"
+        "- Precision: keywords + 1-3 subgroups (cpc=['A61B8/06', 'G01S15/8984']).\n"
+        "- Different wording: search a relevant subgroup with no keywords, or with one broad "
+        "term, to catch documents that describe the same idea in other words.\n"
+        "- Iterate: the CPC line of a strong hit shows where similar documents are filed — "
+        "search those classes next. 'additional' codes are secondary aspects.\n"
+        "- Too many results: add a keyword, a narrower subgroup or a date range. Zero results: "
+        "drop a keyword or a filter, or move up a CPC level.\n"
+        "Unsure which classes fit? Use patent_epoops_classification first."
     )
     args_schema: type[BaseModel] = PatentEpoOpsSearchInput
 
@@ -956,7 +1270,8 @@ class PatentEpoOpsSearchTool(ContextAwareTool):
         keywords: str = "",
         applicant: str = "",
         inventor: str = "",
-        cpc: str = "",
+        cpc: list[str] | str | None = None,
+        include_subgroups: bool = True,
         date_from: str = "",
         date_to: str = "",
         count: int = 10,
@@ -964,12 +1279,22 @@ class PatentEpoOpsSearchTool(ContextAwareTool):
     ) -> str:
         from django.core.cache import cache
 
-        if (cpc or "").strip() and not _normalize_cpc(cpc):
+        codes = _split_cpc(cpc)
+        invalid = [c for c in codes if not _normalize_cpc(c)]
+        if invalid:
             return (
-                f"Patent search error: {cpc!r} is not a CPC symbol. Pass one code like "
-                "H01M, A61B8 or A61B8/06 (or leave cpc empty)."
+                f"Patent search error: not CPC symbols: {', '.join(repr(c) for c in invalid)}. "
+                "Use codes like H01M, A61B8 or A61B8/06 (one per list item)."
             )
-        cql = _build_cql(keywords, applicant, inventor, cpc, date_from, date_to)
+        if len(codes) > _MAX_CPC_CODES:
+            return (
+                f"Patent search error: at most {_MAX_CPC_CODES} CPC codes per search "
+                f"(got {len(codes)}); split them over several searches."
+            )
+        cql = _build_cql(
+            keywords, applicant, inventor, codes, date_from, date_to,
+            include_subgroups=bool(include_subgroups),
+        )
         if not cql:
             return "Patent search error: provide at least one of keywords, applicant, inventor or cpc."
         count = max(1, min(int(count or 10), 25))
@@ -1020,9 +1345,10 @@ class PatentEpoOpsGetTool(ContextAwareTool):
     end_label: str = "Retrieved patent"
     description: str = (
         "Retrieve a specific patent publication from EPO/Espacenet by publication number. "
-        "Choose parts to control what is returned: biblio (title, applicants, date, "
-        "abstract), abstract, claims, description, or all. Use patent_epoops_search first "
-        "to find publication numbers."
+        "Choose parts to control what is returned: biblio (title, applicants, inventors, "
+        "date, CPC codes, abstract), abstract, claims, description, or all. Use "
+        "patent_epoops_search first to find publication numbers. A highly relevant "
+        "document's inventive CPC codes are the best classes to search next."
     )
     args_schema: type[BaseModel] = PatentEpoOpsGetInput
 
@@ -1121,8 +1447,118 @@ class PatentEpoOpsFamilyTool(ContextAwareTool):
         return _format_family(data, display)
 
 
+class PatentEpoOpsClassificationInput(ReasonBaseModel):
+    query: str = Field(
+        default="",
+        description=(
+            "Find candidate CPC groups: 2-5 technical words for ONE search concept (e.g. "
+            "'ultrasound blood flow measurement'). Returns main groups only, ranked "
+            "statistically. Leave empty when using symbol."
+        ),
+    )
+    symbol: str = Field(
+        default="",
+        description=(
+            "Explain ONE CPC symbol: subclass 'A61B', main group 'A61B8' or subgroup "
+            "'A61B8/06'. Returns its title, where it sits in the scheme and the narrower "
+            "groups below it. Leave empty when using query."
+        ),
+    )
+    count: int = Field(default=10, description="query mode: number of candidate groups (1-20, default 10).")
+
+
+class PatentEpoOpsClassificationTool(ContextAwareTool):
+    """Look up the CPC classification scheme (EPO OPS classification services)."""
+
+    name: str = "patent_epoops_classification"
+    section: str = "skills"
+    audience: str = "shared"
+    start_label: str = "Looking up patent classification..."
+    end_label: str = "Looked up patent classification"
+    description: str = (
+        "Look up the Cooperative Patent Classification (CPC) to choose the classes to "
+        "search with patent_epoops_search(cpc=[...]). Searching the right classes catches "
+        "documents that use different wording; the wrong ones miss documents or add noise. "
+        "Two modes — pass exactly one:\n"
+        "- symbol='A61B8/06': title, place in the scheme and the narrower groups directly "
+        "below. Use it to confirm a code means what you think, and to drill down: look up "
+        "a main group, pick the subgroup that matches the concept, look that up if it has "
+        "narrower groups.\n"
+        "- query='technical words': main groups where documents using those words are most "
+        "often classified. Statistical and noisy — unrelated groups can rank first — so "
+        "treat results as candidates and confirm with symbol= before searching.\n"
+        "The most reliable source of codes is the CPC line on highly relevant hits from "
+        "patent_epoops_search / patent_epoops_get; use this tool to verify and refine those, "
+        "or to get started when you have no relevant hit yet. Run one lookup per search concept."
+    )
+    args_schema: type[BaseModel] = PatentEpoOpsClassificationInput
+
+    def _run(self, query: str = "", symbol: str = "", count: int = 10, **kwargs) -> str:
+        query = (query or "").strip()
+        symbol = (symbol or "").strip()
+        if bool(query) == bool(symbol):
+            return "Classification lookup error: pass exactly one of query or symbol."
+        if symbol:
+            return self._lookup_symbol(symbol)
+        return self._search(query, max(1, min(int(count or 10), 20)))
+
+    def _cached_request(self, cache_key: str, path: str, params: dict, accept: str) -> dict:
+        from django.core.cache import cache
+
+        try:
+            cached = cache.get(cache_key)
+        except Exception:
+            cached = None
+        if cached is not None:
+            return json.loads(cached)
+        data = _ops_request(path, params, tool_name=self.name, context=self.context, accept=accept)
+        if "error" not in data:
+            try:
+                # The scheme changes a few times a year.
+                cache.set(cache_key, json.dumps(data), timeout=86400)
+            except Exception:
+                logger.debug("epo_ops classification: cache write failed, continuing")
+        return data
+
+    def _lookup_symbol(self, raw: str) -> str:
+        lookup = _cpc_lookup_symbol(raw)
+        if not lookup:
+            return (
+                f"Classification lookup error: {raw!r} is not a CPC symbol. Use a subclass "
+                "(A61B), main group (A61B8) or subgroup (A61B8/06)."
+            )
+        data = self._cached_request(
+            "epo_ops_cpc_symbol_v1:" + lookup,
+            f"classification/cpc/{lookup}",
+            {"ancestors": "true", "depth": "1"},
+            accept="application/cpc+xml",
+        )
+        if "error" in data:
+            if "404" in data["error"]:
+                return _format_cpc_symbol(None, lookup)
+            return f"Classification lookup error: {data['error']}"
+        return _format_cpc_symbol(_parse_cpc_scheme(data.get("_xml", ""), lookup), lookup)
+
+    def _search(self, query: str, count: int) -> str:
+        q = _sanitize_cql_value(query)
+        if not q:
+            return "Classification lookup error: query needs some technical words."
+        data = self._cached_request(
+            "epo_ops_cpc_search_v1:" + hashlib.sha256(f"{q}:{count}".encode()).hexdigest(),
+            "classification/cpc/search",
+            {"q": q, "Range": f"1-{count}"},
+            accept="application/json",
+        )
+        if "error" in data:
+            if "404" in data["error"]:
+                return _format_cpc_search({}, q)
+            return f"Classification lookup error: {data['error']}"
+        return _format_cpc_search(data, q)
+
+
 __all__ = [
     "PatentEpoOpsSearchTool",
     "PatentEpoOpsGetTool",
     "PatentEpoOpsFamilyTool",
+    "PatentEpoOpsClassificationTool",
 ]

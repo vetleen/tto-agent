@@ -16,6 +16,7 @@ if getattr(settings, "BRAVE_SEARCH_API_KEY", None):
 
 if getattr(settings, "EPO_OPS_KEY", None) and getattr(settings, "EPO_OPS_SECRET", None):
     from llm.tools.epo_ops import (
+        PatentEpoOpsClassificationTool,
         PatentEpoOpsFamilyTool,
         PatentEpoOpsGetTool,
         PatentEpoOpsSearchTool,
@@ -23,5 +24,6 @@ if getattr(settings, "EPO_OPS_KEY", None) and getattr(settings, "EPO_OPS_SECRET"
     registry.register_tool(PatentEpoOpsSearchTool())
     registry.register_tool(PatentEpoOpsGetTool())
     registry.register_tool(PatentEpoOpsFamilyTool())
+    registry.register_tool(PatentEpoOpsClassificationTool())
 
 __all__: list[str] = []
