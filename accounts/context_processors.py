@@ -24,6 +24,15 @@ def nav_context(request):
         context["user_is_org_admin"] = bool(
             membership and membership.role == Membership.Role.ADMIN
         )
+        # Pending "Share with organization" requests for the navbar "Skills"
+        # badge — admins only, one COUNT.
+        context["pending_skill_shares_count"] = 0
+        if context["user_is_org_admin"]:
+            from agent_skills.services import pending_skill_shares
+
+            context["pending_skill_shares_count"] = pending_skill_shares(
+                membership.org
+            ).count()
         # Budget status for navbar progress bar (cached; display-only).
         from core.spend import get_cached_budget_status
 

@@ -87,6 +87,27 @@ class AgentSkill(models.Model):
         blank=True,
         related_name="agent_skills",
     )
+    # Org skills only: the member who shared the skill (see
+    # services.approve_skill_share). They keep editing rights — gated only by
+    # the scan — while they remain a member. SET_NULL so deleting the account
+    # leaves an ordinary admin-managed org skill.
+    maintainer = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="maintained_skills",
+    )
+    # User skills only: a pending "Share with organization" request. Non-null
+    # means an admin of this org sees the skill as "Needs approval".
+    share_requested_org = models.ForeignKey(
+        "accounts.Organization",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="pending_skill_shares",
+    )
+    share_requested_at = models.DateTimeField(null=True, blank=True)
     parent = models.ForeignKey(
         "self",
         on_delete=models.SET_NULL,
@@ -151,6 +172,11 @@ class AgentSkill(models.Model):
                 condition=~models.Q(level="user")
                 | models.Q(created_by__isnull=False),
                 name="user_skill_has_creator",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(share_requested_org__isnull=True)
+                | models.Q(level="user"),
+                name="share_request_user_tier",
             ),
         ]
 

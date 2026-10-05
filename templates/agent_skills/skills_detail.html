@@ -39,6 +39,16 @@
          class="wf-input text-heading text-lg font-semibold rounded-base block w-full px-3 py-2 {% if not editable %}cursor-not-allowed{% endif %}">
           <p class="mt-2 text-xs text-body flex flex-wrap items-center gap-x-2 gap-y-1">
             <span class="wf-mono inline-block px-2 py-0.5 rounded-full border border-accent-subtle text-fg-accent">{{ level_label }}</span>
+            {% if is_pending_share %}
+            <span class="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full border whitespace-nowrap text-fg-warning bg-warning-soft border-warning-subtle" title="{% if is_review %}Shared with the organization by {{ skill.created_by.first_name|default:skill.created_by.email }}{% else %}Waiting for an organization admin to approve it{% endif %}">Needs approval</span>
+            {% endif %}
+            {% if is_review %}
+            <span>shared by {{ skill.created_by.first_name|default:skill.created_by.email }}</span>
+            {% elif is_maintainer %}
+            <span>maintained by you — your changes go live for everyone after the safety scan</span>
+            {% elif skill.level == "org" and skill.maintainer_id and is_org_admin %}
+            <span>maintained by {{ skill.maintainer.first_name|default:skill.maintainer.email }}</span>
+            {% endif %}
             {% if editable and skill.level == "user" %}
             <span class="inline-flex items-center gap-1">slug:
               <code id="skill-slug-display" class="wf-mono">{{ skill.slug }}</code>
@@ -215,6 +225,20 @@
         <span id="save-btn-label">Save</span>
       </button>
       {% endif %}
+      {% if is_review %}
+      <form method="post" action="{% url 'agent_skills_share_approve' skill_id=skill.id %}" class="m-0">
+        {% csrf_token %}
+        <button type="submit" class="inline-flex items-center gap-1.5 text-on-brand bg-brand hover:bg-brand-strong border border-transparent shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-4 focus:ring-brand-medium" data-confirm="Approve '{{ skill.name }}' as an organization skill? It will be on for everyone. {{ skill.created_by.first_name|default:skill.created_by.email }} will keep editing rights: their future changes go live for everyone after only the automatic safety scan, with no further admin approval. You can revoke their editing rights later.">
+          Approve
+        </button>
+      </form>
+      <form method="post" action="{% url 'agent_skills_share_decline' skill_id=skill.id %}" class="m-0">
+        {% csrf_token %}
+        <button type="submit" class="bg-neutral-primary-soft hover:bg-neutral-secondary border border-default text-heading shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand">
+          Decline
+        </button>
+      </form>
+      {% else %}
       <form method="post" action="{% url 'agent_skills_edit_in_chat' skill_id=skill.id %}" class="m-0">
         {% csrf_token %}
         <button type="submit" data-wf-ai-trigger data-busy-label="Opening {{ assistant_name }}…"
@@ -234,6 +258,25 @@
         Copy as personal skill
       </button>
       {% endif %}
+      {% if not is_org_admin and user_org and skill.level == "user" and editable %}
+      {% if is_pending_share %}
+      <form method="post" action="{% url 'agent_skills_share_withdraw' skill_id=skill.id %}" class="m-0">
+        {% csrf_token %}
+        <input type="hidden" name="next" value="detail">
+        <button type="submit" class="bg-neutral-primary-soft hover:bg-neutral-secondary border border-default text-heading shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand">
+          Withdraw share request
+        </button>
+      </form>
+      {% else %}
+      <form method="post" action="{% url 'agent_skills_share' skill_id=skill.id %}" class="m-0">
+        {% csrf_token %}
+        <input type="hidden" name="next" value="detail">
+        <button type="submit" class="bg-neutral-primary-soft hover:bg-neutral-secondary border border-default text-heading shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand" data-confirm="Share '{{ skill.name }}' with {{ user_org.name }}? An admin will review it. Once approved it becomes an organization skill everyone can use, and you can keep editing it. Save any unsaved changes first.">
+          Share with organization
+        </button>
+      </form>
+      {% endif %}
+      {% endif %}
       {% if is_org_admin %}
         {% if skill.level == "user" %}
         <button type="button" id="promote-btn" class="bg-neutral-primary-soft hover:bg-neutral-secondary border border-default text-heading shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand">
@@ -247,13 +290,23 @@
         <button type="button" id="demote-btn" class="bg-neutral-primary-soft hover:bg-neutral-secondary border border-default text-heading shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand">
           Demote to personal skill
         </button>
+        {% if skill.maintainer_id %}
+        <form method="post" action="{% url 'agent_skills_revoke_maintainer' skill_id=skill.id %}" class="m-0">
+          {% csrf_token %}
+          <input type="hidden" name="next" value="detail">
+          <button type="submit" class="bg-neutral-primary-soft hover:bg-neutral-secondary border border-default text-heading shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand" data-confirm="Revoke {{ skill.maintainer.first_name|default:skill.maintainer.email }}'s editing rights? Only admins will be able to edit this skill.">
+            Revoke editing rights
+          </button>
+        </form>
+        {% endif %}
         {% endif %}
       {% endif %}
       <a href="{% url 'agent_skills_download' skill_id=skill.id %}" class="inline-flex items-center gap-1.5 bg-neutral-primary-soft hover:bg-neutral-secondary border border-default text-heading shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand">
         <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg>
         Export
       </a>
-      {% if editable %}
+      {% endif %}
+      {% if can_delete %}
       <form method="post" action="{% url 'agent_skills_delete' skill_id=skill.id %}" class="m-0 ms-auto">
         {% csrf_token %}
         <button type="submit" class="inline-flex items-center gap-1.5 text-fg-danger hover:bg-danger-soft border border-default rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand" data-confirm="Delete this skill? This can't be undone.">

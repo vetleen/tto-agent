@@ -28,7 +28,15 @@ from agent_skills.services import (
     get_accessible_skills,
     get_user_skill_prefs,
     shadowing_default,
+    approve_skill_share,
+    can_delete_skill,
     can_edit_skill,
+    decline_skill_share,
+    get_pending_share_for_admin,
+    pending_skill_shares_for_admin,
+    request_skill_share,
+    revoke_skill_maintainer,
+    withdraw_skill_share,
     create_org_skill,
     create_user_skill,
     dump_skills_json,
@@ -194,16 +202,21 @@ def _annotate_skills(
             else:
                 conflict_label = "You have disabled this skill name"
 
-        # Inline the can_edit_skill rules using the precomputed is_org_admin
-        # flag, avoiding a Membership query per org-skill row (the N+1 the
-        # service helper would otherwise cause). System skills are never
-        # editable; org skills need org admin; user skills need ownership.
+        # Inline the can_edit_skill / can_delete_skill rules using the
+        # precomputed is_org_admin flag, avoiding a Membership query per
+        # org-skill row (the N+1 the service helpers would otherwise cause).
+        # System skills are never editable; org skills need org admin or the
+        # maintainer (a member, since the org tier lists only the viewer's org)
+        # — but only admins delete; user skills need ownership.
+        is_maintainer = skill.level == "org" and skill.maintainer_id == user.pk
         if skill.level == "system":
-            can_edit = False
+            can_edit = can_delete = False
         elif skill.level == "org":
-            can_edit = is_org_admin
+            can_edit = is_org_admin or is_maintainer
+            can_delete = is_org_admin
         else:
-            can_edit = skill.created_by_id == user.pk
+            can_edit = can_delete = skill.created_by_id == user.pk
+        is_pending_share = skill.level == "user" and bool(skill.share_requested_org_id)
 
         rows.append({
             "skill": skill,
@@ -214,6 +227,12 @@ def _annotate_skills(
             "scan_detail": info["detail"],
             "scan_pill": _scan_pill(is_selected, info),
             "can_edit": can_edit,
+            "can_delete": can_delete,
+            "is_maintainer": is_maintainer,
+            "is_pending_share": is_pending_share,
+            # Others' pending shares (admin review rows) aren't the viewer's to
+            # toggle, copy or export — only to view, approve or decline.
+            "is_review": is_pending_share and skill.created_by_id != user.pk,
             "has_conflict": has_conflict,
             "conflict_label": conflict_label,
             "relative_date": _relative_date(skill.updated_at),
@@ -262,19 +281,48 @@ def skills_list(request):
     # One resource prefetch + one scan-config resolve for the whole page, shared
     # by every tier (six _tier calls) instead of per row.
     approval_by_id = bulk_skill_approval(request.user, accessible)
+    # Others' share requests an admin reviews. They aren't accessible to the
+    # admin (still the submitter's personal skills), so they're annotated on
+    # their own: no shadowing against the admin's skills, scan state shown.
+    review_skills = [
+        s for s in pending_skill_shares_for_admin(request.user)
+        if s.created_by_id != request.user.pk
+    ]
+    review_approval = bulk_skill_approval(request.user, review_skills)
+
+    def _is_own_pending(s):
+        return s.level == "user" and bool(s.share_requested_org_id)
 
     def _tier(level, audiences):
+        def in_tier(s):
+            # The submitter sees their pending share in the org tier, flagged
+            # "Needs approval" — it is no longer just a personal skill to them.
+            if _is_own_pending(s):
+                return level == "org"
+            return s.level == level
+
         skills = sorted(
             [
                 s for s in accessible
-                if s.level == level and getattr(s, "audience", "main") in audiences
+                if in_tier(s) and getattr(s, "audience", "main") in audiences
             ],
             key=lambda s: s.name,
         )
-        return _annotate_skills(
+        rows = _annotate_skills(
             request.user, skills, accessible, user_skill_prefs, is_org_admin,
             approval_by_id,
         )
+        if level == "org":
+            reviews = sorted(
+                [s for s in review_skills if getattr(s, "audience", "main") in audiences],
+                key=lambda s: s.name,
+            )
+            rows += _annotate_skills(
+                request.user, reviews, reviews, {}, is_org_admin, review_approval,
+            )
+            # Pending requests first, so they're hard to miss.
+            rows.sort(key=lambda r: not r["is_pending_share"])
+        return rows
 
     # Two surfaces, partitioned by audience: the main assistant (main/shared) and
     # sub-agent specializations (subagent/shared). Shared seeds appear in both.
@@ -332,10 +380,15 @@ def skills_create_org(request):
 @require_http_methods(["GET"])
 def skills_detail(request, skill_id):
     skill = get_skill_for_user(request.user, str(skill_id))
+    # An admin reviewing someone's share request gets a read-only view.
+    is_review = False
+    if skill is None:
+        skill = get_pending_share_for_admin(request.user, str(skill_id))
+        is_review = skill is not None
     if skill is None:
         return redirect("agent_skills_list")
 
-    editable = can_edit_skill(request.user, skill)
+    editable = not is_review and can_edit_skill(request.user, skill)
     org = _user_org(request.user)
     is_org_admin = _is_org_admin(request.user, org)
 
@@ -379,6 +432,10 @@ def skills_detail(request, skill_id):
             "resource_count_cap": RESOURCE_COUNT_CAP,
             "tool_names_json": json.dumps(list(skill.tool_names or [])),
             "editable": editable,
+            "can_delete": not is_review and can_delete_skill(request.user, skill),
+            "is_review": is_review,
+            "is_pending_share": skill.level == "user" and bool(skill.share_requested_org_id),
+            "is_maintainer": skill.level == "org" and skill.maintainer_id == request.user.pk,
             "available_tools": _available_skill_tools(skill.audience),
             "is_org_admin": is_org_admin,
             "user_org": org,
@@ -710,6 +767,99 @@ def skills_demote(request, skill_id):
     return redirect("agent_skills_detail", skill_id=skill.id)
 
 
+def _share_redirect(request, skill):
+    """Back to where the action was taken: the detail page or the list."""
+    if request.POST.get("next") == "detail":
+        return redirect("agent_skills_detail", skill_id=skill.id)
+    return redirect("agent_skills_list")
+
+
+@login_required
+@require_POST
+def skills_share(request, skill_id):
+    """Ask the org admins to adopt one of the user's own skills."""
+    skill = get_skill_for_user(request.user, str(skill_id))
+    if skill is None:
+        return redirect("agent_skills_list")
+    try:
+        request_skill_share(request.user, skill)
+    except PermissionError as exc:
+        messages.error(request, str(exc))
+        return _share_redirect(request, skill)
+    messages.success(
+        request,
+        f"Shared '{skill.name}' with your organization. An admin will review it.",
+    )
+    return _share_redirect(request, skill)
+
+
+@login_required
+@require_POST
+def skills_share_withdraw(request, skill_id):
+    skill = get_skill_for_user(request.user, str(skill_id))
+    if skill is None:
+        return redirect("agent_skills_list")
+    try:
+        withdraw_skill_share(request.user, skill)
+    except PermissionError:
+        return HttpResponseForbidden("Not your skill.")
+    messages.success(request, f"Withdrew the request to share '{skill.name}'.")
+    return _share_redirect(request, skill)
+
+
+@login_required
+@require_POST
+def skills_share_approve(request, skill_id):
+    skill = get_pending_share_for_admin(request.user, str(skill_id))
+    if skill is None:
+        return redirect("agent_skills_list")
+    try:
+        approve_skill_share(request.user, skill)
+    except PermissionError:
+        return HttpResponseForbidden("Org admin required.")
+    except ValueError as exc:
+        messages.error(request, str(exc))
+        return _share_redirect(request, skill)
+    messages.success(request, f"'{skill.name}' is now an organization skill.")
+    return redirect("agent_skills_detail", skill_id=skill.id)
+
+
+@login_required
+@require_POST
+def skills_share_decline(request, skill_id):
+    skill = get_pending_share_for_admin(request.user, str(skill_id))
+    if skill is None:
+        return redirect("agent_skills_list")
+    try:
+        decline_skill_share(request.user, skill)
+    except PermissionError:
+        return HttpResponseForbidden("Org admin required.")
+    except ValueError as exc:
+        messages.error(request, str(exc))
+    else:
+        messages.success(request, f"Declined the request to share '{skill.name}'.")
+    return redirect("agent_skills_list")
+
+
+@login_required
+@require_POST
+def skills_revoke_maintainer(request, skill_id):
+    skill = get_skill_for_user(request.user, str(skill_id))
+    if skill is None:
+        return redirect("agent_skills_list")
+    try:
+        revoke_skill_maintainer(request.user, skill)
+    except PermissionError:
+        return HttpResponseForbidden("Org admin required.")
+    except ValueError as exc:
+        messages.error(request, str(exc))
+    else:
+        messages.success(
+            request, f"Only admins can edit '{skill.name}' from now on."
+        )
+    return _share_redirect(request, skill)
+
+
 @login_required
 @require_POST
 def skills_copy_to_org(request, skill_id):
@@ -824,7 +974,7 @@ def skills_delete(request, skill_id):
     skill = get_skill_for_user(request.user, str(skill_id))
     if skill is None:
         return redirect("agent_skills_list")
-    if not can_edit_skill(request.user, skill):
+    if not can_delete_skill(request.user, skill):
         return HttpResponseForbidden("Cannot delete this skill.")
     name = skill.name
     # Soft-delete: the row is retained (restorable from the Django admin) but
@@ -952,6 +1102,10 @@ def skills_scan_status(request):
     raw = request.GET.get("ids") or ""
     wanted = [i.strip() for i in raw.split(",") if i.strip()][:200]
     accessible = {str(s.id): s for s in get_accessible_skills(request.user)}
+    # Admins also watch the scan of share requests they're reviewing.
+    accessible.update(
+        {str(s.id): s for s in pending_skill_shares_for_admin(request.user)}
+    )
     skills = [accessible[i] for i in wanted if i in accessible]
     return JsonResponse({"ok": True, "skills": bulk_skill_approval(request.user, skills)})
 
@@ -1246,7 +1400,9 @@ def skills_resource_file(request, skill_id, resource_id):
         kind_for_mime,
     )
 
-    skill = get_skill_for_user(request.user, str(skill_id))
+    skill = get_skill_for_user(request.user, str(skill_id)) or (
+        get_pending_share_for_admin(request.user, str(skill_id))
+    )
     if skill is None:
         raise Http404
     from agent_skills.models import SkillResource

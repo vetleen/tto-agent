@@ -602,9 +602,15 @@ class EditSkillTool(ContextAwareTool):
             if new_name:
                 skill.name = new_name
                 update_fields.append("name")
-                # The slug auto-follows the name unless the user froze it or is
-                # also setting one explicitly in this same call.
-                if not skill.slug_customized and "new_slug" not in updates:
+                # A personal skill's slug auto-follows the name unless the user
+                # froze it or is also setting one explicitly in this same call.
+                # Org slugs never follow renames (as in the save form): every
+                # member's slug-keyed prefs point at them.
+                if (
+                    skill.level == "user"
+                    and not skill.slug_customized
+                    and "new_slug" not in updates
+                ):
                     from django.utils.text import slugify
 
                     from agent_skills.services import (
@@ -619,7 +625,20 @@ class EditSkillTool(ContextAwareTool):
         if "new_slug" in updates:
             from django.utils.text import slugify
 
-            from agent_skills.services import _live_slug_taken, _next_free_slug
+            from agent_skills.services import (
+                _is_org_admin_of,
+                _live_slug_taken,
+                _next_free_slug,
+            )
+
+            if skill.level == "org" and not _is_org_admin_of(
+                user, skill.organization_id
+            ):
+                return json.dumps({
+                    "status": "error",
+                    "message": "Only an organization admin can change an "
+                    "organization skill's slug.",
+                })
 
             # Slugify + cap at the SlugField's 64-char limit, mirroring the save
             # form (views._apply_skill_form). Without this, a raw value with
@@ -754,11 +773,22 @@ class DeleteSkillTool(ContextAwareTool):
         except User.DoesNotExist:
             return json.dumps({"status": "error", "message": "User not found."})
 
+        from agent_skills.services import can_delete_skill
+
         skill = get_editable_skill_for_user(user, skill_slug)
         if not skill:
             return json.dumps({
                 "status": "error",
                 "message": f"Skill '{skill_slug}' not found or not editable.",
+            })
+        if not can_delete_skill(user, skill):
+            # A maintainer edits a shared org skill but can't remove it.
+            return json.dumps({
+                "status": "error",
+                "message": (
+                    f"Skill '{skill_slug}' is an organization skill; only an "
+                    "organization admin can delete it."
+                ),
             })
 
         # Soft-delete: retain the row (restorable from the Django admin) and hide

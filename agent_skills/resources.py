@@ -892,6 +892,8 @@ def _scan_user_for_skill(skill: AgentSkill, user):
         return user
     if skill.created_by_id:
         return skill.created_by
+    if skill.maintainer_id:
+        return skill.maintainer
     if skill.organization_id:
         from accounts.models import Membership
 

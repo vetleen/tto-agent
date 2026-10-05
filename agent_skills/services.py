@@ -212,7 +212,9 @@ def get_accessible_skills(user) -> list[AgentSkill]:
 
     all_disabled, system_disabled = _org_disabled_info(user)
     return [
-        s for s in AgentSkill.objects.filter(q, is_active=True, deleted_at__isnull=True)
+        s for s in AgentSkill.objects.filter(
+            q, is_active=True, deleted_at__isnull=True
+        ).select_related("maintainer")
         if not _is_org_hidden(s, all_disabled, system_disabled)
     ]
 
@@ -344,23 +346,54 @@ def can_edit_skill(user, skill: AgentSkill) -> bool:
     """Check if a user can edit a skill.
 
     - System skills: never editable
-    - Org skills: editable by org admins
+    - Org skills: editable by org admins and by the skill's maintainer (the
+      member who shared it) while they remain a member
     - User skills: editable by the creator
     """
-    from accounts.models import Membership
-
     if skill.level == "system":
         return False
 
     if skill.level == "org":
-        return Membership.objects.filter(
-            user=user, org_id=skill.organization_id, role=Membership.Role.ADMIN
-        ).exists()
+        return _is_org_admin_of(user, skill.organization_id) or is_skill_maintainer(
+            user, skill
+        )
 
     if skill.level == "user":
         return skill.created_by_id == user.pk
 
     return False
+
+
+def can_delete_skill(user, skill: AgentSkill) -> bool:
+    """Like :func:`can_edit_skill`, but org skills are admin-only.
+
+    A maintainer may edit a shared skill, but removing it affects the whole
+    organization, so deleting (and demoting) stays an admin decision.
+    """
+    if skill.level == "org":
+        return _is_org_admin_of(user, skill.organization_id)
+    return can_edit_skill(user, skill)
+
+
+def _is_org_admin_of(user, org_id) -> bool:
+    from accounts.models import Membership
+
+    if not org_id or not getattr(user, "pk", None):
+        return False
+    return Membership.objects.filter(
+        user=user, org_id=org_id, role=Membership.Role.ADMIN
+    ).exists()
+
+
+def is_skill_maintainer(user, skill: AgentSkill) -> bool:
+    """Whether ``user`` maintains org skill ``skill`` and is still a member."""
+    from accounts.models import Membership
+
+    if skill.level != "org" or not skill.maintainer_id:
+        return False
+    if skill.maintainer_id != getattr(user, "pk", None):
+        return False
+    return Membership.objects.filter(user=user, org_id=skill.organization_id).exists()
 
 
 def get_editable_skill_for_user(user, slug: str) -> AgentSkill | None:
@@ -378,10 +411,20 @@ def get_editable_skill_for_user(user, slug: str) -> AgentSkill | None:
             if can_edit_skill(user, skill):
                 return skill
             break  # visible tier not editable -> fall back to owned
-    return AgentSkill.objects.filter(
+    owned = AgentSkill.objects.filter(
         slug=slug, level="user", created_by=user, is_active=True,
         deleted_at__isnull=True,
     ).first()
+    if owned is not None:
+        return owned
+    # A shared skill the user maintains is theirs to edit too.
+    maintained = AgentSkill.objects.filter(
+        slug=slug, level="org", maintainer=user, is_active=True,
+        deleted_at__isnull=True,
+    ).first()
+    if maintained is not None and is_skill_maintainer(user, maintained):
+        return maintained
+    return None
 
 
 def soft_delete_skill(skill: AgentSkill) -> AgentSkill:
@@ -812,7 +855,8 @@ def promote_skill_to_org(
 
 
 def move_skill_to_org(
-    user, skill: AgentSkill, organization, *, rescan: bool = True
+    user, skill: AgentSkill, organization, *, rescan: bool = True,
+    maintainer=None, avoid_org_disabled_slugs: bool = False,
 ) -> AgentSkill:
     """Promote a personal skill to org level **in place** (no copy).
 
@@ -820,6 +864,10 @@ def move_skill_to_org(
     level of the same row: the personal skill *becomes* the org skill, so
     templates, ``parent``, and the id are all preserved and nothing is left
     behind at the user tier. Caller must be an admin of ``organization``.
+
+    ``maintainer`` (the sharing member) keeps editing rights on the org skill.
+    ``avoid_org_disabled_slugs`` treats slugs the org has switched off as
+    taken, so the moved skill can't land hidden under an old disable.
 
     Raises ``PermissionError`` if the user is not an admin, or ``ValueError``
     if the skill is not a personal (user-level) skill.
@@ -835,20 +883,33 @@ def move_skill_to_org(
         raise ValueError("Only personal skills can be promoted to the organization.")
 
     old_slug = skill.slug
+    disabled_slugs: set[str] = set()
+    if avoid_org_disabled_slugs:
+        org_skill_prefs = (organization.preferences or {}).get("skills") or {}
+        disabled_slugs = {
+            s for s, pref in org_skill_prefs.items()
+            if isinstance(pref, dict) and pref.get("enabled") is False
+        }
 
     def persist(slug: str) -> AgentSkill:
         skill.slug = slug
         skill.level = "org"
         skill.organization = organization
         skill.created_by = None
+        skill.maintainer = maintainer
+        skill.share_requested_org = None
+        skill.share_requested_at = None
         skill.save(
-            update_fields=["slug", "level", "organization", "created_by", "updated_at"]
+            update_fields=[
+                "slug", "level", "organization", "created_by", "maintainer",
+                "share_requested_org", "share_requested_at", "updated_at",
+            ]
         )
         return skill
 
     _save_with_free_slug(
         old_slug,
-        lambda s: AgentSkill.objects.filter(
+        lambda s: s in disabled_slugs or AgentSkill.objects.filter(
             slug=s, level="org", organization=organization
         ).exclude(pk=skill.pk).exists(),
         persist,
@@ -893,8 +954,12 @@ def move_skill_to_personal(
         skill.level = "user"
         skill.created_by = user
         skill.organization = None
+        skill.maintainer = None
         skill.save(
-            update_fields=["slug", "level", "created_by", "organization", "updated_at"]
+            update_fields=[
+                "slug", "level", "created_by", "organization", "maintainer",
+                "updated_at",
+            ]
         )
         return skill
 
@@ -911,6 +976,163 @@ def move_skill_to_personal(
         from agent_skills.resources import request_skill_rescan
 
         request_skill_rescan(skill, user)
+    return skill
+
+
+# ----- Sharing a personal skill with the organization -------------------
+#
+# A member asks to share one of their own skills ("Share with organization");
+# it stays a user-tier row with ``share_requested_org`` set, which admins of
+# that org (and the submitter) see as "Needs approval". Approving moves the
+# same row to the org tier in place and makes the submitter its maintainer:
+# they keep editing rights, gated only by the scan, while they remain a member.
+
+
+def request_skill_share(user, skill: AgentSkill) -> AgentSkill:
+    """Ask the user's org admins to adopt ``skill`` as an org skill.
+
+    Raises ``PermissionError`` unless ``skill`` is the user's own live personal
+    skill and the user is a non-admin org member (admins promote directly).
+    Idempotent: re-sharing a pending skill keeps the original request time.
+    """
+    from django.utils import timezone
+
+    from accounts.models import Membership, get_membership
+
+    if (
+        skill.level != "user"
+        or skill.created_by_id != user.pk
+        or skill.deleted_at is not None
+        or not skill.is_active
+    ):
+        raise PermissionError("You can only share your own personal skills.")
+    membership = get_membership(user)
+    if not membership or not membership.org_id:
+        raise PermissionError("You are not a member of an organization.")
+    if membership.role == Membership.Role.ADMIN:
+        raise PermissionError("Admins can move the skill to the organization directly.")
+    if skill.share_requested_org_id == membership.org_id:
+        return skill
+    skill.share_requested_org_id = membership.org_id
+    skill.share_requested_at = timezone.now()
+    skill.save(update_fields=["share_requested_org", "share_requested_at", "updated_at"])
+    logger.info("Skill share requested: skill=%s org=%s", skill.pk, membership.org_id)
+    return skill
+
+
+def _clear_share_request(skill: AgentSkill) -> AgentSkill:
+    skill.share_requested_org = None
+    skill.share_requested_at = None
+    skill.save(update_fields=["share_requested_org", "share_requested_at", "updated_at"])
+    return skill
+
+
+def withdraw_skill_share(user, skill: AgentSkill) -> AgentSkill:
+    """The owner withdraws a pending share request."""
+    if skill.level != "user" or skill.created_by_id != user.pk:
+        raise PermissionError("You can only withdraw your own share requests.")
+    if skill.share_requested_org_id:
+        _clear_share_request(skill)
+        logger.info("Skill share withdrawn: skill=%s", skill.pk)
+    return skill
+
+
+def pending_skill_shares(org):
+    """Live share requests to ``org`` whose submitter is still a member."""
+    return AgentSkill.objects.filter(
+        level="user",
+        share_requested_org=org,
+        is_active=True,
+        deleted_at__isnull=True,
+        created_by__organization_memberships__org=org,
+    ).select_related("created_by")
+
+
+def get_pending_share_for_admin(user, skill_id) -> AgentSkill | None:
+    """A pending share request ``user`` may review as an admin of its org.
+
+    Read-only access for the approval decision — deliberately separate from
+    :func:`get_skill_for_user`, so an admin can't attach someone else's
+    pending skill to a chat.
+    """
+    from django.core.exceptions import ValidationError
+
+    try:
+        return pending_skill_shares_for_admin(user).get(pk=skill_id)
+    except (AgentSkill.DoesNotExist, ValidationError, ValueError):
+        return None
+
+
+def pending_skill_shares_for_admin(user):
+    """Pending share requests to the org ``user`` administers (else none)."""
+    from accounts.models import Membership, get_membership
+
+    membership = get_membership(user)
+    if not membership or membership.role != Membership.Role.ADMIN:
+        return AgentSkill.objects.none()
+    return pending_skill_shares(membership.org)
+
+
+def _pending_share_or_error(admin, skill: AgentSkill):
+    from accounts.models import Membership
+
+    org = skill.share_requested_org
+    if skill.level != "user" or org is None:
+        raise ValueError("This skill has no pending share request.")
+    if not Membership.objects.filter(
+        user=admin, org=org, role=Membership.Role.ADMIN
+    ).exists():
+        raise PermissionError("Only org admins can review share requests.")
+    return org
+
+
+def approve_skill_share(admin, skill: AgentSkill) -> AgentSkill:
+    """Adopt a shared skill as an org skill; the submitter becomes maintainer.
+
+    Raises ``PermissionError`` if ``admin`` isn't an admin of the requested
+    org, and ``ValueError`` if there is no pending request, the submitter has
+    left the org, or the skill hasn't passed its safety scan.
+    """
+    from accounts.models import Membership
+    from agent_skills.resources import skill_is_approved
+
+    org = _pending_share_or_error(admin, skill)
+    submitter = skill.created_by
+    if not Membership.objects.filter(user=submitter, org=org).exists():
+        raise ValueError("The person who shared this skill is no longer a member.")
+    if not skill_is_approved(skill):
+        raise ValueError(
+            "This skill hasn't passed the safety scan yet. Wait for the scan to "
+            "finish before approving it."
+        )
+    move_skill_to_org(
+        admin, skill, org, maintainer=submitter, avoid_org_disabled_slugs=True
+    )
+    logger.info(
+        "Skill share approved: skill=%s org=%s maintainer=%s",
+        skill.pk, org.pk, submitter.pk,
+    )
+    return skill
+
+
+def decline_skill_share(admin, skill: AgentSkill) -> AgentSkill:
+    """Decline a share request; the skill stays the submitter's personal skill."""
+    _pending_share_or_error(admin, skill)
+    _clear_share_request(skill)
+    logger.info("Skill share declined: skill=%s", skill.pk)
+    return skill
+
+
+def revoke_skill_maintainer(admin, skill: AgentSkill) -> AgentSkill:
+    """Remove the maintainer's editing rights; admins manage it from now on."""
+    if skill.level != "org":
+        raise ValueError("Only organization skills have a maintainer.")
+    if not _is_org_admin_of(admin, skill.organization_id):
+        raise PermissionError("Only org admins can revoke editing rights.")
+    if skill.maintainer_id:
+        skill.maintainer = None
+        skill.save(update_fields=["maintainer", "updated_at"])
+        logger.info("Skill maintainer revoked: skill=%s", skill.pk)
     return skill
 
 

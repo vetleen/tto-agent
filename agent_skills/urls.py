@@ -15,6 +15,27 @@ urlpatterns = [
     path("<uuid:skill_id>/promote/", views.skills_promote, name="agent_skills_promote"),
     path("<uuid:skill_id>/demote/", views.skills_demote, name="agent_skills_demote"),
     path("<uuid:skill_id>/copy-to-org/", views.skills_copy_to_org, name="agent_skills_copy_to_org"),
+    path("<uuid:skill_id>/share/", views.skills_share, name="agent_skills_share"),
+    path(
+        "<uuid:skill_id>/share/withdraw/",
+        views.skills_share_withdraw,
+        name="agent_skills_share_withdraw",
+    ),
+    path(
+        "<uuid:skill_id>/share/approve/",
+        views.skills_share_approve,
+        name="agent_skills_share_approve",
+    ),
+    path(
+        "<uuid:skill_id>/share/decline/",
+        views.skills_share_decline,
+        name="agent_skills_share_decline",
+    ),
+    path(
+        "<uuid:skill_id>/revoke-maintainer/",
+        views.skills_revoke_maintainer,
+        name="agent_skills_revoke_maintainer",
+    ),
     path("<uuid:skill_id>/delete/", views.skills_delete, name="agent_skills_delete"),
     path("<uuid:skill_id>/toggle/", views.skills_toggle, name="agent_skills_toggle"),
     path(

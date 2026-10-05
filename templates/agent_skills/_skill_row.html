@@ -18,6 +18,10 @@ preflight's `[hidden]` rule is !important).
      data-approved="{{ row.is_approved|yesno:'1,0' }}"
      data-selected="{{ row.is_selected|yesno:'1,0' }}"
      data-toggle-url="{% url 'agent_skills_toggle' skill_id=row.skill.id %}">
+  {% if row.is_review %}
+  {# Someone else's share request: nothing to toggle until it's approved. #}
+  <span class="shrink-0 w-9 me-4" aria-hidden="true"></span>
+  {% else %}
   <label class="relative inline-flex items-center shrink-0 me-4 cursor-pointer" title="Enable {{ row.skill.name }}">
     <input type="checkbox"
            class="skill-toggle sr-only peer"
@@ -27,6 +31,7 @@ preflight's `[hidden]` rule is !important).
     <span class="w-9 h-5 rounded-full bg-neutral-tertiary border border-default-medium transition-colors peer-checked:bg-brand peer-checked:border-transparent peer-focus:ring-2 peer-focus:ring-brand"></span>
     <span class="absolute left-0.5 top-0.5 w-4 h-4 rounded-full bg-neutral-primary-soft dark:bg-body-subtle dark:peer-checked:bg-on-brand shadow-xs transition-transform peer-checked:translate-x-4"></span>
   </label>
+  {% endif %}
   <a href="{% url 'agent_skills_detail' skill_id=row.skill.id %}" class="flex items-center gap-3 flex-1 min-w-0 cursor-pointer hover:text-heading focus:outline-none focus:ring-2 focus:ring-brand rounded-base">
     {% if row.skill.emoji %}
     <span data-dim class="flex items-center justify-center shrink-0 w-9 h-9 rounded-base bg-neutral-secondary-soft border border-default-subtle text-lg{% if not row.is_enabled %} opacity-50{% endif %}" aria-hidden="true">{{ row.skill.emoji }}</span>
@@ -54,7 +59,20 @@ preflight's `[hidden]` rule is !important).
           <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
           Scan needed
         </span>
+        {# Not a .scan-pill: skills-list.js re-derives those from the scan state. #}
+        {% if row.is_pending_share %}
+        <span class="share-pill mt-1 inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full border whitespace-nowrap cursor-default text-fg-warning bg-warning-soft border-warning-subtle" title="{% if row.is_review %}Shared with the organization — review and approve or decline it{% else %}Waiting for an organization admin to approve it{% endif %}">
+          Needs approval
+        </span>
+        {% endif %}
       </span>
+      {% if row.is_review %}
+      <span class="block text-xs text-body-subtle mt-1">Shared by {{ row.skill.created_by.first_name|default:row.skill.created_by.email }}</span>
+      {% elif row.is_maintainer %}
+      <span class="block text-xs text-body-subtle mt-1">Maintained by you</span>
+      {% elif is_org_admin and row.skill.level == "org" and row.skill.maintainer_id %}
+      <span class="block text-xs text-body-subtle mt-1">Maintained by {{ row.skill.maintainer.first_name|default:row.skill.maintainer.email }}</span>
+      {% endif %}
     </span>
   </a>
   <span data-dim class="wf-mono shrink-0 ms-4 text-xs text-body-subtle text-right whitespace-nowrap{% if not row.is_enabled %} opacity-50{% endif %}">{{ row.relative_date }}</span>
@@ -66,6 +84,20 @@ preflight's `[hidden]` rule is !important).
       <a href="{% url 'agent_skills_detail' skill_id=row.skill.id %}" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left">
         {% if row.can_edit %}View &amp; edit{% else %}View{% endif %}
       </a>
+      {% if row.is_review %}
+      <form method="post" action="{% url 'agent_skills_share_approve' skill_id=row.skill.id %}" class="p-0">
+        {% csrf_token %}
+        <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left" data-confirm="Approve '{{ row.skill.name }}' as an organization skill? It will be on for everyone. {{ row.skill.created_by.first_name|default:row.skill.created_by.email }} will keep editing rights: their future changes go live for everyone after only the automatic safety scan, with no further admin approval. You can revoke their editing rights later.">
+          Approve
+        </button>
+      </form>
+      <form method="post" action="{% url 'agent_skills_share_decline' skill_id=row.skill.id %}" class="p-0">
+        {% csrf_token %}
+        <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left">
+          Decline
+        </button>
+      </form>
+      {% else %}
       <form method="post" action="{% url 'agent_skills_edit_in_chat' skill_id=row.skill.id %}" class="p-0">
         {% csrf_token %}
         <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left">
@@ -84,6 +116,23 @@ preflight's `[hidden]` rule is !important).
           Copy as personal skill
         </button>
       </form>
+      {% endif %}
+      {% if not is_org_admin and user_org and row.skill.level == "user" and row.can_edit %}
+        {% if row.is_pending_share %}
+        <form method="post" action="{% url 'agent_skills_share_withdraw' skill_id=row.skill.id %}" class="p-0">
+          {% csrf_token %}
+          <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left">
+            Withdraw share request
+          </button>
+        </form>
+        {% else %}
+        <form method="post" action="{% url 'agent_skills_share' skill_id=row.skill.id %}" class="p-0">
+          {% csrf_token %}
+          <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left" data-confirm="Share '{{ row.skill.name }}' with {{ user_org.name }}? An admin will review it. Once approved it becomes an organization skill everyone can use, and you can keep editing it.">
+            Share with organization
+          </button>
+        </form>
+        {% endif %}
       {% endif %}
       {% if is_org_admin %}
         {% if row.skill.level == "user" %}
@@ -108,12 +157,21 @@ preflight's `[hidden]` rule is !important).
             Demote to personal skill
           </button>
         </form>
+        {% if row.skill.maintainer_id %}
+        <form method="post" action="{% url 'agent_skills_revoke_maintainer' skill_id=row.skill.id %}" class="p-0">
+          {% csrf_token %}
+          <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left" data-confirm="Revoke {{ row.skill.maintainer.first_name|default:row.skill.maintainer.email }}'s editing rights? Only admins will be able to edit this skill.">
+            Revoke editing rights
+          </button>
+        </form>
+        {% endif %}
         {% endif %}
       {% endif %}
       <a href="{% url 'agent_skills_download' skill_id=row.skill.id %}" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left">
         Export
       </a>
-      {% if row.can_edit %}
+      {% endif %}
+      {% if row.can_delete %}
       <form method="post" action="{% url 'agent_skills_delete' skill_id=row.skill.id %}" class="p-0">
         {% csrf_token %}
         <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-fg-danger hover:bg-danger-soft rounded-base text-left" data-confirm="Delete this skill? This can't be undone.">
