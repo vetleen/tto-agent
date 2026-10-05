@@ -1,4 +1,4 @@
-"""Smoke tests for document versioning: retrieval gating, sensitivity union,
+"""Smoke tests for document versioning: retrieval gating, sensitivity rollup,
 status, and rollback — at the model/service level, no LLM/embedding/Celery."""
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from documents.models import (
 )
 from documents.services import retrieval
 from documents.services.versioning import (
+    advance_active_to,
     document_status,
     recompute_document_sensitivity,
     restore_version,
@@ -57,7 +58,7 @@ class VersioningSmokeTests(TestCase):
         self.assertEqual(texts, {"alpha beta", "gamma delta"})
         self.assertNotIn("v1 stale text", texts)
 
-    def test_sensitivity_union_keeps_doc_flagged_while_v0_quarantined(self):
+    def test_clean_live_version_clears_quarantine_from_older_version(self):
         # v0 (original) contained Article-9 data; v1 (clean edit) does not.
         self._version(
             0, searchable=False, quarantined=True,
@@ -73,10 +74,79 @@ class VersioningSmokeTests(TestCase):
         # The clean v1 is live and retrievable...
         chunks = retrieval.get_chunks_by_document(self.doc.id)
         self.assertEqual({c["text"] for c in chunks}, {"clean"})
-        # ...but the document stays flagged because the original v0 still has it.
+        # ...and the document reflects it: the old v0 no longer counts.
+        self.assertFalse(self.doc.is_quarantined)
+        self.assertFalse(self.doc.is_partially_quarantined)
+        self.assertEqual(self.doc.quarantine_reason, "")
+        self.assertEqual(self.doc.quarantine_detail, "")
+
+    def test_quarantined_upload_with_nothing_live_stays_flagged(self):
+        v0 = self._version(
+            0, searchable=False, quarantined=True,
+            detail="Row 23 names a patient's diagnosis.", chunk_texts=["sensitive"],
+        )
+        self.doc.current_version = v0
+        self.doc.save(update_fields=["current_version"])
+
+        recompute_document_sensitivity(self.doc.id)
+        self.doc.refresh_from_db()
         self.assertTrue(self.doc.is_quarantined)
-        # ...and the reviewer's specific finding is rolled up to the document level.
+        self.assertTrue(self.doc.is_partially_quarantined)
+        self.assertEqual(self.doc.quarantine_reason, "GDPR Article 9")
         self.assertEqual(self.doc.quarantine_detail, "Row 23 names a patient's diagnosis.")
+
+    def test_partial_quarantine_follows_live_version(self):
+        v0 = self._version(0, searchable=True, chunk_texts=["ok"])
+        DataRoomDocumentVersion.objects.filter(pk=v0.pk).update(is_partially_quarantined=True)
+        self.doc.current_version = v0
+        self.doc.active_searchable_version = v0
+        self.doc.save(update_fields=["current_version", "active_searchable_version"])
+
+        recompute_document_sensitivity(self.doc.id)
+        self.doc.refresh_from_db()
+        self.assertFalse(self.doc.is_quarantined)
+        self.assertTrue(self.doc.is_partially_quarantined)
+
+    def test_advance_active_to_clears_flag_left_by_quarantined_v0(self):
+        # Production shape: v0 quarantined (doc flagged), then a clean edit is
+        # released through finalize's advance_active_to.
+        v0 = self._version(0, searchable=False, quarantined=True, chunk_texts=["sensitive"])
+        self.doc.current_version = v0
+        self.doc.save(update_fields=["current_version"])
+        recompute_document_sensitivity(self.doc.id)
+        self.doc.refresh_from_db()
+        self.assertTrue(self.doc.is_quarantined)
+
+        v1 = self._version(1, searchable=False, chunk_texts=["clean"])
+        self.doc.current_version = v1
+        self.doc.save(update_fields=["current_version"])
+        advance_active_to(self.doc.id, v1)
+
+        self.doc.refresh_from_db()
+        self.assertEqual(self.doc.active_searchable_version_id, v1.id)
+        self.assertFalse(self.doc.is_quarantined)
+        self.assertFalse(self.doc.is_partially_quarantined)
+
+    def test_backfill_migration_clears_stale_union_flag(self):
+        import importlib
+
+        from django.apps import apps
+
+        mig = importlib.import_module(
+            "documents.migrations.0024_recompute_quarantine_effective_version"
+        )
+        self._version(0, searchable=False, quarantined=True, chunk_texts=["sensitive"])
+        v1 = self._version(1, searchable=True, chunk_texts=["clean"])
+        DataRoomDocument.objects.filter(pk=self.doc.pk).update(
+            current_version=v1, active_searchable_version=v1,
+            is_quarantined=True, is_partially_quarantined=True,
+            quarantine_reason="GDPR Article 9",
+        )
+        mig.recompute_quarantine_from_effective_version(apps, None)
+        self.doc.refresh_from_db()
+        self.assertFalse(self.doc.is_quarantined)
+        self.assertFalse(self.doc.is_partially_quarantined)
+        self.assertEqual(self.doc.quarantine_reason, "")
 
     def test_document_status_reports_processing_when_current_ahead_of_active(self):
         v0 = self._version(0, searchable=True)

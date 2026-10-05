@@ -711,9 +711,8 @@ class ReadDocumentTool(ContextAwareTool):
 
             # Gate on the version actually served (the live searchable one) — the
             # same thing document_search surfaces. Doc-level is_quarantined is a
-            # UNION over retained versions (a kept-but-blocked draft flags it even
-            # while the live version stays clean and searchable), so it must not
-            # gate read access. A quarantined version never becomes active; the
+            # display rollup (it falls back to the working head when nothing is
+            # released), so it must not gate read access. A quarantined version never becomes active; the
             # version-level check is belt-and-braces.
             version = doc.active_searchable_version
             if version is None or version.is_quarantined:

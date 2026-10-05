@@ -963,12 +963,12 @@ def document_save(request, data_room_id, document_id):
     from documents.services.sync_scan import scan_version_synchronously
     from documents.services.versioning import create_version, open_working_version
 
-    current, _version, _warning = open_working_version(doc)
+    current, working, _warning = open_working_version(doc)
     if new_content.strip() == (current or "").strip():
         return JsonResponse({
             "ok": True,
             "unchanged": True,
-            "verdict": "quarantined" if doc.is_quarantined else "clean",
+            "verdict": "quarantined" if (working and working.is_quarantined) else "clean",
             "is_quarantined": bool(doc.is_quarantined),
         })
 

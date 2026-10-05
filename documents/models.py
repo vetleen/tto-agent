@@ -116,8 +116,9 @@ class DataRoomDocument(models.Model):
     is_archived = models.BooleanField(default=False)
     is_quarantined = models.BooleanField(default=False, db_index=True)
     quarantine_reason = models.TextField(blank=True, default="")
-    # User-facing specifics from the PII reviewer, rolled up from the earliest
-    # quarantined version's ``quarantine_detail`` by recompute_document_sensitivity.
+    # The quarantine fields mirror the effective version (active searchable, else
+    # the working head) — see recompute_document_sensitivity. ``quarantine_detail``
+    # holds the user-facing specifics from the PII reviewer.
     # Populated only for Article 9/10 (full) quarantine; empty for guardrails
     # (partial) quarantine. Surfaced in the document list tooltip + "Why was this
     # quarantined?" modal.
@@ -413,8 +414,8 @@ class DataRoomDocumentChunk(models.Model):
 
 class DataRoomDocumentTag(models.Model):
     # Classifications attach to the version that was scanned. Reach the document
-    # via ``version.document``. Document-level sensitivity is the union over
-    # retained versions (see services/versioning.recompute_document_sensitivity).
+    # via ``version.document``. Document-level quarantine mirrors the effective
+    # version (see services/versioning.recompute_document_sensitivity).
     version = models.ForeignKey(
         "DataRoomDocumentVersion",
         on_delete=models.CASCADE,

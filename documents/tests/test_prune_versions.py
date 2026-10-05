@@ -70,6 +70,45 @@ class PruneVersionsTests(TestCase):
         self.assertLessEqual(total, MAX_VERSIONS_PER_DOCUMENT)
         self.assertIn(0, self._remaining())  # original always survives
 
+    def _flag(self, v):
+        DataRoomDocumentVersion.objects.filter(pk=v.pk).update(
+            is_quarantined=True, quarantine_reason="GDPR Article 9",
+        )
+
+    def test_quarantined_original_dropped_once_clean_version_is_live(self):
+        from django.core.files.base import ContentFile
+
+        self.doc.original_file.save("orig.md", ContentFile(b"original bytes"), save=True)
+        v0, v1 = self._v(0), self._v(1)
+        self._flag(v0)
+        DataRoomDocument.objects.filter(pk=self.doc.pk).update(
+            current_version=v1, active_searchable_version=v1,
+            is_quarantined=True, is_partially_quarantined=True,
+        )
+        self.assertEqual(prune_document_versions(), 1)
+        self.assertEqual(self._remaining(), {1})
+        self.doc.refresh_from_db()
+        self.assertFalse(self.doc.is_quarantined)
+        # The upload's original bytes live on the document, not the version.
+        self.assertTrue(self.doc.original_file.storage.exists(self.doc.original_file.name))
+        self.doc.original_file.delete(save=False)
+
+    def test_quarantined_original_kept_when_nothing_is_live(self):
+        v0, v1 = self._v(0), self._v(1)
+        self._flag(v0)
+        DataRoomDocument.objects.filter(pk=self.doc.pk).update(current_version=v1)
+        prune_document_versions()
+        self.assertEqual(self._remaining(), {0, 1})
+
+    def test_quarantined_original_kept_while_it_is_the_working_head(self):
+        v0, v1 = self._v(0), self._v(1)
+        self._flag(v0)
+        DataRoomDocument.objects.filter(pk=self.doc.pk).update(
+            current_version=v0, active_searchable_version=v1,
+        )
+        prune_document_versions()
+        self.assertEqual(self._remaining(), {0, 1})
+
     def test_single_version_is_left_alone(self):
         v0 = self._v(0)
         DataRoomDocument.objects.filter(pk=self.doc.pk).update(

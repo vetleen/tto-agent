@@ -184,31 +184,32 @@ def advance_active_to(document_id: int, version) -> None:
     if old_active_id and old_active_id != version.id:
         set_searchable_for_version(old_active_id, False)
     set_searchable_for_version(version.id, True)
+    recompute_document_sensitivity(document_id)
 
 
 def recompute_document_sensitivity(document_id: int) -> None:
-    """Recompute document-level quarantine rollups as the union over retained versions.
+    """Mirror the effective version's quarantine state onto the document.
 
-    Editing out (or pruning) a sensitive version only clears the document flag once
-    *no* retained version carries it — so a v0 that contained Article-9 data keeps
-    the document flagged while v0 is retained.
+    The effective version is the one Wilfred actually uses — the active searchable
+    version, else (nothing released yet) the working head. Older versions don't
+    count: a clean edit that goes live clears a quarantine that only an earlier
+    version carried.
     """
     from documents.models import DataRoomDocument, DataRoomDocumentVersion
 
-    versions = DataRoomDocumentVersion.objects.filter(document_id=document_id)
-    is_q = versions.filter(is_quarantined=True).exists()
-    is_pq = is_q or versions.filter(is_partially_quarantined=True).exists()
-    reason = ""
-    detail = ""
-    if is_q:
-        v = (
-            versions.filter(is_quarantined=True)
-            .exclude(quarantine_reason="")
-            .order_by("version_index")
-            .first()
-        )
-        reason = v.quarantine_reason if v else ""
-        detail = v.quarantine_detail if v else ""
+    row = (
+        DataRoomDocument.objects.filter(pk=document_id)
+        .values("active_searchable_version_id", "current_version_id")
+        .first()
+    )
+    if row is None:
+        return
+    vid = row["active_searchable_version_id"] or row["current_version_id"]
+    v = DataRoomDocumentVersion.objects.filter(pk=vid).first() if vid else None
+    is_q = bool(v and v.is_quarantined)
+    is_pq = is_q or bool(v and v.is_partially_quarantined)
+    reason = v.quarantine_reason if is_q else ""
+    detail = v.quarantine_detail if is_q else ""
     DataRoomDocument.objects.filter(pk=document_id).update(
         is_quarantined=is_q,
         is_partially_quarantined=is_pq,

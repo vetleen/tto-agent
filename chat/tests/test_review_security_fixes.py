@@ -148,9 +148,8 @@ class ViewImageGateTests(TestCase):
         self.assertEqual(list(self.ctx.pending_native_assets), [])
 
     def test_deferred_draft_does_not_block_live_version(self):
-        # Doc-level is_quarantined is a union over retained versions: a kept-but-
-        # blocked draft sets it while the live version stays clean. The tool must
-        # gate on the served (live) version — here the doc has no image, so it
+        # A kept-but-blocked draft while the live version stays clean. The tool
+        # must gate on the served (live) version — here the doc has no image, so it
         # returns the live version's extracted text, not a quarantine refusal.
         from documents.services.versioning import recompute_document_sensitivity
 

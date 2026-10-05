@@ -380,9 +380,9 @@ class ReadDocumentToolTests(TestCase):
         self.assertNotIn("content", d)
 
     def test_deferred_draft_does_not_block_reading_live_version(self):
-        """A kept-but-blocked draft flags the doc-level quarantine union while the
-        last good version stays live and searchable. Reading must serve the live
-        version (coherent with document_search), not refuse the whole document."""
+        """A kept-but-blocked draft while the last good version stays live and
+        searchable. Reading must serve the live version (coherent with
+        document_search), not refuse the whole document."""
         from documents.models import DataRoomDocumentVersion
         from documents.services.versioning import recompute_document_sensitivity
         from documents.tests._helpers import make_document, make_version
@@ -399,7 +399,8 @@ class ReadDocumentToolTests(TestCase):
             make_active=False,  # deferred: working head advances, live pointer doesn't
         )
         recompute_document_sensitivity(doc.pk)
-        self.assertTrue(DataRoomDocument.objects.get(pk=doc.pk).is_quarantined)
+        # The doc-level flag follows the live version, which is clean.
+        self.assertFalse(DataRoomDocument.objects.get(pk=doc.pk).is_quarantined)
 
         result = self._invoke({"doc_indices": [doc.doc_index]}, self._ctx())
         d = result["documents"][0]
@@ -409,8 +410,8 @@ class ReadDocumentToolTests(TestCase):
 
     def test_remediated_document_with_quarantined_history_is_readable(self):
         """v0 was blocked and retained (deferred new doc), v1 is the clean
-        remediation and is live. The union flag stays set while v0 is retained;
-        reading must serve v1, not stay refused forever."""
+        remediation and is live. The doc-level flag follows v1 (clean); reading
+        must serve v1, not stay refused forever."""
         from documents.models import DataRoomDocumentVersion
         from documents.services.versioning import recompute_document_sensitivity
         from documents.tests._helpers import make_version
@@ -430,7 +431,7 @@ class ReadDocumentToolTests(TestCase):
             chunks=["Clean remediated content"],
         )
         recompute_document_sensitivity(doc.pk)
-        self.assertTrue(DataRoomDocument.objects.get(pk=doc.pk).is_quarantined)
+        self.assertFalse(DataRoomDocument.objects.get(pk=doc.pk).is_quarantined)
 
         result = self._invoke({"doc_indices": [doc.doc_index]}, self._ctx())
         d = result["documents"][0]

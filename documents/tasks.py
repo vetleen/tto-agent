@@ -654,7 +654,9 @@ def prune_document_versions() -> int:
     """Nightly prune of old document versions.
 
     Per document, keep: v0 (the original), current_version, active_searchable_version,
-    and — among the rest — at most one per calendar day (the newest of that day). If
+    and — among the rest — at most one per calendar day (the newest of that day). A
+    quarantined v0 is not kept once a clean version is live: it can never be restored
+    or searched, and the original upload bytes stay on ``document.original_file``. If
     more than MAX_VERSIONS_PER_DOCUMENT remain, drop the oldest non-protected until the
     cap is met. Dropped versions delete their chunks/tags (CASCADE), their pgvector
     rows, and their native blob; the document-level sensitivity union is recomputed.
@@ -687,7 +689,7 @@ def prune_document_versions() -> int:
         for v in (
             DataRoomDocumentVersion.objects.filter(document_id__in=[d.pk for d in batch])
             .order_by("-version_index")
-            .values("pk", "document_id", "version_index", "created_at")
+            .values("pk", "document_id", "version_index", "created_at", "is_quarantined")
         ):
             versions_by_doc.setdefault(v["document_id"], []).append(v)
 
@@ -705,11 +707,19 @@ def prune_document_versions() -> int:
             if doc.active_searchable_version_id:
                 protected.add(doc.active_searchable_version_id)
 
+            droppable: list[int] = []
+            if (
+                v0["is_quarantined"]
+                and doc.active_searchable_version_id
+                and v0["pk"] not in (doc.current_version_id, doc.active_searchable_version_id)
+            ):
+                protected.discard(v0["pk"])
+                droppable.append(v0["pk"])
+
             # Among the non-protected, keep the newest one per calendar day.
             kept_days: set = set()
-            droppable: list[int] = []
             for v in versions:  # newest first
-                if v["pk"] in protected:
+                if v["pk"] in protected or v["pk"] in droppable:
                     continue
                 day = v["created_at"].date() if v["created_at"] else None
                 if day is not None and day not in kept_days:
