@@ -22,9 +22,13 @@ from llm.tools.epo_ops import (
     _as_list,
     _build_cql,
     _collect_text,
+    _citation_lines,
+    _citation_number,
+    _cited_references,
     _cpc_codes,
     _cpc_line,
     _cpc_lookup_symbol,
+    _group_families,
     _parse_cpc_scheme,
     _split_cpc,
     _docdb_ref,
@@ -195,19 +199,19 @@ def _mock_token(token="tok", expires_in="1200"):
 # --------------------------------------------------------------------------- #
 class BuildCqlTests(TestCase):
     def test_keywords_only(self):
-        self.assertEqual(_build_cql(keywords="battery"), 'txt="battery"')
+        self.assertEqual(_build_cql(keywords="battery"), 'ta="battery"')
 
     def test_multiple_fields_anded(self):
         self.assertEqual(
             _build_cql(keywords="battery", applicant="acme", cpc="H01M"),
-            'txt="battery" and pa="acme" and cpc=H01M',
+            'ta="battery" and pa="acme" and cpc=H01M',
         )
 
     def test_multi_word_keywords_use_all_not_phrase(self):
-        # txt="a b c" is an exact-phrase search (OPS 404 in prod); `all` ANDs the words.
+        # ta="a b c" is an exact-phrase search (OPS 404 in prod); `all` ANDs the words.
         self.assertEqual(
             _build_cql(keywords="ultrasound vessel centerline angle correction"),
-            'txt all "ultrasound vessel centerline angle correction"',
+            'ta all "ultrasound vessel centerline angle correction"',
         )
 
     def test_multi_word_applicant_stays_quoted(self):
@@ -224,8 +228,8 @@ class BuildCqlTests(TestCase):
         self.assertIn('pd within "20200101 20211231"', cql)
 
     def test_single_sided_dates_use_comparison(self):
-        self.assertEqual(_build_cql(keywords="x", date_from="2020"), 'txt="x" and pd>=20200101')
-        self.assertEqual(_build_cql(keywords="x", date_to="2021"), 'txt="x" and pd<=20211231')
+        self.assertEqual(_build_cql(keywords="x", date_from="2020"), 'ta="x" and pd>=20200101')
+        self.assertEqual(_build_cql(keywords="x", date_to="2021"), 'ta="x" and pd<=20211231')
 
     def test_cpc_keeps_slash_and_drops_spaces(self):
         self.assertEqual(_build_cql(cpc="A61B 8/06", include_subgroups=False), "cpc=A61B8/06")
@@ -240,7 +244,7 @@ class BuildCqlTests(TestCase):
     def test_several_codes_or_ed_in_parentheses(self):
         self.assertEqual(
             _build_cql(keywords="doppler angle", cpc=["A61B8/06", "G01S15/8984", "A61B8"], date_from="2000"),
-            'txt all "doppler angle" and (cpc=A61B8/06/low or cpc=G01S15/8984/low or cpc=A61B8)'
+            'ta all "doppler angle" and (cpc=A61B8/06/low or cpc=G01S15/8984/low or cpc=A61B8)'
             " and pd>=20000101",
         )
 
@@ -257,7 +261,7 @@ class BuildCqlTests(TestCase):
         self.assertEqual(_build_cql(cpc=codes).count("cpc="), 10)
 
     def test_invalid_cpc_dropped(self):
-        self.assertEqual(_build_cql(keywords="x", cpc="not a cpc"), 'txt="x"')
+        self.assertEqual(_build_cql(keywords="x", cpc="not a cpc"), 'ta="x"')
 
     def test_production_failures_no_longer_emitted(self):
         """Inputs whose CQL OPS answered with 500 SERVER.DomainAccess in prod (WILFRED-7M)."""
@@ -275,7 +279,7 @@ class BuildCqlTests(TestCase):
             self.assertNotRegex(cql, r'cpc="[^"]* [^"]*"')
         self.assertEqual(
             _build_cql(keywords="vector Doppler flow", inventor="Tortoli", date_to="2010"),
-            'txt all "vector Doppler flow" and in="Tortoli" and pd<=20101231',
+            'ta all "vector Doppler flow" and in="Tortoli" and pd<=20101231',
         )
 
     def test_empty_returns_blank(self):
@@ -284,7 +288,7 @@ class BuildCqlTests(TestCase):
     def test_injection_stripped(self):
         # Quotes / '=' / parens can't escape the clause.
         cql = _build_cql(keywords='foo" or pa="bar')
-        self.assertEqual(cql, 'txt all "foo or pa bar"')
+        self.assertEqual(cql, 'ta all "foo or pa bar"')
         self.assertNotIn('="bar"', cql)
 
 
@@ -682,7 +686,7 @@ class PatentToolTests(TestCase):
         self.assertIn("A widget", result)
         self.assertIn("Espacenet: https://worldwide.espacenet.com/patent/search?q=pn%3DEP1000000A1", result)
         params = mock_get.call_args.kwargs["params"]
-        self.assertIn('txt="widget"', params["q"])
+        self.assertIn('ta="widget"', params["q"])
 
     @patch("llm.tools.epo_ops.requests.get")
     def test_search_invalid_cpc_rejected_without_calling_ops(self, mock_get):
@@ -698,7 +702,7 @@ class PatentToolTests(TestCase):
         )
         self.assertEqual(
             mock_get.call_args.kwargs["params"]["q"],
-            'txt all "blood flow vessel" and cpc=G01S15/8984/low and pd>=20000101',
+            'ta all "blood flow vessel" and cpc=G01S15/8984/low and pd>=20000101',
         )
 
     @patch("llm.tools.epo_ops.requests.get")
@@ -749,7 +753,7 @@ class PatentToolTests(TestCase):
     def test_search_count_capped(self, mock_get):
         mock_get.return_value = _mock_ok(SEARCH_FIXTURE)
         PatentEpoOpsSearchTool().invoke({"keywords": "x", "count": 500})
-        self.assertEqual(mock_get.call_args.kwargs["params"]["Range"], "1-25")
+        self.assertEqual(mock_get.call_args.kwargs["params"]["Range"], "1-50")
 
     @patch("llm.tools.epo_ops.requests.get")
     def test_get_success(self, mock_get):
@@ -845,11 +849,11 @@ class OpsOutcomeLogTests(TestCase):
     @patch("llm.tools.epo_ops.requests.get")
     def test_success_row(self, mock_get):
         mock_get.return_value = _mock_ok({"ok": 1})
-        _ops_request(self.PATH, {"q": 'txt="x"'}, tool_name="patent_epoops_search")
+        _ops_request(self.PATH, {"q": 'ta="x"'}, tool_name="patent_epoops_search")
         row = self._row()
         self.assertEqual(row.outcome, "ok")
         self.assertEqual(row.http_status, 200)
-        self.assertEqual(row.query, 'txt="x"')
+        self.assertEqual(row.query, 'ta="x"')
         self.assertEqual(row.request_path, self.PATH)
         self.assertEqual(row.attempts, 1)
         self.assertGreater(row.response_bytes, 0)
@@ -857,7 +861,7 @@ class OpsOutcomeLogTests(TestCase):
     @patch("llm.tools.epo_ops.requests.get")
     def test_404_is_no_results(self, mock_get):
         mock_get.return_value = _mock_http_error(404, text=_fault_xml("SERVER.EntityNotFound", "No results found"))
-        _ops_request(self.PATH, {"q": 'txt="x"'}, tool_name="patent_epoops_search")
+        _ops_request(self.PATH, {"q": 'ta="x"'}, tool_name="patent_epoops_search")
         row = self._row()
         self.assertEqual(row.outcome, "no_results")
         self.assertEqual(row.http_status, 404)
@@ -1200,3 +1204,309 @@ class PatentClassificationToolTests(TestCase):
         row = OpsUsageLog.objects.get(tool_name="patent_epoops_classification")
         self.assertEqual(row.outcome, "error")
         self.assertEqual(row.request_path, "classification/cpc/search")
+
+
+# --------------------------------------------------------------------------- #
+# Search-table (concept) searching, counts, paging, families, seen, citations.
+# --------------------------------------------------------------------------- #
+_K1 = ["hydrochlor?thiazid*", "HCTZ"]
+_K2 = ["bilayer*", "bi layer*", "multilayer*", "multi layer*"]
+_C1 = ["A61K31/549"]
+_C2 = ["A61K9/209"]
+_K1_CQL = '(ta="hydrochlor?thiazid*" or ta="HCTZ")'
+_K2_CQL = '(ta="bilayer*" or ta="bi layer*" or ta="multilayer*" or ta="multi layer*")'
+
+
+class ConceptCqlTests(TestCase):
+    """The paper's strategies A-D (Marttin & Derrien, Table 4) as concepts —
+    the exact CQL that reproduced 33/8/27/11 (union 46) hits live."""
+
+    def test_paper_strategies(self):
+        cases = {
+            "A": ([{"cpc": _C1}, {"cpc": _C2}], "cpc=A61K31/549/low and cpc=A61K9/209/low"),
+            "B": ([{"cpc": _C1}, {"keywords": _K2}], f"cpc=A61K31/549/low and {_K2_CQL}"),
+            "C": ([{"keywords": _K1}, {"cpc": _C2}], f"{_K1_CQL} and cpc=A61K9/209/low"),
+            "D": ([{"keywords": _K1}, {"keywords": _K2}], f"{_K1_CQL} and {_K2_CQL}"),
+        }
+        for label, (concepts, expected) in cases.items():
+            self.assertEqual(_build_cql(concepts=concepts), expected, label)
+
+    def test_union_ors_keywords_and_codes_inside_a_concept(self):
+        cql = _build_cql(concepts=[{"keywords": _K1, "cpc": _C1}, {"keywords": _K2, "cpc": _C2}])
+        self.assertEqual(
+            cql,
+            '(ta="hydrochlor?thiazid*" or ta="HCTZ" or cpc=A61K31/549/low) and '
+            '(ta="bilayer*" or ta="bi layer*" or ta="multilayer*" or ta="multi layer*" or cpc=A61K9/209/low)',
+        )
+
+    def test_full_text_field(self):
+        self.assertEqual(
+            _build_cql(concepts=[{"keywords": ["bilayer*"]}], keyword_field="full_text"), 'txt="bilayer*"'
+        )
+        self.assertEqual(_build_cql(keywords="a b", keyword_field="full_text"), 'txt all "a b"')
+
+    def test_concepts_and_with_filters(self):
+        cql = _build_cql(
+            concepts=[{"keywords": ["tablet*"]}], applicant="Acme", date_to="2003", cites="EP1000000A1"
+        )
+        self.assertEqual(cql, 'ta="tablet*" and pa="Acme" and ct=EP1000000 and pd<=20031231')
+
+    def test_keyword_injection_and_reserved_words_neutralised(self):
+        self.assertEqual(_build_cql(concepts=[{"keywords": ['x") or (pa="y']}]), 'ta="x or pa y"')
+        self.assertEqual(_build_cql(concepts=[{"keywords": ["or"]}]), 'ta="or"')
+
+    def test_short_truncation_rejected(self):
+        with self.assertRaisesRegex(ValueError, "at least 3 letters"):
+            _build_cql(concepts=[{"keywords": ["hy*"]}])
+        # Left truncation with enough letters is fine.
+        self.assertEqual(_build_cql(concepts=[{"keywords": ["*thiazide"]}]), 'ta="*thiazide"')
+
+    def test_long_phrase_rejected(self):
+        with self.assertRaisesRegex(ValueError, "at most 4 words"):
+            _build_cql(concepts=[{"keywords": ["one two three four five"]}])
+
+    def test_over_length_raises_instead_of_truncating(self):
+        concepts = [{"keywords": ["x" * 300 + str(i) for i in range(10)]}]
+        with self.assertRaisesRegex(ValueError, "too long"):
+            _build_cql(concepts=concepts)
+
+    def test_terms_deduplicated(self):
+        self.assertEqual(_build_cql(concepts=[{"keywords": ["tablet", " tablet "]}]), 'ta="tablet"')
+
+
+class CitationNumberTests(TestCase):
+    def test_forms(self):
+        self.assertEqual(_citation_number("WO 03/059327 A1"), "WO03059327")
+        self.assertEqual(_citation_number("WO2003059327A1"), "WO03059327")  # long form 404s up to 2003
+        self.assertEqual(_citation_number("WO2019154667A1"), "WO2019154667")
+        self.assertEqual(_citation_number("EP1000000A1"), "EP1000000")
+        self.assertEqual(_citation_number("not a number!"), "")
+
+    def test_docdb_ref_uses_wo_short_form(self):
+        self.assertEqual(_docdb_ref("WO2003059327A1"), ("docdb", "WO.03059327.A1"))
+        self.assertEqual(_docdb_ref("WO2019154667A1"), ("docdb", "WO.2019154667.A1"))
+
+
+def _doc(country, number, kind, family, title="T", date="20200101"):
+    return {
+        "@country": country,
+        "@doc-number": number,
+        "@kind": kind,
+        "@family-id": family,
+        "bibliographic-data": {
+            "invention-title": {"@lang": "en", "$": title},
+            "publication-reference": {"document-id": {"@document-id-type": "docdb", "date": {"$": date}}},
+            "parties": {"applicants": {"applicant": {"applicant-name": {"name": {"$": "ACME"}}}}},
+            "patent-classifications": {"patent-classification": [_cpc_entry("A", "61", "K", "9", "209")]},
+        },
+        "abstract": {"@lang": "en", "p": {"$": "Abstract text. " * 60}},
+    }
+
+
+def _search_page(docs, total):
+    return {
+        "ops:world-patent-data": {
+            "ops:biblio-search": {
+                "@total-result-count": str(total),
+                "ops:search-result": {"exchange-documents": [{"exchange-document": d} for d in docs]},
+            }
+        }
+    }
+
+
+FAMILY_PAGE = _search_page(
+    [
+        _doc("US", "2020000001", "A1", "111", "Bilayer tablet"),
+        _doc("EP", "3000001", "A1", "111", "Bilayer tablet"),
+        _doc("CN", "100000001", "A", "222", "Other tablet"),
+    ],
+    total=150,
+)
+
+COUNT_FIXTURE = {"ops:world-patent-data": {"ops:biblio-search": {"@total-result-count": "46"}}}
+
+
+class GroupFamiliesTests(TestCase):
+    def test_ep_represents_family(self):
+        groups = _group_families(_parse_search_results(FAMILY_PAGE)["results"])
+        self.assertEqual(len(groups), 2)
+        self.assertEqual(groups[0]["rep"]["publication_number"], "EP3000001A1")
+        self.assertEqual(groups[0]["others"], ["US2020000001A1"])
+        self.assertEqual(groups[1]["rep"]["publication_number"], "CN100000001A")
+
+    def test_missing_family_id_kept_separate(self):
+        results = [{"publication_number": "EP1A1", "family_id": ""}, {"publication_number": "EP2A1", "family_id": ""}]
+        self.assertEqual(len(_group_families(results)), 2)
+
+
+@override_settings(EPO_OPS_KEY="k", EPO_OPS_SECRET="s", CACHES=_LOCMEM_CACHE)
+class SearchToolPagingTests(TestCase):
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        p = patch("llm.tools.epo_ops._ops_rate_limiter")
+        p.start()
+        self.addCleanup(p.stop)
+        p2 = patch("llm.tools.epo_ops._get_access_token", return_value="tok")
+        p2.start()
+        self.addCleanup(p2.stop)
+
+    def _tool(self, conversation="conv-1"):
+        from llm.types.context import RunContext
+
+        tool = PatentEpoOpsSearchTool()
+        tool.context = RunContext.create(user_id=None, conversation_id=conversation)
+        return tool
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_count_only(self, mock_get):
+        mock_get.return_value = _mock_ok(COUNT_FIXTURE)
+        out = self._tool().invoke({"concepts": [{"cpc": _C1}, {"cpc": _C2}], "count_only": True})
+        self.assertEqual(out, "46 publications match. Query: cpc=A61K31/549/low and cpc=A61K9/209/low")
+        self.assertTrue(mock_get.call_args.args[0].endswith("published-data/search"))
+        self.assertEqual(mock_get.call_args.kwargs["params"]["Range"], "1-1")
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_count_only_404_is_zero(self, mock_get):
+        mock_get.return_value = _mock_http_error(404)
+        out = self._tool().invoke({"keywords": "zzqx", "count_only": True})
+        self.assertTrue(out.startswith("0 publications match."))
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_offset_and_view_caps(self, mock_get):
+        mock_get.return_value = _mock_ok(FAMILY_PAGE)
+        tool = self._tool()
+        tool.invoke({"keywords": "tablet", "view": "list", "count": 30, "offset": 100})
+        self.assertEqual(mock_get.call_args.kwargs["params"]["Range"], "101-130")
+        tool.invoke({"keywords": "tablet", "view": "list", "count": 500})
+        self.assertEqual(mock_get.call_args.kwargs["params"]["Range"], "1-100")
+        tool.invoke({"keywords": "tablet", "view": "abstracts", "count": 500})
+        self.assertEqual(mock_get.call_args.kwargs["params"]["Range"], "1-50")
+        tool.invoke({"keywords": "tablet", "view": "list", "count": 50, "offset": 1990})
+        self.assertEqual(mock_get.call_args.kwargs["params"]["Range"], "1991-2000")
+
+    def test_offset_past_2000_rejected(self):
+        out = self._tool().invoke({"keywords": "tablet", "offset": 2000})
+        self.assertIn("first 2000 positions", out)
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_header_and_family_lines(self, mock_get):
+        mock_get.return_value = _mock_ok(FAMILY_PAGE)
+        out = self._tool().invoke({"keywords": "tablet", "view": "list", "count": 3})
+        self.assertIn("150 publications match. Positions 1-3, grouped into 2 families.", out)
+        self.assertIn("Sorted newest first, NOT by relevance.", out)
+        self.assertIn("repeat the search with offset=3", out)
+        self.assertIn('Query: ta="tablet"', out)
+        self.assertIn("[1] EP3000001A1 (20200101) Bilayer tablet — ACME — CPC: A61K9/209", out)
+        self.assertIn("    family: US2020000001A1", out)
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_abstracts_view_trims_abstract(self, mock_get):
+        mock_get.return_value = _mock_ok(FAMILY_PAGE)
+        out = self._tool().invoke({"keywords": "tablet", "count": 3})
+        self.assertIn("Family: US2020000001A1", out)
+        self.assertIn("Abstract text.", out)
+        self.assertNotIn("Abstract text. " * 40, out)
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_seen_marks_and_hide_seen(self, mock_get):
+        mock_get.return_value = _mock_ok(FAMILY_PAGE)
+        first = self._tool().invoke({"keywords": "tablet", "view": "list", "count": 3})
+        self.assertNotIn("[seen]", first)
+        # A later sub-agent in the same conversation sees the marks.
+        second = self._tool().invoke({"keywords": "other", "view": "list", "count": 3})
+        self.assertEqual(second.count("[seen]"), 2)
+        hidden = self._tool().invoke({"keywords": "other", "view": "list", "count": 3, "hide_seen": True})
+        self.assertIn("2 families already seen in this conversation hidden", hidden)
+        self.assertIn("Every family on this page was already seen", hidden)
+        # Another conversation starts fresh.
+        other = self._tool("conv-2").invoke({"keywords": "other", "view": "list", "count": 3})
+        self.assertNotIn("[seen]", other)
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_seen_cache_failure_tolerated(self, mock_get):
+        mock_get.return_value = _mock_ok(FAMILY_PAGE)
+        with patch("django.core.cache.cache.get_many", side_effect=Exception("redis down")), \
+                patch("django.core.cache.cache.set_many", side_effect=Exception("redis down")):
+            out = self._tool().invoke({"keywords": "tablet", "view": "list", "count": 3})
+        self.assertIn("EP3000001A1", out)
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_page_cached_slim(self, mock_get):
+        mock_get.return_value = _mock_ok(FAMILY_PAGE)
+        tool = self._tool()
+        tool.invoke({"keywords": "tablet", "count": 3})
+        tool.invoke({"keywords": "tablet", "count": 3})
+        self.assertEqual(mock_get.call_count, 1)
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_404_is_no_results_with_query(self, mock_get):
+        mock_get.return_value = _mock_http_error(404)
+        out = self._tool().invoke({"concepts": [{"keywords": ["zzqx"]}]})
+        self.assertEqual(out, 'No matching patents found. Query: ta="zzqx"')
+
+    def test_concept_validation(self):
+        tool = self._tool()
+        self.assertIn("neither keywords nor CPC", tool.invoke({"concepts": [{"name": "empty"}]}))
+        self.assertIn("at most 5 concepts", tool.invoke({"concepts": [{"keywords": ["a1b"]}] * 6}))
+        self.assertIn("not CPC symbols: 'tablet'", tool.invoke({"concepts": [{"cpc": ["tablet"]}]}))
+        self.assertIn("not a publication number", tool.invoke({"cites": "???"}))
+        self.assertIn("provide at least one concept", tool.invoke({}))
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_concept_keywords_accept_a_string(self, mock_get):
+        mock_get.return_value = _mock_ok(COUNT_FIXTURE)
+        out = self._tool().invoke({"concepts": [{"keywords": "bilayer*, multilayer*"}], "count_only": True})
+        self.assertIn('(ta="bilayer*" or ta="multilayer*")', out)
+
+
+_CITED_BIBLIO = {
+    "references-cited": {
+        "citation": [
+            {"@cited-phase": "undefined", "@cited-by": "applicant",
+             "patcit": {"document-id": [{"@document-id-type": "docdb", "country": {"$": "EP"},
+                                         "doc-number": {"$": "0502314"}, "kind": {"$": "A1"}}]}},
+            {"@cited-phase": "undefined", "@cited-by": "applicant",
+             "nplcit": {"text": {"$": "- LACOURSIERE ET AL., CAN J CARDIOL, vol. 16, 2000"}}},
+            {"@cited-phase": "international-search-report", "@cited-by": "examiner",
+             "patcit": {"document-id": [{"@document-id-type": "docdb", "country": {"$": "WO"},
+                                         "doc-number": {"$": "0027397"}, "kind": {"$": "A1"}}]},
+             "category": [{"$": "X"}, {"$": "Y"}], "rel-claims": [{"$": "1,4-9,14"}, {"$": "12"}]},
+        ]
+    }
+}
+
+
+class CitationParsingTests(TestCase):
+    def test_cited_references(self):
+        refs = _cited_references(_CITED_BIBLIO)
+        self.assertEqual(refs[0]["number"], "EP0502314A1")
+        self.assertEqual(refs[1]["npl"], "LACOURSIERE ET AL., CAN J CARDIOL, vol. 16, 2000")
+        self.assertEqual(refs[2]["category"], "X/Y")
+        self.assertEqual(refs[2]["claims"], "1,4-9,14, 12")
+
+    def test_lines_examiner_first(self):
+        lines = _citation_lines(_cited_references(_CITED_BIBLIO))
+        self.assertTrue(lines[1].startswith("- WO0027397A1 (examiner, international search report, category X/Y"))
+        self.assertEqual(lines[2], "- EP0502314A1 (applicant)")
+        self.assertIn("Non-patent literature cited: 1", lines)
+
+    def test_cap(self):
+        refs = [{"number": f"EP{i}A1", "npl": "", "by": "applicant", "phase": "", "category": "", "claims": ""}
+                for i in range(40)]
+        lines = _citation_lines(refs)
+        self.assertIn("- … +10 more cited patents", lines)
+
+    def test_empty(self):
+        self.assertEqual(_cited_references({}), [])
+        self.assertEqual(_citation_lines([]), [])
+
+    def test_get_output_includes_citations(self):
+        doc = dict(_EXCHANGE_DOC)
+        doc["bibliographic-data"] = {**_EXCHANGE_DOC["bibliographic-data"], **_CITED_BIBLIO}
+        out = _format_get(
+            {"ops:world-patent-data": {"exchange-documents": {"exchange-document": doc}}}, "EP1000000A1", "biblio"
+        )
+        self.assertIn("Cited references", out)
+        self.assertIn("category X/Y", out)

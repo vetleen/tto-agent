@@ -29,6 +29,7 @@ import logging
 import re
 import threading
 import time
+from typing import Literal
 
 import requests
 from pydantic import BaseModel, Field, field_validator
@@ -456,7 +457,7 @@ def _log_ops_usage(
 # Query construction & number normalization.
 # --------------------------------------------------------------------------- #
 _CQL_STRIP_RE = re.compile(r'["()=/]+')
-_MAX_CQL_LEN = 1000
+_MAX_CQL_LEN = 2000
 
 
 def _sanitize_cql_value(value: str) -> str:
@@ -533,15 +534,15 @@ def _split_cpc(value) -> list[str]:
     return out
 
 
-def _cpc_clause(codes: list[str], include_subgroups: bool = True) -> str:
-    """CQL for one or more (already valid) CPC symbols, OR-ed.
+def _cpc_terms(codes: list[str], include_subgroups: bool = True) -> list[str]:
+    """``cpc=…`` terms for (already valid) CPC symbols, de-duplicated.
 
     ``/low`` widens a subgroup to everything filed beneath it (A61B8/06 also
     matches A61B8/065); main groups and subclasses already include theirs.
     OPS rejects ``/low`` inside ``cpc any "…"`` (400
-    CLIENT.InvalidClassificationRelation), hence the parenthesised OR.
+    CLIENT.InvalidClassificationRelation), so callers OR the terms instead.
     """
-    terms = []
+    terms: list[str] = []
     for code in codes:
         sym = _normalize_cpc(code)
         if not sym:
@@ -551,9 +552,92 @@ def _cpc_clause(codes: list[str], include_subgroups: bool = True) -> str:
         term = f"cpc={sym}"
         if term not in terms:
             terms.append(term)
+    return terms
+
+
+def _or_group(terms: list[str]) -> str:
     if not terms:
         return ""
     return terms[0] if len(terms) == 1 else "(" + " or ".join(terms) + ")"
+
+
+def _cpc_clause(codes: list[str], include_subgroups: bool = True) -> str:
+    """CQL for one or more CPC symbols, OR-ed: ``(cpc=X or cpc=Y)``."""
+    return _or_group(_cpc_terms(codes, include_subgroups))
+
+
+# Keyword fields: the paper's examiner searches use title/abstract; ``txt``
+# also reaches full text where OPS has it (txt=hydrochlor?thiazid* 14,127 hits
+# vs ta= 557, probed 2026-10-05) plus applicant/inventor names.
+_KEYWORD_FIELDS = {"title_abstract": "ta", "full_text": "txt"}
+_MAX_CONCEPTS = 5
+_MAX_TERMS_PER_ROW = 10
+_MAX_PHRASE_WORDS = 4
+_TERM_STRIP_RE = re.compile(r'["()=/\\<>]+')
+_WILDCARD_RE = re.compile(r"[*?#]")
+
+
+def _keyword_field(value: str) -> str:
+    return _KEYWORD_FIELDS.get((value or "").strip().lower(), "ta")
+
+
+def _keyword_term(raw: str) -> str:
+    """One synonym → a quoted CQL term (``"bilayer*"``, ``"bi layer*"``).
+
+    Multi-word terms are exact phrases. Truncation ``*`` (any string), ``?``
+    (zero or one char) and ``#`` (exactly one char) pass through; OPS needs at
+    least 3 real characters in a word that uses ``*`` (``hy*`` → 400
+    CLIENT.PrefixTooShort). Raises ValueError with a message for the model.
+    """
+    val = re.sub(r"\s+", " ", _TERM_STRIP_RE.sub(" ", raw or "")).strip()
+    if not val:
+        return ""
+    words = val.split(" ")
+    if len(words) > _MAX_PHRASE_WORDS:
+        raise ValueError(
+            f"{raw!r} is too long: a keyword is a word or an exact phrase of at most "
+            f"{_MAX_PHRASE_WORDS} words. Put alternative wordings in separate keywords and "
+            "separate ideas in separate concepts."
+        )
+    for word in words:
+        if "*" in word and len(_WILDCARD_RE.sub("", word)) < 3:
+            raise ValueError(f"{raw!r}: '*' needs at least 3 letters in the word (e.g. 'hyd*').")
+    return f'"{val}"'
+
+
+def _concept_clause(concept: dict, field: str, include_subgroups: bool = True) -> str:
+    """One search-table column: its keywords and CPC codes, all OR-ed."""
+    terms: list[str] = []
+    for kw in (concept.get("keywords") or [])[:_MAX_TERMS_PER_ROW]:
+        term = _keyword_term(kw)
+        if term and f"{field}={term}" not in terms:
+            terms.append(f"{field}={term}")
+    terms.extend(
+        t for t in _cpc_terms(_split_cpc(concept.get("cpc"))[:_MAX_TERMS_PER_ROW], include_subgroups)
+        if t not in terms
+    )
+    return _or_group(terms)
+
+
+_WO_OLD_RE = re.compile(r"^WO(\d{4})(\d{6})$")
+
+
+def _wo_short_form(number: str) -> str:
+    """WO numbers up to 2003 are known to OPS in the short form only:
+    ``WO2003059327`` → ``WO03059327`` (the long form 404s); 2004+ stay long."""
+    m = _WO_OLD_RE.match(number)
+    if m and int(m.group(1)) <= 2003:
+        return f"WO{m.group(1)[2:]}{m.group(2)}"
+    return number
+
+
+def _citation_number(raw: str) -> str:
+    """Publication number for ``ct=`` (kind code dropped), or ""."""
+    n = _normalize_pubnumber(raw)
+    if not n:
+        return ""
+    n = re.sub(r"^([A-Z]{2}\d+)[A-Z]\d?$", r"\1", n)
+    return _wo_short_form(n)
 
 
 def _build_cql(
@@ -564,32 +648,48 @@ def _build_cql(
     date_from: str = "",
     date_to: str = "",
     include_subgroups: bool = True,
+    concepts: list[dict] | None = None,
+    keyword_field: str = "title_abstract",
+    cites: str = "",
 ) -> str:
     """Build an OPS CQL query string from structured inputs.
 
-    Field codes: txt (title+abstract+claims), pa (applicant), in (inventor),
-    cpc (CPC classification), pd (publication date). Clauses are ANDed.
+    Field codes: ta (title or abstract) / txt (also full text and names) for
+    keywords, pa (applicant), in (inventor), cpc (CPC), pd (publication date),
+    ct (cites). Everything is ANDed; inside one concept everything is ORed.
     Verified live against OPS 3.2 (2026-10-05):
 
-    - Multi-word keywords use ``txt all "a b c"`` (every word, any order);
-      ``txt="a b c"`` is an exact-phrase search and usually finds nothing.
-    - CPC is emitted unquoted with its slash (``cpc=A61B8/06``), several codes
-      as ``(cpc=X or cpc=Y)``; invalid symbols are dropped (the tool rejects
-      them before calling OPS). See ``_cpc_clause``.
+    - ``concepts`` are search-table columns: ``(ta="a" or ta="b*" or
+      cpc=X/low)``; the paper's strategies A-D reproduce exactly this way.
+    - Legacy ``keywords`` mean "all of these words": ``ta all "a b c"``
+      (``ta="a b c"`` would be an exact phrase and usually finds nothing).
+    - CPC is emitted unquoted with its slash (``cpc=A61B8/06``); invalid
+      symbols are dropped (the tool rejects them before calling OPS).
     - A one-sided date range is ``pd>=`` / ``pd<=``. Padding it with a sentinel
       year (``pd within "20000101 30001231"``) makes OPS 500.
+
+    Raises ValueError (message meant for the model) for an invalid keyword or a
+    query over ``_MAX_CQL_LEN`` — a truncated structured query is invalid CQL.
     """
+    field = _keyword_field(keyword_field)
     clauses: list[str] = []
+    for concept in (concepts or [])[:_MAX_CONCEPTS]:
+        clause = _concept_clause(concept, field, include_subgroups)
+        if clause:
+            clauses.append(clause)
     kw = _sanitize_cql_value(keywords or "")
     if kw:
-        clauses.append(f'txt all "{kw}"' if " " in kw else f'txt="{kw}"')
-    for field, raw in (("pa", applicant), ("in", inventor)):
+        clauses.append(f'{field} all "{kw}"' if " " in kw else f'{field}="{kw}"')
+    for fld, raw in (("pa", applicant), ("in", inventor)):
         val = _sanitize_cql_value(raw or "")
         if val:
-            clauses.append(f'{field}="{val}"')
+            clauses.append(f'{fld}="{val}"')
     cpc_clause = _cpc_clause(_split_cpc(cpc)[:_MAX_CPC_CODES], include_subgroups)
     if cpc_clause:
         clauses.append(cpc_clause)
+    cited = _citation_number(cites)
+    if cited:
+        clauses.append(f"ct={cited}")
 
     df = _sanitize_date(date_from, is_end=False)
     dt = _sanitize_date(date_to, is_end=True)
@@ -600,7 +700,13 @@ def _build_cql(
     elif dt:
         clauses.append(f"pd<={dt}")
 
-    return " and ".join(clauses)[:_MAX_CQL_LEN]
+    cql = " and ".join(clauses)
+    if len(cql) > _MAX_CQL_LEN:
+        raise ValueError(
+            f"the query is too long ({len(cql)} characters, max {_MAX_CQL_LEN}); use fewer "
+            "keywords or codes, or split it over several searches."
+        )
+    return cql
 
 
 _PUBNUM_STRIP_RE = re.compile(r"[\s.,/\-]+")
@@ -642,6 +748,8 @@ def _docdb_ref(raw: str) -> tuple[str, str] | None:
     m = _DOCDB_SPLIT_RE.match(n)
     if m:
         country, number, kind = m.group(1), m.group(2), (m.group(3) or "")
+        if country == "WO":
+            number = _wo_short_form(f"WO{number}")[2:]
         # Skip an empty kind so a kind-less number yields "EP.1000000", not the
         # trailing-dot "EP.1000000." that OPS rejects with a 404.
         return "docdb", ".".join(part for part in (country, number, kind) if part)
@@ -829,6 +937,38 @@ def _cpc_codes(biblio: dict) -> dict[str, list[str]]:
     return {"inventive": inventive, "additional": additional}
 
 
+def _cited_references(biblio: dict) -> list[dict]:
+    """Backward citations from ``references-cited``.
+
+    Each: ``{"number", "npl", "by", "phase", "category", "claims"}``. Examiner
+    citations from a search report carry the category (X: relevant alone,
+    Y: relevant in combination, A: background) and the claims they concern;
+    ``npl`` holds the text of a non-patent citation instead of a number.
+    """
+    refs: list[dict] = []
+    group = biblio.get("references-cited", {}) or {}
+    for cit in _as_list(group.get("citation") if isinstance(group, dict) else None):
+        if not isinstance(cit, dict):
+            continue
+        number = npl = ""
+        patcit = cit.get("patcit")
+        if isinstance(patcit, dict):
+            number = _pubnumber_from_doc_ids(patcit.get("document-id"))
+        elif isinstance(cit.get("nplcit"), dict):
+            npl = _text(cit["nplcit"].get("text")).strip().lstrip("- ").strip()
+        if not number and not npl:
+            continue
+        refs.append({
+            "number": number,
+            "npl": npl,
+            "by": (cit.get("@cited-by") or "").strip(),
+            "phase": (cit.get("@cited-phase") or "").strip(),
+            "category": "/".join(_text(c).strip() for c in _as_list(cit.get("category")) if _text(c).strip()),
+            "claims": ", ".join(_text(c).strip() for c in _as_list(cit.get("rel-claims")) if _text(c).strip()),
+        })
+    return refs
+
+
 def _parse_exchange_document(doc: dict) -> dict:
     biblio = doc.get("bibliographic-data", {}) or {}
     pubnum = _pubnumber_from_attrs(doc)
@@ -837,12 +977,14 @@ def _parse_exchange_document(doc: dict) -> dict:
         pubnum = _pubnumber_from_doc_ids(ref.get("document-id"))
     return {
         "publication_number": pubnum,
+        "family_id": str(doc.get("@family-id") or "").strip(),
         "title": _first_title(biblio),
         "applicants": _party_names(biblio, "applicants", "applicant"),
         "inventors": _party_names(biblio, "inventors", "inventor"),
         "date": _publication_date(biblio),
         "abstract": _abstract_text(doc),
         "cpc": _cpc_codes(biblio),
+        "citations": _cited_references(biblio),
     }
 
 
@@ -925,19 +1067,91 @@ def _clean(text: str) -> str:
     return normalize_text(text or "")
 
 
-def _format_search(data: dict) -> str:
-    if "error" in data:
-        return f"Patent search error: {data['error']}"
-    parsed = _parse_search_results(data)
-    if not parsed["results"]:
-        return "No matching patents found."
+_MAX_POSITION = 2000  # OPS serves search positions 1..2000 only
+_VIEW_LIMITS = {"list": 100, "abstracts": 50}
+_REPRESENTATIVE_PREFIXES = ("EP", "WO")
+
+
+def _group_families(results: list[dict]) -> list[dict]:
+    """Collapse a page's publications into families (OPS ``@family-id``).
+
+    Search hits are publications, so one invention shows up once per family
+    member (US, EP, CN, …). Each group: ``{"family_id", "rep", "others"}`` —
+    the representative is the first EP, else WO, else first member (EP/WO
+    usually have English abstracts and full text); ``others`` are the rest's
+    numbers. Order follows the first member's position.
+    """
+    groups: dict[str, list[dict]] = {}
+    for r in results:
+        key = r.get("family_id") or f"pub:{r.get('publication_number')}"
+        groups.setdefault(key, []).append(r)
+    out: list[dict] = []
+    for key, members in groups.items():
+        rep = next(
+            (m for p in _REPRESENTATIVE_PREFIXES for m in members
+             if (m.get("publication_number") or "").startswith(p)),
+            members[0],
+        )
+        out.append({
+            "family_id": "" if key.startswith("pub:") else key,
+            "rep": rep,
+            "others": [m["publication_number"] for m in members if m is not rep and m.get("publication_number")],
+        })
+    return out
+
+
+def _search_header(total: int, offset: int, shown_pubs: int, families: int, cql: str, hidden: int) -> list[str]:
     lines: list[str] = []
-    total = parsed.get("total")
-    if total:
-        lines.append(f"About {total} total results; showing {parsed['count']}.")
-        lines.append("")
-    for i, r in enumerate(parsed["results"], 1):
-        lines.append(f"**[{i}] {_clean(r['title']) or '(no title)'}** — {r['publication_number'] or '(no number)'}")
+    if shown_pubs:
+        lines.append(
+            f"{total} publications match. Positions {offset + 1}-{offset + shown_pubs}, grouped into "
+            f"{families} famil{'y' if families == 1 else 'ies'}. Sorted newest first, NOT by relevance."
+        )
+    end = offset + shown_pubs
+    if end < min(total, _MAX_POSITION):
+        lines.append(f"More results: repeat the search with offset={end}.")
+    if total > _MAX_POSITION:
+        lines.append(
+            f"Only the first {_MAX_POSITION} positions can ever be listed — narrow the search (another "
+            "concept, a narrower CPC subgroup, or a date range) to see the rest."
+        )
+    if hidden:
+        lines.append(f"{hidden} famil{'y' if hidden == 1 else 'ies'} already seen in this conversation hidden (hide_seen).")
+    lines.append(f"Query: {cql}")
+    lines.append("")
+    return lines
+
+
+def _format_search_groups(
+    groups: list[dict],
+    *,
+    total: int,
+    offset: int = 0,
+    shown_pubs: int = 0,
+    cql: str = "",
+    view: str = "abstracts",
+    seen: set | frozenset = frozenset(),
+    hidden: int = 0,
+) -> str:
+    lines = _search_header(total, offset, shown_pubs, len(groups) + hidden, cql, hidden)
+    if not groups:
+        lines.append("Every family on this page was already seen; continue with the next offset.")
+        return _wrap(lines)
+    for i, g in enumerate(groups, 1):
+        r = g["rep"]
+        num = r["publication_number"] or "(no number)"
+        mark = " [seen]" if g["family_id"] and g["family_id"] in seen else ""
+        family = f"family: {', '.join(g['others'])}" if g["others"] else ""
+        if view == "list":
+            applicant = _clean(r["applicants"][0]) if r["applicants"] else ""
+            cpc = _cpc_line({"inventive": (r.get("cpc") or {}).get("inventive") or []}, max_inventive=4)
+            parts = [f"[{i}] {num} ({r['date'] or '?'}) {_clean(r['title']) or '(no title)'}{mark}"]
+            parts += [p for p in (applicant, cpc) if p]
+            lines.append(" — ".join(parts))
+            if family:
+                lines.append(f"    {family}")
+            continue
+        lines.append(f"**[{i}] {_clean(r['title']) or '(no title)'}** — {num}{mark}")
         url = _espacenet_url(r["publication_number"])
         if url:
             lines.append(f"Espacenet: {url}")
@@ -945,14 +1159,81 @@ def _format_search(data: dict) -> str:
             lines.append(f"Applicant(s): {_clean(', '.join(r['applicants']))}")
         if r["date"]:
             lines.append(f"Published: {r['date']}")
+        if family:
+            lines.append(family[0].upper() + family[1:])
         cpc_line = _cpc_line(r.get("cpc"), max_inventive=6, max_additional=4)
         if cpc_line:
             lines.append(cpc_line)
         abstract = _clean(r["abstract"])
         if abstract:
-            lines.append(abstract[:600] + ("…" if len(abstract) > 600 else ""))
+            lines.append(abstract[:400] + ("…" if len(abstract) > 400 else ""))
         lines.append("")
     return _wrap(lines)
+
+
+def _total_count(data: dict) -> int:
+    root = _unwrap(data)
+    search = root.get("ops:biblio-search", {}) or {}
+    try:
+        return int(search.get("@total-result-count") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _format_search(data: dict, *, cql: str = "", offset: int = 0, view: str = "abstracts") -> str:
+    """Format one search page without seen-tracking (see the tool for that)."""
+    if "error" in data:
+        return f"Patent search error: {data['error']}"
+    parsed = _parse_search_results(data)
+    if not parsed["results"]:
+        return "No matching patents found."
+    groups = _group_families(parsed["results"])
+    return _format_search_groups(
+        groups, total=_total_count(data), offset=offset, shown_pubs=parsed["count"], cql=cql, view=view
+    )
+
+
+# --------------------------------------------------------------------------- #
+# "Already seen" families, per conversation (shared by its sub-agents).
+# --------------------------------------------------------------------------- #
+_SEEN_TTL = 14 * 86400
+
+
+def _seen_scope(context) -> str:
+    if context is None:
+        return ""
+    return str(getattr(context, "conversation_id", "") or getattr(context, "run_id", "") or "")
+
+
+def _seen_key(scope: str, family_id: str) -> str:
+    return f"epo_seen_v1:{scope}:{family_id}"
+
+
+def _seen_lookup(scope: str, family_ids: list[str]) -> set[str]:
+    """Family ids already shown in this conversation. Best-effort: {} on error."""
+    from django.core.cache import cache
+
+    ids = [f for f in family_ids if f]
+    if not scope or not ids:
+        return set()
+    try:
+        found = cache.get_many([_seen_key(scope, f) for f in ids])
+    except Exception:
+        logger.debug("epo_ops: seen lookup failed, continuing")
+        return set()
+    return {f for f in ids if _seen_key(scope, f) in found}
+
+
+def _seen_record(scope: str, family_ids: list[str]) -> None:
+    from django.core.cache import cache
+
+    ids = [f for f in family_ids if f]
+    if not scope or not ids:
+        return
+    try:
+        cache.set_many({_seen_key(scope, f): 1 for f in ids}, timeout=_SEEN_TTL)
+    except Exception:
+        logger.debug("epo_ops: seen record failed, continuing")
 
 
 def _cpc_line(cpc: dict | None, *, max_inventive: int | None = None, max_additional: int | None = None) -> str:
@@ -973,6 +1254,46 @@ def _cpc_line(cpc: dict | None, *, max_inventive: int | None = None, max_additio
     if additional:
         line += f" (additional: {_take(additional, max_additional)})"
     return line
+
+
+_MAX_CITED_SHOWN = 30
+_MAX_NPL_SHOWN = 5
+
+
+def _citation_lines(refs: list[dict]) -> list[str]:
+    """``Cited references`` block: examiner citations first (with category and
+    claims), then applicant/other; patents capped, non-patent literature last."""
+    if not refs:
+        return []
+    patents = [r for r in refs if r["number"]]
+    npl = [r for r in refs if r["npl"]]
+    patents.sort(key=lambda r: 0 if r["by"] == "examiner" else 1)  # stable: keeps OPS order within
+    lines = ["Cited references (X = relevant on its own, Y = relevant combined with another, A = background):"]
+    seen: set[str] = set()
+    shown = 0
+    for r in patents:
+        if r["number"] in seen:
+            continue
+        seen.add(r["number"])
+        if shown >= _MAX_CITED_SHOWN:
+            continue
+        shown += 1
+        detail = [r["by"] or "unknown"]
+        if r["phase"] and r["phase"] != "undefined":
+            detail.append(r["phase"].replace("-", " "))
+        if r["category"]:
+            detail.append(f"category {r['category']}")
+        if r["claims"]:
+            detail.append(f"claims {r['claims']}")
+        lines.append(f"- {r['number']} ({', '.join(detail)})")
+    if len(seen) > shown:
+        lines.append(f"- … +{len(seen) - shown} more cited patents")
+    if npl:
+        lines.append(f"Non-patent literature cited: {len(npl)}")
+        for r in npl[:_MAX_NPL_SHOWN]:
+            cat = f" [category {r['category']}]" if r["category"] else ""
+            lines.append(f"- {_clean(r['npl'])[:200]}{cat}")
+    return lines
 
 
 def _format_get(data: dict, publication_number: str, parts: str) -> str:
@@ -1003,6 +1324,10 @@ def _format_get(data: dict, publication_number: str, parts: str) -> str:
             lines.append("")
             lines.append("Abstract:")
             lines.append(_clean(r["abstract"]))
+        cited = _citation_lines(r.get("citations") or [])
+        if cited:
+            lines.append("")
+            lines.extend(cited)
     # For claims/description (or when the biblio parse is thin), surface raw text.
     if parts in ("claims", "description") or len(docs) == 0:
         acc: list[str] = []
@@ -1198,13 +1523,62 @@ def _format_cpc_search(data: dict, query: str) -> str:
 # --------------------------------------------------------------------------- #
 # Tools.
 # --------------------------------------------------------------------------- #
+class SearchConcept(BaseModel):
+    """One search-table column: alternative keywords and CPC codes for one idea."""
+
+    name: str = Field(default="", description="Short label for the concept, e.g. 'bilayer tablet'.")
+    keywords: list[str] = Field(
+        default_factory=list,
+        description=(
+            f"Up to {_MAX_TERMS_PER_ROW} alternative wordings (synonyms, spellings) — a document "
+            "matching ANY of them qualifies. Each is one word or an exact phrase of at most "
+            f"{_MAX_PHRASE_WORDS} words. Truncation: * any ending (needs 3+ letters: 'bilayer*'), "
+            "? zero or one character ('hydrochlor?thiazid*'), # exactly one character."
+        ),
+    )
+    cpc: list[str] = Field(
+        default_factory=list,
+        description=(
+            f"Up to {_MAX_TERMS_PER_ROW} CPC symbols for this concept (OR-ed with each other and "
+            "with the keywords), e.g. 'A61K9/209'."
+        ),
+    )
+
+    @field_validator("keywords", mode="before")
+    @classmethod
+    def _coerce_keywords(cls, value):
+        if isinstance(value, str):
+            return [v.strip() for v in re.split(r"[,;]|\s+\bor\b\s+", value, flags=re.IGNORECASE) if v.strip()]
+        return value
+
+    @field_validator("cpc", mode="before")
+    @classmethod
+    def _coerce_cpc(cls, value):
+        return _split_cpc(value)
+
+
 class PatentEpoOpsSearchInput(ReasonBaseModel):
+    concepts: list[SearchConcept] = Field(
+        default_factory=list,
+        description=(
+            f"The search as search-table columns (up to {_MAX_CONCEPTS}). Inside a concept, all "
+            "keywords and codes are alternatives (OR); a document must match EVERY concept (AND). "
+            "Give a concept only its CPC codes, only its keywords, or both."
+        ),
+    )
+    keyword_field: Literal["title_abstract", "full_text"] = Field(
+        default="title_abstract",
+        description=(
+            "Where keywords must occur: 'title_abstract' (default, precise) or 'full_text' "
+            "(title, abstract, claims/description where EPO has them, and names — much broader "
+            "and noisier; useful when title/abstract searches miss documents)."
+        ),
+    )
     keywords: str = Field(
         default="",
         description=(
-            "Free-text keywords searched across title, abstract and claims. Every word "
-            "must appear (any order), so 2-5 distinctive terms recall far better than a "
-            "long sentence; run several searches rather than one long one."
+            "Simple alternative to concepts: words that must ALL appear (any order). Prefer "
+            "concepts for structured searches."
         ),
     )
     applicant: str = Field(default="", description="Applicant / assignee name to filter by.")
@@ -1212,24 +1586,52 @@ class PatentEpoOpsSearchInput(ReasonBaseModel):
     cpc: list[str] = Field(
         default_factory=list,
         description=(
-            f"CPC classification symbols to restrict to (up to {_MAX_CPC_CODES}; a document "
-            "matching ANY of them qualifies). Levels: subclass 'A61B' (very broad), main group "
-            "'A61B8' (broad), subgroup 'A61B8/06' (precise). Take codes from the CPC line of "
-            "relevant hits or confirm them with patent_epoops_classification; don't guess "
-            "deep subgroups from memory."
+            f"Simple alternative to concepts: CPC symbols (up to {_MAX_CPC_CODES}), a document "
+            "matching ANY of them qualifies. Levels: subclass 'A61B' (very broad), main group "
+            "'A61B8' (broad), subgroup 'A61B8/06' (precise)."
         ),
     )
     include_subgroups: bool = Field(
         default=True,
         description=(
-            "Also match documents filed in the narrower groups below each cpc subgroup "
-            "(A61B8/06 then also matches A61B8/065). Keep true for prior-art recall; set "
-            "false to search exactly the listed groups."
+            "Also match documents filed in the narrower groups below each CPC subgroup "
+            "(A61B8/06 then also matches A61B8/065). Keep true for recall; false searches "
+            "exactly the listed groups."
+        ),
+    )
+    cites: str = Field(
+        default="",
+        description=(
+            "Only documents that cite this publication (forward citations), e.g. 'WO03059327'. "
+            "Combine with concepts to find later documents building on a close hit."
         ),
     )
     date_from: str = Field(default="", description="Earliest publication date, YYYY or YYYYMMDD.")
-    date_to: str = Field(default="", description="Latest publication date, YYYY or YYYYMMDD.")
-    count: int = Field(default=10, description="Number of results to return (1-25, default 10).")
+    date_to: str = Field(
+        default="",
+        description="Latest publication date, YYYY or YYYYMMDD (e.g. the day before a priority date).",
+    )
+    count_only: bool = Field(
+        default=False,
+        description="Only return how many publications match (cheap). Use it to size a search before listing it.",
+    )
+    view: Literal["abstracts", "list"] = Field(
+        default="abstracts",
+        description=(
+            "'abstracts' (default, up to 50 per page): title, applicants, date, CPC and a short "
+            "abstract. 'list' (up to 100 per page): one line per family — number, date, title, "
+            "applicant, CPC — for screening larger sets quickly."
+        ),
+    )
+    count: int = Field(default=25, description="Results per page (abstracts: 1-50, list: 1-100; default 25).")
+    offset: int = Field(
+        default=0,
+        description="Skip this many results (paging): offset=0 is the first page, then use the offset the result suggests.",
+    )
+    hide_seen: bool = Field(
+        default=False,
+        description="Leave out families already shown by an earlier search in this conversation (any agent).",
+    )
 
     @field_validator("cpc", mode="before")
     @classmethod
@@ -1247,78 +1649,213 @@ class PatentEpoOpsSearchTool(ContextAwareTool):
     start_label: str = "Searching patents..."
     end_label: str = "Searched patents"
     description: str = (
-        "Search the EPO/Espacenet patent database (Open Patent Services) for published "
-        "patents by keywords, applicant, inventor, CPC classification and/or publication "
-        "date range (all given filters must match). Returns a ranked list with publication "
-        "numbers, titles, applicants, dates, each hit's CPC codes and an abstract snippet; "
-        "use patent_epoops_get to read one in full.\n"
-        "How to aim it:\n"
-        "- Broad recall: 2-4 core keywords, optionally one main group (cpc=['A61B8']).\n"
-        "- Precision: keywords + 1-3 subgroups (cpc=['A61B8/06', 'G01S15/8984']).\n"
-        "- Different wording: search a relevant subgroup with no keywords, or with one broad "
-        "term, to catch documents that describe the same idea in other words.\n"
-        "- Iterate: the CPC line of a strong hit shows where similar documents are filed — "
-        "search those classes next. 'additional' codes are secondary aspects.\n"
-        "- Too many results: add a keyword, a narrower subgroup or a date range. Zero results: "
-        "drop a keyword or a filter, or move up a CPC level.\n"
-        "Unsure which classes fit? Use patent_epoops_classification first."
+        "Search EPO/Espacenet (worldwide published patents) with a search table. Pass "
+        "`concepts` — one per column: keywords (synonyms, truncation) and/or CPC codes. Inside "
+        "a concept everything is OR-ed; concepts are AND-ed with each other and with "
+        "applicant/inventor/dates/cites.\n"
+        "Classic strategies for two concepts C1, C2:\n"
+        "- codes only: C1 {cpc} AND C2 {cpc}\n"
+        "- mixed: C1 {cpc} AND C2 {keywords}, and C1 {keywords} AND C2 {cpc}\n"
+        "- keywords only: C1 {keywords} AND C2 {keywords}\n"
+        "- union of all four in one search: give each concept both its keywords and its codes.\n"
+        "Run the separate strategies with count_only=true to see what each contributes; list "
+        "the union to screen the documents.\n"
+        "Results are sorted NEWEST FIRST, not by relevance, so a large result set is not "
+        "'best first': size it with count_only, narrow it (add a concept, a narrower subgroup, "
+        "date_to) until it can be read in full, then page with offset. One invention appears "
+        "once per family member — results are grouped by family. [seen] marks families shown "
+        "earlier in this conversation; hide_seen=true leaves them out.\n"
+        "Each hit shows its CPC codes: codes recurring on relevant hits are classes worth "
+        "searching. Use patent_epoops_get for a full record and its cited references, "
+        "patent_epoops_classification to check a CPC code, and cites= for later documents "
+        "citing a close hit."
     )
     args_schema: type[BaseModel] = PatentEpoOpsSearchInput
 
     def _run(
         self,
+        concepts: list | None = None,
+        keyword_field: str = "title_abstract",
         keywords: str = "",
         applicant: str = "",
         inventor: str = "",
         cpc: list[str] | str | None = None,
         include_subgroups: bool = True,
+        cites: str = "",
         date_from: str = "",
         date_to: str = "",
-        count: int = 10,
+        count_only: bool = False,
+        view: str = "abstracts",
+        count: int = 25,
+        offset: int = 0,
+        hide_seen: bool = False,
         **kwargs,
     ) -> str:
+        concept_dicts = [
+            c.model_dump() if hasattr(c, "model_dump") else dict(c or {}) for c in (concepts or [])
+        ]
+        error = _validate_search_input(concept_dicts, _split_cpc(cpc), cites)
+        if error:
+            return f"Patent search error: {error}"
+        try:
+            cql = _build_cql(
+                keywords, applicant, inventor, _split_cpc(cpc), date_from, date_to,
+                include_subgroups=bool(include_subgroups),
+                concepts=concept_dicts,
+                keyword_field=keyword_field,
+                cites=cites,
+            )
+        except ValueError as e:
+            return f"Patent search error: {e}"
+        if not cql:
+            return (
+                "Patent search error: provide at least one concept, or keywords, applicant, "
+                "inventor, cpc or cites."
+            )
+        if count_only:
+            return self._count(cql)
+
+        view = view if view in _VIEW_LIMITS else "abstracts"
+        count = max(1, min(int(count or 25), _VIEW_LIMITS[view]))
+        offset = max(0, int(offset or 0))
+        if offset >= _MAX_POSITION:
+            return (
+                f"Patent search error: OPS only lists the first {_MAX_POSITION} positions; "
+                "narrow the search instead of paging further."
+            )
+        end = min(offset + count, _MAX_POSITION)
+
+        page = self._fetch_page(cql, offset, end)
+        if "error" in page:
+            if "404" in page["error"]:
+                return f"No matching patents found{' at this offset' if offset else ''}. Query: {cql}"
+            return f"Patent search error: {page['error']} Query: {cql}"
+        results = page["results"]
+        if not results:
+            return f"No matching patents found{' at this offset' if offset else ''}. Query: {cql}"
+
+        groups = _group_families(results)
+        scope = _seen_scope(self.context)
+        family_ids = [g["family_id"] for g in groups]
+        seen = _seen_lookup(scope, family_ids)
+        hidden = 0
+        if hide_seen:
+            kept = [g for g in groups if not (g["family_id"] and g["family_id"] in seen)]
+            hidden = len(groups) - len(kept)
+            groups = kept
+        _seen_record(scope, family_ids)
+        return _format_search_groups(
+            groups,
+            total=page["total"],
+            offset=offset,
+            shown_pubs=len(results),
+            cql=cql,
+            view=view,
+            seen=seen,
+            hidden=hidden,
+        )
+
+    def _fetch_page(self, cql: str, offset: int, end: int) -> dict:
+        """One OPS search page as slim parsed results (cached 15 min).
+
+        A 100-hit biblio page is ~1 MB of JSON; only the fields the formatter
+        uses are kept (abstract cut to 400 chars), so the cache entry stays small.
+        """
         from django.core.cache import cache
 
-        codes = _split_cpc(cpc)
-        invalid = [c for c in codes if not _normalize_cpc(c)]
-        if invalid:
-            return (
-                f"Patent search error: not CPC symbols: {', '.join(repr(c) for c in invalid)}. "
-                "Use codes like H01M, A61B8 or A61B8/06 (one per list item)."
-            )
-        if len(codes) > _MAX_CPC_CODES:
-            return (
-                f"Patent search error: at most {_MAX_CPC_CODES} CPC codes per search "
-                f"(got {len(codes)}); split them over several searches."
-            )
-        cql = _build_cql(
-            keywords, applicant, inventor, codes, date_from, date_to,
-            include_subgroups=bool(include_subgroups),
-        )
-        if not cql:
-            return "Patent search error: provide at least one of keywords, applicant, inventor or cpc."
-        count = max(1, min(int(count or 10), 25))
-
-        cache_key = "epo_ops_search_v1:" + hashlib.sha256(f"{cql}:{count}".encode()).hexdigest()
+        cache_key = "epo_ops_search_v2:" + hashlib.sha256(f"{cql}:{offset}:{end}".encode()).hexdigest()
         try:
             cached = cache.get(cache_key)
         except Exception:
             cached = None
         if cached is not None:
-            return _format_search(json.loads(cached))
+            return json.loads(cached)
 
         data = _ops_request(
             "published-data/search/biblio",
-            {"q": cql, "Range": f"1-{count}"},
+            {"q": cql, "Range": f"{offset + 1}-{end}"},
             tool_name=self.name,
             context=self.context,
         )
-        if "error" not in data:
+        if "error" in data:
+            return data
+        parsed = _parse_search_results(data)
+        page = {
+            "total": _total_count(data),
+            "results": [
+                {
+                    "publication_number": r["publication_number"],
+                    "family_id": r["family_id"],
+                    "title": r["title"],
+                    "applicants": r["applicants"][:3],
+                    "date": r["date"],
+                    "abstract": (r["abstract"] or "")[:420],
+                    "cpc": r["cpc"],
+                }
+                for r in parsed["results"]
+            ],
+        }
+        try:
+            cache.set(cache_key, json.dumps(page), timeout=900)
+        except Exception:
+            logger.debug("epo_ops search: cache write failed, continuing")
+        return page
+
+    def _count(self, cql: str) -> str:
+        from django.core.cache import cache
+
+        cache_key = "epo_ops_count_v1:" + hashlib.sha256(cql.encode()).hexdigest()
+        try:
+            total = cache.get(cache_key)
+        except Exception:
+            total = None
+        if total is None:
+            data = _ops_request(
+                "published-data/search",
+                {"q": cql, "Range": "1-1"},
+                tool_name=self.name,
+                context=self.context,
+            )
+            if "error" in data:
+                if "404" not in data["error"]:
+                    return f"Patent search error: {data['error']} Query: {cql}"
+                total = 0
+            else:
+                total = _total_count(data)
             try:
-                cache.set(cache_key, json.dumps(data), timeout=900)
+                cache.set(cache_key, total, timeout=900)
             except Exception:
-                logger.debug("epo_ops search: cache write failed, continuing")
-        return _format_search(data)
+                logger.debug("epo_ops count: cache write failed, continuing")
+        return f"{total} publications match. Query: {cql}"
+
+
+def _validate_search_input(concepts: list[dict], legacy_cpc: list[str], cites: str) -> str:
+    """Error message for invalid structured input, or "" — checked before OPS is called."""
+    if len(concepts) > _MAX_CONCEPTS:
+        return f"at most {_MAX_CONCEPTS} concepts per search (got {len(concepts)})."
+    if len(legacy_cpc) > _MAX_CPC_CODES:
+        return (
+            f"at most {_MAX_CPC_CODES} CPC codes per search (got {len(legacy_cpc)}); "
+            "split them over several searches."
+        )
+    invalid = [c for c in legacy_cpc if not _normalize_cpc(c)]
+    for i, concept in enumerate(concepts, 1):
+        label = concept.get("name") or f"concept {i}"
+        kws = concept.get("keywords") or []
+        codes = _split_cpc(concept.get("cpc"))
+        if not kws and not codes:
+            return f"{label!r} has neither keywords nor CPC codes."
+        if len(kws) > _MAX_TERMS_PER_ROW or len(codes) > _MAX_TERMS_PER_ROW:
+            return f"{label!r}: at most {_MAX_TERMS_PER_ROW} keywords and {_MAX_TERMS_PER_ROW} CPC codes."
+        invalid += [c for c in codes if not _normalize_cpc(c)]
+    if invalid:
+        return (
+            f"not CPC symbols: {', '.join(repr(c) for c in invalid)}. "
+            "Use codes like H01M, A61B8 or A61B8/06 (one per list item)."
+        )
+    if (cites or "").strip() and not _citation_number(cites):
+        return f"{cites!r} is not a publication number (cites)."
+    return ""
 
 
 class PatentEpoOpsGetInput(ReasonBaseModel):
@@ -1346,8 +1883,12 @@ class PatentEpoOpsGetTool(ContextAwareTool):
     description: str = (
         "Retrieve a specific patent publication from EPO/Espacenet by publication number. "
         "Choose parts to control what is returned: biblio (title, applicants, inventors, "
-        "date, CPC codes, abstract), abstract, claims, description, or all. Use "
-        "patent_epoops_search first to find publication numbers. A highly relevant "
+        "date, CPC codes, abstract and cited references), abstract, claims, description, or "
+        "all. Claims/description exist mainly for EP and WO documents — for others, find an "
+        "EP/WO member with patent_epoops_family. Cited references list what the examiner "
+        "(category X: relevant alone, Y: in combination, A: background) and the applicant "
+        "cited; for a close document these are prime prior-art candidates, and "
+        "patent_epoops_search(cites=...) finds later documents citing it. A highly relevant "
         "document's inventive CPC codes are the best classes to search next."
     )
     args_schema: type[BaseModel] = PatentEpoOpsGetInput
