@@ -19,6 +19,7 @@ from agent_skills.services import (
 )
 from core.preferences import get_preferences
 from llm.tools.epo_ops import (
+    PatentEpoOpsClassificationTool,
     PatentEpoOpsFamilyTool,
     PatentEpoOpsGetTool,
     PatentEpoOpsSearchTool,
@@ -27,7 +28,12 @@ from llm.tools.registry import get_tool_registry
 
 User = get_user_model()
 
-_PATENT_TOOLS = ["patent_epoops_search", "patent_epoops_get", "patent_epoops_family"]
+_PATENT_TOOLS = [
+    "patent_epoops_search",
+    "patent_epoops_get",
+    "patent_epoops_family",
+    "patent_epoops_classification",
+]
 
 
 class PatentSearcherSeedTests(TestCase):
@@ -36,7 +42,12 @@ class PatentSearcherSeedTests(TestCase):
 
         self.registry = get_tool_registry()
         self._added: list[str] = []
-        for cls in (PatentEpoOpsSearchTool, PatentEpoOpsGetTool, PatentEpoOpsFamilyTool):
+        for cls in (
+            PatentEpoOpsSearchTool,
+            PatentEpoOpsGetTool,
+            PatentEpoOpsFamilyTool,
+            PatentEpoOpsClassificationTool,
+        ):
             tool = cls()
             self.registry.register_tool(tool)
             self._added.append(tool.name)
