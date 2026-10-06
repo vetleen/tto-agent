@@ -56,7 +56,91 @@ def _rpm() -> int:
     return rpm if rpm > 0 else 30
 
 
-_ops_rate_limiter = _TokenBucketRateLimiter(requests_per_second=_rpm() / 60.0, burst=1)
+# OPS reports, with every response, how many requests per 60 s window this
+# client may make per service in the current system state (Reference Guide
+# §2.3.3, header ``X-Throttling-Control: idle (retrieval=green:200,
+# search=yellow:20, inpadoc=red:30, images=green:200, other=green:1000)``).
+# Green = <50 % of that limit used, yellow 50-75 %, red >75 %, black =
+# suspended. Instances don't share counters, so it is advisory.
+_THROTTLE_HEADER = "X-Throttling-Control"
+_THROTTLE_RE = re.compile(r"(\w+)=(\w+):(\d+)")
+# Steady rate as a share of the allowance: red starts at 75 % used, so 60 %
+# keeps us yellow at worst even when two instances disagree.
+_THROTTLE_HEADROOM = 0.6
+
+
+def _service_for_path(path: str) -> str:
+    """The OPS service a rest-services path belongs to (throttling is per service)."""
+    p = (path or "").lstrip("/")
+    if p.startswith("published-data/search"):
+        return "search"
+    if p.startswith("published-data/publication"):
+        return "retrieval"
+    if p.startswith("family/"):
+        return "inpadoc"
+    return "other"  # classification etc.
+
+
+class _ServiceThrottle:
+    """One token bucket per OPS service, adapted to ``X-Throttling-Control``.
+
+    Every bucket starts at the configured ceiling (``EPO_OPS_RPM``) and is
+    lowered to a share of whatever OPS says it allows right now — this is what
+    keeps a busy sub-agent out of ``CLIENT.RobotDetected``.
+    """
+
+    SERVICES = ("retrieval", "search", "inpadoc", "other")
+
+    def __init__(self, ceiling_rpm: int):
+        self.ceiling_rpm = ceiling_rpm
+        self._rpm = {s: ceiling_rpm for s in self.SERVICES}
+        self._buckets = {
+            s: _TokenBucketRateLimiter(requests_per_second=ceiling_rpm / 60.0, burst=1)
+            for s in self.SERVICES
+        }
+        self._state = ""
+        self._lock = threading.Lock()
+
+    def acquire(self, path: str = "") -> None:
+        self._buckets[_service_for_path(path)].acquire()
+
+    def observe(self, headers) -> None:
+        """Apply the throttling header of a response (any response; never raises)."""
+        try:
+            value = (headers or {}).get(_THROTTLE_HEADER, "") or ""
+        except Exception:
+            return
+        pairs = _THROTTLE_RE.findall(value)
+        if not pairs:
+            return
+        state = value.split("(", 1)[0].strip().lower()
+        with self._lock:
+            self._state = state
+            for name, colour, limit in pairs:
+                if name not in self._buckets:
+                    continue
+                limit = int(limit)
+                suspended = colour.lower() == "black" or limit <= 0
+                rpm = 1 if suspended else min(self.ceiling_rpm, max(1, int(limit * _THROTTLE_HEADROOM)))
+                if rpm == self._rpm[name]:
+                    continue
+                if suspended:
+                    # Worth a Sentry event: OPS has suspended a service for us.
+                    logger.warning("EPO OPS %s service suspended (black); throttling to 1/min", name)
+                else:
+                    logger.info(
+                        "EPO OPS throttle: %s -> %d/min (state=%s, %s, %d/min allowed)",
+                        name, rpm, state, colour, limit,
+                    )
+                self._rpm[name] = rpm
+                self._buckets[name].set_rate(rpm / 60.0)
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return {"state": self._state, "rpm": dict(self._rpm)}
+
+
+_ops_rate_limiter = _ServiceThrottle(_rpm())
 _token_lock = threading.Lock()
 
 _TOKEN_CACHE_KEY = "epo_ops_access_token_v1"
@@ -267,7 +351,7 @@ def _ops_request(
 
         attempts += 1
         try:
-            _ops_rate_limiter.acquire()
+            _ops_rate_limiter.acquire(path)
             response = requests.get(
                 url,
                 headers={
@@ -278,6 +362,8 @@ def _ops_request(
                 timeout=15,
                 stream=True,
             )
+            # Error responses carry the throttling header too.
+            _ops_rate_limiter.observe(getattr(response, "headers", None))
             response.raise_for_status()
 
             from llm.tools.web_fetch import _enforce_size_and_buffer, _max_response_bytes
@@ -614,7 +700,18 @@ def _keyword_field(value: str) -> str:
     return _KEYWORD_FIELDS.get((value or "").strip().lower(), "ta")
 
 
-def _keyword_term(raw: str) -> str:
+def _check_leading_truncation(word: str, field: str, whole: str) -> None:
+    """OPS rule: truncation at the start of a word only works in the title and
+    abstract indices, so ``*thiazide`` is fine in ti/ab/ta but a 400 in txt."""
+    if field == "txt" and word and word[0] in "*?#":
+        raise ValueError(
+            f"{whole!r}: leading truncation ({word!r}) only works in title/abstract fields "
+            "(an EPO rule): use field title_abstract, title or abstract, or drop the leading "
+            "wildcard."
+        )
+
+
+def _keyword_term(raw: str, field: str = "ta") -> str:
     """One synonym → a quoted CQL term (``"bilayer*"``, ``"bi layer*"``).
 
     Multi-word terms are exact phrases. Truncation ``*`` (any string), ``?``
@@ -635,6 +732,7 @@ def _keyword_term(raw: str) -> str:
     for word in words:
         if "*" in word and len(_WILDCARD_RE.sub("", word)) < 3:
             raise ValueError(f"{raw!r}: '*' needs at least 3 letters in the word (e.g. 'hyd*').")
+        _check_leading_truncation(word, field, raw)
     return f'"{val}"'
 
 
@@ -644,13 +742,14 @@ def _keyword_term(raw: str) -> str:
 _NEAR_RE = re.compile(r"^(\S+)\s+NEAR(?:/(\d+|S|P))?\s+(\S+)$")
 
 
-def _proximity_word(raw: str, whole: str) -> str:
+def _proximity_word(raw: str, whole: str, field: str = "ta") -> str:
     """One side of a NEAR expression: a single sanitised word (truncation allowed)."""
     word = re.sub(r"\s+", " ", _TERM_STRIP_RE.sub(" ", raw)).strip()
     if not word or " " in word:
         raise ValueError(f"{whole!r}: each side of NEAR is one word (truncation allowed), not a phrase.")
     if "*" in word and len(_WILDCARD_RE.sub("", word)) < 3:
         raise ValueError(f"{whole!r}: '*' needs at least 3 letters in the word (e.g. 'hyd*').")
+    _check_leading_truncation(word, field, whole)
     return word
 
 
@@ -669,8 +768,8 @@ def _proximity_term(raw: str, field: str) -> str | None:
                 "(a phrase side is not possible; use a phrase keyword instead)."
             )
         return None
-    left = _proximity_word(m.group(1), raw)
-    right = _proximity_word(m.group(3), raw)
+    left = _proximity_word(m.group(1), raw, field)
+    right = _proximity_word(m.group(3), raw, field)
     qual = (m.group(2) or "S").upper()
     if qual == "P":
         op = "prox/unit=paragraph"
@@ -694,7 +793,7 @@ def _concept_clause(concept: dict, default_field: str, include_subgroups: bool =
     for kw in (concept.get("keywords") or [])[:_MAX_TERMS_PER_ROW]:
         term = _proximity_term(kw, field)
         if term is None:
-            quoted = _keyword_term(kw)
+            quoted = _keyword_term(kw, field)
             if not quoted:
                 continue
             term = f"{field}={quoted}"
@@ -773,6 +872,8 @@ def _build_cql(
             clauses.append(clause)
     kw = _sanitize_cql_value(keywords or "")
     if kw:
+        for word in kw.split(" "):
+            _check_leading_truncation(word, field, keywords)
         clauses.append(f'{field} all "{kw}"' if " " in kw else f'{field}="{kw}"')
     for fld, raw in (("pa", applicant), ("in", inventor)):
         val = _sanitize_cql_value(raw or "")
@@ -1641,7 +1742,8 @@ class SearchConcept(BaseModel):
             f"Up to {_MAX_TERMS_PER_ROW} alternative wordings (synonyms, spellings) — a document "
             "matching ANY of them qualifies. Each is one word or an exact phrase of at most "
             f"{_MAX_PHRASE_WORDS} words. Truncation: * any ending (needs 3+ letters: 'bilayer*'), "
-            "? zero or one character ('hydrochlor?thiazid*'), # exactly one character. "
+            "? zero or one character ('hydrochlor?thiazid*'), # exactly one character; a leading "
+            "wildcard ('*thiazide') works in title/abstract fields only, not full_text. "
             "Proximity: 'zero NEAR/3 order' (two words within 3 words of each other, any order), "
             "'zero NEAR order' (same sentence), 'zero NEAR/P order' (same paragraph) — NEAR in "
             "capitals, one word on each side."

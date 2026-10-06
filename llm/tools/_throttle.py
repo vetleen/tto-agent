@@ -69,6 +69,20 @@ class TokenBucketRateLimiter:
         self._last_refill = time.monotonic()
         self._lock = threading.Lock()
 
+    def set_rate(self, requests_per_second: float) -> None:
+        """Change the refill rate in place (for advisory server-side throttling).
+
+        Tokens accrued at the old rate are kept; the new rate applies from now.
+        """
+        with self._lock:
+            now = time.monotonic()
+            self._tokens = min(
+                self._max_tokens,
+                self._tokens + (now - self._last_refill) * self._rps,
+            )
+            self._last_refill = now
+            self._rps = max(float(requests_per_second), 1e-6)
+
     def acquire(self) -> None:
         while True:
             with self._lock:

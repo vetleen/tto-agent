@@ -1,9 +1,26 @@
 """Tests for shared tool throttling helpers (llm/tools/_throttle.py)."""
 
+import time
 from unittest import TestCase
 
-from llm.tools._throttle import deadline_capped_wait
+from llm.tools._throttle import TokenBucketRateLimiter, deadline_capped_wait
 from llm.types.context import RunContext
+
+
+class SetRateTests(TestCase):
+    def test_set_rate_changes_the_refill_rate_in_place(self):
+        limiter = TokenBucketRateLimiter(requests_per_second=0.001, burst=1)
+        limiter.acquire()  # spends the only token; the next one is ~1000 s away
+        limiter.set_rate(1000.0)
+        start = time.monotonic()
+        limiter.acquire()
+        self.assertLess(time.monotonic() - start, 0.5)
+        self.assertEqual(limiter._rps, 1000.0)
+
+    def test_set_rate_never_zero(self):
+        limiter = TokenBucketRateLimiter(requests_per_second=1.0, burst=1)
+        limiter.set_rate(0)
+        self.assertGreater(limiter._rps, 0)
 
 
 class _Ctx:

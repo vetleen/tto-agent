@@ -12,10 +12,12 @@ import logging
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from llm.tools.epo_ops import (
     PatentEpoOpsClassificationTool,
+    _ServiceThrottle,
+    _service_for_path,
     PatentEpoOpsFamilyTool,
     PatentEpoOpsGetTool,
     PatentEpoOpsSearchTool,
@@ -494,7 +496,7 @@ class FormatterTests(TestCase):
 class OpsRequestTests(TestCase):
     def setUp(self):
         p = patch("llm.tools.epo_ops._ops_rate_limiter")
-        p.start()
+        self.limiter = p.start()
         self.addCleanup(p.stop)
         p2 = patch("llm.tools.epo_ops._get_access_token", return_value="tok")
         p2.start()
@@ -508,6 +510,20 @@ class OpsRequestTests(TestCase):
         data = _ops_request("published-data/search/biblio", {"q": "x"}, tool_name="patent_epoops_search")
         self.assertEqual(data, {"ok": 1})
         self.assertEqual(OpsUsageLog.objects.filter(tool_name="patent_epoops_search").count(), 1)
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_throttle_header_observed_on_success_and_error(self, mock_get):
+        ok = _mock_ok({"ok": 1})
+        ok.headers = {"X-Throttling-Control": "idle (search=green:30)"}
+        mock_get.return_value = ok
+        _ops_request("published-data/search/biblio", {"q": "x"}, tool_name="patent_epoops_search")
+        self.limiter.acquire.assert_called_with("published-data/search/biblio")
+        self.limiter.observe.assert_called_with(ok.headers)
+
+        err = _mock_http_error(404, headers={"X-Throttling-Control": "busy (search=yellow:15)"})
+        mock_get.return_value = err
+        _ops_request("published-data/search/biblio", {"q": "x"}, tool_name="patent_epoops_search")
+        self.limiter.observe.assert_called_with(err.headers)
 
     @patch("llm.tools.epo_ops.requests.get")
     def test_404_graceful_no_retry(self, mock_get):
@@ -1284,6 +1300,18 @@ class ConceptCqlTests(TestCase):
         with self.assertRaisesRegex(ValueError, "at most 4 words"):
             _build_cql(concepts=[{"keywords": ["one two three four five"]}])
 
+    def test_leading_truncation_only_in_title_abstract_fields(self):
+        """OPS rule: a leading wildcard works in ti/ab/ta but is a 400 in txt."""
+        for field in ("title", "abstract", "title_abstract"):
+            self.assertIn("*thiazide", _build_cql(concepts=[{"keywords": ["*thiazide"], "field": field}]))
+        for kws in (["*thiazide"], ["?thiazide"], ["#thiazide"], ["*thiazid* NEAR/3 tablet*"]):
+            with self.assertRaisesRegex(ValueError, "title/abstract fields", msg=str(kws)):
+                _build_cql(concepts=[{"keywords": kws, "field": "full_text"}])
+        with self.assertRaisesRegex(ValueError, "title/abstract fields"):
+            _build_cql(keywords="*thiazide tablet", keyword_field="full_text")
+        # Truncation elsewhere in the word is fine in full text.
+        self.assertEqual(_build_cql(concepts=[{"keywords": ["thiazid*"], "field": "full_text"}]), 'txt="thiazid*"')
+
     def test_over_length_raises_instead_of_truncating(self):
         concepts = [{"keywords": ["x" * 900 + str(i) for i in range(10)]}]
         with self.assertRaisesRegex(ValueError, "too long"):
@@ -1641,3 +1669,58 @@ class GetClaimsNotFoundTests(TestCase):
         mock_get.return_value = _mock_http_error(404)
         out = PatentEpoOpsGetTool().invoke({"publication_number": "EP2252273A1"})
         self.assertIn("No matching patent record was found", out)
+
+
+# --------------------------------------------------------------------------- #
+# Adaptive per-service throttle (X-Throttling-Control, Reference Guide 2.3.3).
+# --------------------------------------------------------------------------- #
+class ServiceThrottleTests(SimpleTestCase):
+    GUIDE = {  # the three successive example headers from the guide
+        "idle": "idle (retrieval=green:200, search=green:30, inpadoc=green:60, images=green:200, other=green:1000)",
+        "busy": "busy (retrieval=green:100, search=green:15, inpadoc=green:45, images=green:100, other=green:1000)",
+        "overloaded": "overloaded (retrieval=green:50, search=green:5, inpadoc=green:30, images=green:50, other=green:1000)",
+    }
+
+    def test_adapts_to_the_guide_examples(self):
+        t = _ServiceThrottle(30)
+        self.assertEqual(t.snapshot(), {"state": "", "rpm": {"retrieval": 30, "search": 30, "inpadoc": 30, "other": 30}})
+        for state, search_rpm, inpadoc_rpm in (("idle", 18, 30), ("busy", 9, 27), ("overloaded", 3, 18)):
+            t.observe({"X-Throttling-Control": self.GUIDE[state]})
+            snap = t.snapshot()
+            self.assertEqual(snap["state"], state)
+            self.assertEqual(snap["rpm"]["search"], search_rpm, state)   # 60 % of 30 / 15 / 5
+            self.assertEqual(snap["rpm"]["inpadoc"], inpadoc_rpm, state)  # 60 % of 60 / 45 / 30, capped
+            self.assertEqual(snap["rpm"]["retrieval"], 30)  # never above the ceiling
+        self.assertAlmostEqual(t._buckets["search"]._rps, 3 / 60)
+
+    def test_black_suspends_to_one_per_minute_with_a_warning(self):
+        t = _ServiceThrottle(30)
+        with self.assertLogs("llm.tools.epo_ops", level="WARNING") as cm:
+            t.observe({"X-Throttling-Control": "overloaded (search=black:0, inpadoc=red:30)"})
+        self.assertEqual(t.snapshot()["rpm"]["search"], 1)
+        self.assertEqual(t.snapshot()["rpm"]["inpadoc"], 18)
+        self.assertEqual(len([r for r in cm.records if r.levelno >= logging.WARNING]), 1)
+        # Repeating the same header is silent (no change).
+        with self.assertNoLogs("llm.tools.epo_ops", level="WARNING"):
+            t.observe({"X-Throttling-Control": "overloaded (search=black:0, inpadoc=red:30)"})
+
+    def test_garbage_or_missing_header_is_ignored(self):
+        t = _ServiceThrottle(30)
+        before = t.snapshot()
+        for headers in ({}, None, {"X-Throttling-Control": "???"}, {"X-Throttling-Control": ""}, "nope"):
+            t.observe(headers)
+        self.assertEqual(t.snapshot(), before)
+
+    def test_service_for_path(self):
+        self.assertEqual(_service_for_path("published-data/search/biblio"), "search")
+        self.assertEqual(_service_for_path("published-data/search"), "search")
+        self.assertEqual(_service_for_path("published-data/publication/docdb/EP.1.A1/biblio"), "retrieval")
+        self.assertEqual(_service_for_path("family/publication/docdb/EP.1.A1/legal"), "inpadoc")
+        self.assertEqual(_service_for_path("classification/cpc/A61B8/06"), "other")
+        self.assertEqual(_service_for_path(""), "other")
+
+    def test_acquire_uses_the_service_bucket(self):
+        t = _ServiceThrottle(30)
+        with patch.object(t._buckets["inpadoc"], "acquire") as acq:
+            t.acquire("family/publication/docdb/EP.1.A1/legal")
+        acq.assert_called_once()
