@@ -336,33 +336,45 @@ class LLMService:
         async with sem:
             loop = asyncio.get_running_loop()
             q: asyncio.Queue[StreamEvent | BaseException | None] = asyncio.Queue()
+            # Set when the async side stops consuming — an early exit from the
+            # caller's loop, aclose(), a cancellation — so the producer halts at
+            # its next event instead of running the rest of the pipeline (a
+            # whole tool loop, billed) for a listener that is gone.
+            stop = threading.Event()
 
             def _produce() -> None:
                 try:
                     for event in self.stream(pipeline_id, request):
+                        if stop.is_set():
+                            return
                         loop.call_soon_threadsafe(q.put_nowait, event)
                         if cancel_event and cancel_event.is_set():
                             break
                 except BaseException as exc:
-                    loop.call_soon_threadsafe(q.put_nowait, exc)
+                    if not stop.is_set():
+                        loop.call_soon_threadsafe(q.put_nowait, exc)
                 else:
-                    loop.call_soon_threadsafe(q.put_nowait, self._STREAM_SENTINEL)
+                    if not stop.is_set():
+                        loop.call_soon_threadsafe(q.put_nowait, self._STREAM_SENTINEL)
 
             thread = threading.Thread(target=_produce, daemon=True)
             thread.start()
 
-            while True:
-                if cancel_event and cancel_event.is_set():
-                    break
-                try:
-                    item = await asyncio.wait_for(q.get(), timeout=0.5)
-                except asyncio.TimeoutError:
-                    continue
-                if item is self._STREAM_SENTINEL:
-                    break
-                if isinstance(item, BaseException):
-                    raise item
-                yield item
+            try:
+                while True:
+                    if cancel_event and cancel_event.is_set():
+                        break
+                    try:
+                        item = await asyncio.wait_for(q.get(), timeout=0.5)
+                    except asyncio.TimeoutError:
+                        continue
+                    if item is self._STREAM_SENTINEL:
+                        break
+                    if isinstance(item, BaseException):
+                        raise item
+                    yield item
+            finally:
+                stop.set()
 
     def _get_stream_semaphore(self) -> asyncio.Semaphore:
         """Lazy-init the semaphore inside a running event loop.

@@ -716,6 +716,85 @@ class CreateSubagentToolTimeoutTests(TestCase):
         self.assertIn("still running", result["message"])
 
     @patch("chat.tasks.run_subagent_task")
+    @patch("chat.subagent_tool.time")
+    def test_blocking_wait_claims_the_run_before_it_completes(self, mock_time, mock_task):
+        """The inline claim is made at dispatch, not when the poll sees COMPLETED.
+
+        The completion event reaches every consumer on the thread (another tab,
+        or a page reloaded after a dropped socket) inside the 2 s poll gap; an
+        outcome still unclaimed there seeds a duplicate orchestrator turn.
+        """
+        mock_task.delay.return_value = MagicMock(id="celery-claim")
+        mock_time.monotonic.side_effect = [0, 2, 4, 6]
+        mock_time.sleep = MagicMock()
+        seen = []
+
+        def fake_refresh(run_obj):
+            seen.append(SubAgentRun.objects.get(pk=run_obj.pk).reported_at)
+            if len(seen) >= 2:
+                SubAgentRun.objects.filter(pk=run_obj.pk).update(
+                    status=SubAgentRun.Status.COMPLETED, result="done",
+                )
+            run_obj.__dict__.update(SubAgentRun.objects.filter(pk=run_obj.pk).values()[0])
+
+        tool = CreateSubagentTool()
+        tool.set_context(_ctx(self.user.pk, self.thread.id))
+        with patch.object(SubAgentRun, "refresh_from_db", autospec=True, side_effect=fake_refresh):
+            result = tool.invoke({"prompt": "task", "timeout": 60})
+
+        self.assertEqual(result, "done")
+        self.assertIsNotNone(seen[0], "run must be claimed before the first poll")
+
+    @patch("chat.tasks.run_subagent_task")
+    @patch("chat.subagent_tool.time")
+    def test_timeout_releases_the_inline_claim(self, mock_time, mock_task):
+        mock_task.delay.return_value = MagicMock(id="celery-release")
+        mock_time.monotonic.side_effect = [0, 2, 32]
+        mock_time.sleep = MagicMock()
+        seen = []
+
+        def fake_refresh(run_obj):
+            seen.append(SubAgentRun.objects.get(pk=run_obj.pk).reported_at)
+            run_obj.__dict__.update(SubAgentRun.objects.filter(pk=run_obj.pk).values()[0])
+
+        ctx = _ctx(self.user.pk, self.thread.id)
+        with patch.object(SubAgentRun, "refresh_from_db", autospec=True, side_effect=fake_refresh):
+            result = _invoke(CreateSubagentTool, {"prompt": "slow", "timeout": 30}, ctx)
+
+        self.assertEqual(result["status"], "started")
+        self.assertIsNotNone(seen[0], "claimed while waiting")
+        self.assertIsNone(SubAgentRun.objects.get().reported_at, "released on timeout")
+
+    @patch("chat.subagent_tool._claim_run")
+    @patch("chat.tasks.run_subagent_task")
+    @patch("chat.subagent_tool.time")
+    def test_long_wait_refreshes_the_claim(self, mock_time, mock_task, mock_claim):
+        """A wait longer than the report lease must not let the claim go stale."""
+        from chat.subagent_tool import _CLAIM_REFRESH_POLLS
+
+        mock_task.delay.return_value = MagicMock(id="celery-refresh")
+        mock_time.monotonic.side_effect = [0] + [1] * (_CLAIM_REFRESH_POLLS + 5)
+        mock_time.sleep = MagicMock()
+        polls = 0
+
+        def fake_refresh(run_obj):
+            nonlocal polls
+            polls += 1
+            if polls > _CLAIM_REFRESH_POLLS:
+                SubAgentRun.objects.filter(pk=run_obj.pk).update(
+                    status=SubAgentRun.Status.COMPLETED, result="done",
+                )
+            run_obj.__dict__.update(SubAgentRun.objects.filter(pk=run_obj.pk).values()[0])
+
+        tool = CreateSubagentTool()
+        tool.set_context(_ctx(self.user.pk, self.thread.id))
+        with patch.object(SubAgentRun, "refresh_from_db", autospec=True, side_effect=fake_refresh):
+            tool.invoke({"prompt": "long", "timeout": 540})
+
+        # dispatch + one refresh at poll 30 + the completion claim
+        self.assertEqual(mock_claim.call_count, 3)
+
+    @patch("chat.tasks.run_subagent_task")
     def test_timeout_clamped_to_max(self, mock_task):
         """timeout=999 is clamped to 540 and stored on the run."""
         mock_task.delay.return_value = MagicMock(id="celery-clamp")

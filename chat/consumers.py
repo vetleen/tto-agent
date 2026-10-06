@@ -28,6 +28,10 @@ class _TurnState:
 
     cancel_event: threading.Event
     stream_finished: asyncio.Event
+    # The gate granted this turn a slot, so the model may be working on it. A
+    # disconnect then lets the turn finish detached; a turn still waiting in
+    # line is dropped instead (nothing generated, no place held for nobody).
+    slot_held: bool = False
     user_message_id: object | None = None  # pk of the user message this turn guards
     guardrail_task: asyncio.Task | None = None
     guardrail_intercepted: bool = False
@@ -267,6 +271,10 @@ def _messages_with_turn_context(
 class ChatConsumer(AsyncWebsocketConsumer):
     """WebSocket consumer for chat with LLM streaming and optional RAG via data rooms."""
 
+    # True once the socket died under a running turn (see _detach_from_socket).
+    # Class-level default so hand-built consumers in tests have it too.
+    _detached: bool = False
+
     async def connect(self):
         self.user = self.scope.get("user")
         self.resolved_prefs = None
@@ -287,6 +295,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # this WebSocket; headless loop turns swap in a BroadcastSink/NullSink.
         from chat.sinks import WebSocketSink
         self._sink = WebSocketSink(self)
+        self._detached = False
 
         # Reject unauthenticated users
         if not self.user or self.user.is_anonymous:
@@ -326,31 +335,69 @@ class ChatConsumer(AsyncWebsocketConsumer):
         except _REDIS_BLIP:
             logger.warning("channel group_discard degraded (redis blip) group=%s", group)
 
+    async def _socket_lost(self, exc) -> None:
+        """The sink's send failed: the socket died under a running turn."""
+        self._detach_from_socket(f"send failed: {type(exc).__name__}")
+
+    def _detach_from_socket(self, reason: str) -> None:
+        """Carry on without the browser: finish the running turn and persist it.
+
+        Used when the socket is gone mid-turn — a send failed, or the client
+        disconnected. The rest of the turn's events go to the thread's
+        broadcast group instead (the path headless loop turns use), so a
+        reconnected tab renders them live and the reply is saved either way.
+        Idempotent. The session starts no further turns once detached (see
+        _should_seed_continuation).
+        """
+        if self._detached:
+            return
+        self._detached = True
+        from chat.sinks import BroadcastSink, NullSink
+
+        thread_id = self._current_thread_id
+        self._sink = BroadcastSink(thread_id) if thread_id else NullSink()
+        logger.info(
+            "chat socket lost mid-turn; finishing the turn detached thread=%s (%s)",
+            thread_id, reason,
+        )
+
     async def disconnect(self, close_code):
-        """Clean up background tasks when WebSocket disconnects."""
+        """Tear down the socket-bound pieces when the WebSocket disconnects.
+
+        A turn the model is already working on (it holds a gate slot) is NOT
+        cancelled: it finishes detached (``_detach_from_socket``) so its reply
+        is persisted and a reconnected tab can pick it up. Cancelling here used
+        to lose the partial reply and the current tool round on every network
+        drop. A turn still waiting in line is dropped as before — nothing has
+        been generated, and a departed user must not hold a place in the queue.
+        """
         # Leave thread channel group
         if self._current_thread_id:
             await self._safe_group_discard(f"thread_{self._current_thread_id}")
 
-        # Signal any active LLM stream to stop
-        if self._cancel_event:
-            self._cancel_event.set()
-
-        # Cancel the stream lifecycle task
-        if self._stream_task and not self._stream_task.done():
-            self._stream_task.cancel()
-            try:
-                await self._stream_task
-            except asyncio.CancelledError:
-                pass
-
-        # Cancel the guardrail pipeline if still running
-        if self._guardrail_task and not self._guardrail_task.done():
-            self._guardrail_task.cancel()
-            try:
-                await self._guardrail_task
-            except asyncio.CancelledError:
-                pass
+        streaming = self._stream_task and not self._stream_task.done()
+        turn = self._turn
+        if streaming and turn is not None and turn.slot_held:
+            # The guardrail task is left alone too: _finalize_guardrail awaits
+            # it in the turn's `finally`, so the verdict still gets applied.
+            self._detach_from_socket(f"close {close_code}")
+        else:
+            # Queued (or idle): signal any stream to stop and cancel the task.
+            if self._cancel_event:
+                self._cancel_event.set()
+            if streaming:
+                self._stream_task.cancel()
+                try:
+                    await self._stream_task
+                except asyncio.CancelledError:
+                    pass
+            # A guardrail scan has no turn left to act on.
+            if self._guardrail_task and not self._guardrail_task.done():
+                self._guardrail_task.cancel()
+                try:
+                    await self._guardrail_task
+                except asyncio.CancelledError:
+                    pass
 
         # Cancel the sub-agent self-heal watchdog
         await self._cancel_subagent_watch()
@@ -1381,6 +1428,22 @@ class ChatConsumer(AsyncWebsocketConsumer):
         """Read-only view of unreported terminal runs (used by the watchdog)."""
         return self._unreported_subagent_run_ids_sync(thread_id)
 
+    def _should_seed_continuation(self, turn) -> bool:
+        """Whether this consumer may start a seeded orchestrator turn after ``turn``.
+
+        Only the current, live turn of a connected session: a stopped or
+        superseded turn must not spawn a second concurrent stream, and a
+        detached session (socket gone, finishing its turn in the background)
+        leaves any continuation to a live consumer instead.
+        """
+        return (
+            self._turn is turn
+            and not self._stopped
+            and not self._detached
+            and not turn.cancel_event.is_set()
+            and self._has_tool("chat_subagent_create")
+        )
+
     @database_sync_to_async
     def _claim_unreported_subagents(self, thread_id) -> bool:
         """Atomically claim terminal subagent outcomes that haven't been reported.
@@ -2289,6 +2352,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
                         self._cancel_event = None
                     return
 
+                turn.slot_held = True
+
                 # Gather history + context and build the layered system prompt.
                 # Deliberately here and not in the dispatch loop: the snapshot
                 # then reflects the moment the turn runs, which for a turn that
@@ -2414,15 +2479,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     logger.exception("Failed to resync sub-agent status")
 
             # Seed a continuation for any sub-agent result that arrived while the
-            # stream ran — but ONLY if this turn is still the current, live turn.
-            # A cancelled / superseded / disconnected turn (cancel_event set, or
-            # self._turn already replaced by a newer turn) must not spawn a second
-            # concurrent stream or stream onto a closed socket.
+            # stream ran — but ONLY if this turn is still the current, live turn
+            # of a connected session (_should_seed_continuation): a cancelled /
+            # superseded turn must not spawn a second concurrent stream, and a
+            # detached one finishes its single turn and leaves the continuation
+            # to whichever live consumer claims it.
             if (
-                self._turn is turn
-                and not self._stopped
-                and not turn.cancel_event.is_set()
-                and self._has_tool("chat_subagent_create")
+                self._should_seed_continuation(turn)
                 and await self._claim_unreported_subagents(str(thread.id))
             ):
                 await self._handle_chat_message(
@@ -3009,8 +3072,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
             if self._sink.wants_heartbeats else None
         )
 
+        stream = service.astream("simple_chat", request, cancel_event=turn.cancel_event)
         try:
-            async for event in service.astream("simple_chat", request, cancel_event=turn.cancel_event):
+            async for event in stream:
                 event_data = event.model_dump()
                 if (
                     event.event_type == "message_end"
@@ -3291,6 +3355,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "data": {"message": "Failed to get AI response."},
             })
         finally:
+            # Close the generator now (a no-op once it is exhausted). On an early
+            # exit — an exception in the loop body, a cancellation — this stops
+            # astream's producer thread at its next event instead of letting it
+            # run the rest of the tool loop for nobody.
+            try:
+                await stream.aclose()
+            except Exception:
+                logger.debug("closing the LLM stream failed", exc_info=True)
             if heartbeat_task is not None:
                 heartbeat_task.cancel()
                 try:

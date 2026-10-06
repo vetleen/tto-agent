@@ -3042,6 +3042,10 @@
 
   // -- WebSocket --
   let ws = null;
+  // Set when the socket drops mid-turn (not a deliberate close): the server
+  // finishes that turn detached and persists the reply, so the next successful
+  // reconnect reloads the page to show it (or to join the rest of it live).
+  let droppedMidTurn = false;
   let reconnectTimeout = null;
   let reconnectAttempts = 0;
   let stableTimer = null;
@@ -3071,6 +3075,11 @@
       updateConnectionStatus(false, true);
       ws = new WebSocket(getWsUrl());
       ws.onopen = function() {
+        if (droppedMidTurn) {
+          droppedMidTurn = false;
+          window.location.reload();
+          return;
+        }
         clearTimeout(stableTimer);
         stableTimer = setTimeout(function() { reconnectAttempts = 0; }, stableConnectionMs);
         updateConnectionStatus(true, false);
@@ -3086,7 +3095,14 @@
       ws.onclose = function(event) {
         clearTimeout(stableTimer);
         updateConnectionStatus(false, false);
-        if (currentStreamingElement) { finishStreaming("Lost the connection — please try again."); }
+        if (currentStreamingElement) {
+          // A deliberate close (disconnect(), code 1000) means the page is going
+          // away; anything else is a drop — the server keeps the turn alive, so
+          // fetch its outcome once we are back (see ws.onopen).
+          if (event.code !== 1000) droppedMidTurn = true;
+          finishStreaming("Connection lost — the reply will appear once reconnected.");
+          enableInput();
+        }
         clearTimeout(streamingTimeout);
         if (event.code === 4413) {
           const statusText = document.getElementById("connection-text");

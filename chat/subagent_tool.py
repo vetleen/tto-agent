@@ -269,19 +269,24 @@ class CreateSubagentTool(ContextAwareTool):
                 ),
             })
 
-        # Poll for result until timeout
+        # Blocking wait: this turn delivers the outcome inline, so claim the run
+        # NOW and keep the claim fresh while waiting — not only when the poll
+        # notices completion. The completion event reaches every consumer on
+        # the thread (another tab, or the page a dropped socket reloaded) inside
+        # the 2 s poll gap, and an outcome that is still unclaimed there seeds a
+        # duplicate orchestrator turn. The claim is released on timeout so the
+        # usual event/watchdog delivery takes over.
+        _claim_run(run.id)
+        polls = 0
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             time.sleep(2)
+            polls += 1
+            if polls % _CLAIM_REFRESH_POLLS == 0:
+                _claim_run(run.id)  # a wait longer than the report lease stays claimed
             run.refresh_from_db()
             if run.status == SubAgentRun.Status.COMPLETED:
-                # We deliver the result inline this turn, so mark the run reported.
-                # Otherwise the consumer's _claim_unreported_subagents sees the
-                # hidden result message as unreported and fires a duplicate seeded
-                # orchestrator turn (double delivery + LLM cost).
-                from django.utils import timezone
-
-                SubAgentRun.objects.filter(pk=run.id).update(reported_at=timezone.now())
+                _claim_run(run.id)
                 if run.result or run.canvas:
                     from chat.subagent_service import render_canvas_block
 
@@ -302,7 +307,9 @@ class CreateSubagentTool(ContextAwareTool):
                     "message": f"Sub-agent failed: {run.error}",
                 })
 
-        # Timeout exceeded — still waiting for a slot, or still running
+        # Timeout exceeded — still waiting for a slot, or still running. Release
+        # the inline claim: the outcome will be delivered by a seeded turn.
+        SubAgentRun.objects.filter(pk=run.id).update(reported_at=None)
         queue = get_queue_depth()
         if _is_waiting(run.id):
             return json.dumps({
@@ -326,6 +333,20 @@ class CreateSubagentTool(ContextAwareTool):
             "message": f"Sub-agent is still running after {timeout}s. Its result will appear in the conversation automatically.",
         })
 
+
+
+# Re-claim the run every this many 2 s polls (~60 s) while blocking on it, so
+# the claim never ages past ChatConsumer.SUBAGENT_REPORT_LEASE_MINUTES mid-wait.
+_CLAIM_REFRESH_POLLS = 30
+
+
+def _claim_run(run_id) -> None:
+    """Mark the run as reported by the orchestrator turn that is waiting on it."""
+    from django.utils import timezone
+
+    from chat.models import SubAgentRun
+
+    SubAgentRun.objects.filter(pk=run_id).update(reported_at=timezone.now())
 
 
 # Register on import

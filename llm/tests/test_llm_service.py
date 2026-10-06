@@ -348,6 +348,42 @@ class LLMServiceTests(TestCase):
         self.assertEqual(events[1].data, {"text": "Hi"})
         self.assertEqual(events[2].event_type, "message_end")
 
+    @patch("llm.service.llm_service.log_stream")
+    async def test_astream_stops_the_producer_when_the_consumer_leaves_early(self, _mock_log):
+        """An early exit (exception in the caller's loop, aclose) must halt the
+        producer thread at its next event — otherwise the rest of a tool loop
+        runs, and bills, for a listener that is gone."""
+        import asyncio
+        import contextlib
+        import time
+
+        request = ChatRequest(
+            messages=[Message(role="user", content="Hi")],
+            stream=True,
+            model="gpt-4o-mini",
+            context=RunContext.create(),
+        )
+        run_id = request.context.run_id
+        produced = []
+
+        def fake_stream(req):
+            for i in range(200):
+                produced.append(i)
+                yield StreamEvent(event_type="token", data={"text": str(i)}, sequence=i, run_id=run_id)
+                time.sleep(0.005)
+
+        fake_pipeline = MagicMock()
+        fake_pipeline.capabilities = {"streaming": True, "tools": True}
+        fake_pipeline.stream.side_effect = fake_stream
+        service = _make_service(fake_pipeline)
+
+        async with contextlib.aclosing(service.astream("simple_chat", request)) as stream:
+            async for _event in stream:
+                break
+
+        await asyncio.sleep(0.3)  # 200 events would take ~1 s unchecked
+        self.assertLess(len(produced), 10)
+
 
 class RunViaStreamTests(TestCase):
     """LLMService.run_via_stream: stream under the hood, collapse to a ChatResponse."""

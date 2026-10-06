@@ -23,15 +23,34 @@ class WebSocketSink:
 
     This is the interactive default; it preserves the consumer's original
     behaviour (``await self.send(text_data=json.dumps(event))``).
+
+    A send can fail because the socket died under the turn (network drop,
+    laptop sleep) before daphne delivered the disconnect. That must never end
+    the turn: the first failure marks the sink lost and lets the consumer
+    detach (``_socket_lost`` swaps in a BroadcastSink so the rest of the turn
+    still reaches a reconnected tab); later events are dropped here.
     """
 
     wants_heartbeats = True
 
     def __init__(self, consumer):
         self._consumer = consumer
+        self._lost = False
 
     async def send_event(self, event: dict) -> None:
-        await self._consumer.send(text_data=json.dumps(event))
+        if self._lost:
+            return
+        payload = json.dumps(event)
+        try:
+            await self._consumer.send(text_data=payload)
+        except Exception as exc:
+            self._lost = True
+            logger.info(
+                "chat socket lost mid-turn; detaching (%s: %s)", type(exc).__name__, exc,
+            )
+            on_lost = getattr(self._consumer, "_socket_lost", None)
+            if on_lost is not None:
+                await on_lost(exc)
 
 
 class BroadcastSink:
