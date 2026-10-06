@@ -1266,7 +1266,7 @@ class ConceptCqlTests(TestCase):
             _build_cql(concepts=[{"keywords": ["one two three four five"]}])
 
     def test_over_length_raises_instead_of_truncating(self):
-        concepts = [{"keywords": ["x" * 300 + str(i) for i in range(10)]}]
+        concepts = [{"keywords": ["x" * 500 + str(i) for i in range(10)]}]
         with self.assertRaisesRegex(ValueError, "too long"):
             _build_cql(concepts=concepts)
 

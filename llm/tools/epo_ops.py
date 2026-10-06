@@ -457,7 +457,9 @@ def _log_ops_usage(
 # Query construction & number normalization.
 # --------------------------------------------------------------------------- #
 _CQL_STRIP_RE = re.compile(r'["()=/]+')
-_MAX_CQL_LEN = 2000
+# OPS accepted 3,430-character queries live (5 concepts × 10 phrases + 10 codes,
+# 2026-10-06); 4000 leaves headroom while still rejecting runaway input.
+_MAX_CQL_LEN = 4000
 
 
 def _sanitize_cql_value(value: str) -> str:
