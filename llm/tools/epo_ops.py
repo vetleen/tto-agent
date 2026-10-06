@@ -185,6 +185,9 @@ _FAULT_MESSAGE_RE = re.compile(r"<(?:[\w-]+:)?message>\s*([^<]*?)\s*</", re.IGNO
 # with 500 SERVER.DomainAccess "please try again later" — deterministically, so
 # retrying the same query only burns minutes of backoff.
 _BAD_QUERY_FAULT = "SERVER.DomainAccess"
+# EPO's fair-use detector ("recent behaviour implies you are a robot ... try
+# again later"): a 403 that is transient, not an auth problem.
+_ROBOT_FAULT = "CLIENT.RobotDetected"
 
 
 def _parse_ops_fault(response) -> tuple[str, str, str]:
@@ -302,6 +305,17 @@ def _ops_request(
                     error_code=code or "Rejected",
                     error_message=f"X-Rejection-Reason: {rejection}. {message}".strip(),
                 )
+            if status == 403 and code == _ROBOT_FAULT:
+                # Back off like a 429; a fresh token changes nothing here.
+                wait = _RATE_LIMIT_BACKOFF_SCHEDULE[min(attempt, len(_RATE_LIMIT_BACKOFF_SCHEDULE) - 1)]
+                logger.info("EPO OPS robot detection (attempt %d), waiting %.1fs", attempt + 1, wait)
+                if attempt < _MAX_RETRIES:
+                    nap, may_retry = _deadline_capped_wait(wait, context)
+                    if nap > 0:
+                        time.sleep(nap)
+                    if may_retry:
+                        continue
+                break
             if status in (401, 403) and not refreshed:
                 # Token may have been revoked before its TTL — refresh once.
                 logger.info("EPO OPS %s, refreshing token and retrying", status)
@@ -394,6 +408,20 @@ def _ops_request(
             if not may_retry:
                 break  # run deadline reached during backoff — stop retrying
 
+    if last_code == _ROBOT_FAULT:
+        # Worth one Sentry event: being throttled in production matters.
+        logger.warning("EPO OPS robot detection persisted after retries path=%s", path)
+        return _done(
+            {"error": (
+                "EPO's fair-use detector is refusing requests right now (CLIENT.RobotDetected). "
+                "Wait a few minutes before searching again — do not retry at once — and tell "
+                "the user patent search is paused briefly."
+            )},
+            "error",
+            http_status=last_status,
+            error_code=last_code,
+            error_message=last_message,
+        )
     # WARNING (one Sentry event per exhausted call), not ERROR: the tool
     # degrades gracefully and the model reports the outage to the user.
     logger.warning("EPO OPS failed after retries path=%s code=%s", path, last_code or "-", exc_info=last_exc)
@@ -458,8 +486,10 @@ def _log_ops_usage(
 # --------------------------------------------------------------------------- #
 _CQL_STRIP_RE = re.compile(r'["()=/]+')
 # OPS accepted 3,430-character queries live (5 concepts × 10 phrases + 10 codes,
-# 2026-10-06); 4000 leaves headroom while still rejecting runaway input.
-_MAX_CQL_LEN = 4000
+# 2026-10-06); its real ceiling is unmeasured. The per-row limits bound a sane
+# query well below this — it only stops runaway input; beyond it OPS's own
+# 400/414 is surfaced as a client error.
+_MAX_CQL_LEN = 8000
 
 
 def _sanitize_cql_value(value: str) -> str:
@@ -571,8 +601,9 @@ def _cpc_clause(codes: list[str], include_subgroups: bool = True) -> str:
 # Keyword fields: the paper's examiner searches use title/abstract; ``txt``
 # also reaches full text where OPS has it (txt=hydrochlor?thiazid* 14,127 hits
 # vs ta= 557, probed 2026-10-05) plus applicant/inventor names.
-_KEYWORD_FIELDS = {"title_abstract": "ta", "full_text": "txt"}
-_MAX_CONCEPTS = 5
+# Verified live (2026-10-06): ti / ab / ta / txt exist; "claims" and "desc" are
+# not OPS indexes (claims-only search is impossible; full text is the closest).
+_KEYWORD_FIELDS = {"title": "ti", "abstract": "ab", "title_abstract": "ta", "full_text": "txt"}
 _MAX_TERMS_PER_ROW = 10
 _MAX_PHRASE_WORDS = 4
 _TERM_STRIP_RE = re.compile(r'["()=/\\<>]+')
@@ -607,13 +638,68 @@ def _keyword_term(raw: str) -> str:
     return f'"{val}"'
 
 
-def _concept_clause(concept: dict, field: str, include_subgroups: bool = True) -> str:
-    """One search-table column: its keywords and CPC codes, all OR-ed."""
+# ``A NEAR/3 B`` (within 3 words), ``A NEAR B`` / ``A NEAR/S B`` (same sentence),
+# ``A NEAR/P B`` (same paragraph). Uppercase only: a lowercase "near" inside a
+# phrase ("antenna near field") must stay an ordinary phrase.
+_NEAR_RE = re.compile(r"^(\S+)\s+NEAR(?:/(\d+|S|P))?\s+(\S+)$")
+
+
+def _proximity_word(raw: str, whole: str) -> str:
+    """One side of a NEAR expression: a single sanitised word (truncation allowed)."""
+    word = re.sub(r"\s+", " ", _TERM_STRIP_RE.sub(" ", raw)).strip()
+    if not word or " " in word:
+        raise ValueError(f"{whole!r}: each side of NEAR is one word (truncation allowed), not a phrase.")
+    if "*" in word and len(_WILDCARD_RE.sub("", word)) < 3:
+        raise ValueError(f"{whole!r}: '*' needs at least 3 letters in the word (e.g. 'hyd*').")
+    return word
+
+
+def _proximity_term(raw: str, field: str) -> str | None:
+    """A NEAR keyword as a CQL proximity clause, or None if ``raw`` isn't one.
+
+    ``zero NEAR/3 order`` → ``(ta=zero prox/distance<=3 ta=order)``; ``NEAR`` /
+    ``NEAR/S`` → ``prox/unit=sentence``; ``NEAR/P`` → ``prox/unit=paragraph``.
+    The unquoted form is the one verified live (2026-10-06).
+    """
+    m = _NEAR_RE.match((raw or "").strip())
+    if not m:
+        if re.search(r"(^|\s)NEAR(/\S*)?(\s|$)", raw or ""):
+            raise ValueError(
+                f"{raw!r}: NEAR takes one word on each side, e.g. 'zero NEAR/3 order' "
+                "(a phrase side is not possible; use a phrase keyword instead)."
+            )
+        return None
+    left = _proximity_word(m.group(1), raw)
+    right = _proximity_word(m.group(3), raw)
+    qual = (m.group(2) or "S").upper()
+    if qual == "P":
+        op = "prox/unit=paragraph"
+    elif qual == "S":
+        op = "prox/unit=sentence"
+    else:
+        if int(qual) < 1:
+            raise ValueError(f"{raw!r}: NEAR/N needs N of at least 1.")
+        op = f"prox/distance<={int(qual)}"
+    return f"({field}={left} {op} {field}={right})"
+
+
+def _concept_clause(concept: dict, default_field: str, include_subgroups: bool = True) -> str:
+    """One search-table column: its keywords and CPC codes, all OR-ed.
+
+    The concept's own ``field`` (title / abstract / title_abstract / full_text)
+    overrides the search-wide default.
+    """
+    field = _keyword_field(concept["field"]) if concept.get("field") else default_field
     terms: list[str] = []
     for kw in (concept.get("keywords") or [])[:_MAX_TERMS_PER_ROW]:
-        term = _keyword_term(kw)
-        if term and f"{field}={term}" not in terms:
-            terms.append(f"{field}={term}")
+        term = _proximity_term(kw, field)
+        if term is None:
+            quoted = _keyword_term(kw)
+            if not quoted:
+                continue
+            term = f"{field}={quoted}"
+        if term not in terms:
+            terms.append(term)
     terms.extend(
         t for t in _cpc_terms(_split_cpc(concept.get("cpc"))[:_MAX_TERMS_PER_ROW], include_subgroups)
         if t not in terms
@@ -654,16 +740,20 @@ def _build_cql(
     keyword_field: str = "title_abstract",
     cites: str = "",
     publication: str = "",
+    exclude: dict | None = None,
 ) -> str:
     """Build an OPS CQL query string from structured inputs.
 
-    Field codes: ta (title or abstract) / txt (also full text and names) for
-    keywords, pa (applicant), in (inventor), cpc (CPC), pd (publication date),
-    ct (cites). Everything is ANDed; inside one concept everything is ORed.
-    Verified live against OPS 3.2 (2026-10-05):
+    Field codes: ti / ab / ta / txt for keywords (title, abstract, both, full
+    text — per concept or the search default), pa (applicant), in (inventor),
+    cpc (CPC), pd (publication date), ct (cites), pn (publication). Everything
+    is ANDed; inside one concept everything is ORed; ``exclude`` is NOT-ed off
+    the whole query. Verified live against OPS 3.2 (2026-10-05/06):
 
     - ``concepts`` are search-table columns: ``(ta="a" or ta="b*" or
       cpc=X/low)``; the paper's strategies A-D reproduce exactly this way.
+    - ``A NEAR/3 B`` keywords become ``(ta=A prox/distance<=3 ta=B)``.
+    - ``x not y`` is OPS's NOT (``and not`` is a syntax error).
     - Legacy ``keywords`` mean "all of these words": ``ta all "a b c"``
       (``ta="a b c"`` would be an exact phrase and usually finds nothing).
     - CPC is emitted unquoted with its slash (``cpc=A61B8/06``); invalid
@@ -671,12 +761,13 @@ def _build_cql(
     - A one-sided date range is ``pd>=`` / ``pd<=``. Padding it with a sentinel
       year (``pd within "20000101 30001231"``) makes OPS 500.
 
-    Raises ValueError (message meant for the model) for an invalid keyword or a
-    query over ``_MAX_CQL_LEN`` — a truncated structured query is invalid CQL.
+    Raises ValueError (message meant for the model) for an invalid keyword, an
+    exclude with nothing to exclude from, or a query over ``_MAX_CQL_LEN`` — a
+    truncated structured query is invalid CQL.
     """
     field = _keyword_field(keyword_field)
     clauses: list[str] = []
-    for concept in (concepts or [])[:_MAX_CONCEPTS]:
+    for concept in concepts or []:
         clause = _concept_clause(concept, field, include_subgroups)
         if clause:
             clauses.append(clause)
@@ -709,6 +800,14 @@ def _build_cql(
         clauses.append(f"pd<={dt}")
 
     cql = " and ".join(clauses)
+    excluded = _concept_clause(exclude, field, include_subgroups) if exclude else ""
+    if excluded:
+        if not cql:
+            raise ValueError(
+                "exclude needs something to exclude from: add at least one concept or filter."
+            )
+        positive = f"({cql})" if len(clauses) > 1 else cql
+        cql = f"{positive} not {excluded}"
     if len(cql) > _MAX_CQL_LEN:
         raise ValueError(
             f"the query is too long ({len(cql)} characters, max {_MAX_CQL_LEN}); use fewer "
@@ -1542,7 +1641,10 @@ class SearchConcept(BaseModel):
             f"Up to {_MAX_TERMS_PER_ROW} alternative wordings (synonyms, spellings) — a document "
             "matching ANY of them qualifies. Each is one word or an exact phrase of at most "
             f"{_MAX_PHRASE_WORDS} words. Truncation: * any ending (needs 3+ letters: 'bilayer*'), "
-            "? zero or one character ('hydrochlor?thiazid*'), # exactly one character."
+            "? zero or one character ('hydrochlor?thiazid*'), # exactly one character. "
+            "Proximity: 'zero NEAR/3 order' (two words within 3 words of each other, any order), "
+            "'zero NEAR order' (same sentence), 'zero NEAR/P order' (same paragraph) — NEAR in "
+            "capitals, one word on each side."
         ),
     )
     cpc: list[str] = Field(
@@ -1550,6 +1652,14 @@ class SearchConcept(BaseModel):
         description=(
             f"Up to {_MAX_TERMS_PER_ROW} CPC symbols for this concept (OR-ed with each other and "
             "with the keywords), e.g. 'A61K9/209'."
+        ),
+    )
+    field: Literal["title", "abstract", "title_abstract", "full_text"] | None = Field(
+        default=None,
+        description=(
+            "Where THIS concept's keywords must occur, overriding the search's keyword_field: "
+            "'title' (strictest), 'abstract', 'title_abstract', 'full_text'. Leave unset to "
+            "use the search default."
         ),
     )
 
@@ -1570,17 +1680,27 @@ class PatentEpoOpsSearchInput(ReasonBaseModel):
     concepts: list[SearchConcept] = Field(
         default_factory=list,
         description=(
-            f"The search as search-table columns (up to {_MAX_CONCEPTS}). Inside a concept, all "
-            "keywords and codes are alternatives (OR); a document must match EVERY concept (AND). "
-            "Give a concept only its CPC codes, only its keywords, or both."
+            "The search as search-table columns (typically 2-5; more is rarely useful). Inside "
+            "a concept, all keywords and codes are alternatives (OR); a document must match "
+            "EVERY concept (AND). Give a concept only its CPC codes, only its keywords, or both."
         ),
     )
-    keyword_field: Literal["title_abstract", "full_text"] = Field(
+    keyword_field: Literal["title", "abstract", "title_abstract", "full_text"] = Field(
         default="title_abstract",
         description=(
-            "Where keywords must occur: 'title_abstract' (default, precise) or 'full_text' "
-            "(title, abstract, claims/description where EPO has them, and names — much broader "
-            "and noisier; useful when title/abstract searches miss documents)."
+            "Default field for keywords (a concept can override it): 'title_abstract' (default, "
+            "precise), 'title' (strictest), 'abstract', or 'full_text' (title, abstract, "
+            "claims/description where EPO has them — mostly EP/WO — and names; much broader and "
+            "noisier, useful when title/abstract searches miss documents). There is no "
+            "claims-only field in EPO's service."
+        ),
+    )
+    exclude: SearchConcept | None = Field(
+        default=None,
+        description=(
+            "Documents matching ANY of these keywords/codes are removed from the result (NOT). "
+            "Use sparingly and only after seeing what a noisy class or term brings in — it "
+            "silently drops documents that also match everything else."
         ),
     )
     keywords: str = Field(
@@ -1681,6 +1801,11 @@ class PatentEpoOpsSearchTool(ContextAwareTool):
         "- union of all four in one search: give each concept both its keywords and its codes.\n"
         "Run the separate strategies with count_only=true to see what each contributes; list "
         "the union to screen the documents.\n"
+        "Keywords match in title+abstract by default; set keyword_field, or a concept's own "
+        "field, to title / abstract / full_text (no claims-only field exists). Two words that "
+        "must sit together: a phrase ('zero order') or NEAR ('zero NEAR/3 order'). Two words "
+        "that must both appear anywhere: two concepts. exclude= removes documents (NOT) — "
+        "rarely needed.\n"
         "Each result is one patent FAMILY, shown under one member's number — which may differ "
         "from the number you know (the paper's WO03059327 appears as EP1467712A1). To check "
         "whether a known document is in a result set, rerun it with count_only=true and "
@@ -1708,6 +1833,7 @@ class PatentEpoOpsSearchTool(ContextAwareTool):
         include_subgroups: bool = True,
         cites: str = "",
         publication: str = "",
+        exclude=None,
         date_from: str = "",
         date_to: str = "",
         count_only: bool = False,
@@ -1717,10 +1843,16 @@ class PatentEpoOpsSearchTool(ContextAwareTool):
         hide_seen: bool = False,
         **kwargs,
     ) -> str:
-        concept_dicts = [
-            c.model_dump() if hasattr(c, "model_dump") else dict(c or {}) for c in (concepts or [])
-        ]
-        error = _validate_search_input(concept_dicts, _split_cpc(cpc), cites, publication)
+        def _as_dict(c):
+            return c.model_dump() if hasattr(c, "model_dump") else dict(c or {})
+
+        concept_dicts = [_as_dict(c) for c in (concepts or [])]
+        exclude_dict = _as_dict(exclude) if exclude else None
+        if exclude_dict and not (exclude_dict.get("keywords") or exclude_dict.get("cpc")):
+            exclude_dict = None
+        error = _validate_search_input(
+            concept_dicts, _split_cpc(cpc), cites, publication, exclude=exclude_dict,
+        )
         if error:
             return f"Patent search error: {error}"
         try:
@@ -1731,6 +1863,7 @@ class PatentEpoOpsSearchTool(ContextAwareTool):
                 keyword_field=keyword_field,
                 cites=cites,
                 publication=publication,
+                exclude=exclude_dict,
             )
         except ValueError as e:
             return f"Patent search error: {e}"
@@ -1857,19 +1990,20 @@ class PatentEpoOpsSearchTool(ContextAwareTool):
 
 
 def _validate_search_input(
-    concepts: list[dict], legacy_cpc: list[str], cites: str, publication: str = ""
+    concepts: list[dict], legacy_cpc: list[str], cites: str, publication: str = "",
+    exclude: dict | None = None,
 ) -> str:
     """Error message for invalid structured input, or "" — checked before OPS is called."""
-    if len(concepts) > _MAX_CONCEPTS:
-        return f"at most {_MAX_CONCEPTS} concepts per search (got {len(concepts)})."
     if len(legacy_cpc) > _MAX_CPC_CODES:
         return (
             f"at most {_MAX_CPC_CODES} CPC codes per search (got {len(legacy_cpc)}); "
             "split them over several searches."
         )
     invalid = [c for c in legacy_cpc if not _normalize_cpc(c)]
-    for i, concept in enumerate(concepts, 1):
-        label = concept.get("name") or f"concept {i}"
+    rows = [(c.get("name") or f"concept {i}", c) for i, c in enumerate(concepts, 1)]
+    if exclude:
+        rows.append(("exclude", exclude))
+    for label, concept in rows:
         kws = concept.get("keywords") or []
         codes = _split_cpc(concept.get("cpc"))
         if not kws and not codes:

@@ -582,6 +582,25 @@ class OpsRequestTests(TestCase):
         self.assertIn("IndividualQuotaPerHour", data["error"])
 
     @patch("llm.tools.epo_ops._invalidate_token")
+    @patch("llm.tools.epo_ops.time.sleep")
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_403_robot_detected_backs_off_then_asks_to_wait(self, mock_get, sleep, invalidate):
+        """EPO's fair-use detector is transient: retry with backoff, no token refresh,
+        and a final message that says to wait rather than 'will not resolve'."""
+        mock_get.return_value = _mock_http_error(
+            403, text=_fault_xml("CLIENT.RobotDetected", "Recent behaviour implies you are a robot")
+        )
+        with self.assertLogs("llm.tools.epo_ops", level="INFO") as cm:
+            data = _ops_request("published-data/search/biblio", {"q": "x"}, tool_name="patent_epoops_search")
+        self.assertEqual(mock_get.call_count, 4)
+        invalidate.assert_not_called()
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [5.0, 15.0, 30.0])
+        self.assertIn("Wait a few minutes", data["error"])
+        self.assertNotIn("will not resolve", data["error"])
+        warnings = [r for r in cm.records if r.levelno >= logging.WARNING]
+        self.assertEqual(len(warnings), 1)
+
+    @patch("llm.tools.epo_ops._invalidate_token")
     @patch("llm.tools.epo_ops.requests.get")
     def test_403_without_rejection_refreshes_once(self, mock_get, invalidate):
         mock_get.return_value = _mock_http_error(403)
@@ -1266,9 +1285,68 @@ class ConceptCqlTests(TestCase):
             _build_cql(concepts=[{"keywords": ["one two three four five"]}])
 
     def test_over_length_raises_instead_of_truncating(self):
-        concepts = [{"keywords": ["x" * 500 + str(i) for i in range(10)]}]
+        concepts = [{"keywords": ["x" * 900 + str(i) for i in range(10)]}]
         with self.assertRaisesRegex(ValueError, "too long"):
             _build_cql(concepts=concepts)
+
+    def test_no_cap_on_the_number_of_concepts(self):
+        cql = _build_cql(concepts=[{"keywords": [f"word{i}"]} for i in range(7)])
+        self.assertEqual(cql.count(" and "), 6)
+
+    def test_field_per_concept_overrides_the_search_default(self):
+        cql = _build_cql(
+            concepts=[{"keywords": ["tablet*"], "field": "title"}, {"keywords": ["bilayer*"]}],
+            keyword_field="abstract",
+        )
+        self.assertEqual(cql, 'ti="tablet*" and ab="bilayer*"')
+        self.assertEqual(_build_cql(keywords="a b", keyword_field="title"), 'ti all "a b"')
+        self.assertEqual(_build_cql(concepts=[{"keywords": ["x"], "field": "full_text"}]), 'txt="x"')
+
+    def test_proximity_forms(self):
+        cases = {
+            "zero NEAR/3 order": "(ta=zero prox/distance<=3 ta=order)",
+            "zero NEAR order": "(ta=zero prox/unit=sentence ta=order)",
+            "zero NEAR/S order": "(ta=zero prox/unit=sentence ta=order)",
+            "zero NEAR/P order": "(ta=zero prox/unit=paragraph ta=order)",
+            "print* NEAR/5 tablet*": "(ta=print* prox/distance<=5 ta=tablet*)",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(_build_cql(concepts=[{"keywords": [raw]}]), expected, raw)
+        # OR-ed with its sibling synonyms; follows the concept's field.
+        self.assertEqual(
+            _build_cql(concepts=[{"keywords": ["zero NEAR/3 order", "zero order"], "field": "title"}]),
+            '((ti=zero prox/distance<=3 ti=order) or ti="zero order")',
+        )
+
+    def test_proximity_invalid_forms(self):
+        for raw, msg in [
+            ("zero order NEAR/3 release", "one word on each side"),
+            ("zero NEAR", "one word on each side"),
+            ("hy* NEAR/2 order", "at least 3 letters"),
+            ("zero NEAR/0 order", "at least 1"),
+        ]:
+            with self.assertRaisesRegex(ValueError, msg, msg=raw):
+                _build_cql(concepts=[{"keywords": [raw]}])
+
+    def test_lowercase_near_is_an_ordinary_phrase(self):
+        self.assertEqual(_build_cql(concepts=[{"keywords": ["antenna near field"]}]), 'ta="antenna near field"')
+        self.assertEqual(_build_cql(concepts=[{"keywords": ["nearly zero"]}]), 'ta="nearly zero"')
+
+    def test_exclude_is_not_ed_off_the_whole_query(self):
+        cql = _build_cql(
+            concepts=[{"keywords": ["bilayer*"]}, {"cpc": ["A61K9/209"]}],
+            exclude={"keywords": ["tablet*"], "cpc": ["A61K31/549"]},
+        )
+        self.assertEqual(
+            cql, '(ta="bilayer*" and cpc=A61K9/209/low) not (ta="tablet*" or cpc=A61K31/549/low)'
+        )
+        # A single positive clause is not double-parenthesised; exclude has its own field.
+        self.assertEqual(
+            _build_cql(concepts=[{"keywords": ["bilayer*"]}], exclude={"keywords": ["tablet*"], "field": "title"}),
+            'ta="bilayer*" not ti="tablet*"',
+        )
+        with self.assertRaisesRegex(ValueError, "exclude needs"):
+            _build_cql(exclude={"keywords": ["tablet*"]})
 
     def test_terms_deduplicated(self):
         self.assertEqual(_build_cql(concepts=[{"keywords": ["tablet", " tablet "]}]), 'ta="tablet"')
@@ -1465,10 +1543,23 @@ class SearchToolPagingTests(TestCase):
     def test_concept_validation(self):
         tool = self._tool()
         self.assertIn("neither keywords nor CPC", tool.invoke({"concepts": [{"name": "empty"}]}))
-        self.assertIn("at most 5 concepts", tool.invoke({"concepts": [{"keywords": ["a1b"]}] * 6}))
         self.assertIn("not CPC symbols: 'tablet'", tool.invoke({"concepts": [{"cpc": ["tablet"]}]}))
+        self.assertIn("not CPC symbols: 'x'", tool.invoke({"concepts": [{"keywords": ["a1b"]}], "exclude": {"cpc": ["x"]}}))
+        self.assertIn("exclude needs something", tool.invoke({"exclude": {"keywords": ["tablet*"]}}))
         self.assertIn("not a publication number", tool.invoke({"cites": "???"}))
         self.assertIn("provide at least one concept", tool.invoke({}))
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_exclude_and_field_reach_the_query(self, mock_get):
+        mock_get.return_value = _mock_ok(COUNT_FIXTURE)
+        out = self._tool().invoke({
+            "concepts": [{"keywords": ["bilayer*"], "field": "title"}, {"keywords": ["zero NEAR/3 order"]}],
+            "exclude": {"keywords": ["capsule*"]},
+            "count_only": True,
+        })
+        self.assertIn(
+            'Query: (ti="bilayer*" and (ta=zero prox/distance<=3 ta=order)) not ta="capsule*"', out
+        )
 
     @patch("llm.tools.epo_ops.requests.get")
     def test_concept_keywords_accept_a_string(self, mock_get):
