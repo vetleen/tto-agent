@@ -43,6 +43,7 @@ from llm.tools.epo_ops import (
     _normalize_cpc,
     _normalize_pubnumber,
     _ops_request,
+    _parse_cpc_search,
     _parse_family,
     _parse_ops_fault,
     _parse_search_results,
@@ -1724,3 +1725,46 @@ class ServiceThrottleTests(SimpleTestCase):
         with patch.object(t._buckets["inpadoc"], "acquire") as acq:
             t.acquire("family/publication/docdb/EP.1.A1/legal")
         acq.assert_called_once()
+
+
+class MixedContentTextTests(TestCase):
+    """OPS JSON for text with inline elements: ``$`` becomes a list of runs and
+    ``@mixed.layout`` gives the interleaving — seen live on CPC titles that
+    reference other groups (the words were dropped before this)."""
+
+    A61K45 = {
+        "@date-revised": "2016-05-01",
+        "cpc:title-part": {"cpc:text": {
+            "$": ["Medicinal preparations containing active ingredients not provided for in groups ", " - "],
+            "cpc:class-ref": [{"@scheme": "cpc", "$": "A61K31/00"}, {"@scheme": "cpc", "$": "A61K41/00"}],
+            "@mixed.layout": ["$", "cpc:class-ref", "$", "cpc:class-ref"],
+        }},
+    }
+
+    def test_layout_reassembles_the_title(self):
+        acc: list[str] = []
+        _collect_text(self.A61K45, acc)
+        self.assertEqual(
+            acc,
+            ["Medicinal preparations containing active ingredients not provided for in groups "
+             "A61K31/00 - A61K41/00"],
+        )
+
+    def test_classification_search_title(self):
+        data = {"ops:world-patent-data": {"ops:classification-search": {"ops:search-result": {
+            "ops:classification-statistics": [
+                {"@classification-symbol": "A61K45/00", "@percentage": "1.67", "cpc:class-title": self.A61K45},
+            ]}}}}
+        hits = _parse_cpc_search(data)
+        self.assertEqual(
+            hits[0]["title"],
+            "Medicinal preparations containing active ingredients not provided for in groups A61K31/00 - A61K41/00",
+        )
+
+    def test_list_dollar_without_layout_and_plain_shapes_unchanged(self):
+        acc: list[str] = []
+        _collect_text({"p": {"$": ["one ", "two"]}}, acc)
+        self.assertEqual(acc, ["one ", "two"])
+        acc = []
+        _collect_text({"abstract": {"@lang": "en", "p": {"$": "plain"}}}, acc)
+        self.assertEqual(acc, ["plain"])

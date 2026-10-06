@@ -1002,13 +1002,33 @@ def _collect_text(node, acc: list[str]) -> None:
     """Recursively gather text from ``$`` leaves (skipping ``@attributes``).
 
     Fallback for constituents (claims/description/abstract) whose exact shape
-    varies by authority.
+    varies by authority. Mixed content — text with inline elements such as a
+    CPC title's class references — arrives as ``"$": [runs...]`` plus the
+    inline elements and an ``@mixed.layout`` listing their order; it is
+    reassembled in that order as one entry (seen live: A61K45/00's title).
     """
     if isinstance(node, dict):
+        layout = node.get("@mixed.layout")
+        if isinstance(layout, list) and layout:
+            queues = {key: list(_as_list(node.get(key))) for key in dict.fromkeys(layout)}
+            parts: list[str] = []
+            for key in layout:
+                queue = queues.get(key) or []
+                if not queue:
+                    continue
+                item = queue.pop(0)
+                if key == "$":
+                    if isinstance(item, str):
+                        parts.append(item)
+                else:
+                    sub: list[str] = []
+                    _collect_text(item, sub)
+                    parts.append("".join(sub))
+            acc.append("".join(parts))
+            return
         for k, v in node.items():
             if k == "$":
-                if isinstance(v, str):
-                    acc.append(v)
+                acc.extend(s for s in _as_list(v) if isinstance(s, str))
             elif isinstance(k, str) and k.startswith("@"):
                 continue
             else:
@@ -1706,7 +1726,8 @@ def _parse_cpc_search(data: dict) -> list[dict]:
             score = float(stat.get("@percentage") or 0)
         except (TypeError, ValueError):
             score = 0.0
-        hits.append({"symbol": symbol, "title": " ".join(a.strip() for a in acc if a.strip()), "score": score})
+        title = re.sub(r"\s+", " ", " ".join(acc)).strip()
+        hits.append({"symbol": symbol, "title": title, "score": score})
     return hits
 
 
