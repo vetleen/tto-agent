@@ -207,15 +207,19 @@ The core features (F1, F2, ...) and refinements (R1, R2, ...) from the brief, on
 plus any assumptions made about what a feature means.
 
 ## Feature table
-| Document (number as shown, date, applicant) | F1 | F2 | ... | R1 | ... | Verdict |
-|---|---|---|---|---|---|---|
+| Document (number as shown, date, applicant) | F1 | F2 | ... | R1 | ... | In common | Verdict |
+|---|---|---|---|---|---|---|---|
 Cells: disclosed / partly / not / unclear — each with its quote and location (claim number,
 paragraph number, or text part). A cell without a quote is "unclear", never "disclosed".
+"In common" is the count of core features disclosed (n of N).
 
 ## Per document
 For each document: what was read (claims; which description parts; via which EP/WO family
-member, or "abstract only"), the single-document verdict — does it disclose every core
-feature in combination? — with the decisive quotes, and which refinements it discloses.
+member, or "abstract only"); its purpose and effect — the technical problem it addresses
+and the effect it reports, quoted from its summary — and whether that is the same as,
+similar to, or different from the invention's; the single-document verdict — does it
+disclose every core feature in combination? — with the decisive quotes; and which
+refinements it discloses.
 
 ## Novelty summary
 Any document that discloses all core features (with the quotes that settle it); otherwise
