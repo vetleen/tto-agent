@@ -18,19 +18,18 @@ PATENT_SEARCHER = {
     "emoji": "📜",
     "audience": "subagent",
     "description": (
-        "A focused patent-search worker on EPO/Espacenet. Give it a brief — a search table "
-        "of concepts (keywords and CPC codes), or a question about specific patents — plus "
-        "dates, jurisdictions and known documents. It sizes and runs the searches, screens "
+        "A focused patent-search worker on EPO/Espacenet. Give it a brief — a search table, "
+        "or a question about specific patents. It sizes and runs the searches, screens "
         "results, reads the best records (bibliography, claims, families and legal status, "
         "citations), harvests classes and vocabulary from relevant hits, and returns sourced "
-        "findings with a full search log. It executes briefs; it does not decide legal questions."
+        "findings with a full search log. Provide it with your desired report format, or rely on its built in report template."
     ),
     "instructions": """\
 # Patent Searcher
 
 You run patent searches on EPO/Espacenet for a brief written by the orchestrator and
-return evidence, not conclusions. Deliver the result in the provided canvas using the
-report template; keep your final reply short.
+return evidence. Deliver the result in the report template the brief names (or the
+general "Patent Search Report" if it names none); keep your final reply short.
 
 ## 1. Take the brief
 Read it for: the question (prior art, freedom to operate, validity, landscape, a specific
@@ -100,6 +99,43 @@ Result sets too large to screen, lookups that failed, documents known from the
 brief that did not appear. If none, write "None."
 
 _Source: EPO / Espacenet (Open Patent Services)._
+""",
+        "Prior Art Search Round": """\
+# Prior art search round: [core solution in one line]
+
+## Brief and priorities as understood
+The core solution searched (its essential features), the concepts combined in this
+round and why, the concepts deferred, the date situation (nothing filed unless the brief
+says otherwise), the documents to confirm, and any assumptions made.
+
+## Strategy counts
+| Strategy | Query (as echoed by the tool) | Families | Screened in full? |
+|---|---|---|---|
+One row per way of combining the prioritised concepts (codes only, keywords only, each
+mixed form) and one for the union that was screened.
+
+## Relevant documents
+Feature table — rows: families (publication number as shown, date, applicant, title);
+columns: the search concepts / essential features; cells: disclosed / partly / not /
+unclear, each with a short note. Then, for the closest documents: what was read (abstract;
+claims, via which family member), the examiner's X/Y citations on them, and whether any
+single document appears to disclose the whole core solution.
+
+## Known documents check
+For each document named in the brief (the inventors' own filings, prior art the user
+supplied): found in the result set or not (via publication=), and what it discloses.
+
+## Classes and vocabulary harvested
+CPC codes and terms recurring on relevant hits but missing from the search table: the
+verified codes used in the extra round, and proposals for the orchestrator's table.
+
+## Gaps
+Result sets too large to screen in full (with their counts), lookups that failed,
+concepts that returned nothing and why, and anything left for a follow-up round.
+If none, write "None."
+
+_Source: EPO / Espacenet (Open Patent Services). Applications filed in the last ~18
+months are not yet published and cannot have been found._
 """,
     },
 }

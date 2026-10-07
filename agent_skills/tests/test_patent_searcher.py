@@ -75,6 +75,7 @@ class PatentSearcherSeedTests(TestCase):
             self.assertIn(name, skill.tool_names)
         self.assertNotIn("skill_resource_view", skill.tool_names)
         self.assertTrue(skill.templates.filter(name="Patent Search Report").exists())
+        self.assertTrue(skill.templates.filter(name="Prior Art Search Round").exists())
 
     def test_filter_keeps_patent_tools_for_subagent(self):
         kept = filter_to_skill_tools(
