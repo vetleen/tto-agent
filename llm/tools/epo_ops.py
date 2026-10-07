@@ -1525,7 +1525,41 @@ def _citation_lines(refs: list[dict]) -> list[str]:
     return lines
 
 
-def _format_get(data: dict, publication_number: str, parts: str) -> str:
+# Claims/description text is delivered in parts of about this many characters
+# (a description runs 20-100k words); the raw OPS response is cached, so
+# paging through a document costs one request.
+_TEXT_PART_CHARS = 8000
+
+
+def _split_text_parts(body: str, size: int = _TEXT_PART_CHARS) -> list[str]:
+    """Split a long text into parts of at most ``size`` characters, breaking at
+    paragraph (newline) boundaries where possible so a part never starts
+    mid-sentence. A single paragraph longer than ``size`` is cut hard."""
+    if len(body) <= size:
+        return [body] if body else []
+    parts: list[str] = []
+    current: list[str] = []
+    length = 0
+    for para in body.split("\n"):
+        while len(para) > size:  # pathological paragraph: hard cut
+            if current:
+                parts.append("\n".join(current))
+                current, length = [], 0
+            parts.append(para[:size])
+            para = para[size:]
+        extra = len(para) + (1 if current else 0)
+        if current and length + extra > size:
+            parts.append("\n".join(current))
+            current, length = [], 0
+            extra = len(para)
+        current.append(para)
+        length += extra
+    if current:
+        parts.append("\n".join(current))
+    return parts
+
+
+def _format_get(data: dict, publication_number: str, parts: str, part: int = 1) -> str:
     if "error" in data:
         return f"Patent retrieval error: {data['error']}"
     root = _unwrap(data)
@@ -1557,14 +1591,31 @@ def _format_get(data: dict, publication_number: str, parts: str) -> str:
         if cited:
             lines.append("")
             lines.extend(cited)
-    # For claims/description (or when the biblio parse is thin), surface raw text.
+    # For claims/description (or when the biblio parse is thin), surface raw text —
+    # in parts, so a long description can be read through part by part.
     if parts in ("claims", "description") or len(docs) == 0:
         acc: list[str] = []
         _collect_text(root, acc)
         body = _clean("\n".join(acc))
-        if body:
+        chunks = _split_text_parts(body)
+        if chunks:
+            total = len(chunks)
+            if part > total:
+                return (
+                    f"{publication_number} {parts}: there is no part {part} — the text has "
+                    f"{total} part{'s' if total != 1 else ''} ({len(body):,} characters)."
+                )
             lines.append("")
-            lines.append(body[:8000] + ("…" if len(body) > 8000 else ""))
+            if total > 1:
+                # Earlier parts plus the newline that separated each from the next.
+                shown = sum(len(c) + 1 for c in chunks[:part - 1])
+                lines.append(
+                    f"Text part {part} of {total} (characters {shown + 1:,}-"
+                    f"{shown + len(chunks[part - 1]):,} of {len(body):,})."
+                    + (f" Next: part={part + 1}." if part < total else " This is the last part.")
+                )
+                lines.append("")
+            lines.append(chunks[part - 1])
     if len(lines) <= header_len:
         return f"No content found for {publication_number} (part: {parts})."
     return _wrap(lines)
@@ -2158,6 +2209,15 @@ class PatentEpoOpsGetInput(ReasonBaseModel):
             "claims/description are large and only available for some authorities (EP/WO)."
         ),
     )
+    part: int = Field(
+        default=1,
+        description=(
+            "For long claims/description text: which part to show (1-based). The text comes "
+            f"in parts of about {_TEXT_PART_CHARS:,} characters; the result says how many parts "
+            "there are and which to request next. Paging through a document costs no extra "
+            "EPO requests."
+        ),
+    )
 
 
 class PatentEpoOpsGetTool(ContextAwareTool):
@@ -2172,8 +2232,11 @@ class PatentEpoOpsGetTool(ContextAwareTool):
         "Retrieve a specific patent publication from EPO/Espacenet by publication number. "
         "Choose parts to control what is returned: biblio (title, applicants, inventors, "
         "date, CPC codes, abstract and cited references), abstract, claims, description, or "
-        "all. Claims/description exist mainly for EP and WO documents — for others, find an "
-        "EP/WO member with patent_epoops_family. Cited references list what the examiner "
+        "all. A long claims/description text arrives in numbered parts: read part=1, then "
+        "the parts the result points to, until the features you are checking are found or "
+        "the text is exhausted. Claims/description exist mainly for EP and WO documents — "
+        "for others, find an EP/WO member with patent_epoops_family. Cited references list "
+        "what the examiner "
         "(category X: relevant alone, Y: in combination, A: background) and the applicant "
         "cited; for a close document these are prime prior-art candidates, and "
         "patent_epoops_search(cites=...) finds later documents citing it. A highly relevant "
@@ -2181,7 +2244,7 @@ class PatentEpoOpsGetTool(ContextAwareTool):
     )
     args_schema: type[BaseModel] = PatentEpoOpsGetInput
 
-    def _run(self, publication_number: str = "", parts: str = "biblio", **kwargs) -> str:
+    def _run(self, publication_number: str = "", parts: str = "biblio", part: int = 1, **kwargs) -> str:
         from django.core.cache import cache
 
         ref = _docdb_ref(publication_number)
@@ -2196,6 +2259,7 @@ class PatentEpoOpsGetTool(ContextAwareTool):
                 "Patent retrieval error: parts must be one of "
                 "biblio, abstract, claims, description, all."
             )
+        part = max(1, int(part or 1))
 
         cache_key = "epo_ops_get_v1:" + hashlib.sha256(
             f"{fmt}:{path_number}:{constituent}".encode()
@@ -2205,7 +2269,7 @@ class PatentEpoOpsGetTool(ContextAwareTool):
         except Exception:
             cached = None
         if cached is not None:
-            return _format_get(json.loads(cached), display, parts)
+            return _format_get(json.loads(cached), display, parts, part)
 
         data = _ops_request(
             f"published-data/publication/{fmt}/{path_number}/{constituent}",
@@ -2226,7 +2290,7 @@ class PatentEpoOpsGetTool(ContextAwareTool):
                 "text under the WO number — use patent_epoops_family to find the WO (or another "
                 "EP/WO) member and request its claims."
             )
-        return _format_get(data, display, parts)
+        return _format_get(data, display, parts, part)
 
 
 class PatentEpoOpsFamilyInput(ReasonBaseModel):

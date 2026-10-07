@@ -30,6 +30,7 @@ from llm.tools.epo_ops import (
     _cpc_codes,
     _cpc_line,
     _cpc_lookup_symbol,
+    _split_text_parts,
     _group_families,
     _parse_cpc_scheme,
     _split_cpc,
@@ -1670,6 +1671,85 @@ class GetClaimsNotFoundTests(TestCase):
         mock_get.return_value = _mock_http_error(404)
         out = PatentEpoOpsGetTool().invoke({"publication_number": "EP2252273A1"})
         self.assertIn("No matching patent record was found", out)
+
+
+def _description_fixture(paragraphs):
+    """An OPS description response: one ``p`` per paragraph, as OPS returns it."""
+    return {"ops:world-patent-data": {"ftxt:fulltext-documents": {"ftxt:fulltext-document": {
+        "description": {"p": [{"@num": f"{i:04d}", "$": text} for i, text in enumerate(paragraphs, 1)]}
+    }}}}
+
+
+class SplitTextPartsTests(SimpleTestCase):
+    def test_short_text_is_one_part(self):
+        self.assertEqual(_split_text_parts("abc", size=10), ["abc"])
+        self.assertEqual(_split_text_parts("", size=10), [])
+
+    def test_breaks_at_paragraph_boundaries(self):
+        body = "\n".join(["a" * 40, "b" * 40, "c" * 40, "d" * 40])
+        parts = _split_text_parts(body, size=100)
+        self.assertEqual(parts, ["a" * 40 + "\n" + "b" * 40, "c" * 40 + "\n" + "d" * 40])
+        self.assertTrue(all(len(p) <= 100 for p in parts))
+        self.assertEqual("\n".join(parts), body)  # nothing lost
+
+    def test_oversized_paragraph_is_cut_hard(self):
+        body = "x" * 250 + "\n" + "y" * 10
+        parts = _split_text_parts(body, size=100)
+        # The remainder of the cut paragraph is a normal paragraph again, so the
+        # short one that follows joins it.
+        self.assertEqual(parts, ["x" * 100, "x" * 100, "x" * 50 + "\n" + "y" * 10])
+
+
+@override_settings(EPO_OPS_KEY="k", EPO_OPS_SECRET="s", CACHES=_LOCMEM_CACHE)
+class GetTextPagingTests(TestCase):
+    """A long description is read part by part; paging never re-fetches."""
+
+    PARAS = [f"[{i:04d}] " + f"Paragraph {i} of the description. " * 40 for i in range(1, 31)]
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        p = patch("llm.tools.epo_ops._ops_rate_limiter")
+        p.start()
+        self.addCleanup(p.stop)
+        p2 = patch("llm.tools.epo_ops._get_access_token", return_value="tok")
+        p2.start()
+        self.addCleanup(p2.stop)
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_parts_cover_the_text_once_and_point_to_the_next(self, mock_get):
+        mock_get.return_value = _mock_ok(_description_fixture(self.PARAS))
+        tool = PatentEpoOpsGetTool()
+        first = tool.invoke({"publication_number": "EP1000000A1", "parts": "description"})
+        self.assertIn("Text part 1 of ", first)
+        self.assertIn("Next: part=2.", first)
+        self.assertIn("[0001]", first)
+        total = int(first.split("Text part 1 of ")[1].split(" ")[0])
+        self.assertGreater(total, 1)
+
+        seen = []
+        for n in range(1, total + 1):
+            out = tool.invoke({"publication_number": "EP1000000A1", "parts": "description", "part": n})
+            self.assertIn(f"Text part {n} of {total}", out)
+            seen.extend(f"[{i:04d}]" for i in range(1, 31) if f"[{i:04d}]" in out)
+        self.assertEqual(seen, [f"[{i:04d}]" for i in range(1, 31)])  # every paragraph exactly once, in order
+        self.assertIn("This is the last part.", out)
+        self.assertEqual(mock_get.call_count, 1)  # one OPS request for the whole walk
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_part_beyond_the_end(self, mock_get):
+        mock_get.return_value = _mock_ok(_description_fixture(self.PARAS))
+        out = PatentEpoOpsGetTool().invoke({"publication_number": "EP1000000A1", "parts": "description", "part": 99})
+        self.assertIn("there is no part 99", out)
+        self.assertIn("parts (", out)
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_short_text_has_no_part_header(self, mock_get):
+        mock_get.return_value = _mock_ok(_description_fixture(self.PARAS[:1]))
+        out = PatentEpoOpsGetTool().invoke({"publication_number": "EP1000000A1", "parts": "claims"})
+        self.assertNotIn("Text part", out)
+        self.assertIn("[0001]", out)
 
 
 # --------------------------------------------------------------------------- #
