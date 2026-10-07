@@ -137,5 +137,36 @@ If none, write "None."
 _Source: EPO / Espacenet (Open Patent Services). Applications filed in the last ~18
 months are not yet published and cannot have been found._
 """,
+        "Classification Report": """\
+# Classification and vocabulary: [invention in one line]
+
+## Concepts as understood
+The concepts to classify, the core terms used for each, and any assumptions made.
+
+## Recommended codes
+| Concept | Code | Title (from the symbol lookup) | Level | Why (hits / statistics) | Families (count_only) |
+|---|---|---|---|---|---|
+Level is subclass, main group or subgroup. Prefer the most specific code that still
+covers the whole concept; heading-only entries (not assigned to documents) are excluded.
+
+## Alternatives and neighbours
+Per concept: the broader (parent) code, narrower subgroups considered, and any
+"take precedence" notes pointing to neighbouring classes — each with a line on why it
+was or was not chosen.
+
+## Vocabulary proposals
+Per concept: terms seen in the titles or abstracts of relevant hits that are not yet
+in the search table, each with the publication number it came from.
+
+## Evidence
+The relevant hits used (publication number, title, their CPC line), the statistical
+classification queries run with their top results, and the symbol lookups made.
+
+## Not completed
+Concepts without a convincing code, lookups that failed, and codes the orchestrator
+should double-check. If none, write "None."
+
+_Source: EPO / Espacenet (Open Patent Services)._
+""",
     },
 }
