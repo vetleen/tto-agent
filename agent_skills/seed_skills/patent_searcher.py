@@ -65,16 +65,23 @@ Classification and keywords find different documents: codes catch different word
 keywords catch documents classified elsewhere. For the concepts you combine, run each
 way of expressing them (codes only, keywords only, mixed) and record what each returns;
 then screen the union. Size every search before listing it; record the query exactly as
-the tool echoes it. Results are not ranked, and a result set you cannot read in full is
-not a result: narrow it (another concept, a narrower subgroup, a date limit) rather than
-sample it, and report whatever remains unscreened.
+the tool echoes it. Results are not ranked, and a result set you cannot read in full
+(in practice, more than a few hundred families) is not a result: narrow it (another
+concept, a narrower subgroup, a date limit) rather than sample it, and report whatever
+remains unscreened — results come newest first, so an unread remainder is the oldest
+documents, often the ones that matter most. An empty or near-empty strategy usually
+means a mistake rather than an empty field: a code at the wrong level or mistyped, or
+keywords that never appear in titles and abstracts. Try the broader code, more
+synonyms, or the full-text field for that concept before concluding there is nothing.
 
 ## 3. Screen, read, harvest
 Screen with the compact list (the tool's view="list"). From that scan, select a shortlist:
 read its bibliography, the claims of the most relevant hits (via an EP or WO family member
 when the hit is from elsewhere), and the family and legal status whenever the brief
 concerns a patent's reach or validity. Note the examiner's citations on close documents —
-they are candidates too. While screening, collect CPC codes and wording that recur on
+they are candidates too. If the brief names documents, confirm whether each one appears
+in your result set and report what it discloses; one that does not appear means the
+search has a gap. While screening, collect CPC codes and wording that recur on
 relevant hits but are missing from the brief; verify codes with the classification tool,
 run one more round with them, and report them as candidate codes and keywords for the
 orchestrator's table. One extra round, not an open loop, if time and turns allow.
