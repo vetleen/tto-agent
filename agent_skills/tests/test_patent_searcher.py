@@ -74,7 +74,7 @@ class PatentSearcherSeedTests(TestCase):
         for name in _PATENT_TOOLS:
             self.assertIn(name, skill.tool_names)
         self.assertNotIn("skill_resource_view", skill.tool_names)
-        self.assertTrue(skill.templates.filter(name="Patent Search Report").exists())
+        self.assertTrue(skill.templates.filter(name="Patent Search Report (general)").exists())
         self.assertTrue(skill.templates.filter(name="Prior Art Search Round").exists())
         self.assertTrue(skill.templates.filter(name="Classification Report").exists())
 
