@@ -77,6 +77,7 @@ class PatentSearcherSeedTests(TestCase):
         self.assertTrue(skill.templates.filter(name="Patent Search Report (general)").exists())
         self.assertTrue(skill.templates.filter(name="Prior Art Search Round").exists())
         self.assertTrue(skill.templates.filter(name="Classification Report").exists())
+        self.assertTrue(skill.templates.filter(name="Document Review").exists())
 
     def test_filter_keeps_patent_tools_for_subagent(self):
         kept = filter_to_skill_tools(

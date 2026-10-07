@@ -199,5 +199,33 @@ should double-check. If none, write "None."
 
 _Source: EPO / Espacenet (Open Patent Services)._
 """,
+        "Document Review": """\
+# Document review: [what the documents were read against, in one line]
+
+## Features as understood
+The core features (F1, F2, ...) and refinements (R1, R2, ...) from the brief, one line each,
+plus any assumptions made about what a feature means.
+
+## Feature table
+| Document (number as shown, date, applicant) | F1 | F2 | ... | R1 | ... | Verdict |
+|---|---|---|---|---|---|---|
+Cells: disclosed / partly / not / unclear — each with its quote and location (claim number,
+paragraph number, or text part). A cell without a quote is "unclear", never "disclosed".
+
+## Per document
+For each document: what was read (claims; which description parts; via which EP/WO family
+member, or "abstract only"), the single-document verdict — does it disclose every core
+feature in combination? — with the decisive quotes, and which refinements it discloses.
+
+## Novelty summary
+Any document that discloses all core features (with the quotes that settle it); otherwise
+the best-covered documents and what each one lacks.
+
+## Not completed
+Documents not fully read and why, abstract-only documents, parts not reached, cells left
+unclear. If none, write "None."
+
+_Source: EPO / Espacenet (Open Patent Services)._
+""",
     },
 }
