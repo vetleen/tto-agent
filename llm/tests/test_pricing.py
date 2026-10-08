@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from django.test import SimpleTestCase
 
-from llm.service.pricing import calculate_cost, get_model_pricing
+from llm.service.pricing import calculate_cost, get_display_pricing, get_model_pricing
 
 
 class PricingLookupTests(SimpleTestCase):
@@ -42,6 +42,35 @@ class PricingLookupTests(SimpleTestCase):
             get_model_pricing("anthropic/claude-opus-5-5"),
             (Decimal("4.00"), Decimal("0.20"), Decimal("5.00"), Decimal("20.00")),
         )
+
+    def test_sonnet_55_prices(self):
+        # Cache reads are 0.05x input on Sonnet 5.5 (not the usual 0.1x).
+        self.assertEqual(
+            get_model_pricing("anthropic/claude-sonnet-5-5"),
+            (Decimal("2.00"), Decimal("0.10"), Decimal("2.50"), Decimal("10.00")),
+        )
+
+    def test_haiku_55_bands_split_at_100k(self):
+        self.assertEqual(
+            get_model_pricing("claude-haiku-5-5", input_tokens=100_000),
+            (Decimal("0.10"), Decimal("0.01"), Decimal("0.125"), Decimal("0.50")),
+        )
+        self.assertEqual(
+            get_model_pricing("claude-haiku-5-5", input_tokens=100_001),
+            (Decimal("0.50"), Decimal("0.05"), Decimal("0.625"), Decimal("2.50")),
+        )
+
+    def test_display_pricing(self):
+        # Haiku 5.5 displays its >100K band; other models their base band.
+        self.assertEqual(
+            get_display_pricing("anthropic/claude-haiku-5-5"),
+            (Decimal("0.50"), Decimal("0.05"), Decimal("0.625"), Decimal("2.50")),
+        )
+        self.assertEqual(
+            get_display_pricing("openai/gpt-6-luna"),
+            get_model_pricing("openai/gpt-6-luna"),
+        )
+        self.assertIsNone(get_display_pricing("unknown/model"))
 
     def test_long_context_pricing_applies_to_entire_request(self):
         self.assertEqual(
@@ -127,6 +156,22 @@ class CostTests(SimpleTestCase):
                 cache_write_1h_tokens=100,
             ),
             Decimal("0.01355"),
+        )
+
+    def test_haiku_55_long_context_cost_includes_1h_writes(self):
+        # 200K total input: 100K regular, 50K cache reads, 30K 5m writes,
+        # 20K 1h writes, all at the >100K band, plus 10K output.
+        self.assertEqual(
+            calculate_cost(
+                "claude-haiku-5-5",
+                200_000,
+                10_000,
+                cached_input_tokens=50_000,
+                cache_write_tokens=50_000,
+                cache_write_1h_tokens=20_000,
+            ),
+            # 0.05 + 0.0025 + 0.01875 + 0.02 (1h at $1.00) + 0.025
+            Decimal("0.11625"),
         )
 
     def test_long_context_cost(self):

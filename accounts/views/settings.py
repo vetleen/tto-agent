@@ -273,8 +273,8 @@ def org_settings_page(request):
     for mid in system_models:
         info = get_model_info(mid)
         price = ""
-        if info and info.input_price is not None and info.output_price is not None:
-            price = f"${info.input_price} / ${info.output_price}"
+        if info and info.display_input_price is not None and info.display_output_price is not None:
+            price = f"${info.display_input_price} / ${info.display_output_price}"
         system_models_data.append({"id": mid, "price": price})
     system_defaults = get_system_defaults()
     all_tools = get_tool_registry().list_tools()

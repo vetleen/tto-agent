@@ -70,6 +70,24 @@ def get_model_pricing(
     return inp, cached, write, out
 
 
+def get_display_pricing(
+    model: str,
+) -> Optional[Tuple[Decimal, Decimal, Decimal, Decimal]]:
+    """User-facing ``(input, cached, cache_write, output)`` prices per 1M.
+
+    The long-context band for models flagged ``display_long_context_price``,
+    otherwise the base band; dated price changes apply either way.
+    """
+    info = get_model_info(model)
+    if (
+        info is not None
+        and info.display_long_context_price
+        and info.long_context_threshold is not None
+    ):
+        return get_model_pricing(model, input_tokens=info.long_context_threshold + 1)
+    return get_model_pricing(model)
+
+
 def calculate_cost(
     model: str,
     input_tokens: Optional[int],

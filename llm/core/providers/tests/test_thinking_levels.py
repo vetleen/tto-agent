@@ -60,6 +60,32 @@ class AnthropicReasoningTests(SimpleTestCase):
         self.assertEqual(kwargs["max_tokens"], 128_000)
 
     @patch("llm.core.providers.anthropic.create_variant_client")
+    def test_haiku_55_is_adaptive_with_drop_block(self, create_variant):
+        # Released after 2026-10-01: binds thinking to the prefix, so the
+        # request opts into drop_block instead of 400ing at an edit point.
+        create_variant.return_value = MagicMock()
+        model = AnthropicChatModel("anthropic/claude-haiku-5-5", MagicMock())
+        model._get_streaming_client(_request("medium"))
+        kwargs = create_variant.call_args.kwargs
+        self.assertEqual(
+            kwargs["thinking"],
+            {
+                "type": "adaptive",
+                "display": "summarized",
+                "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+            },
+        )
+        self.assertEqual(kwargs["output_config"], {"effort": "medium"})
+        self.assertEqual(kwargs["max_tokens"], 128_000)
+
+    @patch("llm.core.providers.anthropic.create_variant_client")
+    def test_haiku_55_off_disables_thinking(self, create_variant):
+        create_variant.return_value = MagicMock()
+        model = AnthropicChatModel("anthropic/claude-haiku-5-5", MagicMock())
+        model._get_streaming_client(_request("off"))
+        self.assertEqual(create_variant.call_args.kwargs["thinking"], {"type": "disabled"})
+
+    @patch("llm.core.providers.anthropic.create_variant_client")
     def test_opus_48_xhigh_is_adaptive(self, create_variant):
         create_variant.return_value = MagicMock()
         model = AnthropicChatModel("anthropic/claude-opus-4-8", MagicMock())

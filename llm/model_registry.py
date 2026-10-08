@@ -94,7 +94,23 @@ class ModelInfo:
     long_context_cache_write_price: Decimal | None = None
     long_context_cache_write_1h_price: Decimal | None = None
     long_context_output_price: Decimal | None = None
+    # Show the long-context band in user-facing prices and tiers. For models
+    # whose threshold sits below our typical context size (Haiku 5.5: 100K),
+    # the base band would understate what most requests actually cost.
+    display_long_context_price: bool = False
     price_changes: tuple[PriceChange, ...] = ()
+
+    @property
+    def display_input_price(self) -> Decimal | None:
+        if self.display_long_context_price and self.long_context_input_price is not None:
+            return self.long_context_input_price
+        return self.input_price
+
+    @property
+    def display_output_price(self) -> Decimal | None:
+        if self.display_long_context_price and self.long_context_output_price is not None:
+            return self.long_context_output_price
+        return self.output_price
 
     @property
     def supports_thinking(self) -> bool:
@@ -114,13 +130,14 @@ class ModelInfo:
         """Manual picker stars, falling back to a price-derived rating."""
         if self.stars is not None:
             return self.stars
-        if self.input_price is None:
+        price = self.display_input_price
+        if price is None:
             base = 3
-        elif self.input_price <= Decimal("0.50"):
+        elif price <= Decimal("0.50"):
             base = 1
-        elif self.input_price <= Decimal("1.50"):
+        elif price <= Decimal("1.50"):
             base = 2
-        elif self.input_price < Decimal("5.00"):
+        elif price < Decimal("5.00"):
             base = 3
         else:
             base = 4
@@ -130,7 +147,8 @@ class ModelInfo:
     def tiers(self) -> frozenset[str]:
         """Every performance category the model belongs to (may overlap)."""
         result: set[str] = set()
-        if self.input_price is not None and self.input_price < Decimal("0.50"):
+        price = self.display_input_price
+        if price is not None and price < Decimal("0.50"):
             result.add(TIER_CHEAP)
         star_tier = _STARS_TO_TIER.get(self.capability_stars)
         if star_tier:
@@ -298,7 +316,8 @@ _MODELS: dict[str, ModelInfo] = {
         default_reasoning_level="high", thinking_mode="adaptive",
         input_modalities=_MULTIMODAL, context_window=1_000_000,
         max_output_tokens=128_000, input_price=Decimal("2.00"),
-        cached_input_price=Decimal("0.20"), cache_write_price=Decimal("2.50"),
+        # Cache reads are 0.05x input, not the usual 0.1x.
+        cached_input_price=Decimal("0.10"), cache_write_price=Decimal("2.50"),
         cache_write_1h_price=Decimal("4.00"), output_price=Decimal("10.00"),
     ),
     "anthropic/claude-sonnet-5": ModelInfo(
@@ -310,6 +329,30 @@ _MODELS: dict[str, ModelInfo] = {
         max_output_tokens=128_000, input_price=Decimal("2.00"),
         cached_input_price=Decimal("0.20"), cache_write_price=Decimal("2.50"),
         cache_write_1h_price=Decimal("4.00"), output_price=Decimal("10.00"),
+    ),
+    "anthropic/claude-haiku-5-5": ModelInfo(
+        display_name="Claude Haiku 5.5", provider="anthropic", api_model="claude-haiku-5-5",
+        stars=2,
+        # Thinking can be disabled at effort <= high. "off" sends disabled with
+        # no effort (provider default medium), so it is always valid.
+        reasoning_levels=("off", "low", "medium", "high", "xhigh", "max"),
+        default_reasoning_level="medium", thinking_mode="adaptive",
+        # Released 2026-10-07: preserved thinking is enforced on it.
+        binds_thinking_to_prefix=True,
+        input_modalities=_MULTIMODAL, context_window=1_000_000,
+        max_output_tokens=128_000,
+        # Two bands split at 100K prompt tokens. Most of our requests exceed
+        # that, so display and tiers use the >100K band.
+        input_price=Decimal("0.10"), cached_input_price=Decimal("0.01"),
+        cache_write_price=Decimal("0.125"), cache_write_1h_price=Decimal("0.20"),
+        output_price=Decimal("0.50"),
+        long_context_threshold=100_000,
+        long_context_input_price=Decimal("0.50"),
+        long_context_cached_input_price=Decimal("0.05"),
+        long_context_cache_write_price=Decimal("0.625"),
+        long_context_cache_write_1h_price=Decimal("1.00"),
+        long_context_output_price=Decimal("2.50"),
+        display_long_context_price=True,
     ),
     "anthropic/claude-haiku-4-5": ModelInfo(
         display_name="Claude Haiku 4.5", provider="anthropic", api_model="claude-haiku-4-5",

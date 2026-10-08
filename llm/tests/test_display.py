@@ -113,6 +113,8 @@ class PickerRatingTests(SimpleTestCase):
         self.assertEqual(get_price_level("openai/gpt-6-luna"), 1)
         self.assertEqual(get_price_level("openai/gpt-6-sol"), 3)
         self.assertEqual(get_price_level("anthropic/claude-opus-5-5"), 4)
+        # Rated on its >100K band ($2.50 output), not the $0.50 base.
+        self.assertEqual(get_price_level("anthropic/claude-haiku-5-5"), 1)
         self.assertEqual(get_price_level("custom/unknown"), 0)
 
     def test_capability_buckets(self):
@@ -165,5 +167,10 @@ class PickerRatingTests(SimpleTestCase):
         self.assertEqual(
             get_model_meta_tooltip("openai/gpt-5.4-nano"),
             "Cheap · $1.25 / 1M output tokens",
+        )
+        # Shows the >100K band most requests pay, not the $0.50 base.
+        self.assertEqual(
+            get_model_meta_tooltip("anthropic/claude-haiku-5-5"),
+            "Mid · $2.50 / 1M output tokens",
         )
         self.assertIsNone(get_model_meta_tooltip("custom/unknown"))

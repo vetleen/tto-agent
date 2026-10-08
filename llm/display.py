@@ -202,9 +202,9 @@ def get_price_level(model_id: str) -> int:
     upper-inclusive ``<=5 -> 2``, ``<=15 -> 3``, ``<=50 -> 4``, ``>50 -> 5``.
     Drives the ``$``-``$$$$$`` glyphs in the chat model picker.
     """
-    from llm.service.pricing import get_model_pricing
+    from llm.service.pricing import get_display_pricing
 
-    pricing = get_model_pricing(model_id)
+    pricing = get_display_pricing(model_id)
     if pricing is None:
         return 0
     output_price = pricing[3]
@@ -247,10 +247,10 @@ def get_model_meta_tooltip(model_id: str) -> str | None:
     The standing label follows the star rating (five stars read "Flagship").
     Example: ``"Flagship · $30 / 1M output tokens"``.
     """
-    from llm.service.pricing import get_model_pricing
+    from llm.service.pricing import get_display_pricing
 
     info = get_model_info(model_id)
-    pricing = get_model_pricing(model_id)
+    pricing = get_display_pricing(model_id)
     if info is None or pricing is None:
         return None
     label = _CAPABILITY_LABELS.get(get_capability_level(model_id), info.tier.capitalize())

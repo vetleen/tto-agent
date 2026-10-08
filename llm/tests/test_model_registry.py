@@ -37,6 +37,7 @@ EXPECTED_IDS = [
     "anthropic/claude-opus-5-5",
     "anthropic/claude-sonnet-5-5",
     "anthropic/claude-sonnet-5",
+    "anthropic/claude-haiku-5-5",
     "anthropic/claude-haiku-4-5",
     "gemini/gemini-3.1-pro-preview",
     "gemini/gemini-3.8-flash",
@@ -81,6 +82,7 @@ class RegistryTests(SimpleTestCase):
             "anthropic/claude-opus-5-5": (("low", "medium", "high", "xhigh", "max"), "medium"),
             "anthropic/claude-sonnet-5-5": (("low", "medium", "high", "xhigh", "max"), "high"),
             "anthropic/claude-sonnet-5": (("off", "low", "medium", "high", "xhigh", "max"), "high"),
+            "anthropic/claude-haiku-5-5": (("off", "low", "medium", "high", "xhigh", "max"), "medium"),
             "anthropic/claude-haiku-4-5": (("off", "low", "medium", "high"), "off"),
             "gemini/gemini-3.1-pro-preview": (("low", "medium", "high"), "high"),
             "gemini/gemini-3.8-flash": (("low", "medium", "high"), "medium"),
@@ -119,6 +121,26 @@ class RegistryTests(SimpleTestCase):
         self.assertEqual(info.context_window, 1_000_000)
         self.assertEqual(info.max_output_tokens, 128_000)
         self.assertEqual(info.thinking_mode, "adaptive")
+
+    def test_haiku_5_5_metadata(self):
+        info = get_model_info("anthropic/claude-haiku-5-5")
+        self.assertEqual(info.api_model, "claude-haiku-5-5")
+        self.assertEqual(info.thinking_mode, "adaptive")
+        self.assertTrue(info.binds_thinking_to_prefix)
+        self.assertEqual(info.context_window, 1_000_000)
+        self.assertEqual(info.max_output_tokens, 128_000)
+        self.assertEqual(info.input_price, Decimal("0.10"))
+        self.assertEqual(info.long_context_threshold, 100_000)
+        self.assertEqual(info.long_context_cache_write_1h_price, Decimal("1.00"))
+        # Typical contexts exceed 100K, so display uses the long-context band.
+        self.assertEqual(info.display_input_price, Decimal("0.50"))
+        self.assertEqual(info.display_output_price, Decimal("2.50"))
+
+    def test_display_price_defaults_to_base_band(self):
+        # Long-context models without the display flag show their base price.
+        info = get_model_info("openai/gpt-6-luna")
+        self.assertEqual(info.display_input_price, Decimal("0.10"))
+        self.assertEqual(info.display_output_price, Decimal("0.50"))
 
     def test_gemini_3_8_flash_pricing(self):
         info = get_model_info("gemini/gemini-3.8-flash")
@@ -230,6 +252,11 @@ class TierTests(SimpleTestCase):
         self.assertEqual(luna.tiers, frozenset({TIER_CHEAP, TIER_MID}))
         self.assertEqual(get_model_tier("openai/gpt-6-luna"), TIER_MID)
 
+    def test_haiku_5_5_not_cheap_at_display_price(self):
+        # $0.10 base but $0.50 above 100K; tiers follow the displayed band.
+        haiku = get_model_info("anthropic/claude-haiku-5-5")
+        self.assertEqual(haiku.tiers, frozenset({TIER_MID}))
+
     def test_tier_sets(self):
         self.assertEqual(
             get_models_by_tier(TIER_CHEAP),
@@ -246,6 +273,7 @@ class TierTests(SimpleTestCase):
                 "openai/gpt-5.6-terra",
                 "anthropic/claude-sonnet-5-5",
                 "anthropic/claude-sonnet-5",
+                "anthropic/claude-haiku-5-5",
                 "anthropic/claude-haiku-4-5",
                 "gemini/gemini-3.1-pro-preview",
                 "gemini/gemini-3.8-flash",

@@ -15,6 +15,7 @@ _ADAPTIVE_ANTHROPIC = {
     "claude-opus-4-6",
     "claude-sonnet-5-5",
     "claude-sonnet-5",
+    "claude-haiku-5-5",
 }
 
 
