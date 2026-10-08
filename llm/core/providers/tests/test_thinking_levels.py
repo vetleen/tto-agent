@@ -124,9 +124,11 @@ class AnthropicReasoningTests(SimpleTestCase):
         self.assertEqual(create_variant.call_args.kwargs["output_config"], {"effort": "max"})
 
     @patch("llm.core.providers.anthropic.create_variant_client")
-    def test_haiku_keeps_budgeted_extended_thinking(self, create_variant):
+    def test_unregistered_model_uses_budgeted_extended_thinking(self, create_variant):
+        # No registered model is extended-only any more (Haiku 4.5 retired);
+        # unregistered Anthropic names still fall back to budget_tokens.
         create_variant.return_value = MagicMock()
-        model = AnthropicChatModel("anthropic/claude-haiku-4-5", MagicMock())
+        model = AnthropicChatModel("anthropic/claude-custom-legacy", MagicMock())
         model._get_streaming_client(_request("medium"))
         kwargs = create_variant.call_args.kwargs
         self.assertEqual(kwargs["thinking"], {"type": "enabled", "budget_tokens": 10_000})

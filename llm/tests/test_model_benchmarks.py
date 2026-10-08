@@ -86,10 +86,7 @@ class BenchmarkDataTests(SimpleTestCase):
         )
 
     def test_livebench_if_misses_only_haiku(self):
-        self.assertEqual(
-            missing_models(BENCHMARK_LIVEBENCH_IF),
-            ["anthropic/claude-haiku-5-5", "anthropic/claude-haiku-4-5"],
-        )
+        self.assertEqual(missing_models(BENCHMARK_LIVEBENCH_IF), ["anthropic/claude-haiku-5-5"])
 
     def test_hallucination_rate_is_lower_is_better(self):
         self.assertFalse(get_benchmark(BENCHMARK_OMNISCIENCE).higher_is_better)

@@ -39,7 +39,7 @@ class CapabilityTests(SimpleTestCase):
             "openai/gpt-5.6-terra",
             "openai/gpt-5.4-nano",
             "anthropic/claude-fable-5",
-            "anthropic/claude-haiku-4-5",
+            "anthropic/claude-haiku-5-5",
             "gemini/gemini-3.7-flash",
             "gemini/gemini-3.5-flash-lite",
         ):
@@ -81,8 +81,8 @@ class ReasoningLevelTests(SimpleTestCase):
             ["off", "low", "medium", "high", "xhigh", "max"],
         )
         self.assertEqual(
-            get_thinking_levels("anthropic/claude-haiku-4-5"),
-            ["off", "low", "medium", "high"],
+            get_thinking_levels("anthropic/claude-haiku-5-5"),
+            ["off", "low", "medium", "high", "xhigh", "max"],
         )
 
     def test_flash_lite_includes_minimal(self):
@@ -106,7 +106,6 @@ class PickerRatingTests(SimpleTestCase):
         self.assertEqual(get_price_level("openai/gpt-5.4-nano"), 1)
         self.assertEqual(get_price_level("gemini/gemini-3.5-flash-lite"), 1)
         self.assertEqual(get_price_level("gemini/gemini-3.7-flash"), 2)
-        self.assertEqual(get_price_level("anthropic/claude-haiku-4-5"), 2)
         self.assertEqual(get_price_level("openai/gpt-5.6-terra"), 3)
         self.assertEqual(get_price_level("openai/gpt-5.6-sol"), 4)
         self.assertEqual(get_price_level("openai/gpt-6-astra"), 4)

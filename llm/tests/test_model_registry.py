@@ -38,7 +38,6 @@ EXPECTED_IDS = [
     "anthropic/claude-sonnet-5-5",
     "anthropic/claude-sonnet-5",
     "anthropic/claude-haiku-5-5",
-    "anthropic/claude-haiku-4-5",
     "gemini/gemini-3.1-pro-preview",
     "gemini/gemini-3.8-flash",
     "gemini/gemini-3.5-flash-lite",
@@ -83,7 +82,6 @@ class RegistryTests(SimpleTestCase):
             "anthropic/claude-sonnet-5-5": (("low", "medium", "high", "xhigh", "max"), "high"),
             "anthropic/claude-sonnet-5": (("off", "low", "medium", "high", "xhigh", "max"), "high"),
             "anthropic/claude-haiku-5-5": (("off", "low", "medium", "high", "xhigh", "max"), "medium"),
-            "anthropic/claude-haiku-4-5": (("off", "low", "medium", "high"), "off"),
             "gemini/gemini-3.1-pro-preview": (("low", "medium", "high"), "high"),
             "gemini/gemini-3.8-flash": (("low", "medium", "high"), "medium"),
             "gemini/gemini-3.5-flash-lite": (("minimal", "low", "medium", "high"), "minimal"),
@@ -98,7 +96,7 @@ class RegistryTests(SimpleTestCase):
         self.assertEqual(get_model_info("gpt-5.6-sol").context_window, 1_050_000)
         self.assertEqual(get_model_info("gpt-5.6-sol").max_output_tokens, 128_000)
         self.assertEqual(get_model_info("gpt-5.4-nano").context_window, 400_000)
-        self.assertEqual(get_model_info("claude-haiku-4-5").max_output_tokens, 64_000)
+        self.assertEqual(get_model_info("claude-haiku-5-5").max_output_tokens, 128_000)
         self.assertEqual(get_model_info("gemini-3.8-flash").context_window, 1_048_576)
 
     def test_flagship_pricing_is_present(self):
@@ -157,7 +155,7 @@ class RegistryTests(SimpleTestCase):
             if info.provider == "anthropic":
                 self.assertIn(info.thinking_mode, ("adaptive", "extended"))
         self.assertEqual(get_model_info("claude-opus-5-5").thinking_mode, "adaptive")
-        self.assertEqual(get_model_info("claude-haiku-4-5").thinking_mode, "extended")
+        self.assertEqual(get_model_info("claude-haiku-5-5").thinking_mode, "adaptive")
 
     def test_every_model_has_manual_stars(self):
         # Curated models must not rely on the price-derived fallback, which
@@ -184,6 +182,7 @@ class ReplacementTests(SimpleTestCase):
             "anthropic/claude-opus-4-8": "anthropic/claude-opus-5-5",
             "anthropic/claude-opus-4-6": "anthropic/claude-opus-5-5",
             "anthropic/claude-sonnet-4-6": "anthropic/claude-sonnet-5",
+            "anthropic/claude-haiku-4-5": "anthropic/claude-haiku-5-5",
             "gemini/gemini-3.7-flash": "gemini/gemini-3.8-flash",
             "gemini/gemini-3.1-flash-lite": "gemini/gemini-3.5-flash-lite",
         }
@@ -274,7 +273,6 @@ class TierTests(SimpleTestCase):
                 "anthropic/claude-sonnet-5-5",
                 "anthropic/claude-sonnet-5",
                 "anthropic/claude-haiku-5-5",
-                "anthropic/claude-haiku-4-5",
                 "gemini/gemini-3.1-pro-preview",
                 "gemini/gemini-3.8-flash",
             ],
@@ -311,7 +309,9 @@ class TierTests(SimpleTestCase):
         self.assertTrue(is_model_valid_for_slot("openai/gpt-6-astra", "primary"))
         self.assertTrue(is_model_valid_for_slot("anthropic/claude-fable-5-1", "primary"))
         self.assertFalse(is_model_valid_for_slot("openai/gpt-6-luna", "primary"))
-        self.assertFalse(is_model_valid_for_slot("anthropic/claude-haiku-4-5", "primary"))
+        self.assertFalse(is_model_valid_for_slot("anthropic/claude-haiku-5-5", "primary"))
+        # Haiku 5.5 displays at its >100K band ($0.50 input), so it isn't cheap.
+        self.assertFalse(is_model_valid_for_slot("anthropic/claude-haiku-5-5", "cheap"))
 
     def test_get_models_for_slot_canonicalizes_filter(self):
         allowed = ["openai/gpt-5.4-nano", "openai/gpt-5.4"]
@@ -326,7 +326,7 @@ class TierTests(SimpleTestCase):
         self.assertIn("openai/gpt-6-luna", two_up)
         three_up = get_models_with_min_stars(3)
         self.assertIn("anthropic/claude-sonnet-5", three_up)
-        self.assertNotIn("anthropic/claude-haiku-4-5", three_up)
+        self.assertNotIn("anthropic/claude-haiku-5-5", three_up)
         self.assertEqual(
             get_models_with_min_stars(5),
             [

@@ -46,13 +46,13 @@ class ProviderLiveAPITests(TestCase):
         self.assertIn("OK", content.upper())
 
     def test_anthropic_returns_valid_response(self):
-        """Call Anthropic (claude-haiku-4-5) through LLMService and assert valid response."""
+        """Call Anthropic (claude-haiku-5-5) through LLMService and assert valid response."""
         with patch.dict(
             "os.environ",
-            {"LLM_ALLOWED_MODELS": "claude-haiku-4-5", "DEFAULT_LLM_MODEL": "claude-haiku-4-5"},
+            {"LLM_ALLOWED_MODELS": "claude-haiku-5-5", "DEFAULT_LLM_MODEL": "claude-haiku-5-5"},
             clear=False,
         ):
-            content = self._run_simple_chat("claude-haiku-4-5")
+            content = self._run_simple_chat("claude-haiku-5-5")
         self.assertIn("OK", content.upper())
 
     def test_gemini_returns_valid_response(self):
@@ -181,8 +181,8 @@ class StreamingUsageCostTests(TestCase):
         self._assert_usage_and_cost(end_data, "gpt-5.4-nano")
 
     def test_anthropic_streaming_returns_usage_and_cost(self):
-        end_data = self._stream_and_collect("claude-haiku-4-5")
-        self._assert_usage_and_cost(end_data, "claude-haiku-4-5")
+        end_data = self._stream_and_collect("claude-haiku-5-5")
+        self._assert_usage_and_cost(end_data, "claude-haiku-5-5")
 
     def test_gemini_streaming_returns_usage_and_cost(self):
         end_data = self._stream_and_collect("gemini-3.1-flash-lite")

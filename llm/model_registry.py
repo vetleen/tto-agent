@@ -354,16 +354,6 @@ _MODELS: dict[str, ModelInfo] = {
         long_context_output_price=Decimal("2.50"),
         display_long_context_price=True,
     ),
-    "anthropic/claude-haiku-4-5": ModelInfo(
-        display_name="Claude Haiku 4.5", provider="anthropic", api_model="claude-haiku-4-5",
-        stars=2,
-        reasoning_levels=("off", "low", "medium", "high"),
-        default_reasoning_level="off", thinking_mode="extended",
-        input_modalities=_MULTIMODAL, context_window=200_000,
-        max_output_tokens=64_000, input_price=Decimal("1.00"),
-        cached_input_price=Decimal("0.10"), cache_write_price=Decimal("1.25"),
-        cache_write_1h_price=Decimal("2.00"), output_price=Decimal("5.00"),
-    ),
     # Google Gemini
     "gemini/gemini-3.1-pro-preview": ModelInfo(
         display_name="Gemini 3.1 Pro Preview", provider="google_genai",
@@ -416,6 +406,7 @@ MODEL_REPLACEMENTS: dict[str, str] = {
     "anthropic/claude-opus-4-8": "anthropic/claude-opus-5-5",
     "anthropic/claude-opus-5": "anthropic/claude-opus-5-5",
     "anthropic/claude-sonnet-4-6": "anthropic/claude-sonnet-5",
+    "anthropic/claude-haiku-4-5": "anthropic/claude-haiku-5-5",
     "gemini/gemini-3.5-flash": "gemini/gemini-3.7-flash",
     "gemini/gemini-3.7-flash": "gemini/gemini-3.8-flash",
     "gemini/gemini-3.1-flash-lite": "gemini/gemini-3.5-flash-lite",
