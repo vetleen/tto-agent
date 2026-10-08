@@ -1048,7 +1048,7 @@ def describe_image(
 
     media_type = content_type or "image/png"
     if media_type not in SUPPORTED_IMAGE_TYPES:
-        logger.warning("describe_image: skipping unsupported image type %s (%d bytes)", media_type, len(image_bytes))
+        logger.info("describe_image: skipping unsupported image type %s (%d bytes)", media_type, len(image_bytes))
         return None
 
     b64 = base64.b64encode(image_bytes).decode("ascii")

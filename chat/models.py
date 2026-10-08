@@ -354,7 +354,7 @@ class ChatAttachment(models.Model):
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
     )
-    file = models.FileField(upload_to="chat_attachments/%Y/%m/")
+    file = models.FileField(upload_to="chat_attachments/%Y/%m/", max_length=500)
     original_filename = models.CharField(max_length=255)
     content_type = models.CharField(max_length=100)
     size_bytes = models.PositiveIntegerField()

@@ -211,6 +211,23 @@ class UploadAttachmentTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["attachments"][0]["content_type"], "application/pdf")
 
+    def test_upload_long_dotted_filename(self):
+        # WILFRED-98: Django treats everything after the first dot as the
+        # extension, so a long dotted name overflowed the old 100-char default
+        # and the storage raised SuspiciousFileOperation. Upload twice so the
+        # second save also takes the collision (alternative-name) path.
+        name = (
+            "Seminar_serie_NINA_møte_3_11.12.25__Hvordan_kan_vi_jobbe_med_"
+            "innovasjoner_i_et_FoU-samarbeid.pdf"
+        )
+        for _ in range(2):
+            f = SimpleUploadedFile(name, b"%PDF-1.4 test", content_type="application/pdf")
+            resp = self.client.post(self.url, {"files": f})
+            self.assertEqual(resp.status_code, 200)
+            att = resp.json()["attachments"][0]
+            self.assertEqual(att["filename"], name)
+        self.assertEqual(ChatAttachment.objects.filter(original_filename=name).count(), 2)
+
     def test_upload_pdf_is_pending_and_dispatches_processing(self):
         from unittest.mock import patch
 
