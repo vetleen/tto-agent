@@ -370,6 +370,65 @@ class WebFetchCacheTests(TestCase):
         _cache_result(cache, "wf-full", {"url": "u", "content": "hello"})
         self.assertIsNotNone(cache.get("wf-full"))
 
+    def test_cached_entry_is_compressed_and_round_trips(self):
+        # WILFRED-99: entries are zlib-compressed so large documents take a
+        # fraction of the shared (broker) Redis.
+        import zlib
+
+        from django.core.cache import cache
+        from llm.tools.web_fetch import _cache_result
+
+        cache.clear()
+        result = {"url": "u", "content": "word " * 5000}
+        _cache_result(cache, "wf-zip", result)
+        blob = cache.get("wf-zip")
+        self.assertIsInstance(blob, bytes)
+        self.assertLess(len(blob), len(result["content"]) // 4)
+        self.assertEqual(json.loads(zlib.decompress(blob)), result)
+
+    @override_settings(WEB_FETCH_CACHE_MAX_BYTES=50)
+    def test_entry_over_cap_returned_but_not_cached(self):
+        import secrets
+
+        from django.core.cache import cache
+        from llm.tools.web_fetch import _cache_result
+
+        cache.clear()
+        # Random text barely compresses, so it stays over the tiny cap.
+        result = {"url": "u", "content": secrets.token_hex(500)}
+        out = _cache_result(cache, "wf-big", result)
+        self.assertEqual(out, result)
+        self.assertIsNone(cache.get("wf-big"))
+
+    @override_settings(WEB_FETCH_CACHE_LARGE_ENTRY_BYTES=50)
+    def test_large_entry_gets_short_ttl(self):
+        import secrets
+
+        from django.core.cache import cache
+        from llm.tools.web_fetch import _CACHE_LARGE_TTL, _CACHE_TTL, _cache_result
+
+        with patch.object(cache, "set") as mock_set:
+            _cache_result(cache, "wf-small", {"url": "u", "content": "hi"})
+            _cache_result(cache, "wf-large", {"url": "u", "content": secrets.token_hex(500)})
+        ttls = {c.args[0]: c.kwargs["timeout"] for c in mock_set.call_args_list}
+        self.assertEqual(ttls, {"wf-small": _CACHE_TTL, "wf-large": _CACHE_LARGE_TTL})
+
+    @patch("llm.tools.web_fetch._pinned_get")
+    def test_unreadable_cache_entry_refetches(self, mock_get):
+        import hashlib
+
+        from django.core.cache import cache
+
+        url = "https://example.com/corrupt"
+        cache.set("web_fetch_v4:" + hashlib.sha256(url.encode()).hexdigest(), b"not zlib", 60)
+        mock_get.return_value = _mock_response(
+            content_type="text/html",
+            text="<html><body><p>Fresh after corrupt entry</p></body></html>",
+        )
+        result = self.tool.invoke({"url": url})
+        self.assertIn("Fresh after corrupt entry", result)
+        mock_get.assert_called_once()
+
     @patch("llm.tools.web_fetch._pinned_get")
     def test_cache_connection_error_falls_through(self, mock_get):
         mock_get.return_value = _mock_response(

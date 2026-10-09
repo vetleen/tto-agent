@@ -10,6 +10,7 @@ import re
 import socket
 import threading
 import time
+import zlib
 
 from urllib.parse import urljoin, urlparse
 
@@ -63,6 +64,27 @@ _DEFAULT_MAX_PARSE_BYTES = 8_000_000  # 8 MB
 
 def _max_parse_bytes() -> int:
     return getattr(django_settings, "WEB_FETCH_MAX_PARSE_BYTES", _DEFAULT_MAX_PARSE_BYTES)
+
+
+# Result cache sizing. The cache shares the production Redis (50 MB, noeviction)
+# with the Celery broker, so an unbounded entry can starve the broker and crash
+# the worker (WILFRED-99/9A/9B: a sub-agent's large PDF fetches filled it).
+# Entries are zlib-compressed (extracted text shrinks ~3x); a compressed entry
+# over the cap is not cached at all; a large one is kept only long enough to page
+# through it. Paginated re-reads are served from this cache, so long documents
+# must stay cacheable — hence a high cap with a short TTL rather than a low cap.
+_DEFAULT_CACHE_MAX_BYTES = 1_000_000  # compressed
+_CACHE_LARGE_ENTRY_BYTES = 200_000  # compressed; above this use the short TTL
+_CACHE_TTL = 3600
+_CACHE_LARGE_TTL = 900
+
+
+def _cache_max_bytes() -> int:
+    return getattr(django_settings, "WEB_FETCH_CACHE_MAX_BYTES", _DEFAULT_CACHE_MAX_BYTES)
+
+
+def _cache_large_entry_bytes() -> int:
+    return getattr(django_settings, "WEB_FETCH_CACHE_LARGE_ENTRY_BYTES", _CACHE_LARGE_ENTRY_BYTES)
 
 
 # Dyno-wide cap on concurrent HTML parse+extract — the memory-heavy window: a
@@ -804,11 +826,20 @@ def _cache_result(cache, cache_key: str, result: dict) -> dict:
     Skips an empty extraction (no content) so a transient failure — a
     JS-rendered page, or Jina being down/declined — isn't pinned for the full
     hour; the next fetch of that URL can try again instead of re-serving "0 of 0".
+    The entry is stored zlib-compressed and size-bounded (see _CACHE_* above).
     """
     if not (result.get("content") or "").strip():
         return result
     try:
-        cache.set(cache_key, json.dumps(result), timeout=3600)
+        blob = zlib.compress(json.dumps(result).encode("utf-8"), 6)
+        if len(blob) > _cache_max_bytes():
+            logger.info(
+                "web_fetch: not caching url=%s (chars=%d, compressed=%d bytes > cap)",
+                result.get("url", ""), len(result.get("content") or ""), len(blob),
+            )
+            return result
+        ttl = _CACHE_LARGE_TTL if len(blob) > _cache_large_entry_bytes() else _CACHE_TTL
+        cache.set(cache_key, blob, timeout=ttl)
     except Exception:
         logger.debug("web_fetch: cache write failed, continuing")
     return result
@@ -836,17 +867,22 @@ def _fetch_core(url: str, cache, context=None) -> dict:
     # resolved exactly once per fetch and the validated IP is the one we
     # actually connect to (closes the DNS-rebinding gap).
 
-    # v3: result dicts now carry an "images" candidate list; bump so pre-upgrade
-    # cached entries (without it) aren't served for include_images requests.
-    cache_key = "web_fetch_v3:" + hashlib.sha256(url.encode()).hexdigest()
+    # v4: entries are zlib-compressed JSON bytes (v3 was a JSON string, and added
+    # the "images" candidate list); bump so a pre-upgrade entry is never decoded.
+    cache_key = "web_fetch_v4:" + hashlib.sha256(url.encode()).hexdigest()
     try:
         cached = cache.get(cache_key)
     except Exception:
         logger.debug("web_fetch: cache read failed, proceeding without cache")
         cached = None
     if cached is not None:
-        logger.debug("Web fetch cache hit for url=%s", url)
-        return json.loads(cached)
+        try:
+            data = json.loads(zlib.decompress(cached))
+        except (zlib.error, TypeError, ValueError):
+            logger.debug("web_fetch: unreadable cache entry for url=%s, refetching", url)
+        else:
+            logger.debug("Web fetch cache hit for url=%s", url)
+            return data
 
     # --- Fetch HTML ---
     headers = {

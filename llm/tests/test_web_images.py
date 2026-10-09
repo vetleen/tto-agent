@@ -306,7 +306,7 @@ class WebFetchIncludeImagesTests(TestCase):
 
 @override_settings(
     # DummyCache (never persists): the default test cache is a real Redis whose
-    # web_fetch_v3:* entries survive across runs. A cache hit makes _fetch_core
+    # web_fetch_v4:* entries survive across runs. A cache hit makes _fetch_core
     # return before it ever fetches or scans, so on a re-run the scan we assert
     # on would silently never fire. Force a real fetch (and scan) every run.
     CACHES={"default": {"BACKEND": "django.core.cache.backends.dummy.DummyCache"}},
