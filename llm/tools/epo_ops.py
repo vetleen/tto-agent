@@ -35,6 +35,7 @@ import requests
 from pydantic import BaseModel, Field, field_validator
 
 from llm.tools.interfaces import ContextAwareTool, ReasonBaseModel
+from llm.tools._json_cache import cache_get_json, cache_set_json
 from llm.tools._throttle import (
     BACKOFF_BASE as _BACKOFF_BASE,
     MAX_RETRIES as _MAX_RETRIES,
@@ -44,6 +45,16 @@ from llm.tools._throttle import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Response cache sizing (see llm/tools/_json_cache.py: the cache shares the
+# broker's 50 MB noeviction Redis). Entries are zlib-compressed; OPS full text is
+# XML-derived JSON with heavy key repetition, so a multi-MB description shrinks
+# well over 3x. A compressed entry over the cap is not cached; one over the
+# "large" threshold is kept only long enough to page through it (patent_epoops_get
+# serves part=2..N from this cache, so long descriptions must stay cacheable).
+_CACHE_MAX_BYTES = 1_000_000  # compressed
+_CACHE_LARGE_BYTES = 200_000  # compressed; above this use _CACHE_LARGE_TTL
+_CACHE_LARGE_TTL = 900
 
 
 def _rpm() -> int:
@@ -2097,13 +2108,11 @@ class PatentEpoOpsSearchTool(ContextAwareTool):
         """
         from django.core.cache import cache
 
-        cache_key = "epo_ops_search_v2:" + hashlib.sha256(f"{cql}:{offset}:{end}".encode()).hexdigest()
-        try:
-            cached = cache.get(cache_key)
-        except Exception:
-            cached = None
+        # v3: compressed entries (see _CACHE_* above).
+        cache_key = "epo_ops_search_v3:" + hashlib.sha256(f"{cql}:{offset}:{end}".encode()).hexdigest()
+        cached = cache_get_json(cache, cache_key)
         if cached is not None:
-            return json.loads(cached)
+            return cached
 
         data = _ops_request(
             "published-data/search/biblio",
@@ -2129,10 +2138,7 @@ class PatentEpoOpsSearchTool(ContextAwareTool):
                 for r in parsed["results"]
             ],
         }
-        try:
-            cache.set(cache_key, json.dumps(page), timeout=900)
-        except Exception:
-            logger.debug("epo_ops search: cache write failed, continuing")
+        cache_set_json(cache, cache_key, page, ttl=900, max_bytes=_CACHE_MAX_BYTES)
         return page
 
     def _count(self, cql: str) -> str:
@@ -2261,15 +2267,13 @@ class PatentEpoOpsGetTool(ContextAwareTool):
             )
         part = max(1, int(part or 1))
 
-        cache_key = "epo_ops_get_v1:" + hashlib.sha256(
+        # v2: compressed, size-bounded entries (see _CACHE_* above).
+        cache_key = "epo_ops_get_v2:" + hashlib.sha256(
             f"{fmt}:{path_number}:{constituent}".encode()
         ).hexdigest()
-        try:
-            cached = cache.get(cache_key)
-        except Exception:
-            cached = None
+        cached = cache_get_json(cache, cache_key)
         if cached is not None:
-            return _format_get(json.loads(cached), display, parts, part)
+            return _format_get(cached, display, parts, part)
 
         data = _ops_request(
             f"published-data/publication/{fmt}/{path_number}/{constituent}",
@@ -2278,10 +2282,10 @@ class PatentEpoOpsGetTool(ContextAwareTool):
             context=self.context,
         )
         if "error" not in data:
-            try:
-                cache.set(cache_key, json.dumps(data), timeout=3600)
-            except Exception:
-                logger.debug("epo_ops get: cache write failed, continuing")
+            cache_set_json(
+                cache, cache_key, data, ttl=3600, max_bytes=_CACHE_MAX_BYTES,
+                large_bytes=_CACHE_LARGE_BYTES, large_ttl=_CACHE_LARGE_TTL,
+            )
         elif parts in ("claims", "description") and "404" in data["error"]:
             # Seen live: EP2252273A1 claims → 404 while its WO member had them.
             return (
@@ -2324,15 +2328,13 @@ class PatentEpoOpsFamilyTool(ContextAwareTool):
         fmt, path_number = ref
         display = _normalize_pubnumber(publication_number)
 
-        cache_key = "epo_ops_family_v1:" + hashlib.sha256(
+        # v2: compressed, size-bounded entries (see _CACHE_* above).
+        cache_key = "epo_ops_family_v2:" + hashlib.sha256(
             f"{fmt}:{path_number}".encode()
         ).hexdigest()
-        try:
-            cached = cache.get(cache_key)
-        except Exception:
-            cached = None
+        cached = cache_get_json(cache, cache_key)
         if cached is not None:
-            return _format_family(json.loads(cached), display)
+            return _format_family(cached, display)
 
         data = _ops_request(
             f"family/publication/{fmt}/{path_number}/legal",
@@ -2341,10 +2343,10 @@ class PatentEpoOpsFamilyTool(ContextAwareTool):
             context=self.context,
         )
         if "error" not in data:
-            try:
-                cache.set(cache_key, json.dumps(data), timeout=3600)
-            except Exception:
-                logger.debug("epo_ops family: cache write failed, continuing")
+            cache_set_json(
+                cache, cache_key, data, ttl=3600, max_bytes=_CACHE_MAX_BYTES,
+                large_bytes=_CACHE_LARGE_BYTES, large_ttl=_CACHE_LARGE_TTL,
+            )
         return _format_family(data, display)
 
 
@@ -2406,19 +2408,16 @@ class PatentEpoOpsClassificationTool(ContextAwareTool):
     def _cached_request(self, cache_key: str, path: str, params: dict, accept: str) -> dict:
         from django.core.cache import cache
 
-        try:
-            cached = cache.get(cache_key)
-        except Exception:
-            cached = None
+        cached = cache_get_json(cache, cache_key)
         if cached is not None:
-            return json.loads(cached)
+            return cached
         data = _ops_request(path, params, tool_name=self.name, context=self.context, accept=accept)
         if "error" not in data:
-            try:
-                # The scheme changes a few times a year.
-                cache.set(cache_key, json.dumps(data), timeout=86400)
-            except Exception:
-                logger.debug("epo_ops classification: cache write failed, continuing")
+            # The scheme changes a few times a year.
+            cache_set_json(
+                cache, cache_key, data, ttl=86400, max_bytes=_CACHE_MAX_BYTES,
+                large_bytes=_CACHE_LARGE_BYTES, large_ttl=_CACHE_LARGE_TTL,
+            )
         return data
 
     def _lookup_symbol(self, raw: str) -> str:
@@ -2429,7 +2428,7 @@ class PatentEpoOpsClassificationTool(ContextAwareTool):
                 "(A61B), main group (A61B8) or subgroup (A61B8/06)."
             )
         data = self._cached_request(
-            "epo_ops_cpc_symbol_v1:" + lookup,
+            "epo_ops_cpc_symbol_v2:" + lookup,  # v2: compressed entries
             f"classification/cpc/{lookup}",
             {"ancestors": "true", "depth": "1"},
             accept="application/cpc+xml",
@@ -2445,7 +2444,7 @@ class PatentEpoOpsClassificationTool(ContextAwareTool):
         if not q:
             return "Classification lookup error: query needs some technical words."
         data = self._cached_request(
-            "epo_ops_cpc_search_v1:" + hashlib.sha256(f"{q}:{count}".encode()).hexdigest(),
+            "epo_ops_cpc_search_v2:" + hashlib.sha256(f"{q}:{count}".encode()).hexdigest(),
             "classification/cpc/search",
             {"q": q, "Range": f"1-{count}"},
             accept="application/json",

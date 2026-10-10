@@ -1848,3 +1848,87 @@ class MixedContentTextTests(TestCase):
         acc = []
         _collect_text({"abstract": {"@lang": "en", "p": {"$": "plain"}}}, acc)
         self.assertEqual(acc, ["plain"])
+
+
+# --------------------------------------------------------------------------- #
+# Compressed, size-bounded response cache (shares the broker's Redis).
+# --------------------------------------------------------------------------- #
+
+
+@override_settings(EPO_OPS_KEY="k", EPO_OPS_SECRET="s", CACHES=_LOCMEM_CACHE)
+class OpsResponseCacheTests(TestCase):
+    PARAS = [f"[{i:04d}] " + f"Paragraph {i} of the description. " * 40 for i in range(1, 11)]
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        p = patch("llm.tools.epo_ops._ops_rate_limiter")
+        p.start()
+        self.addCleanup(p.stop)
+        p2 = patch("llm.tools.epo_ops._get_access_token", return_value="tok")
+        p2.start()
+        self.addCleanup(p2.stop)
+
+    def _get(self):
+        return PatentEpoOpsGetTool().invoke({"publication_number": "EP1000000A1", "parts": "description"})
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_entry_is_compressed_and_round_trips(self, mock_get):
+        import zlib
+
+        from django.core.cache import cache
+
+        mock_get.return_value = _mock_ok(_description_fixture(self.PARAS))
+        with patch.object(cache, "set", wraps=cache.set) as spy:
+            first = self._get()
+        key, blob = spy.call_args[0][:2]
+        self.assertTrue(key.startswith("epo_ops_get_v2:"))
+        self.assertIsInstance(blob, bytes)
+        self.assertEqual(json.loads(zlib.decompress(blob)), _description_fixture(self.PARAS))
+        self.assertEqual(spy.call_args[1]["timeout"], 3600)
+        self.assertEqual(self._get(), first)
+        self.assertEqual(mock_get.call_count, 1)
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_large_entry_gets_short_ttl(self, mock_get):
+        from django.core.cache import cache
+
+        mock_get.return_value = _mock_ok(_description_fixture(self.PARAS))
+        with patch("llm.tools.epo_ops._CACHE_LARGE_BYTES", 10), \
+                patch.object(cache, "set", wraps=cache.set) as spy:
+            self._get()
+        self.assertEqual(spy.call_args[1]["timeout"], 900)
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_oversize_entry_is_not_cached(self, mock_get):
+        mock_get.return_value = _mock_ok(_description_fixture(self.PARAS))
+        with patch("llm.tools.epo_ops._CACHE_MAX_BYTES", 10):
+            first = self._get()
+            second = self._get()
+        self.assertIn("[0001]", first)
+        self.assertEqual(first, second)
+        self.assertEqual(mock_get.call_count, 2)
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_legacy_or_corrupt_entry_is_refetched(self, mock_get):
+        from django.core.cache import cache
+
+        mock_get.return_value = _mock_ok(_description_fixture(self.PARAS))
+        with patch.object(cache, "set", wraps=cache.set) as spy:
+            self._get()
+        key = spy.call_args[0][0]
+        for bad in (json.dumps({"legacy": "uncompressed json string"}), b"not zlib"):
+            cache.set(key, bad)
+            out = self._get()
+            self.assertIn("[0001]", out)
+        self.assertEqual(mock_get.call_count, 3)
+
+    def test_cache_errors_are_swallowed(self):
+        from llm.tools._json_cache import cache_get_json, cache_set_json
+
+        broken = MagicMock()
+        broken.get.side_effect = Exception("redis down")
+        broken.set.side_effect = Exception("OOM command not allowed")
+        self.assertIsNone(cache_get_json(broken, "k"))
+        self.assertFalse(cache_set_json(broken, "k", {"a": 1}, ttl=60, max_bytes=1000))
