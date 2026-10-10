@@ -161,6 +161,30 @@ class PresenceLockTests(TransactionTestCase):
         self.assertTrue(connected2)
         await comm2.disconnect()
 
+    def _lock_holder_consumer(self, key):
+        consumer = MeetingTranscribeConsumer()
+        consumer._presence_lock_key = key
+        return consumer
+
+    async def test_heartbeat_retakes_a_vanished_lock(self):
+        # The cache is LRU-evicting, so a live session's lock can disappear; the
+        # next heartbeat takes it back so a second tab stays blocked.
+        from django.core.cache import cache
+
+        key = "meeting_live_session:vanished"
+        consumer = self._lock_holder_consumer(key)
+        await consumer._refresh_presence_lock()
+        self.assertEqual(await database_sync_to_async(cache.get)(key), consumer._lock_owner)
+
+    async def test_heartbeat_leaves_a_foreign_lock_alone(self):
+        from django.core.cache import cache
+
+        key = "meeting_live_session:foreign"
+        await database_sync_to_async(cache.set)(key, "another-connection", 45)
+        consumer = self._lock_holder_consumer(key)
+        await consumer._refresh_presence_lock()
+        self.assertEqual(await database_sync_to_async(cache.get)(key), "another-connection")
+
 
 @override_settings(**_CONSUMER_OVERRIDES)
 class FinalizeDurationTests(TransactionTestCase):

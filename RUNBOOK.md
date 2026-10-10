@@ -8,7 +8,8 @@ Operational reference for Wilfred (tto-agent). For dev setup see README.md, for 
 |-----------|------|--------|
 | **Daphne** | ASGI server (HTTP + WebSocket) | `config/asgi.py` |
 | **Postgres** | Primary database + pgvector embeddings | `DATABASE_URL` |
-| **Redis** | Celery broker (db 0), Channels/WebSocket (db 0), Django cache (db 1) | `REDIS_URL` |
+| **Redis** | Celery broker (db 0), Channels/WebSocket (db 0) | `REDIS_URL` |
+| **Cache Redis** | Django cache (separate add-on, `allkeys-lru`; falls back to db 1 of `REDIS_URL` when unset) | `CACHE_REDIS_URL` |
 | **Celery** | Async task processing (document pipeline, sub-agents, guardrails) | `config/celery.py` |
 | **Sentry** | Error tracking + performance monitoring | `SENTRY_DSN` |
 
@@ -137,7 +138,7 @@ rather than the feature.
 
 **Required config vars:** `DJANGO_SECRET_KEY`, `DJANGO_CSRF_TRUSTED_ORIGINS`, `DJANGO_ALLOWED_HOSTS`, at least one LLM API key (`OPENAI_API_KEY`), `LLM_DEFAULT_MODEL`, `LLM_ALLOWED_MODELS`.
 
-**Auto-provisioned by Heroku add-ons:** `DATABASE_URL` (Heroku Postgres), `REDIS_URL` (Heroku Redis).
+**Auto-provisioned by Heroku add-ons:** `DATABASE_URL` (Heroku Postgres), `REDIS_URL` (Heroku Redis), `CACHE_REDIS_URL` (the second Heroku Redis, attached `--as CACHE_REDIS`).
 
 **Provisioning a fresh app:** `app.json` declares the stack, buildpacks, add-ons, formation, and config-var names, so a new app can be created from the manifest (Heroku "Deploy" button or `heroku` setup) instead of re-running the steps by hand. Buildpacks and config vars are **per-app** — `pipelines:promote` copies only the slug, not these — so each app (staging, production) needs them set once. The pgbouncer buildpack is what provides `bin/start-pgbouncer`; without it the wrapped Procfile lines fail.
 
@@ -401,10 +402,42 @@ heroku redis:info                           # connection count, memory
 heroku redis:cli                            # interactive shell
 ```
 
-Redis is shared across three uses (Celery broker on db 0, Channels on db 0, Django cache on db 1). If Redis hits memory limits, Celery tasks and WebSocket connections will fail.
+There are two Redis instances per app (staging and production):
 
-**Connection limits.** The `mini` plan caps Redis at **20 connections**, shared across
-the broker, Channels (WebSockets), and the cache. Every pool is now explicitly bounded,
+| Instance | Attachment | Used by | Eviction policy |
+|----------|------------|---------|-----------------|
+| Main (`premium-0` on production, `mini` on staging) | `REDIS_URL` | Celery broker (db 0), Channels pub/sub | `volatile-lru` |
+| Cache (`mini`) | `CACHE_REDIS_URL` | Django cache (`CACHES`) | `allkeys-lru` |
+
+**Why two.** On 2026-10-08 the cache still shared the main instance (db 1). Parallel
+sub-agent web research cached tens of MB of page text, Redis hit its 50 MB cap under
+`noeviction`, and refused 613 writes: 65 Celery enqueues were lost and the broker's
+startup `sadd`s failed, crashing the worker (`Unrecoverable error: OutOfMemoryError`).
+With the cache on its own LRU instance, cached data can never starve the broker.
+Without `CACHE_REDIS_URL` (local dev, tests, review apps without the add-on) the cache
+falls back to db 1 of `REDIS_URL` (`_cache_location` in `config/settings.py`).
+
+**Eviction policies.** Set with `heroku redis:maxmemory <ATTACHMENT> --policy <policy> -a <app>`;
+applies immediately, no restart. `volatile-lru` on the main instance only ever evicts keys
+that have a TTL — Celery's queues have none, so the broker is never evicted; it only matters
+as a backstop if something with a TTL lands there. `allkeys-lru` on the cache instance
+evicts anything; every cache user already treats a miss as "recompute" (`ResilientRedisCache`
+also degrades errors to misses). The meetings presence lock re-takes itself on the next
+heartbeat if evicted (`_refresh_presence_lock`).
+
+**Memory headroom.** `premium-0` reports 50 MB, but ~15 MB of that is fixed overhead
+(a 10 MB HA replication backlog plus bookkeeping), so ~34 MB is usable for data.
+
+```bash
+# Set up the cache instance on a new app (staging first; production is user-gated)
+heroku addons:create heroku-redis:mini --as CACHE_REDIS -a <app>   # sets CACHE_REDIS_URL, restarts dynos
+heroku redis:wait CACHE_REDIS -a <app>
+heroku redis:maxmemory CACHE_REDIS --policy allkeys-lru -a <app>
+```
+
+**Connection limits.** The `mini` plan caps Redis at **20 connections** (`premium-0`: 40).
+The broker and Channels share the main instance; the cache pool now lives on the cache
+instance, so its 6/process count against that instance's own cap. Every pool is explicitly bounded,
 because redis-py defaults `max_connections` to 2**31 — effectively unlimited — and an
 unbounded pool will grow straight past the cap, at which point Heroku drops the
 over-limit TLS handshakes for *every* consumer on the instance:
@@ -466,7 +499,13 @@ See `.env.example` for the full list with comments. Key production variables:
 | `DJANGO_CSRF_TRUSTED_ORIGINS` | Yes | Comma-separated origins for CSRF (e.g., `https://app.herokuapp.com`) |
 | `DJANGO_ALLOWED_IP_RANGES` | No | Comma-separated inbound IP/CIDR allowlist for HTTP and WebSockets; empty disables it. Production: `129.241.0.0/16`. |
 | `DATABASE_URL` | Auto | Postgres connection (set by Heroku add-on) |
-| `REDIS_URL` | Auto | Redis connection (set by Heroku add-on) |
+| `REDIS_URL` | Auto | Redis connection for the Celery broker and Channels (set by Heroku add-on) |
+| `CACHE_REDIS_URL` | Auto | Dedicated cache Redis (add-on attached `--as CACHE_REDIS`, `allkeys-lru`). Unset → cache uses db 1 of `REDIS_URL` |
+| `WEB_FETCH_MAX_INFLIGHT` | No | Dyno-wide cap on uncached web fetches in flight (download/Jina + extract + scan; default: 8). Bounds worker RSS during parallel sub-agent research |
+| `WEB_FETCH_INFLIGHT_WAIT_SECONDS` | No | How long a fetch waits for an in-flight slot before returning a "try again shortly" error (default: 60) |
+| `WEB_FETCH_MAX_CONTENT_CHARS` | No | Extracted text kept per page; longer pages are cut and the result says so (default: 300000) |
+| `WEB_FETCH_JINA_MAX_RESPONSE_BYTES` | No | Byte cap on a Jina Reader response (default: 4000000). Direct downloads use `WEB_FETCH_MAX_RESPONSE_BYTES` |
+| `WEB_FETCH_CACHE_TTL` | No | Seconds a fetched page stays cached for paginated re-reads (default: 300) |
 | `CELERY_WORKER_CONCURRENCY` | No | threads-pool worker thread count (default 8; ≈ max worker DB connections). Raise to ~16–20 on a 40-connection Postgres plan. |
 | `SUBAGENT_WORKER_SLOTS` | No | Max sub-agents executing at once, system-wide (default 4; production 8). The sub-agent memory lever — applies on the next dispatch, no restart. See *Sub-agent execution queue*. |
 | `SUBAGENT_MAX_SYSTEM` | No | Max sub-agents waiting + running system-wide, i.e. the queue depth (default 8; production 24). Above it a spawn is refused with "system busy". |
@@ -509,7 +548,7 @@ See `.env.example` for the full list with comments. Key production variables:
 | `CHAT_ATTACHMENT_MAX_DESCRIBED_IMAGES` | No | Unique embedded pictures vision-described per pdf/docx/pptx chat or meeting attachment (default: 50). The rest are stored with a format-only label; ~0.6 s and ~$0.0001 per picture on Luna |
 | `DOCUMENT_MAX_DESCRIBED_IMAGES` | No | Same cap per data-room document / email attachment tree (default: 50) |
 | `DOCUMENT_IMAGE_DESCRIBE_CONCURRENCY` | No | Concurrent vision calls while describing a document's or attachment's pictures (default: 5). Each briefly holds a DB connection: peak ≈ this × concurrently processing documents/attachments |
-| `IMGDESC_CACHE_TTL` | No | Seconds an org-wide picture description stays cached in Redis (`imgdesc:v2:<org>:<sha>`, default: 30 days); shared by data rooms and chat attachments |
+| `IMGDESC_CACHE_TTL` | No | Seconds an org-wide picture description stays cached in Redis (`imgdesc:v2:<org>:<sha>`, default: 7 days); shared by data rooms and chat attachments |
 | `DOCPROGRESS_CACHE_TTL` | No | Seconds a processing-progress dict lives in Redis (`docprogress:v1:<version>`, `attprogress:v1:<attachment>`, default: 600); every write refreshes it |
 | `VISION_IMAGE_MAX_EDGE` | No | Ingest image downscale: max long edge in px (default: 1568) |
 | `VISION_IMAGE_MAX_PIXELS` | No | Ingest image downscale: max pixel area (default: 1_150_000) |

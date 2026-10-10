@@ -990,8 +990,17 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
     def _refresh_presence_lock(self) -> None:
         # Only refresh a lock we still own (own-lock check), so a successor's
         # lock is never extended by a laggard predecessor.
-        if self._presence_lock_key and cache.get(self._presence_lock_key) == self._lock_owner:
+        if not self._presence_lock_key:
+            return
+        holder = cache.get(self._presence_lock_key)
+        if holder == self._lock_owner:
             cache.set(self._presence_lock_key, self._lock_owner, MEETING_LIVE_LOCK_TTL_SECONDS)
+        elif holder is None:
+            # Our lock vanished (evicted by the cache's LRU policy, or lost in a
+            # Redis blip) while this session is still live: take it back so a
+            # second tab stays blocked. add() is atomic — if another connection
+            # grabbed it first, theirs stands.
+            cache.add(self._presence_lock_key, self._lock_owner, MEETING_LIVE_LOCK_TTL_SECONDS)
 
     @sync_to_async
     def _release_presence_lock(self) -> None:

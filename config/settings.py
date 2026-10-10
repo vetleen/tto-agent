@@ -594,6 +594,17 @@ WEB_FETCH_MAX_RESPONSE_BYTES = _env_int("WEB_FETCH_MAX_RESPONSE_BYTES", "1000000
 # Bounds the transient RSS peak when many sub-agent web_fetches run at once on the
 # threads-pool worker (Aug-2026 R14). See llm/tools/web_fetch.py.
 WEB_FETCH_CONCURRENCY = _env_int("WEB_FETCH_CONCURRENCY", "4")
+# Dyno-wide cap on uncached fetches in flight (download/Jina + extract + scan); a
+# fetch waits up to WEB_FETCH_INFLIGHT_WAIT_SECONDS for a slot, then errors. Bounds
+# the RSS a burst of parallel sub-agent research holds at once (2026-10-09).
+WEB_FETCH_MAX_INFLIGHT = _env_int("WEB_FETCH_MAX_INFLIGHT", "8")
+WEB_FETCH_INFLIGHT_WAIT_SECONDS = _env_int("WEB_FETCH_INFLIGHT_WAIT_SECONDS", "60")
+# Extracted text kept per page (longer pages are cut and say so), the byte cap on
+# a Jina Reader response (it returns text, so needs less than a raw HTML download),
+# and how long a result stays cached for paginated re-reads.
+WEB_FETCH_MAX_CONTENT_CHARS = _env_int("WEB_FETCH_MAX_CONTENT_CHARS", "300000")
+WEB_FETCH_JINA_MAX_RESPONSE_BYTES = _env_int("WEB_FETCH_JINA_MAX_RESPONSE_BYTES", "4000000")  # 4 MB
+WEB_FETCH_CACHE_TTL = _env_int("WEB_FETCH_CACHE_TTL", "300")  # 5 min
 # Dyno-wide cap on concurrent document extract+chunk stages (pypdf/docx/pptx
 # parsing, image extraction, chunking). One figure-heavy PDF is 100-200 MB of
 # transient RSS even after the pypdf cache fix; a folder upload can otherwise put
@@ -843,7 +854,7 @@ DOCPROGRESS_CACHE_TTL = _env_int("DOCPROGRESS_CACHE_TTL", "600")  # 10 min
 # letterhead/logo described once in an org isn't re-described in the next document.
 # Bump the key version in documents.services.image_assets when the vision prompt
 # changes so stale-prompt descriptions age out.
-IMGDESC_CACHE_TTL = _env_int("IMGDESC_CACHE_TTL", "2592000")  # 30 days
+IMGDESC_CACHE_TTL = _env_int("IMGDESC_CACHE_TTL", "604800")  # 7 days
 TARGET_CHUNK_TOKENS = _env_int("TARGET_CHUNK_TOKENS", "768")
 MAX_CHUNK_TOKENS = _env_int("MAX_CHUNK_TOKENS", "1200")
 CHUNK_OVERLAP_TOKENS = _env_int("CHUNK_OVERLAP_TOKENS", "100")
@@ -1102,14 +1113,27 @@ CHANNEL_LAYERS = {
     },
 }
 
-# Cache (Redis DB 1; DB 0 is Celery/channels)
-_cache_redis_base = _redis_url.rsplit("/", 1)[0] if "/" in _redis_url.split("://", 1)[-1] else _redis_url
+# Cache. On Heroku it lives on its OWN Redis add-on (attached as CACHE_REDIS ->
+# CACHE_REDIS_URL, maxmemory-policy allkeys-lru), so a burst of cached pages can
+# never fill the broker's Redis again: on 2026-10-08 web_fetch entries filled the
+# shared instance and Redis refused 65 Celery enqueues and crashed the worker.
+# Without CACHE_REDIS_URL (local dev, tests) it falls back to DB 1 of REDIS_URL
+# (DB 0 is Celery/channels).
+def _cache_location(redis_url: str, cache_redis_url: str) -> tuple[str, bool]:
+    """Return ``(LOCATION, is_tls)`` for the Django cache."""
+    if cache_redis_url:
+        return cache_redis_url, cache_redis_url.startswith("rediss://")
+    base = redis_url.rsplit("/", 1)[0] if "/" in redis_url.split("://", 1)[-1] else redis_url
+    return f"{base}/1", redis_url.startswith("rediss://")
+
+
+_cache_location_url, _cache_is_tls = _cache_location(_redis_url, os.environ.get("CACHE_REDIS_URL", ""))
 _cache_config: dict = {
     # Fail-open subclass of the built-in RedisCache: a transient Redis blip (the
-    # shared 20-connection Mini cap being briefly exceeded) degrades a cache read
-    # to a miss instead of 500-ing the request. See core/cache.py.
+    # 20-connection Mini cap being briefly exceeded) degrades a cache read to a
+    # miss instead of 500-ing the request. See core/cache.py.
     "BACKEND": "core.cache.ResilientRedisCache",
-    "LOCATION": f"{_cache_redis_base}/1",
+    "LOCATION": _cache_location_url,
     # Django passes unrecognised OPTIONS straight to ConnectionPool.from_url.
     "OPTIONS": {
         "max_connections": _CACHE_POOL_MAX,
@@ -1117,7 +1141,7 @@ _cache_config: dict = {
         "socket_keepalive": True,
     },
 }
-if _redis_is_tls:
+if _cache_is_tls:
     _cache_config["OPTIONS"]["ssl_cert_reqs"] = ssl.CERT_NONE
 CACHES = {"default": _cache_config}
 

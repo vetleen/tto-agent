@@ -104,6 +104,39 @@ class ChannelLayerSettingsTest(SimpleTestCase):
         self.assertIn('_cache_config["OPTIONS"]["ssl_cert_reqs"] = ssl.CERT_NONE', source)
 
 
+class CacheLocationTest(SimpleTestCase):
+    """The cache runs on its own Redis add-on (CACHE_REDIS_URL) when one is attached,
+    so cached data can never fill the broker's Redis; otherwise DB 1 of REDIS_URL."""
+
+    def _location(self, redis_url, cache_redis_url):
+        from config.settings import _cache_location
+
+        return _cache_location(redis_url, cache_redis_url)
+
+    def test_dedicated_cache_redis_wins(self):
+        self.assertEqual(
+            self._location("redis://broker:6379", "redis://cache:6379"),
+            ("redis://cache:6379", False),
+        )
+
+    def test_falls_back_to_db1_of_redis_url(self):
+        self.assertEqual(
+            self._location("redis://127.0.0.1:6379/0", ""),
+            ("redis://127.0.0.1:6379/1", False),
+        )
+        self.assertEqual(
+            self._location("redis://h:6379", ""),
+            ("redis://h:6379/1", False),
+        )
+
+    def test_tls_follows_the_chosen_url(self):
+        # A TLS cache add-on next to a plain broker URL (and vice versa) must get
+        # ssl_cert_reqs from the cache URL, not from REDIS_URL.
+        self.assertEqual(self._location("redis://broker:6379", "rediss://cache:6379")[1], True)
+        self.assertEqual(self._location("rediss://broker:6379", "redis://cache:6379")[1], False)
+        self.assertEqual(self._location("rediss://broker:6379", "")[1], True)
+
+
 class ChannelLayerUsageTest(SimpleTestCase):
     """Pub/sub has no cross-process delivery to a *specific* channel.
 

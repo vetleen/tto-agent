@@ -297,7 +297,7 @@ class EmbeddedImageDescriberBase:
             cache.set(
                 _CACHE_KEY.format(org_id=self.org_id, sha=sha),
                 desc,
-                getattr(settings, "IMGDESC_CACHE_TTL", 2_592_000),
+                getattr(settings, "IMGDESC_CACHE_TTL", 604_800),
             )
         except Exception:  # pragma: no cover - cache is already fail-open
             pass
