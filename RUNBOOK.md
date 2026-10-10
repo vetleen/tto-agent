@@ -437,7 +437,11 @@ heroku redis:maxmemory CACHE_REDIS --policy allkeys-lru -a <app>
 
 **Connection limits.** The `mini` plan caps Redis at **20 connections** (`premium-0`: 40).
 The broker and Channels share the main instance; the cache pool now lives on the cache
-instance, so its 6/process count against that instance's own cap. Every pool is explicitly bounded,
+instance, so its 6/process count against that instance's own cap. Django's cache handler
+is thread-local, so the stock `RedisCache` gave every *thread* its own pool;
+`ResilientRedisCache` shares one blocking pool per process, which is what makes "6" a
+per-process number (before that fix one staging research run had 85 connections
+rejected by the cache Mini). Every pool is explicitly bounded,
 because redis-py defaults `max_connections` to 2**31 — effectively unlimited — and an
 unbounded pool will grow straight past the cap, at which point Heroku drops the
 over-limit TLS handshakes for *every* consumer on the instance:
@@ -506,6 +510,9 @@ See `.env.example` for the full list with comments. Key production variables:
 | `WEB_FETCH_MAX_CONTENT_CHARS` | No | Extracted text kept per page; longer pages are cut and the result says so (default: 300000) |
 | `WEB_FETCH_JINA_MAX_RESPONSE_BYTES` | No | Byte cap on a Jina Reader response (default: 4000000). Direct downloads use `WEB_FETCH_MAX_RESPONSE_BYTES` |
 | `WEB_FETCH_CACHE_TTL` | No | Seconds a fetched page stays cached for paginated re-reads (default: 300) |
+| `WEB_FETCH_MAX_PARSE_BYTES` | No | HTML characters handed to the parser; the rest is truncated before parsing (default: 3000000) |
+| `WEB_FETCH_LARGE_PAGE_CHARS` | No | HTML this large or larger parses one page at a time per dyno (default: 500000) |
+| `CACHE_REDIS_POOL_TIMEOUT` | No | Seconds a cache call waits for a free connection in the process-wide pool before degrading to a miss (default: 2) |
 | `CELERY_WORKER_CONCURRENCY` | No | threads-pool worker thread count (default 8; ≈ max worker DB connections). Raise to ~16–20 on a 40-connection Postgres plan. |
 | `SUBAGENT_WORKER_SLOTS` | No | Max sub-agents executing at once, system-wide (default 4; production 8). The sub-agent memory lever — applies on the next dispatch, no restart. See *Sub-agent execution queue*. |
 | `SUBAGENT_MAX_SYSTEM` | No | Max sub-agents waiting + running system-wide, i.e. the queue depth (default 8; production 24). Above it a spawn is refused with "system busy". |

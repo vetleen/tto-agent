@@ -77,6 +77,35 @@ class ResilientRedisCacheUnitTests(SimpleTestCase):
                 self.cache.get("k")
 
 
+class SharedClientTests(SimpleTestCase):
+    """Every thread's backend instance shares one client (one bounded pool) per
+    process, so max_connections caps the process rather than each thread."""
+
+    def test_instances_with_same_config_share_a_client(self):
+        a = ResilientRedisCache(_LOC, {"OPTIONS": {"max_connections": 3}})
+        b = ResilientRedisCache(_LOC, {"OPTIONS": {"max_connections": 3}})
+        self.assertIs(a._cache, b._cache)
+
+    def test_threads_share_the_client(self):
+        import threading
+
+        seen = []
+        backends = [ResilientRedisCache(_LOC, {"OPTIONS": {"max_connections": 4}}) for _ in range(4)]
+        threads = [threading.Thread(target=lambda c=c: seen.append(c._cache)) for c in backends]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(len({id(c) for c in seen}), 1)
+
+    def test_different_config_gets_its_own_client(self):
+        a = ResilientRedisCache(_LOC, {"OPTIONS": {"max_connections": 3}})
+        b = ResilientRedisCache("redis://127.0.0.1:6379/2", {"OPTIONS": {"max_connections": 3}})
+        c = ResilientRedisCache(_LOC, {"OPTIONS": {"max_connections": 5}})
+        self.assertIsNot(a._cache, b._cache)
+        self.assertIsNot(a._cache, c._cache)
+
+
 @override_settings(
     CACHES={"default": {"BACKEND": "core.cache.ResilientRedisCache", "LOCATION": _LOC}},
     BUDGET_STATUS_CACHE_SECONDS=60,  # force the cached path (0 would bypass the cache)

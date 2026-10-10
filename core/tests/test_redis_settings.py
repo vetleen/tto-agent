@@ -89,6 +89,13 @@ class ChannelLayerSettingsTest(SimpleTestCase):
         self.assertGreaterEqual(max_connections, 2)
         self.assertLess(max_connections, 20)
 
+    def test_cache_pool_blocks_briefly_instead_of_failing(self):
+        """The process-wide shared pool waits for a free connection rather than
+        raising the moment all are busy (which would turn bursts into misses)."""
+        options = settings.CACHES["default"].get("OPTIONS", {})
+        self.assertEqual(options.get("pool_class"), "redis.BlockingConnectionPool")
+        self.assertGreater(options.get("timeout", 0), 0)
+
     def test_cache_keeps_tls_option_alongside_pool_bound(self):
         """Adding max_connections must not have displaced ssl_cert_reqs.
 

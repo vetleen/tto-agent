@@ -594,6 +594,11 @@ WEB_FETCH_MAX_RESPONSE_BYTES = _env_int("WEB_FETCH_MAX_RESPONSE_BYTES", "1000000
 # Bounds the transient RSS peak when many sub-agent web_fetches run at once on the
 # threads-pool worker (Aug-2026 R14). See llm/tools/web_fetch.py.
 WEB_FETCH_CONCURRENCY = _env_int("WEB_FETCH_CONCURRENCY", "4")
+# HTML over WEB_FETCH_MAX_PARSE_BYTES chars is truncated before parsing; HTML of
+# WEB_FETCH_LARGE_PAGE_CHARS or more parses one page at a time per dyno (four
+# ~1.4M-char pages parsed together added ~320 MB RSS on staging, 2026-10-10).
+WEB_FETCH_MAX_PARSE_BYTES = _env_int("WEB_FETCH_MAX_PARSE_BYTES", "3000000")
+WEB_FETCH_LARGE_PAGE_CHARS = _env_int("WEB_FETCH_LARGE_PAGE_CHARS", "500000")
 # Dyno-wide cap on uncached fetches in flight (download/Jina + extract + scan); a
 # fetch waits up to WEB_FETCH_INFLIGHT_WAIT_SECONDS for a slot, then errors. Bounds
 # the RSS a burst of parallel sub-agent research holds at once (2026-10-09).
@@ -1135,7 +1140,13 @@ _cache_config: dict = {
     "BACKEND": "core.cache.ResilientRedisCache",
     "LOCATION": _cache_location_url,
     # Django passes unrecognised OPTIONS straight to ConnectionPool.from_url.
+    # ResilientRedisCache shares this pool across all threads of a process, so
+    # max_connections bounds the process. Blocking: when every connection is busy
+    # a cache call waits up to CACHE_REDIS_POOL_TIMEOUT seconds for one (cache ops
+    # take ~ms) instead of failing; past that it degrades to a miss.
     "OPTIONS": {
+        "pool_class": "redis.BlockingConnectionPool",
+        "timeout": int(os.environ.get("CACHE_REDIS_POOL_TIMEOUT", "2")),
         "max_connections": _CACHE_POOL_MAX,
         "health_check_interval": _REDIS_HEALTH_CHECK_INTERVAL,
         "socket_keepalive": True,

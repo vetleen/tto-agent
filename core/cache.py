@@ -20,16 +20,27 @@ Per-method fallbacks are chosen so degradation is SAFE:
     LIVE meeting) rather than handing out a duplicate lock;
   - ``set`` / ``touch`` / ``delete`` / ``*_many`` -> no-op.
 
-``incr`` / ``decr`` / ``clear`` are intentionally left to the parent so genuine
-errors on those still surface.
+``incr`` / ``decr`` fail open too (see their comments); ``clear`` is left to
+the parent so genuine errors on it still surface.
+
+One client (and so one connection pool) per process. Django's cache handler is
+thread-local, so the stock RedisCache builds a client — with its own pool — in
+every thread that touches the cache, and ``max_connections`` caps each thread,
+not the process. The threads-pool worker (16 Celery threads plus tool and fetch
+thread pools) therefore opened far more connections than the bound suggests:
+the dedicated cache Mini (20 connections) rejected 85 in one staging research
+run (2026-10-10). Here every thread shares the process's client for the same
+LOCATION + OPTIONS; redis-py pools are thread-safe.
 """
 
 from __future__ import annotations
 
 import logging
+import threading
 
 from django.core.cache.backends.base import DEFAULT_TIMEOUT
 from django.core.cache.backends.redis import RedisCache
+from django.utils.functional import cached_property
 
 try:
     from redis.exceptions import (
@@ -43,9 +54,25 @@ except Exception:  # pragma: no cover - redis is always installed in this app
 
 logger = logging.getLogger(__name__)
 
+_shared_clients: dict[str, object] = {}
+_shared_clients_lock = threading.Lock()
+
 
 class ResilientRedisCache(RedisCache):
-    """``RedisCache`` that swallows transient connection/timeout errors (fail-open)."""
+    """``RedisCache`` that swallows transient connection/timeout errors (fail-open)
+    and shares one client per process (see module docstring)."""
+
+    @cached_property
+    def _cache(self):
+        key = repr((self._servers, sorted(self._options.items(), key=lambda kv: kv[0])))
+        client = _shared_clients.get(key)
+        if client is None:
+            with _shared_clients_lock:
+                client = _shared_clients.get(key)
+                if client is None:
+                    client = self._class(self._servers, **self._options)
+                    _shared_clients[key] = client
+        return client
 
     def _degraded(self, op: str, key=None) -> None:
         # INFO, not WARNING: this is a tolerated, expected condition under
