@@ -400,18 +400,72 @@ class WebFetchCacheTests(TestCase):
         self.assertEqual(out, result)
         self.assertIsNone(cache.get("wf-big"))
 
-    @override_settings(WEB_FETCH_CACHE_LARGE_ENTRY_BYTES=50)
-    def test_large_entry_gets_short_ttl(self):
-        import secrets
-
+    def test_entries_kept_five_minutes_by_default(self):
+        # The cache only serves paginated re-reads, which happen within minutes.
         from django.core.cache import cache
-        from llm.tools.web_fetch import _CACHE_LARGE_TTL, _CACHE_TTL, _cache_result
+        from llm.tools.web_fetch import _cache_result
 
         with patch.object(cache, "set") as mock_set:
-            _cache_result(cache, "wf-small", {"url": "u", "content": "hi"})
-            _cache_result(cache, "wf-large", {"url": "u", "content": secrets.token_hex(500)})
-        ttls = {c.args[0]: c.kwargs["timeout"] for c in mock_set.call_args_list}
-        self.assertEqual(ttls, {"wf-small": _CACHE_TTL, "wf-large": _CACHE_LARGE_TTL})
+            _cache_result(cache, "wf-ttl", {"url": "u", "content": "hi"})
+        self.assertEqual(mock_set.call_args.kwargs["timeout"], 300)
+
+    @override_settings(WEB_FETCH_CACHE_TTL=42)
+    def test_ttl_is_configurable(self):
+        from django.core.cache import cache
+        from llm.tools.web_fetch import _cache_result
+
+        with patch.object(cache, "set") as mock_set:
+            _cache_result(cache, "wf-ttl", {"url": "u", "content": "hi"})
+        self.assertEqual(mock_set.call_args.kwargs["timeout"], 42)
+
+    @patch("llm.tools.web_fetch._pinned_get")
+    def test_fragment_variants_share_one_fetch(self, mock_get):
+        # ".../doc#a" and ".../doc#b" are the same page: the fragment never
+        # reaches the server, so fetch once, cache once, request it without "#".
+        mock_get.return_value = _mock_response(
+            content_type="text/html",
+            text="<html><body><p>Regulation text</p></body></html>",
+        )
+        first = self.tool.invoke({"url": "https://example.com/doc#chapter-2"})
+        second = self.tool.invoke({"url": "https://example.com/doc#%C2%A73-5"})
+
+        self.assertIn("Regulation text", first)
+        self.assertIn("Regulation text", second)
+        mock_get.assert_called_once()
+        self.assertEqual(mock_get.call_args.args[0], "https://example.com/doc")
+
+    @override_settings(WEB_FETCH_MAX_CONTENT_CHARS=100)
+    @patch("llm.tools.web_fetch._pinned_get")
+    def test_content_over_cap_is_truncated_and_flagged(self, mock_get):
+        from django.core.cache import cache
+        from llm.tools.web_fetch import _fetch_core
+
+        mock_get.return_value = _mock_response(
+            content_type="text/html",
+            text="<html><body><p>" + "word " * 200 + "</p></body></html>",
+        )
+        data = _fetch_core("https://example.com/huge", cache)
+
+        self.assertLessEqual(len(data["content"]), 100)
+        self.assertEqual(data["truncated_at"], len(data["content"]))
+        self.assertEqual(data["char_count"], len(data["content"]))
+
+        # Reading to the end says the page was cut, not "(complete)".
+        result = self.tool.invoke({"url": "https://example.com/huge", "max_chars": 50000})
+        self.assertIn("was cut at", result)
+        self.assertNotIn("(complete)", result)
+
+    @patch("llm.tools.web_fetch._pinned_get")
+    def test_content_under_cap_not_flagged(self, mock_get):
+        from django.core.cache import cache
+        from llm.tools.web_fetch import _fetch_core
+
+        mock_get.return_value = _mock_response(
+            content_type="text/html",
+            text="<html><body><p>Short page</p></body></html>",
+        )
+        data = _fetch_core("https://example.com/short-page", cache)
+        self.assertNotIn("truncated_at", data)
 
     @patch("llm.tools.web_fetch._pinned_get")
     def test_unreadable_cache_entry_refetches(self, mock_get):
@@ -1371,12 +1425,12 @@ class JinaFallbackTests(TestCase):
                     any("Jina fallback failed" in r.getMessage() for r in logs.records)
                 )
 
-    @override_settings(WEB_FETCH_MAX_RESPONSE_BYTES=1000)
+    @override_settings(WEB_FETCH_JINA_MAX_RESPONSE_BYTES=1000)
     @patch("llm.tools.web_fetch.requests.get")
     @patch("llm.tools.web_fetch._pinned_get")
     def test_jina_oversized_response_declines(self, mock_pinned, mock_requests_get):
-        """An oversized Jina body trips the size cap; the fallback declines and
-        the original error surfaces."""
+        """An oversized Jina body trips its own size cap; the fallback declines
+        and the original error surfaces."""
         mock_pinned.side_effect = req_lib.exceptions.ConnectionError("refused")
         mock_requests_get.return_value = _mock_response(
             chunks=[b"z" * 2000], content_length=None,
@@ -1482,3 +1536,83 @@ class WebFetchConcurrencyCapTests(TestCase):
     def test_setting_floored_at_one(self):
         # A misconfigured 0 must not deadlock every fetch — floored to 1.
         self.assertEqual(_get_web_fetch_semaphore()._initial_value, 1)
+
+
+@override_settings(
+    CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
+    JINA_API_KEY="",
+)
+class WebFetchInflightCapTests(TestCase):
+    """The dyno-wide cap on uncached fetches in flight (download + extract), which
+    bounds how many pages' bytes and text a research burst holds at once."""
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        web_fetch_module._inflight_semaphore = None
+        self.addCleanup(setattr, web_fetch_module, "_inflight_semaphore", None)
+
+    @override_settings(WEB_FETCH_MAX_INFLIGHT=3)
+    def test_semaphore_honours_setting(self):
+        self.assertEqual(web_fetch_module._get_inflight_semaphore()._initial_value, 3)
+
+    @override_settings(WEB_FETCH_MAX_INFLIGHT=0)
+    def test_setting_floored_at_one(self):
+        self.assertEqual(web_fetch_module._get_inflight_semaphore()._initial_value, 1)
+
+    @override_settings(WEB_FETCH_MAX_INFLIGHT=1, WEB_FETCH_INFLIGHT_WAIT_SECONDS=0.05)
+    @patch("llm.tools.web_fetch._pinned_get")
+    def test_full_cap_returns_busy_error(self, mock_get):
+        from django.core.cache import cache
+        from llm.tools.web_fetch import _fetch_core
+
+        sem = web_fetch_module._get_inflight_semaphore()
+        sem.acquire()  # another fetch holds the only slot
+        try:
+            data = _fetch_core("https://example.com/busy", cache)
+        finally:
+            sem.release()
+
+        self.assertIn("try again shortly", data["error"])
+        mock_get.assert_not_called()
+
+    @override_settings(WEB_FETCH_MAX_INFLIGHT=1)
+    @patch("llm.tools.web_fetch._pinned_get")
+    def test_slot_released_after_fetch_and_after_error(self, mock_get):
+        from django.core.cache import cache
+        from llm.tools.web_fetch import _fetch_core
+
+        mock_get.side_effect = req_lib.exceptions.Timeout("slow")
+        _fetch_core("https://example.com/err", cache)
+        mock_get.side_effect = None
+        mock_get.return_value = _mock_response(
+            content_type="text/html", text="<html><body><p>Fine</p></body></html>",
+        )
+        _fetch_core("https://example.com/ok", cache)
+
+        # Both slots were given back: the single slot is free again.
+        sem = web_fetch_module._get_inflight_semaphore()
+        self.assertTrue(sem.acquire(blocking=False))
+        sem.release()
+
+    @override_settings(WEB_FETCH_MAX_INFLIGHT=1, WEB_FETCH_INFLIGHT_WAIT_SECONDS=0.05)
+    @patch("llm.tools.web_fetch._pinned_get")
+    def test_cache_hit_skips_the_cap(self, mock_get):
+        from django.core.cache import cache
+        from llm.tools.web_fetch import _fetch_core
+
+        mock_get.return_value = _mock_response(
+            content_type="text/html", text="<html><body><p>Cached page</p></body></html>",
+        )
+        _fetch_core("https://example.com/hit", cache)  # populate the cache
+
+        sem = web_fetch_module._get_inflight_semaphore()
+        sem.acquire()  # cap is full...
+        try:
+            data = _fetch_core("https://example.com/hit", cache)
+        finally:
+            sem.release()
+
+        self.assertIn("Cached page", data["content"])  # ...but a hit is still served
+        mock_get.assert_called_once()

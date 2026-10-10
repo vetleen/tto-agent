@@ -12,7 +12,7 @@ import threading
 import time
 import zlib
 
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urldefrag, urljoin, urlparse
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -46,6 +46,40 @@ def _max_response_bytes() -> int:
     return getattr(django_settings, "WEB_FETCH_MAX_RESPONSE_BYTES", _DEFAULT_MAX_RESPONSE_BYTES)
 
 
+# Jina returns extracted text/markdown, not HTML, so it needs far less headroom
+# than a direct download: 4 MB is well over a million characters.
+# Overridable via settings.WEB_FETCH_JINA_MAX_RESPONSE_BYTES.
+_DEFAULT_JINA_MAX_RESPONSE_BYTES = 4_000_000
+
+
+def _jina_max_response_bytes() -> int:
+    return getattr(django_settings, "WEB_FETCH_JINA_MAX_RESPONSE_BYTES", _DEFAULT_JINA_MAX_RESPONSE_BYTES)
+
+
+# Cap on the extracted text kept per page (2026-10-09: sub-agents pulled whole
+# 200k-650k char pages in parallel; every copy — result dict, cache blob, web
+# scan input — scales with it). 300k chars is ~30 pages of web_fetch
+# pagination; anything past it is dropped and the result says where it was cut.
+# Overridable via settings.WEB_FETCH_MAX_CONTENT_CHARS.
+_DEFAULT_MAX_CONTENT_CHARS = 300_000
+
+
+def _cap_content(content: str) -> tuple[str, int | None]:
+    """Truncate *content* to WEB_FETCH_MAX_CONTENT_CHARS at a whitespace boundary.
+
+    Returns ``(content, truncated_at)``; ``truncated_at`` is ``None`` when the
+    content was within the cap.
+    """
+    cap = getattr(django_settings, "WEB_FETCH_MAX_CONTENT_CHARS", _DEFAULT_MAX_CONTENT_CHARS)
+    if len(content) <= cap:
+        return content, None
+    window = content[:cap]
+    boundary = max(window.rfind(" "), window.rfind("\n"))
+    if boundary > cap // 2:
+        window = window[:boundary]
+    return window, len(window)
+
+
 # HTML parser for the two BeautifulSoup passes (text + image discovery). lxml is
 # several times leaner and faster than the stdlib "html.parser" on the parse
 # tree — the transient web-research memory culprit (Aug-2026 R14 tracemalloc
@@ -66,25 +100,23 @@ def _max_parse_bytes() -> int:
     return getattr(django_settings, "WEB_FETCH_MAX_PARSE_BYTES", _DEFAULT_MAX_PARSE_BYTES)
 
 
-# Result cache sizing. The cache shares the production Redis (50 MB, noeviction)
-# with the Celery broker, so an unbounded entry can starve the broker and crash
-# the worker (WILFRED-99/9A/9B: a sub-agent's large PDF fetches filled it).
-# Entries are zlib-compressed (extracted text shrinks ~3x); a compressed entry
-# over the cap is not cached at all; a large one is kept only long enough to page
-# through it. Paginated re-reads are served from this cache, so long documents
-# must stay cacheable — hence a high cap with a short TTL rather than a low cap.
+# Result cache sizing. Research bursts of large pages once filled the Redis the
+# cache shared with the Celery broker and crashed the worker (WILFRED-99/9A/9B,
+# 2026-10-08). Entries are zlib-compressed (extracted text shrinks ~3x) and a
+# compressed entry over the cap is not cached at all. The cache exists to serve
+# paginated re-reads, which happen within minutes of the first fetch — hence a
+# high cap with a short TTL rather than a low cap. Overridable via
+# settings.WEB_FETCH_CACHE_MAX_BYTES / WEB_FETCH_CACHE_TTL.
 _DEFAULT_CACHE_MAX_BYTES = 1_000_000  # compressed
-_CACHE_LARGE_ENTRY_BYTES = 200_000  # compressed; above this use the short TTL
-_CACHE_TTL = 3600
-_CACHE_LARGE_TTL = 900
+_DEFAULT_CACHE_TTL = 300
 
 
 def _cache_max_bytes() -> int:
     return getattr(django_settings, "WEB_FETCH_CACHE_MAX_BYTES", _DEFAULT_CACHE_MAX_BYTES)
 
 
-def _cache_large_entry_bytes() -> int:
-    return getattr(django_settings, "WEB_FETCH_CACHE_LARGE_ENTRY_BYTES", _CACHE_LARGE_ENTRY_BYTES)
+def _cache_ttl() -> int:
+    return getattr(django_settings, "WEB_FETCH_CACHE_TTL", _DEFAULT_CACHE_TTL)
 
 
 # Dyno-wide cap on concurrent HTML parse+extract — the memory-heavy window: a
@@ -105,6 +137,28 @@ def _get_web_fetch_semaphore() -> threading.BoundedSemaphore:
                 n = max(1, int(getattr(django_settings, "WEB_FETCH_CONCURRENCY", 4)))
                 _web_fetch_semaphore = threading.BoundedSemaphore(n)
     return _web_fetch_semaphore
+
+
+# Dyno-wide cap on uncached fetches in flight — download, Jina fallback, parse
+# and scan. The parse cap above bounds only the tree-building window; the raw
+# responses and extracted text of every other in-flight fetch still pile up
+# (2026-10-09: parallel sub-agents x 4 tool calls x 4 pages put dozens in flight
+# and took the worker from ~400 MB to ~800 MB RSS in 20 s, which the threads
+# pool never gives back). Cache hits skip it. Always acquired BEFORE the parse
+# semaphore, so the two can't deadlock. Set WEB_FETCH_MAX_INFLIGHT /
+# WEB_FETCH_INFLIGHT_WAIT_SECONDS.
+_inflight_semaphore: threading.BoundedSemaphore | None = None
+_inflight_semaphore_lock = threading.Lock()
+
+
+def _get_inflight_semaphore() -> threading.BoundedSemaphore:
+    global _inflight_semaphore
+    if _inflight_semaphore is None:
+        with _inflight_semaphore_lock:
+            if _inflight_semaphore is None:
+                n = max(1, int(getattr(django_settings, "WEB_FETCH_MAX_INFLIGHT", 8)))
+                _inflight_semaphore = threading.BoundedSemaphore(n)
+    return _inflight_semaphore
 
 
 class _SSRFBlocked(Exception):
@@ -517,7 +571,7 @@ def _fetch_via_jina(url: str, context=None, reason: str = "") -> dict | None:
             # Trusted host — no SSRF pinning needed, but still cap the body so
             # a huge page can't OOM the worker. _ResponseTooLarge is an
             # Exception, so it's caught here and the fallback declines gracefully.
-            _enforce_size_and_buffer(resp, _max_response_bytes())
+            _enforce_size_and_buffer(resp, _jina_max_response_bytes())
             break
         except requests.exceptions.HTTPError as e:
             status = getattr(getattr(e, "response", None), "status_code", None)
@@ -568,13 +622,14 @@ def _fetch_via_jina(url: str, context=None, reason: str = "") -> dict | None:
         return None
 
     logger.info("web_fetch: Jina fallback succeeded for url=%s chars=%d", url, len(content))
+    content, truncated_at = _cap_content(content)
     images = _images_from_jina(data)
     # Alt text (parsed from Jina's image summary) is page-supplied, untrusted
     # content — scan it alongside the body, exactly like the direct path.
     alt_blob = _alt_text_blob(images)
     _run_web_scan(content + (("\n" + alt_blob) if alt_blob else ""), context)
 
-    return {
+    result = {
         "url": url,
         "title": title,
         "content": content,
@@ -582,6 +637,9 @@ def _fetch_via_jina(url: str, context=None, reason: str = "") -> dict | None:
         "source": "jina",
         "images": images,
     }
+    if truncated_at is not None:
+        result["truncated_at"] = truncated_at
+    return result
 
 
 def _run_web_scan(text: str, context=None) -> None:
@@ -825,8 +883,8 @@ def _cache_result(cache, cache_key: str, result: dict) -> dict:
 
     Skips an empty extraction (no content) so a transient failure — a
     JS-rendered page, or Jina being down/declined — isn't pinned for the full
-    hour; the next fetch of that URL can try again instead of re-serving "0 of 0".
-    The entry is stored zlib-compressed and size-bounded (see _CACHE_* above).
+    TTL; the next fetch of that URL can try again instead of re-serving "0 of 0".
+    The entry is stored zlib-compressed and size-bounded (see _DEFAULT_CACHE_* above).
     """
     if not (result.get("content") or "").strip():
         return result
@@ -838,8 +896,7 @@ def _cache_result(cache, cache_key: str, result: dict) -> dict:
                 result.get("url", ""), len(result.get("content") or ""), len(blob),
             )
             return result
-        ttl = _CACHE_LARGE_TTL if len(blob) > _cache_large_entry_bytes() else _CACHE_TTL
-        cache.set(cache_key, blob, timeout=ttl)
+        cache.set(cache_key, blob, timeout=_cache_ttl())
     except Exception:
         logger.debug("web_fetch: cache write failed, continuing")
     return result
@@ -849,11 +906,14 @@ def _fetch_core(url: str, cache, context=None) -> dict:
     """Fetch a URL and return a result dict with the FULL extracted content.
 
     Returns ``{url, title, content, char_count, source}`` on success or
-    ``{"error": ..., "url": ...}`` on failure. Truncation/pagination happens
-    at the formatting boundary, never here — the cache always holds the full
-    content so paginated re-reads are cache hits.
+    ``{"error": ..., "url": ...}`` on failure. Pagination happens at the
+    formatting boundary, never here — the cache holds the whole extracted
+    content (up to WEB_FETCH_MAX_CONTENT_CHARS; a result cut there carries
+    ``truncated_at``) so paginated re-reads are cache hits.
     """
-    url = url.strip()
+    # Drop any #fragment: it never reaches the server, so ".../doc#s3" and
+    # ".../doc#s5" are the same page — one fetch, one cache entry.
+    url, _fragment = urldefrag(url.strip())
     if not url:
         return {"error": "Empty URL", "url": url}
 
@@ -884,6 +944,22 @@ def _fetch_core(url: str, cache, context=None) -> dict:
             logger.debug("Web fetch cache hit for url=%s", url)
             return data
 
+    inflight = _get_inflight_semaphore()
+    wait = getattr(django_settings, "WEB_FETCH_INFLIGHT_WAIT_SECONDS", 60)
+    if not inflight.acquire(timeout=wait):
+        logger.info("web_fetch: in-flight cap still full after %ss, giving up on url=%s", wait, url)
+        return {"error": "Too many pages are being fetched right now; try again shortly", "url": url}
+    try:
+        return _fetch_uncached(url, cache, cache_key, context)
+    finally:
+        inflight.release()
+
+
+def _fetch_uncached(url: str, cache, cache_key: str, context=None) -> dict:
+    """The network half of _fetch_core: download (or Jina), extract, scan, cache.
+
+    Runs while holding an in-flight slot (see _get_inflight_semaphore).
+    """
     # --- Fetch HTML ---
     headers = {
         "User-Agent": f"Mozilla/5.0 (compatible; {django_settings.ASSISTANT_NAME}Bot/1.0)",
@@ -1013,6 +1089,8 @@ def _fetch_core(url: str, cache, context=None) -> dict:
                     _run_web_scan(alt_blob, context)
             return _cache_result(cache, cache_key, jina)
 
+    text, truncated_at = _cap_content(text)
+
     # Alt text is page-supplied, untrusted content — scan it alongside the body.
     alt_blob = _alt_text_blob(images)
     _run_web_scan(text + (("\n" + alt_blob) if alt_blob else ""), context)
@@ -1025,6 +1103,8 @@ def _fetch_core(url: str, cache, context=None) -> dict:
         "source": "direct",
         "images": images,
     }
+    if truncated_at is not None:
+        result["truncated_at"] = truncated_at
     return _cache_result(cache, cache_key, result)
 
 
@@ -1106,6 +1186,11 @@ def _format_fetch_result(
         pagination = (
             f"Showing chars {start_index}–{end_index} of {total_len} — "
             f"call again with start_index={end_index} to continue reading"
+        )
+    elif data.get("truncated_at"):
+        pagination = (
+            f"Showing chars {start_index}–{end_index} of {total_len} — this is all that "
+            f"was kept: the page was longer and was cut at {total_len} chars"
         )
     else:
         pagination = f"Showing chars {start_index}–{end_index} of {total_len} (complete)"
