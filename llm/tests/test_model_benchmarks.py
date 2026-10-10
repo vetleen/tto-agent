@@ -42,13 +42,13 @@ class BenchmarkDataTests(SimpleTestCase):
                 self.assertEqual(len(seen), len(set(seen)))
 
     def test_missing_models(self):
-        # GPT-6.1 Sol (2026-09-29) has no Arena votes yet; Haiku 5.5
-        # (2026-10-07) has no published scores anywhere yet.
+        # GPT-6.1 Sol, Sonnet 5.5 and Haiku 5.5 have no Arena business
+        # rating yet (checked 2026-10-10).
         self.assertEqual(
             missing_models(BENCHMARK_ARENA_BUSINESS),
             ["openai/gpt-6.1-sol", "anthropic/claude-sonnet-5-5", "anthropic/claude-haiku-5-5"],
         )
-        self.assertEqual(missing_models(BENCHMARK_GDPVAL), ["anthropic/claude-haiku-5-5"])
+        self.assertEqual(missing_models(BENCHMARK_GDPVAL), [])
         for key in BENCHMARKS:
             covered = {s.model_id for s in get_scores(key)}
             self.assertEqual(
@@ -85,8 +85,20 @@ class BenchmarkDataTests(SimpleTestCase):
             ],
         )
 
-    def test_livebench_if_misses_only_haiku(self):
-        self.assertEqual(missing_models(BENCHMARK_LIVEBENCH_IF), ["anthropic/claude-haiku-5-5"])
+    def test_livebench_if_covers_every_model(self):
+        self.assertEqual(missing_models(BENCHMARK_LIVEBENCH_IF), [])
+
+    def test_haiku_5_5_scores(self):
+        # Every effort level on AA; LiveBench lists only xhigh and max.
+        efforts = ["low", "medium", "high", "xhigh", "max"]
+        for key in (BENCHMARK_GDPVAL, BENCHMARK_GDP_PDF, BENCHMARK_OMNISCIENCE):
+            with self.subTest(key=key):
+                rows = get_scores(key, "anthropic/claude-haiku-5-5")
+                self.assertEqual([s.effort for s in rows], efforts)
+        self.assertEqual(
+            [s.effort for s in get_scores(BENCHMARK_LIVEBENCH_IF, "anthropic/claude-haiku-5-5")],
+            ["xhigh", "max"],
+        )
 
     def test_hallucination_rate_is_lower_is_better(self):
         self.assertFalse(get_benchmark(BENCHMARK_OMNISCIENCE).higher_is_better)
