@@ -619,6 +619,17 @@ class ChatHomeModelChoicesTests(TestCase):
         self.assertContains(response, 'id="model-selector-btn"')
         self.assertContains(response, 'id="model-selector-dropdown"')
 
+    def test_model_choices_carry_rating_not_blended_price(self):
+        # The "$" rating comes from a backend-only blended price; the picker
+        # gets the rating and the real list price (tooltip), never the blend.
+        response = self.client.get(reverse("chat_home"))
+        choices = json.loads(response.context["model_choices_json"])
+        self.assertTrue(choices)
+        for m in choices:
+            with self.subTest(model=m["id"]):
+                self.assertIn("price_level", m)
+                self.assertFalse(any("blend" in k for k in m))
+
     @patch("core.preferences.get_preferences")
     def test_model_guide_covers_only_enabled_models(self, mock_preferences):
         from core.preferences import ResolvedPreferences

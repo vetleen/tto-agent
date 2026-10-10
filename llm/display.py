@@ -184,34 +184,64 @@ def supports_modality(model_id: str, modality: str) -> bool:
     return modality in input_modalities(model_id)
 
 
-# Output-price buckets (USD per 1M output tokens) -> "$" count (1-5).
-# "$" is exclusive (< $3, so $3.00 exactly reads "$$"); the rest are
-# upper-inclusive: $$ <= $5, $$$ <= $15, $$$$ <= $50, $$$$$ > $50.
-_PRICE_SINGLE_DOLLAR_MAX = Decimal("3")
+# Fixed token mix behind the "$" rating: the share of tokens by billing kind in
+# prod agent/chat turns (llm_llmcalllog, 2026-08-11..2026-10-10, 573M tokens over
+# 896 turns). Output is ~1% of tokens, so cache writes and reads drive what a
+# model costs us; uncached input is ~0 and omitted. Shares sum to 1.
+_PRICE_MIX_CACHE_READ = Decimal("0.768")
+_PRICE_MIX_CACHE_WRITE = Decimal("0.220")
+_PRICE_MIX_OUTPUT = Decimal("0.012")
+
+# Blended USD per 1M tokens -> "$" count (1-5). "$" is exclusive (< $0.15);
+# the rest are upper-inclusive: $$ <= $0.50, $$$ <= $1.20, $$$$ <= $3, $$$$$ > $3.
+_PRICE_SINGLE_DOLLAR_MAX = Decimal("0.15")
 _PRICE_THRESHOLDS = (
-    (Decimal("5"), 2),
-    (Decimal("15"), 3),
-    (Decimal("50"), 4),
+    (Decimal("0.50"), 2),
+    (Decimal("1.20"), 3),
+    (Decimal("3"), 4),
 )
 
 
-def get_price_level(model_id: str) -> int:
-    """Return a 1-5 cost rating from a model's output price (0 if unknown).
+def _blended_price(model_id: str) -> Decimal | None:
+    """USD per 1M tokens at the fixed prod mix, or None if pricing is unknown.
 
-    Buckets on USD per 1M output tokens: ``<3 -> 1`` (exclusive), then
-    upper-inclusive ``<=5 -> 2``, ``<=15 -> 3``, ``<=50 -> 4``, ``>50 -> 5``.
-    Drives the ``$``-``$$$$$`` glyphs in the chat model picker.
+    Backend-only: it sets the "$" rating and is never shown to users, who see
+    the rating and the real list prices. Uses the displayed price band
+    (Haiku 5.5's >100K band); a model without a cache-write charge (Gemini's
+    implicit caching) bills those tokens as plain input.
     """
     from llm.service.pricing import get_display_pricing
 
     pricing = get_display_pricing(model_id)
     if pricing is None:
+        return None
+    input_price, cached_price, write_price, output_price = pricing
+    if cached_price is None:
+        cached_price = input_price
+    if write_price is None:
+        write_price = input_price
+    return (
+        _PRICE_MIX_CACHE_READ * cached_price
+        + _PRICE_MIX_CACHE_WRITE * write_price
+        + _PRICE_MIX_OUTPUT * output_price
+    )
+
+
+def get_price_level(model_id: str) -> int:
+    """Return a 1-5 cost rating from a model's blended price (0 if unknown).
+
+    Buckets ``_blended_price`` (USD per 1M tokens at the prod token mix):
+    ``<0.15 -> 1`` (exclusive), then upper-inclusive ``<=0.50 -> 2``,
+    ``<=1.20 -> 3``, ``<=3 -> 4``, ``>3 -> 5``. Drives the ``$``-``$$$$$``
+    glyphs in the chat model picker and the model guide.
+    """
+    price = _blended_price(model_id)
+    if price is None:
         return 0
-    output_price = pricing[3]
-    if output_price < _PRICE_SINGLE_DOLLAR_MAX:
+    if price < _PRICE_SINGLE_DOLLAR_MAX:
         return 1
     for threshold, level in _PRICE_THRESHOLDS:
-        if output_price <= threshold:
+        if price <= threshold:
             return level
     return 5
 

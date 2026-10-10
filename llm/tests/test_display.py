@@ -7,6 +7,10 @@ from django.test import SimpleTestCase
 
 from llm.model_registry import ModelInfo
 from llm.display import (
+    _PRICE_MIX_CACHE_READ,
+    _PRICE_MIX_CACHE_WRITE,
+    _PRICE_MIX_OUTPUT,
+    _blended_price,
     get_capability_level,
     get_default_thinking_level,
     get_display_name,
@@ -101,20 +105,65 @@ class ReasoningLevelTests(SimpleTestCase):
 
 class PickerRatingTests(SimpleTestCase):
     def test_price_buckets(self):
-        # "$" is exclusive at $3 output; $2.50 flash-lite is in, $3.75 flash is not.
-        self.assertEqual(get_price_level("openai/gpt-5.6-luna"), 1)
-        self.assertEqual(get_price_level("openai/gpt-5.4-nano"), 1)
-        self.assertEqual(get_price_level("gemini/gemini-3.5-flash-lite"), 1)
+        # Rated on the blended price at the prod token mix, not output alone.
+        expected = {
+            "openai/gpt-6-luna": 1,
+            "openai/gpt-5.4-nano": 1,
+            "gemini/gemini-3.5-flash-lite": 1,
+            # Same $2.50 output as flash-lite, but its >100K band input/cache
+            # prices put it with Gemini 3.8 Flash.
+            "anthropic/claude-haiku-5-5": 2,
+            "gemini/gemini-3.8-flash": 2,
+            "openai/gpt-6.1-sol": 3,
+            "openai/gpt-6-sol": 3,
+            "openai/gpt-5.6-terra": 3,
+            "gemini/gemini-3.1-pro-preview": 3,
+            "anthropic/claude-sonnet-5-5": 3,
+            "anthropic/claude-sonnet-5": 3,
+            "openai/gpt-5.6-sol": 4,
+            "anthropic/claude-opus-5-5": 4,
+            "openai/gpt-6-astra": 5,
+            "anthropic/claude-fable-5-1": 5,
+            "anthropic/claude-fable-5": 5,
+        }
+        for model_id, level in expected.items():
+            with self.subTest(model=model_id):
+                self.assertEqual(get_price_level(model_id), level)
+        # Retired IDs rate as their replacement.
         self.assertEqual(get_price_level("gemini/gemini-3.7-flash"), 2)
-        self.assertEqual(get_price_level("openai/gpt-5.6-terra"), 3)
-        self.assertEqual(get_price_level("openai/gpt-5.6-sol"), 4)
-        self.assertEqual(get_price_level("openai/gpt-6-astra"), 4)
-        self.assertEqual(get_price_level("openai/gpt-6-luna"), 1)
-        self.assertEqual(get_price_level("openai/gpt-6-sol"), 3)
-        self.assertEqual(get_price_level("anthropic/claude-opus-5-5"), 4)
-        # Rated on its >100K band ($2.50 output), not the $0.50 base.
-        self.assertEqual(get_price_level("anthropic/claude-haiku-5-5"), 1)
         self.assertEqual(get_price_level("custom/unknown"), 0)
+
+    def test_price_mix_sums_to_one(self):
+        self.assertEqual(
+            _PRICE_MIX_CACHE_READ + _PRICE_MIX_CACHE_WRITE + _PRICE_MIX_OUTPUT, Decimal("1"),
+        )
+
+    def test_blended_price_falls_back_to_input_without_write_price(self):
+        # Gemini has no cache-write charge: those tokens bill as plain input.
+        prices = (Decimal("1"), Decimal("0.10"), None, Decimal("5"))
+        with patch("llm.service.pricing.get_display_pricing", return_value=prices):
+            self.assertEqual(
+                _blended_price("gemini/x"),
+                _PRICE_MIX_CACHE_READ * Decimal("0.10")
+                + _PRICE_MIX_CACHE_WRITE * Decimal("1")
+                + _PRICE_MIX_OUTPUT * Decimal("5"),
+            )
+
+    def test_price_bucket_boundaries(self):
+        cases = [
+            (Decimal("0.1499"), 1),
+            (Decimal("0.15"), 2),
+            (Decimal("0.50"), 2),
+            (Decimal("0.5001"), 3),
+            (Decimal("1.20"), 3),
+            (Decimal("3"), 4),
+            (Decimal("3.0001"), 5),
+        ]
+        for price, level in cases:
+            with self.subTest(price=price), patch(
+                "llm.display._blended_price", return_value=price,
+            ):
+                self.assertEqual(get_price_level("x/y"), level)
 
     def test_capability_buckets(self):
         self.assertEqual(get_capability_level("openai/gpt-5.4-nano"), 1)

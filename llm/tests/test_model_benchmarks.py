@@ -124,8 +124,20 @@ class ModelGuideTests(SimpleTestCase):
         guide = build_model_guide(self.ALLOWED)
         opus = guide["models"][0]
         self.assertEqual(opus["display_name"], "Claude Opus 5.5")
-        self.assertEqual(opus["price_level"], 4)  # $20 / 1M output
+        self.assertEqual(opus["price_level"], 4)
         self.assertEqual(opus["capability_level"], 4)
+
+    def test_models_never_carry_the_blended_price(self):
+        # The blended price only sets the rating; users see the rating and
+        # the real list prices, never the blend.
+        from llm.display import _blended_price
+
+        guide = build_model_guide(self.ALLOWED)
+        for m in guide["models"]:
+            with self.subTest(model=m["id"]):
+                blended = str(_blended_price(m["id"]))
+                self.assertNotIn(blended, json.dumps(m))
+                self.assertFalse(any("blend" in k for k in m))
 
     def test_every_effort_row_and_metadata_is_serialisable(self):
         guide = build_model_guide(self.ALLOWED)
