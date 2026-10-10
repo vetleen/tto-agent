@@ -792,14 +792,17 @@ class CanvasImportValidationTests(TestCase):
         self.thread = ChatThread.objects.create(created_by=self.user)
         self.client.force_login(self.user)
 
-    def test_rejects_non_docx_file(self):
+    def test_rejects_unsupported_file(self):
+        # Word, PDF and text are importable (CANVAS_IMPORT_KINDS); anything
+        # else is refused before a canvas is created.
         from django.core.files.uploadedfile import SimpleUploadedFile
 
-        f = SimpleUploadedFile("evil.txt", b"hello", content_type="text/plain")
+        f = SimpleUploadedFile("evil.exe", b"MZ\x90\x00", content_type="application/x-msdownload")
         url = reverse("canvas_import", kwargs={"thread_id": self.thread.id})
         response = self.client.post(url, {"file": f})
         self.assertEqual(response.status_code, 400)
         self.assertIn("docx", response.json()["error"].lower())
+        self.assertFalse(ChatCanvas.objects.filter(thread=self.thread).exists())
 
     def test_rejects_oversized_file(self):
         from django.core.files.uploadedfile import SimpleUploadedFile
