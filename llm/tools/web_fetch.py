@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import ipaddress
 import json
@@ -87,17 +88,28 @@ def _cap_content(content: str) -> tuple[str, int | None]:
 # trivially revertible. lxml ships transitively via readability-lxml.
 _HTML_PARSER = "lxml"
 
-# High safety cap on the size of decoded HTML handed to the parser. The download
-# is already bounded (_DEFAULT_MAX_RESPONSE_BYTES), but a bs4 tree is several
-# times the HTML size, so an oversized page can still spike RSS transiently.
-# This is an absolute safety net for pathological pages, not a normal-path limit
-# — kept high; HTML over it is truncated before parsing (article content sits
-# near the top of the document). Overridable via settings.WEB_FETCH_MAX_PARSE_BYTES.
-_DEFAULT_MAX_PARSE_BYTES = 8_000_000  # 8 MB
+# Cap on the size of decoded HTML handed to the parser. The download is already
+# bounded (_DEFAULT_MAX_RESPONSE_BYTES), but the bs4/lxml tree plus trafilatura's
+# and readability's own trees run many times the HTML size: four ~1.4M-char
+# EUR-Lex pages parsed together added ~320 MB RSS in 4 s on staging (2026-10-10).
+# HTML over the cap is truncated before parsing (article content sits near the
+# top of the document); the extracted text is capped separately
+# (WEB_FETCH_MAX_CONTENT_CHARS). Overridable via settings.WEB_FETCH_MAX_PARSE_BYTES.
+_DEFAULT_MAX_PARSE_BYTES = 3_000_000
 
 
 def _max_parse_bytes() -> int:
     return getattr(django_settings, "WEB_FETCH_MAX_PARSE_BYTES", _DEFAULT_MAX_PARSE_BYTES)
+
+
+# HTML at or above this many characters parses in a single-slot "large page" lane
+# (on top of a normal parse slot), so at most one huge tree exists per dyno at a
+# time. Overridable via settings.WEB_FETCH_LARGE_PAGE_CHARS.
+_DEFAULT_LARGE_PAGE_CHARS = 500_000
+
+
+def _large_page_chars() -> int:
+    return getattr(django_settings, "WEB_FETCH_LARGE_PAGE_CHARS", _DEFAULT_LARGE_PAGE_CHARS)
 
 
 # Result cache sizing. Research bursts of large pages once filled the Redis the
@@ -137,6 +149,12 @@ def _get_web_fetch_semaphore() -> threading.BoundedSemaphore:
                 n = max(1, int(getattr(django_settings, "WEB_FETCH_CONCURRENCY", 4)))
                 _web_fetch_semaphore = threading.BoundedSemaphore(n)
     return _web_fetch_semaphore
+
+
+# Single-slot lane for large pages (see _large_page_chars). Always acquired
+# BEFORE the parse semaphore, so a large page holds the lane while it waits for a
+# parse slot but never the other way round — no deadlock.
+_large_parse_lock = threading.Lock()
 
 
 # Dyno-wide cap on uncached fetches in flight — download, Jina fallback, parse
@@ -1015,12 +1033,12 @@ def _fetch_uncached(url: str, cache, cache_key: str, context=None) -> dict:
     logger.info("web_fetch: fetched url=%s status=%d chars=%d", url, response.status_code, len(response.text))
     raw_html = response.text
 
-    # Absolute safety net: a bs4 tree is several times the HTML size, so cap the
-    # HTML handed to the parser. Rare — only pathologically large pages hit it;
-    # the article content sits near the top, so truncation loses little.
+    # The parse trees are many times the HTML size, so cap the HTML handed to the
+    # parser; the article content sits near the top, so truncation loses little.
+    # INFO: routine for huge regulation/database pages, not actionable.
     max_parse = _max_parse_bytes()
     if len(raw_html) > max_parse:
-        logger.warning(
+        logger.info(
             "web_fetch: HTML for url=%s is %d chars (> %d cap); truncating before parse",
             url, len(raw_html), max_parse,
         )
@@ -1039,7 +1057,8 @@ def _fetch_uncached(url: str, cache, cache_key: str, context=None) -> dict:
     # the network/cache tail — so glibc isn't holding a tree per in-flight fetch.
     # raw_html's length is captured for the JS-render check before it is freed.
     raw_len = len(raw_html)
-    with _get_web_fetch_semaphore():
+    large_lane = _large_parse_lock if raw_len >= _large_page_chars() else contextlib.nullcontext()
+    with large_lane, _get_web_fetch_semaphore():
         try:
             soup = BeautifulSoup(raw_html, _HTML_PARSER)
         except Exception:

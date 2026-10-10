@@ -118,12 +118,12 @@ class WebFetchToolTests(TestCase):
         self.assertGreater(len(big_html), 2000)
         mock_get.return_value = _mock_response(content_type="text/html", text=big_html)
 
-        with self.assertLogs("llm.tools.web_fetch", level="WARNING") as cm:
+        with self.assertLogs("llm.tools.web_fetch", level="INFO") as cm:
             result = self.tool.invoke({"url": "https://example.com"})
 
         # Top-of-page content survives the truncation...
         self.assertIn("Top content here.", result)
-        # ...and the safety-net warning fired.
+        # ...and the truncation was logged (INFO: routine, not a Sentry event).
         self.assertTrue(
             any("truncating before parse" in line for line in cm.output),
             cm.output,
@@ -1536,6 +1536,57 @@ class WebFetchConcurrencyCapTests(TestCase):
     def test_setting_floored_at_one(self):
         # A misconfigured 0 must not deadlock every fetch — floored to 1.
         self.assertEqual(_get_web_fetch_semaphore()._initial_value, 1)
+
+
+@override_settings(
+    CACHES={"default": {"BACKEND": "django.core.cache.backends.dummy.DummyCache"}},
+    JINA_API_KEY="",
+)
+class WebFetchLargePageLaneTests(TestCase):
+    """Large pages parse one at a time (single-slot lane), so at most one huge
+    parse tree exists per dyno; normal pages don't touch the lane."""
+
+    def _page(self, size):
+        body = "<p>" + ("word " * (size // 5)) + "</p>"
+        return _mock_response(content_type="text/html", text=f"<html><body>{body}</body></html>")
+
+    @override_settings(WEB_FETCH_LARGE_PAGE_CHARS=1000)
+    @patch("llm.tools.web_fetch._pinned_get")
+    def test_large_page_waits_for_the_lane(self, mock_get):
+        from django.core.cache import cache
+        from llm.tools.web_fetch import _fetch_core
+
+        mock_get.return_value = self._page(5000)
+        acquired = []
+        real_lock = web_fetch_module._large_parse_lock
+
+        class _SpyLock:
+            def __enter__(self):
+                acquired.append(True)
+                return real_lock.__enter__()
+
+            def __exit__(self, *exc):
+                return real_lock.__exit__(*exc)
+
+        with patch.object(web_fetch_module, "_large_parse_lock", _SpyLock()):
+            data = _fetch_core("https://example.com/large", cache)
+
+        self.assertIn("word", data["content"])
+        self.assertEqual(acquired, [True])
+        self.assertFalse(real_lock.locked())  # released afterwards
+
+    @override_settings(WEB_FETCH_LARGE_PAGE_CHARS=1_000_000)
+    @patch("llm.tools.web_fetch._pinned_get")
+    def test_normal_page_skips_the_lane(self, mock_get):
+        from django.core.cache import cache
+        from llm.tools.web_fetch import _fetch_core
+
+        mock_get.return_value = self._page(5000)
+        spy = MagicMock()
+        with patch.object(web_fetch_module, "_large_parse_lock", spy):
+            data = _fetch_core("https://example.com/normal", cache)
+        self.assertIn("word", data["content"])
+        spy.__enter__.assert_not_called()
 
 
 @override_settings(
