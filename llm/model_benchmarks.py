@@ -24,6 +24,7 @@ BENCHMARK_ARENA_BUSINESS = "arena_business"
 BENCHMARK_GDP_PDF = "gdp_pdf"
 BENCHMARK_LIVEBENCH_IF = "livebench_if"
 BENCHMARK_OMNISCIENCE = "omniscience_hallucination"
+BENCHMARK_RESPONSE_TIME = "response_time_100k"
 
 
 @dataclass(frozen=True)
@@ -58,7 +59,8 @@ class Benchmark:
     higher_is_better: bool = True
     caveat: str | None = None
     # How the guide formats and scales scores: "elo" (relative, no zero),
-    # "percent" (0-100, shown with %), "score" (0-100, shown bare).
+    # "percent" (0-100, shown with %), "score" (0-100, shown bare),
+    # "seconds" (a duration, lower is better; bars relative to the fastest).
     scale: str = "elo"
 
 
@@ -329,6 +331,69 @@ _LIVEBENCH_IF_SCORES = (
     _row("gemini/gemini-3.5-flash-lite", "high", 67.24, "gemini-3.5-flash-lite-high"),
 )
 
+# Artificial Analysis end-to-end response time (seconds to receive a complete
+# 500-token answer, thinking included) for its 100K-token prompt: the median in
+# the "by prompt type" data on each artificialanalysis.ai/models/<slug> page,
+# fetched 2026-10-11. Slugs follow the AA rows above. Effort variants AA has no
+# 100K measurement for are left out (GPT-6 Sol/Luna medium, Gemini 3.8 Flash
+# low/medium, Sonnet 5 max); GPT-5.6 Sol, Fable 5 and GPT-5.4 nano have none.
+_RESPONSE_TIME_SCORES = (
+    _row("openai/gpt-6-astra", "low", 11.4, "gpt-6-astra-low"),
+    _row("openai/gpt-6-astra", "medium", 17.2, "gpt-6-astra-medium"),
+    _row("openai/gpt-6-astra", "high", 31.9, "gpt-6-astra-high"),
+    _row("openai/gpt-6-astra", "xhigh", 125.6, "gpt-6-astra-xhigh"),
+    _row("openai/gpt-6-astra", "max", 179.8, "gpt-6-astra"),
+    _row("openai/gpt-6.1-sol", "low", 9.3, "gpt-6-1-sol-low"),
+    _row("openai/gpt-6.1-sol", "medium", 13.3, "gpt-6-1-sol-medium"),
+    _row("openai/gpt-6.1-sol", "high", 48.5, "gpt-6-1-sol-high"),
+    _row("openai/gpt-6.1-sol", "xhigh", 203.0, "gpt-6-1-sol-xhigh"),
+    _row("openai/gpt-6.1-sol", "max", 287.3, "gpt-6-1-sol"),
+    _row("openai/gpt-6-sol", "none", 9.5, "gpt-6-sol-non-reasoning"),
+    _row("openai/gpt-6-sol", "low", 13.7, "gpt-6-sol-low"),
+    _row("openai/gpt-6-sol", "high", 18.8, "gpt-6-sol-high"),
+    _row("openai/gpt-6-sol", "xhigh", 39.8, "gpt-6-sol-xhigh"),
+    _row("openai/gpt-6-sol", "max", 58.6, "gpt-6-sol"),
+    _row("openai/gpt-6-luna", "none", 5.7, "gpt-6-luna-non-reasoning"),
+    _row("openai/gpt-6-luna", "low", 8.3, "gpt-6-luna-low"),
+    _row("openai/gpt-6-luna", "high", 10.5, "gpt-6-luna-high"),
+    _row("openai/gpt-6-luna", "xhigh", 16.2, "gpt-6-luna-xhigh"),
+    _row("openai/gpt-6-luna", "max", 48.8, "gpt-6-luna"),
+    _row("openai/gpt-5.6-terra", "none", 6.0, "gpt-5-6-terra-non-reasoning"),
+    _row("openai/gpt-5.6-terra", "low", 6.8, "gpt-5-6-terra-low"),
+    _row("openai/gpt-5.6-terra", "medium", 6.0, "gpt-5-6-terra-medium"),
+    _row("openai/gpt-5.6-terra", "high", 8.6, "gpt-5-6-terra-high"),
+    _row("openai/gpt-5.6-terra", "xhigh", 15.5, "gpt-5-6-terra-xhigh"),
+    _row("openai/gpt-5.6-terra", "max", 42.4, "gpt-5-6-terra"),
+    _row("anthropic/claude-fable-5-1", "low", 20.9, "claude-fable-5-1-low"),
+    _row("anthropic/claude-fable-5-1", "medium", 23.6, "claude-fable-5-1-medium"),
+    _row("anthropic/claude-fable-5-1", "high", 31.7, "claude-fable-5-1-high"),
+    _row("anthropic/claude-fable-5-1", "xhigh", 70.2, "claude-fable-5-1-xhigh"),
+    _row("anthropic/claude-fable-5-1", "max", 321.3, "claude-fable-5-1"),
+    _row("anthropic/claude-opus-5-5", "low", 18.9, "claude-opus-5-5-low"),
+    _row("anthropic/claude-opus-5-5", "medium", 29.6, "claude-opus-5-5-medium"),
+    _row("anthropic/claude-opus-5-5", "high", 30.8, "claude-opus-5-5-high"),
+    _row("anthropic/claude-opus-5-5", "xhigh", 107.1, "claude-opus-5-5-xhigh"),
+    _row("anthropic/claude-opus-5-5", "max", 558.4, "claude-opus-5-5"),
+    _row("anthropic/claude-sonnet-5-5", "low", 10.9, "claude-sonnet-5-5-low"),
+    _row("anthropic/claude-sonnet-5-5", "medium", 16.7, "claude-sonnet-5-5-medium"),
+    _row("anthropic/claude-sonnet-5-5", "high", 17.0, "claude-sonnet-5-5-high"),
+    _row("anthropic/claude-sonnet-5-5", "xhigh", 70.4, "claude-sonnet-5-5-xhigh"),
+    _row("anthropic/claude-sonnet-5-5", "max", 562.5, "claude-sonnet-5-5"),
+    _row("anthropic/claude-sonnet-5", "off", 19.1, "claude-sonnet-5-non-reasoning"),
+    _row("anthropic/claude-sonnet-5", "low", 17.0, "claude-sonnet-5-low"),
+    _row("anthropic/claude-sonnet-5", "medium", 17.1, "claude-sonnet-5-medium"),
+    _row("anthropic/claude-sonnet-5", "high", 35.0, "claude-sonnet-5-high"),
+    _row("anthropic/claude-sonnet-5", "xhigh", 36.0, "claude-sonnet-5-xhigh"),
+    _row("anthropic/claude-haiku-5-5", "low", 7.4, "claude-haiku-5-5-low"),
+    _row("anthropic/claude-haiku-5-5", "medium", 25.5, "claude-haiku-5-5-medium"),
+    _row("anthropic/claude-haiku-5-5", "high", 21.2, "claude-haiku-5-5-high"),
+    _row("anthropic/claude-haiku-5-5", "xhigh", 110.5, "claude-haiku-5-5-xhigh"),
+    _row("anthropic/claude-haiku-5-5", "max", 279.9, "claude-haiku-5-5"),
+    _row("gemini/gemini-3.1-pro-preview", None, 34.9, "gemini-3-1-pro-preview"),
+    _row("gemini/gemini-3.8-flash", "high", 16.3, "gemini-3-8-flash"),
+    _row("gemini/gemini-3.5-flash-lite", None, 17.1, "gemini-3-5-flash-lite"),
+)
+
 _FETCHED = date(2026, 9, 29)
 
 BENCHMARKS: dict[str, Benchmark] = {
@@ -433,6 +498,29 @@ BENCHMARKS: dict[str, Benchmark] = {
                 "as sticking to sources you provide."
             ),
         ),
+        Benchmark(
+            key=BENCHMARK_RESPONSE_TIME,
+            name="AA End-to-End Response Time (100K)",
+            title="Speed",
+            question="How long do you wait for a reply in a long conversation?",
+            metric="Seconds",
+            description=(
+                "Seconds from sending a request with about 100,000 tokens of "
+                "context (a long chat with documents) until a complete "
+                "500-token answer has arrived, thinking time included. Median "
+                "of repeated measurements on the model maker's own service."
+            ),
+            source_url="https://artificialanalysis.ai/models",
+            as_of=date(2026, 10, 11),
+            scores=_RESPONSE_TIME_SCORES,
+            higher_is_better=False,
+            scale="seconds",
+            caveat=(
+                "Times one reply. When the assistant uses tools, such as "
+                "searching or reading documents, it makes several calls, so "
+                "the full wait is longer."
+            ),
+        ),
     )
 }
 
@@ -518,5 +606,5 @@ __all__ = [
     "Benchmark", "BenchmarkScore", "BENCHMARKS",
     "BENCHMARK_GDPVAL", "BENCHMARK_ARENA_BUSINESS",
     "BENCHMARK_GDP_PDF", "BENCHMARK_LIVEBENCH_IF", "BENCHMARK_OMNISCIENCE",
-    "get_benchmark", "get_scores", "missing_models", "build_model_guide",
+    "BENCHMARK_RESPONSE_TIME", "get_benchmark", "get_scores", "missing_models", "build_model_guide",
 ]

@@ -105,12 +105,20 @@
     };
     var lastFocus = null;
 
-    // "percent" and "score" are bounded 0-100 (bars from 0); "elo" is relative.
-    function isBounded(bench) { return bench.scale !== 'elo'; }
+    // "percent" and "score" are bounded 0-100 (bars from 0); "elo" is relative;
+    // "seconds" is a duration (bars relative to the fastest).
+    function isBounded(bench) { return bench.scale === 'percent' || bench.scale === 'score'; }
+
+    function formatSeconds(s) {
+      if (s < 60) return s.toFixed(1) + ' s';
+      var whole = Math.round(s);
+      return Math.floor(whole / 60) + ' min ' + (whole % 60) + ' s';
+    }
 
     function formatScore(bench, score) {
       if (bench.scale === 'percent') return score.toFixed(1) + '%';
       if (bench.scale === 'score') return score.toFixed(1);
+      if (bench.scale === 'seconds') return formatSeconds(score);
       return String(Math.round(score));
     }
 
@@ -131,10 +139,15 @@
     }
 
     // One scale per page (list + detail share it): percent metrics from 0,
-    // Elo from a round number below the lowest visible score (Elo has no zero).
+    // Elo from a round number below the lowest visible score (Elo has no zero),
+    // durations as fastest / time (twice as slow = half the bar).
     function makeScale(bench, rows) {
       var values = rows.map(function (r) { return goodness(bench, r.score); });
       if (!values.length) return function () { return 0; };
+      if (bench.scale === 'seconds') {
+        var fastest = Math.min.apply(null, rows.map(function (r) { return r.score; }));
+        return function (score) { return Math.max(0.015, Math.min(1, fastest / (score || 1))); };
+      }
       var hi = Math.max.apply(null, values);
       var lo = 0;
       if (!isBounded(bench)) {

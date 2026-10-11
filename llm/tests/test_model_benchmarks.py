@@ -10,6 +10,7 @@ from llm.model_benchmarks import (
     BENCHMARK_GDPVAL,
     BENCHMARK_LIVEBENCH_IF,
     BENCHMARK_OMNISCIENCE,
+    BENCHMARK_RESPONSE_TIME,
     BENCHMARKS,
     build_model_guide,
     get_benchmark,
@@ -82,6 +83,7 @@ class BenchmarkDataTests(SimpleTestCase):
                 (BENCHMARK_GDP_PDF, "percent"),
                 (BENCHMARK_LIVEBENCH_IF, "score"),
                 (BENCHMARK_OMNISCIENCE, "percent"),
+                (BENCHMARK_RESPONSE_TIME, "seconds"),
             ],
         )
 
@@ -102,6 +104,23 @@ class BenchmarkDataTests(SimpleTestCase):
 
     def test_hallucination_rate_is_lower_is_better(self):
         self.assertFalse(get_benchmark(BENCHMARK_OMNISCIENCE).higher_is_better)
+
+    def test_response_time(self):
+        bench = get_benchmark(BENCHMARK_RESPONSE_TIME)
+        self.assertFalse(bench.higher_is_better)
+        # AA has no 100K timing for these (checked 2026-10-11).
+        self.assertEqual(
+            missing_models(BENCHMARK_RESPONSE_TIME),
+            ["openai/gpt-5.6-sol", "openai/gpt-5.4-nano", "anthropic/claude-fable-5"],
+        )
+        for s in bench.scores:
+            with self.subTest(model=s.model_id, effort=s.effort):
+                self.assertGreater(s.score, 0)
+        # Every effort AA timed is a row, so the guide can rank each model by
+        # its fastest effort and list them all in the detail view.
+        haiku = {s.effort: s.score for s in get_scores(BENCHMARK_RESPONSE_TIME, "anthropic/claude-haiku-5-5")}
+        self.assertEqual(set(haiku), {"low", "medium", "high", "xhigh", "max"})
+        self.assertEqual(min(haiku, key=haiku.get), "low")
 
 
 class ModelGuideTests(SimpleTestCase):
