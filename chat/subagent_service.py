@@ -11,7 +11,7 @@ from core.preferences import MIN_CONTEXT_TOKENS, ResolvedPreferences
 
 logger = logging.getLogger(__name__)
 
-# Sub-agents get fewer tool iterations than the pipeline default (50): long
+# Sub-agents get fewer tool iterations than the pipeline default (100): long
 # runs are the worker's main memory spike (history grows every iteration), and
 # the per-iteration progress counter the pipeline injects for sub-agents keeps
 # the model pacing itself instead of hitting the cliff.

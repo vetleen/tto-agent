@@ -1584,7 +1584,7 @@ class RunSubagentServiceTests(TestCase):
         pipeline_id, request = mock_svc.return_value.run_via_stream.call_args[0]
         self.assertEqual(pipeline_id, "simple_chat")
         self.assertTrue(request.stream)
-        # Sub-agents run with a reduced iteration budget (pipeline default is 50).
+        # Sub-agents run with a reduced iteration budget (pipeline default is 100).
         self.assertEqual(request.params["max_tool_iterations"], 35)
 
 
