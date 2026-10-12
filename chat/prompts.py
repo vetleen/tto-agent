@@ -44,10 +44,10 @@ def _render_canvas_sharing(max_shared_canvases: dict[str, int] | None) -> tuple[
     Returns ``(delivered_suffix, canvases_bullet)``. *max_shared_canvases* maps
     model tier → how many canvases a sub-agent of that tier may be handed; None
     (no resolved budget) keeps the bullet without a number, and all-zero drops
-    the option entirely.
+    the canvas option entirely (attachments can still be shared).
     """
     if max_shared_canvases is not None and not any(max_shared_canvases.values()):
-        return "", ""
+        return " (your prompt, plus any attachments you choose to share)", ""
 
     def _n(count: int) -> str:
         return f"{count} canvas" if count == 1 else f"{count} canvases"
@@ -65,7 +65,7 @@ def _render_canvas_sharing(max_shared_canvases: dict[str, int] | None) -> tuple[
         "have it draft a revision, ask it to build one in its working canvas, which is "
         f"returned to you.{limit}\n"
     )
-    return " (your prompt, plus any canvases you choose to share)", bullet
+    return " (your prompt, plus any canvases or attachments you choose to share)", bullet
 
 
 def build_static_system_prompt(
@@ -200,7 +200,8 @@ and the same async reactivation path as described above kicks in.
 - A "queued" status is not a failure: the sub-agent is waiting for a free execution slot and starts automatically, and its result arrives the same way as a started one. Never create it again — re-submitting only adds a duplicate to the queue.
 - Choose `model_tier` based on task complexity: "mid" (default) for most tasks (research, summaries, lookups), "top" only for tasks that require exceptional intelligence (note: rarely relevant).
 - Optionally pass `type="<slug>"` to give the sub-agent a specialization (extra role-specific instructions and tools). Available specializations, if any, are listed under "Sub-agent specializations"; omit `type` for a general-purpose sub-agent.
-{canvases_bullet}- Write clear, specific task prompts — the sub-agent has no access to your current conversation history. You **must** provide all necessary information in your prompt to it.
+{canvases_bullet}- Optionally pass `attachments=[N, ...]` (numbers from the "# Attachments" list) to let the sub-agent view files the user attached — text, PDF pages, slides, images — instead of describing them in your prompt. Sharing an email also shares the files attached to it.
+- Write clear, specific task prompts — the sub-agent has no access to your current conversation history. You **must** provide all necessary information in your prompt to it.
 
 ## Checking results
 - Sub-agent status and results should appear automatically on every turn after a sub-agent completes.

@@ -203,7 +203,11 @@ Runtime nudge tells the model to use it.
 **Native files (images/PDFs/decks)**: chat attachments are sent to the model natively only on
 the turn they were uploaded (`ChatConsumer._enrich_with_attachments`: user entries after the
 last assistant entry); older messages carry `[Attached: #N …]` markers and the agent
-re-views files with `chat_attachment_view` (numbers from `list_thread_attachments`). Tool
+re-views files with `chat_attachment_view` (numbers from `list_thread_attachments`). The
+orchestrator shares attachments with a sub-agent via `chat_subagent_create(attachments=[N…])`
+(ids + numbers on `SubAgentRun.shared_attachments`, an email brings its split-out files); the
+sub-agent's prompt lists them and `subagent_attachment_view` (a subclass limited to those ids,
+re-checking redaction per view) shows them. Tool
 views (`document_view_native`, `skill_resource_view`, `chat_attachment_view`) queue bytes via
 `RunContext.try_add_native_asset` and are visible only within the current reply. Any tool
 that shows a PDF natively must use `chat.pdf_attach.attach_pdf_to_context` (pages slice →

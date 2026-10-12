@@ -26,7 +26,9 @@ from llm.tools.interfaces import omitted_arg_marker
 logger = logging.getLogger(__name__)
 
 
-def _resolve_run(context):
+def _resolve_run(
+    context, unavailable: str = "The working canvas is only available inside a sub-agent run.",
+):
     """Return ``(run, error_json_or_None)`` for the run this tool executes in.
 
     The tools find their ``SubAgentRun`` via ``context.run_id`` (set to the run
@@ -44,12 +46,7 @@ def _resolve_run(context):
     try:
         run = SubAgentRun.objects.get(pk=run_id)
     except (SubAgentRun.DoesNotExist, ValueError, DjangoValidationError):
-        return None, json.dumps(
-            {
-                "status": "error",
-                "message": "The working canvas is only available inside a sub-agent run.",
-            }
-        )
+        return None, json.dumps({"status": "error", "message": unavailable})
     return run, None
 
 

@@ -162,6 +162,7 @@ def resolve_subagent_tools(
     prefs: ResolvedPreferences,
     data_room_ids: list[int],
     specialization_slug: str = "",
+    has_shared_attachments: bool = False,
 ) -> list[str]:
     """Return the tool list for a sub-agent.
 
@@ -197,8 +198,34 @@ def resolve_subagent_tools(
     # specialization cannot reintroduce tools that are unusable without rooms.
     if not data_room_ids:
         tools = [t for t in tools if t not in DATA_ROOM_TOOL_NAMES]
+    # Like chat_attachment_view on the main agent: only when there is a file to view.
+    if not has_shared_attachments:
+        tools = [t for t in tools if t != "subagent_attachment_view"]
 
     return tools
+
+
+def shared_attachment_rows(run) -> list[tuple[int, object]]:
+    """``[(number, ChatAttachment), ...]`` for the files shared with *run*, in
+    the order shared. Skips files deleted or redacted since the spawn."""
+    from chat.models import ChatAttachment
+
+    entries = run.shared_attachments or []
+    if not entries:
+        return []
+    rows = {
+        str(a.pk): a
+        for a in ChatAttachment.objects.select_related("message").filter(
+            thread_id=run.thread_id, pk__in=[e["id"] for e in entries],
+        )
+    }
+    out = []
+    for e in entries:
+        att = rows.get(e["id"])
+        if att is None or att.message_id is None or att.message.is_redacted:
+            continue
+        out.append((e["number"], att))
+    return out
 
 
 def get_run_specialization_skill(run):
@@ -308,6 +335,7 @@ def _create_subagent_failure_message(run) -> None:
 def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> None:
     """Execute a sub-agent run. Called by the Celery task."""
     from chat.models import SubAgentRun
+    from chat.services import attachment_kind_label
     from chat.subagent_prompts import build_subagent_system_prompt
     from core.preferences import get_preferences
     from llm import get_llm_service
@@ -365,8 +393,10 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
 
         # Resolve tools
         data_room_ids = run.data_room_ids or []
+        shared_rows = shared_attachment_rows(run)
         tool_list = resolve_subagent_tools(
             prefs, data_room_ids, specialization_slug=run.skill_slug,
+            has_shared_attachments=bool(shared_rows),
         )
         run.tool_names = tool_list
         run.save(update_fields=["model_used", "tool_names"])
@@ -408,6 +438,14 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
             canvas_content=run.canvas,
             canvas_title=run.canvas_title,
             shared_canvases=run.shared_canvases,
+            shared_attachments=[
+                {
+                    "number": n,
+                    "filename": att.original_filename,
+                    "kind_label": attachment_kind_label(att),
+                }
+                for n, att in shared_rows
+            ],
         )
 
         # Build LLM request
@@ -419,6 +457,8 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
         )
         context.run_id = str(run_id)
         context.agent_kind = "subagent"
+        # Lets subagent_attachment_view check the model takes images/PDFs natively.
+        context.model_id = model
         # Seed the in-memory scratchpad so a resumed run re-reads its prior notes;
         # the tool loop shows context.scratchpad once up front and again at every
         # edit point (llm/pipelines/edit_points.py).

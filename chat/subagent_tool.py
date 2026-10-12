@@ -57,6 +57,64 @@ def _snapshot_canvases(thread_id, titles: list[str], max_canvases: int) -> tuple
     return snapshot, ""
 
 
+def _shareable(att) -> bool:
+    """Sent (not a composer draft) and not removed by the content safety system."""
+    return att.message_id is not None and not att.message.is_redacted
+
+
+def _resolve_shared_attachments(thread_id, numbers: list[int]) -> tuple[list[dict], str]:
+    """Map the orchestrator's attachment numbers to ``[{"id", "number"}, ...]``.
+
+    Returns ``(entries, "")`` or ``([], error_message)``. Any sent attachment of
+    the thread may be shared — the same set the main agent can view. An email
+    brings the files split out of it along (a child is skipped silently when it
+    can't be shared itself). Ids are stored, not numbers: drafts count in the
+    numbering and can be removed, which shifts later numbers.
+    """
+    from chat.services import list_thread_attachments
+
+    wanted = list(dict.fromkeys(int(n) for n in numbers))
+    if not wanted:
+        return [], ""
+    pairs = list_thread_attachments(thread_id)
+    by_number = dict(pairs)
+    number_of = {att.pk: n for n, att in pairs}
+
+    entries: list[dict] = []
+    seen: set = set()
+
+    def _add(n, att):
+        if att.pk not in seen:
+            seen.add(att.pk)
+            entries.append({"id": str(att.pk), "number": n})
+
+    for n in wanted:
+        att = by_number.get(n)
+        if att is None:
+            available = [f"#{m} {a.original_filename}" for m, a in pairs if _shareable(a)]
+            listing = ", ".join(available) if available else "(none)"
+            return [], f"No attachment #{n}. Attachments in this conversation: {listing}."
+        if att.message_id is None:
+            return [], (
+                f"Attachment #{n} ('{att.original_filename}') hasn't been sent yet — it "
+                "is still a draft in the message composer."
+            )
+        if att.message.is_redacted:
+            return [], (
+                f"Attachment #{n} ('{att.original_filename}') was removed by the content "
+                "safety system and can't be shared."
+            )
+        _add(n, att)
+        children = sorted(
+            (a for _, a in pairs if a.parent_id == att.pk),
+            key=lambda a: (a.email_ordinal or 0, a.created_at),
+        )
+        for child in children:
+            if _shareable(child):
+                _add(number_of[child.pk], child)
+    return entries, ""
+
+
 # --- Input schemas ---
 
 class CreateSubagentInput(ReasonBaseModel):
@@ -79,6 +137,15 @@ class CreateSubagentInput(ReasonBaseModel):
             "sub-agent sees the text as it is now: it cannot edit your canvas or "
             "see later changes. Omit when the task doesn't need it; the number "
             "you may share is stated in your instructions."
+        ),
+    )
+    attachments: list[int] = Field(
+        default_factory=list,
+        description=(
+            "Optional numbers of files the user attached to this conversation (from "
+            "the '# Attachments' list) to share with the sub-agent. It can view those "
+            "files itself — text, PDF pages, presentation slides, images — but no "
+            "other attachment. Sharing an email also shares the files attached to it."
         ),
     )
     model_tier: str = Field(
@@ -115,7 +182,8 @@ class CreateSubagentTool(ContextAwareTool):
         "Delegate a task to an independent sub-agent that runs with its own context and tools. "
         "Use for tasks requiring extensive research, parallel analysis, or focused work. "
         "Set timeout=0 for background, 30-60 for quick tasks, 120 for research. "
-        "Pass canvases to give it a read-only copy of canvas text."
+        "Pass canvases to give it a read-only copy of canvas text, and attachments "
+        "to let it view files the user attached."
     )
     args_schema: type[BaseModel] = CreateSubagentInput
 
@@ -206,6 +274,12 @@ class CreateSubagentTool(ContextAwareTool):
         if err_msg:
             return json.dumps({"status": "error", "message": err_msg})
 
+        shared_attachments, err_msg = _resolve_shared_attachments(
+            thread_id, kwargs.get("attachments") or [],
+        )
+        if err_msg:
+            return json.dumps({"status": "error", "message": err_msg})
+
         # Atomically check limits and create the run record.
         # The service resolves model_used and tool_names when it executes.
         run, err_msg = create_subagent_run_if_allowed(
@@ -218,6 +292,7 @@ class CreateSubagentTool(ContextAwareTool):
             data_room_ids=data_room_ids,
             skill_slug=specialization,
             shared_canvases=shared_canvases,
+            shared_attachments=shared_attachments,
         )
         if run is None:
             return json.dumps({"status": "error", "message": err_msg})

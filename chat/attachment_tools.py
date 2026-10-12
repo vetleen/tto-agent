@@ -9,6 +9,9 @@ the rest of this reply only; a presentation's slides are queued the same way fro
 the per-slide renders the worker stored (``chat/attachment_render.py``), a few at
 a time via ``pages``. Everything else comes back as extracted text. The result
 always states which ``representation`` the agent received.
+
+``subagent_attachment_view`` is the same tool for a sub-agent, limited to the
+files the orchestrator shared with it (``chat_subagent_create`` ``attachments``).
 """
 
 from __future__ import annotations
@@ -139,25 +142,12 @@ class AttachmentViewTool(ContextAwareTool):
     ) -> str:
         from core.file_types import KIND_DOCX, KIND_EMAIL, KIND_IMAGE, KIND_PDF, KIND_PPTX, KIND_TEXT
 
-        from chat.services import attachment_kind, list_thread_attachments
+        from chat.services import attachment_kind
 
         context = self.context
-        thread_id = context.conversation_id if context else None
-        if not thread_id:
-            return _error("No thread context available.")
-
-        pairs = list_thread_attachments(thread_id)
-        if not pairs:
-            return _error("There are no attachments on this chat.")
-        att = dict(pairs).get(attachment_number)
-        if att is None:
-            return json.dumps({
-                "status": "error",
-                "message": f"No attachment #{attachment_number}.",
-                "available_attachments": [
-                    {"number": n, "filename": a.original_filename} for n, a in pairs
-                ],
-            })
+        att, err = self._resolve_attachment(attachment_number)
+        if err:
+            return err
         filename = att.original_filename
         if att.message_id is None:
             return _error(
@@ -204,6 +194,30 @@ class AttachmentViewTool(ContextAwareTool):
             )
         text = self._extracted_text(att, file_bytes, kind)
         return self._extracted_result(base, text, char_offset, reason=reason)
+
+    def _resolve_attachment(self, attachment_number: int):
+        """``(attachment, None)`` or ``(None, error_json)`` — any attachment of
+        the thread, by its thread-wide number. The caller checks draft/redacted."""
+        from chat.services import list_thread_attachments
+
+        context = self.context
+        thread_id = context.conversation_id if context else None
+        if not thread_id:
+            return None, _error("No thread context available.")
+
+        pairs = list_thread_attachments(thread_id)
+        if not pairs:
+            return None, _error("There are no attachments on this chat.")
+        att = dict(pairs).get(attachment_number)
+        if att is None:
+            return None, json.dumps({
+                "status": "error",
+                "message": f"No attachment #{attachment_number}.",
+                "available_attachments": [
+                    {"number": n, "filename": a.original_filename} for n, a in pairs
+                ],
+            })
+        return att, None
 
     # --- per-kind paths -------------------------------------------------
 
@@ -454,6 +468,73 @@ class AttachmentViewTool(ContextAwareTool):
         return json.dumps(result)
 
 
+class SubagentAttachmentViewInput(AttachmentViewInput):
+    attachment_number: int = Field(
+        description=(
+            "Which file to view, by its number in the '# Files shared by the "
+            "orchestrator' list in your instructions."
+        ),
+    )
+
+
+class SubagentAttachmentViewTool(AttachmentViewTool):
+    """``chat_attachment_view`` for a sub-agent, limited to the files the
+    orchestrator shared with it (``SubAgentRun.shared_attachments``)."""
+
+    name: str = "subagent_attachment_view"
+    audience: str = "subagent"
+    description: str = (
+        "View a file the orchestrator shared with you, by its number from the "
+        "'# Files shared by the orchestrator' list in your instructions. Images, "
+        "PDFs and presentations (.pptx) can be shown to you natively — you see the "
+        "page, image or slide as it actually looks; a deck's slides come as images, "
+        "a few per call, selected with `pages`. Word documents, emails and text "
+        "files are returned as extracted text. The result states which form you "
+        "received (`representation`) and why, if it was degraded. Use `pages` to "
+        "view part of a PDF or deck and mode='extracted' to read its text (long "
+        "text is paged with `char_offset`). A native view is only visible to you "
+        "during the reply in which you requested it."
+    )
+    args_schema: type[BaseModel] = SubagentAttachmentViewInput
+
+    def _resolve_attachment(self, attachment_number: int):
+        from chat.models import ChatAttachment
+        from chat.subagent_canvas_tools import _resolve_run
+
+        run, err = _resolve_run(
+            self.context, unavailable="Shared files are only available inside a sub-agent run.",
+        )
+        if err:
+            return None, err
+        shared = run.shared_attachments or []
+        if not shared:
+            return None, _error("The orchestrator didn't share any files with you.")
+        entry = next((e for e in shared if e.get("number") == attachment_number), None)
+        if entry is None:
+            names = {
+                str(pk): name
+                for pk, name in ChatAttachment.objects.filter(
+                    thread_id=run.thread_id, pk__in=[e["id"] for e in shared],
+                ).values_list("pk", "original_filename")
+            }
+            return None, json.dumps({
+                "status": "error",
+                "message": f"File #{attachment_number} wasn't shared with you.",
+                "shared_files": [
+                    {"number": e["number"], "filename": names.get(e["id"], "")}
+                    for e in shared
+                ],
+            })
+        att = (
+            ChatAttachment.objects.select_related("message")
+            .filter(pk=entry["id"], thread_id=run.thread_id)
+            .first()
+        )
+        if att is None:
+            return None, _error(f"File #{attachment_number} is no longer available.")
+        return att, None
+
+
 def _error(message: str) -> str:
     return json.dumps({"status": "error", "message": message})
 
@@ -492,5 +573,6 @@ try:
 
     _registry = get_tool_registry()
     _registry.register_tool(AttachmentViewTool())
+    _registry.register_tool(SubagentAttachmentViewTool())
 except Exception:  # pragma: no cover - registration best-effort at import
-    logger.exception("Failed to register chat_attachment_view tool")
+    logger.exception("Failed to register the attachment view tools")

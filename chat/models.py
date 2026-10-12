@@ -731,6 +731,11 @@ class SubAgentRun(models.Model):
     # Snapshot taken at spawn — a queued or retried run sees the same text —
     # and never refreshed.
     shared_canvases = models.JSONField(default=list, blank=True)
+    # Chat attachments the orchestrator shared (chat_subagent_create
+    # ``attachments``): ``[{"id": "<attachment pk>", "number": N}, ...]``, N being
+    # the thread-wide attachment number. Ids, not a snapshot — files don't change;
+    # subagent_attachment_view re-reads the row (and re-checks redaction) per view.
+    shared_attachments = models.JSONField(default=list, blank=True)
 
     # Metrics
     tokens_used = models.PositiveIntegerField(default=0)
