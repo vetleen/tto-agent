@@ -89,3 +89,42 @@ class ImageGeneratorGateTest(TestCase):
     def test_tool_stripped_when_no_image_model(self):
         prefs = get_preferences(self.user)
         self.assertNotIn("chat_generate_image", self._image_tools(prefs))
+
+
+class SeedTextTemplatesTest(TestCase):
+    """Seeded text templates are first-party content: READY on creation (never
+    scanned, like seeded files), hashed and token-counted like any other text
+    resource, and repaired on re-seed if an older loader left a row PENDING —
+    a PENDING row renders as "still processing" in the skill's resource list."""
+
+    def test_seeded_templates_are_ready(self):
+        from agent_skills.models import SkillResource
+        from agent_skills.seed_skills import SYSTEM_SKILLS
+
+        seeded = [s for s in SYSTEM_SKILLS if s.get("templates")]
+        self.assertTrue(seeded)
+        for data in seeded:
+            skill = AgentSkill.objects.get(slug=data["slug"], level="system")
+            rows = list(skill.templates.filter(original_filename=""))
+            self.assertEqual(len(rows), len(data["templates"]), data["slug"])
+            for tmpl in rows:
+                self.assertEqual(tmpl.status, SkillResource.Status.READY, tmpl.name)
+                self.assertTrue(tmpl.content_sha256, tmpl.name)
+                self.assertGreater(tmpl.token_count, 0, tmpl.name)
+
+    def test_reseed_repairs_pending_template(self):
+        from agent_skills.models import SkillResource
+        from agent_skills.seed_skills import seed_system_skills
+
+        skill = AgentSkill.objects.get(slug="patent-searcher", level="system")
+        tmpl = skill.templates.get(name="Patent Search Report (general)")
+        SkillResource.objects.filter(pk=tmpl.pk).update(
+            status=SkillResource.Status.PENDING, content_sha256="", token_count=0,
+        )
+
+        seed_system_skills()
+
+        tmpl.refresh_from_db()
+        self.assertEqual(tmpl.status, SkillResource.Status.READY)
+        self.assertTrue(tmpl.content_sha256)
+        self.assertGreater(tmpl.token_count, 0)

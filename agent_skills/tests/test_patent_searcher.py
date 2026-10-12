@@ -74,10 +74,13 @@ class PatentSearcherSeedTests(TestCase):
         for name in _PATENT_TOOLS:
             self.assertIn(name, skill.tool_names)
         self.assertNotIn("skill_resource_view", skill.tool_names)
-        self.assertTrue(skill.templates.filter(name="Patent Search Report (general)").exists())
-        self.assertTrue(skill.templates.filter(name="Prior Art Search Round").exists())
-        self.assertTrue(skill.templates.filter(name="Classification Report").exists())
-        self.assertTrue(skill.templates.filter(name="Document Review").exists())
+        # Task-neutral: one general report template; task-specific report
+        # formats (prior art rounds, classification, document review) live in
+        # the orchestrator skill's brief, not here.
+        self.assertEqual(
+            list(skill.templates.values_list("name", flat=True)),
+            ["Patent Search Report (general)"],
+        )
 
     def test_filter_keeps_patent_tools_for_subagent(self):
         kept = filter_to_skill_tools(

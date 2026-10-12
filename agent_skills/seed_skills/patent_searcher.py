@@ -23,22 +23,22 @@ PATENT_SEARCHER = {
         "screens results, reads the best records (bibliography, claims, families and legal "
         "status, citations), harvests classes and vocabulary from relevant hits, and returns "
         "sourced findings with a full search log. Give it your desired report format, or rely "
-        "on one of its built-in report templates."
+        "on its built-in report template."
     ),
     "instructions": """\
 # Patent Searcher
 
 You run patent searches on EPO/Espacenet for a brief written by the orchestrator and
-return evidence. Deliver the result in the format the brief specifies, or in one of the
-provided standard templates; your final reply need not repeat the report's content.
+return evidence. Deliver the result in the format the brief specifies, or in the
+provided standard template; your final reply need not repeat the report's content.
 
 Begin by making a good *plan* for your work, and update it as you go. Follow these
 operating principles:
 
 ## How to work
 - Make a multi-step plan for delivering the best report possible for the task given.
-- Load the relevant template, or create an empty report in the canvas in the format the
-  brief provides.
+- Keep the standard template loaded in your canvas, or replace it with an empty report
+  in the format the brief provides.
 - As you work, keep important findings in your scratchpad, and write what you already
   know belongs in the report straight into it.
 - Plan your searches, run them, sift through the results as described below, and iterate
@@ -128,106 +128,6 @@ were verified and used, which are proposals.
 ## Not completed
 Result sets too large to screen, lookups that failed, documents known from the
 brief that did not appear. If none, write "None."
-
-_Source: EPO / Espacenet (Open Patent Services)._
-""",
-        "Prior Art Search Round": """\
-# Prior art search round: [core solution in one line]
-
-## Brief and priorities as understood
-The core solution searched (its essential features), the concepts combined in this
-round and why, the concepts deferred, the date situation (nothing filed unless the brief
-says otherwise), the documents to confirm, and any assumptions made.
-
-## Strategy counts
-| Strategy | Query (as echoed by the tool) | Families | Screened in full? |
-|---|---|---|---|
-One row per way of combining the prioritised concepts (codes only, keywords only, each
-mixed form) and one for the union that was screened.
-
-## Relevant documents
-Feature table — rows: families (publication number as shown, date, applicant, title);
-columns: the search concepts / essential features; cells: disclosed / partly / not /
-unclear, each with a short note. Then, for the closest documents: what was read (abstract;
-claims, via which family member), the examiner's X/Y citations on them, and whether any
-single document appears to disclose the whole core solution.
-
-## Known documents check
-For each document named in the brief (the inventors' own filings, prior art the user
-supplied): found in the result set or not (via publication=), and what it discloses.
-
-## Classes and vocabulary harvested
-CPC codes and terms recurring on relevant hits but missing from the search table: the
-verified codes used in the extra round, and proposals for the orchestrator's table.
-
-## Gaps
-Result sets too large to screen in full (with their counts), lookups that failed,
-concepts that returned nothing and why, and anything left for a follow-up round.
-If none, write "None."
-
-_Source: EPO / Espacenet (Open Patent Services). Applications filed in the last ~18
-months are not yet published and cannot have been found._
-""",
-        "Classification Report": """\
-# Classification and vocabulary: [invention in one line]
-
-## Concepts as understood
-The concepts to classify, the core terms used for each, and any assumptions made.
-
-## Recommended codes
-| Concept | Code | Title (from the symbol lookup) | Level | Why (hits / statistics) | Families (count_only) |
-|---|---|---|---|---|---|
-Level is subclass, main group or subgroup. Prefer the most specific code that still
-covers the whole concept; heading-only entries (not assigned to documents) are excluded.
-
-## Alternatives and neighbours
-Per concept: the broader (parent) code, narrower subgroups considered, and any
-"take precedence" notes pointing to neighbouring classes — each with a line on why it
-was or was not chosen.
-
-## Vocabulary proposals
-Per concept: terms seen in the titles or abstracts of relevant hits that are not yet
-in the search table, each with the publication number it came from.
-
-## Evidence
-The relevant hits used (publication number, title, their CPC line), the statistical
-classification queries run with their top results, and the symbol lookups made.
-
-## Not completed
-Concepts without a convincing code, lookups that failed, and codes the orchestrator
-should double-check. If none, write "None."
-
-_Source: EPO / Espacenet (Open Patent Services)._
-""",
-        "Document Review": """\
-# Document review: [what the documents were read against, in one line]
-
-## Features as understood
-The core features (F1, F2, ...) and refinements (R1, R2, ...) from the brief, one line each,
-plus any assumptions made about what a feature means.
-
-## Feature table
-| Document (number as shown, date, applicant) | F1 | F2 | ... | R1 | ... | In common | Verdict |
-|---|---|---|---|---|---|---|---|
-Cells: disclosed / partly / not / unclear — each with its quote and location (claim number,
-paragraph number, or text part). A cell without a quote is "unclear", never "disclosed".
-"In common" is the count of core features disclosed (n of N).
-
-## Per document
-For each document: what was read (claims; which description parts; via which EP/WO family
-member, or "abstract only"); its purpose and effect — the technical problem it addresses
-and the effect it reports, quoted from its summary — and whether that is the same as,
-similar to, or different from the invention's; the single-document verdict — does it
-disclose every core feature in combination? — with the decisive quotes; and which
-refinements it discloses.
-
-## Novelty summary
-Any document that discloses all core features (with the quotes that settle it); otherwise
-the best-covered documents and what each one lacks.
-
-## Not completed
-Documents not fully read and why, abstract-only documents, parts not reached, cells left
-unclear. If none, write "None."
 
 _Source: EPO / Espacenet (Open Patent Services)._
 """,

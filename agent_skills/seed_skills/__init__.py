@@ -83,6 +83,8 @@ def _seed_file_resources(skill, slug: str) -> None:
 def seed_system_skills():
     """Create or update system-level skills. Idempotent."""
     from agent_skills.models import AgentSkill, SkillTemplate
+    from agent_skills.resources import resource_content_hash
+    from core.tokens import count_tokens
 
     for skill_data in SYSTEM_SKILLS:
         fields = {
@@ -104,16 +106,26 @@ def seed_system_skills():
         except AgentSkill.DoesNotExist:
             skill = AgentSkill.objects.create(slug=skill_data["slug"], level="system", **fields)
 
-        # Seed templates from optional "templates" dict
+        # Seed templates from optional "templates" dict. First-party text, so
+        # it is READY at once (never scanned, like seed_file_resource); hash and
+        # token count are kept in step with create_text_resource so the UI and
+        # the resource manifest treat a seeded row like any other text resource.
         templates = skill_data.get("templates", {})
         for tmpl_name, tmpl_content in templates.items():
+            wanted = {
+                "content": tmpl_content,
+                "content_sha256": resource_content_hash(tmpl_content),
+                "token_count": count_tokens(tmpl_content),
+                "status": SkillTemplate.Status.READY,
+            }
             try:
                 tmpl = skill.templates.get(name=tmpl_name)
-                if tmpl.content != tmpl_content:
-                    tmpl.content = tmpl_content
+                if any(getattr(tmpl, k) != v for k, v in wanted.items()):
+                    for k, v in wanted.items():
+                        setattr(tmpl, k, v)
                     tmpl.save()
             except SkillTemplate.DoesNotExist:
-                skill.templates.create(name=tmpl_name, content=tmpl_content)
+                skill.templates.create(name=tmpl_name, **wanted)
         # Remove stale seeded templates no longer in seed data.
         # Only clean up when a "templates" key is explicitly present —
         # existing skills without it should not have templates deleted. Scoped to
