@@ -875,6 +875,42 @@ class BuildDynamicContextTests(TestCase):
         self.assertIn("Theme: a deck-level custom palette", result)
         self.assertIn("accent1=#123456", result)
 
+    def test_render_active_deck_section_matches_preamble_section(self):
+        """The shared renderer IS the preamble section (byte-identical), so the
+        edit-point deck block can reuse it without the two drifting apart."""
+        from chat.prompts import render_active_deck_section
+
+        class FakeDeck:
+            title = "Board deck"
+            content = {"version": 1, "size": {"w": 960, "h": 540}, "slides": []}
+
+        decks = [{"title": "Board deck", "active": True}, {"title": "Other", "active": False}]
+        section = render_active_deck_section(FakeDeck(), decks)
+        self.assertTrue(section.startswith('# Active Slide Deck: "Board deck"\n'))
+        self.assertIn(section, build_dynamic_context(active_slide_set=FakeDeck(), slide_decks=decks))
+        self.assertIn('Decks in this thread: "Board deck" (active), "Other"', section)
+        self.assertEqual(render_active_deck_section(None), "")
+
+    def test_render_active_deck_block_has_its_own_header_and_intro(self):
+        from chat.prompts import (
+            ACTIVE_DECK_BLOCK_HEADER, render_active_deck_block, render_active_deck_section,
+        )
+        from chat.slides.schema import canonical_deck_text
+
+        class FakeDeck:
+            title = "Board deck"
+            content = {"version": 1, "size": {"w": 960, "h": 540}, "slides": []}
+
+        block = render_active_deck_block(FakeDeck())
+        self.assertTrue(block.startswith(f'{ACTIVE_DECK_BLOCK_HEADER}: "Board deck"\n'))
+        self.assertIn("supersedes", block)
+        self.assertIn("Theme: Forest (built-in default)", block)
+        self.assertIn(f"```json\n{canonical_deck_text(FakeDeck.content)}\n```", block)
+        # Same body as the preamble section once past the header/intro.
+        section = render_active_deck_section(FakeDeck())
+        self.assertEqual(block.split("Theme:", 1)[1], section.split("Theme:", 1)[1])
+        self.assertEqual(render_active_deck_block(None), "")
+
     def test_single_canvas_content(self):
         """Old single-canvas API via 'canvas' param."""
         class FakeCanvas:

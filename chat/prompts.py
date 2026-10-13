@@ -624,6 +624,92 @@ def _fmt_time(dt) -> str | None:
     return local.strftime("%d.%m.%y %H:%M")
 
 
+# -- Active slide deck: the per-turn section and its edit-point twin ------------
+# Usage text of the per-turn "Active Slide Deck" section (last user message).
+ACTIVE_DECK_PREAMBLE_INTRO = (
+    "This is the deck the user sees rendered in the side panel — edit it with "
+    "`slide_canvas_edit` (find/replace on this EXACT JSON) or `slide_canvas_write` "
+    "(full rewrite). Slide/element ids are permanent; the user comments by slide id.\n"
+)
+# The consolidated block the tool loop appends at a mid-turn edit point (see
+# llm/pipelines/edit_points.py + chat/slides/deck_block.py): the same section,
+# re-read from storage, so the model edits against ONE current copy and the
+# slide tools can trim the deck JSON out of their earlier call arguments.
+ACTIVE_DECK_BLOCK_HEADER = "# Active Slide Deck (current state)"
+ACTIVE_DECK_BLOCK_INTRO = (
+    "This is the active deck as it is NOW, re-read from storage after the tool calls "
+    "above. It supersedes the \"Active Slide Deck\" section in the user message above "
+    "and any deck JSON in earlier tool calls or results (some were omitted from this "
+    "transcript to save space). Make further changes with `slide_canvas_edit` "
+    "(find/replace on THIS exact JSON) or `slide_canvas_write` (full rewrite). "
+    "Slide/element ids are permanent; the user comments by slide id.\n"
+)
+
+
+def render_active_deck_section(
+    active_slide_set, slide_decks: list[dict] | None = None, *,
+    header: str | None = None, intro: str | None = None,
+) -> str:
+    """The "Active Slide Deck" section: header, usage text, the thread's deck
+    inventory (when it has several), the resolved theme, and the canonical deck
+    JSON. ``""`` without a deck. The defaults reproduce the per-turn preamble
+    section exactly; the edit-point block passes its own header and intro."""
+    if not active_slide_set:
+        return ""
+    from chat.slides.schema import canonical_deck_text
+    from chat.slides.theme import resolve_theme
+
+    section = (header or f'# Active Slide Deck: "{active_slide_set.title}"') + "\n"
+    section += ACTIVE_DECK_PREAMBLE_INTRO if intro is None else intro
+    # Inventory of this thread's decks, so you know what you can switch between.
+    if slide_decks and len(slide_decks) > 1:
+        names = ", ".join(
+            f'"{d["title"]}"' + (" (active)" if d.get("active") else "")
+            for d in slide_decks
+        )
+        section += (
+            f"Decks in this thread: {names}. Switch which one you work on with "
+            "`slide_canvas_activate`.\n"
+        )
+    # The resolved theme — reference the NAMES in the JSON (so the deck re-themes
+    # cleanly); the hexes/fonts are for your judgement (matching a colour in an
+    # image prompt, or choosing a harmonious literal).
+    theme = resolve_theme(active_slide_set.content or {})
+    colours = theme.get("colors", {})
+    fonts = theme.get("fonts", {})
+    pal = ", ".join(
+        f"{k}={colours[k]}" for k in (
+            "dk1", "lt1", "dk2", "lt2", "accent1", "accent2", "accent3",
+            "accent4", "accent5", "accent6", "success", "warning", "danger",
+        ) if k in colours
+    )
+    fnt = ", ".join(f"{k}={fonts[k]}" for k in ("headline", "subhead", "body", "data") if k in fonts)
+    # Which named theme the deck carries (provenance written by the theme
+    # tools / picker); no override at all == the built-in Forest default.
+    override = (active_slide_set.content or {}).get("theme") or {}
+    theme_label = override.get("_theme_label") or (
+        "Forest (built-in default)" if not override else "a deck-level custom palette"
+    )
+    section += (
+        f"Theme: {theme_label} — already the user's default; switch it with "
+        "`slides_set_theme` only if they want a different look.\n"
+    )
+    section += f"Theme colours (name=hex): {pal}.\nTheme fonts: {fnt}.\n"
+    section += f"```json\n{canonical_deck_text(active_slide_set.content or {})}\n```"
+    return section
+
+
+def render_active_deck_block(active_slide_set, slide_decks: list[dict] | None = None) -> str:
+    """The edit-point "current state" twin of :func:`render_active_deck_section`."""
+    if not active_slide_set:
+        return ""
+    return render_active_deck_section(
+        active_slide_set, slide_decks,
+        header=f'{ACTIVE_DECK_BLOCK_HEADER}: "{active_slide_set.title}"',
+        intro=ACTIVE_DECK_BLOCK_INTRO,
+    )
+
+
 def build_dynamic_context(
     *,
     doc_context: dict[str, Any] | None = None,
@@ -849,51 +935,7 @@ def build_dynamic_context(
 
     # -- Active slide deck (the deck the user sees rendered in the side panel) --
     if active_slide_set:
-        from chat.slides.schema import canonical_deck_text
-        from chat.slides.theme import resolve_theme
-
-        section = (
-            f'# Active Slide Deck: "{active_slide_set.title}"\n'
-            "This is the deck the user sees rendered in the side panel — edit it with "
-            "`slide_canvas_edit` (find/replace on this EXACT JSON) or `slide_canvas_write` "
-            "(full rewrite). Slide/element ids are permanent; the user comments by slide id.\n"
-        )
-        # Inventory of this thread's decks, so you know what you can switch between.
-        if slide_decks and len(slide_decks) > 1:
-            names = ", ".join(
-                f'"{d["title"]}"' + (" (active)" if d.get("active") else "")
-                for d in slide_decks
-            )
-            section += (
-                f"Decks in this thread: {names}. Switch which one you work on with "
-                "`slide_canvas_activate`.\n"
-            )
-        # The resolved theme — reference the NAMES in the JSON (so the deck re-themes
-        # cleanly); the hexes/fonts are for your judgement (matching a colour in an
-        # image prompt, or choosing a harmonious literal).
-        theme = resolve_theme(active_slide_set.content or {})
-        colours = theme.get("colors", {})
-        fonts = theme.get("fonts", {})
-        pal = ", ".join(
-            f"{k}={colours[k]}" for k in (
-                "dk1", "lt1", "dk2", "lt2", "accent1", "accent2", "accent3",
-                "accent4", "accent5", "accent6", "success", "warning", "danger",
-            ) if k in colours
-        )
-        fnt = ", ".join(f"{k}={fonts[k]}" for k in ("headline", "subhead", "body", "data") if k in fonts)
-        # Which named theme the deck carries (provenance written by the theme
-        # tools / picker); no override at all == the built-in Forest default.
-        override = (active_slide_set.content or {}).get("theme") or {}
-        theme_label = override.get("_theme_label") or (
-            "Forest (built-in default)" if not override else "a deck-level custom palette"
-        )
-        section += (
-            f"Theme: {theme_label} — already the user's default; switch it with "
-            "`slides_set_theme` only if they want a different look.\n"
-        )
-        section += f"Theme colours (name=hex): {pal}.\nTheme fonts: {fnt}.\n"
-        section += f"```json\n{canonical_deck_text(active_slide_set.content or {})}\n```"
-        parts.append(section)
+        parts.append(render_active_deck_section(active_slide_set, slide_decks))
 
     # -- Current task plan status --
     if tasks:

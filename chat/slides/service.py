@@ -29,6 +29,31 @@ def get_active_deck(thread_id):
     )
 
 
+def active_deck_for_prompt(thread_id):
+    """``(active deck | None, [{"title", "active"} ...] for every live deck)`` —
+    the active deck is injected in full (per-turn preamble and the edit-point deck
+    block); the list lets the model know what decks it can switch between with
+    slide_canvas_activate."""
+    active = get_active_deck(thread_id)
+    decks = [
+        {"title": d["title"], "active": d["is_active"]}
+        for d in SlideSet.objects.filter(thread_id=thread_id, deleted_at__isnull=True)
+        .order_by("created_at").values("title", "is_active")
+    ]
+    return active, decks
+
+
+def deck_version(deck):
+    """``(pk, updated_at)`` of a deck, or ``None`` — what the edit-point deck block
+    compares against the preamble snapshot to tell whether the deck the model
+    already sees is still current. ``updated_at`` only moves on content/title
+    writes (activation saves with ``update_fields``); the pk covers a switch to
+    another deck."""
+    if deck is None:
+        return None
+    return (deck.pk, deck.updated_at)
+
+
 def resolve_deck(thread_id, name: str | None = None):
     """Return ``(deck, error)``. ``name`` targets by title; else the active deck."""
     if name:

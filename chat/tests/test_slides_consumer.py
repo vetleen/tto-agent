@@ -8,7 +8,7 @@ from unittest import mock
 
 from asgiref.sync import async_to_sync
 from django.contrib.auth import get_user_model
-from django.test import SimpleTestCase, TransactionTestCase
+from django.test import SimpleTestCase, TransactionTestCase, override_settings
 
 
 class SlidesUpdatedToolsMembershipTests(SimpleTestCase):
@@ -77,6 +77,90 @@ class SkillWiringTests(SimpleTestCase):
         for layout_ref in ("`matrix_2x2` layout", "`ecosystem` layout", "`process` (chevrons)",
                            "`table` layout", "`cycle` layout"):
             self.assertNotIn(layout_ref, text)
+
+
+@override_settings(
+    CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
+)
+class DeckBlockWiringTests(TransactionTestCase):
+    """The consumer hands the tool loop a deck-block provider whose baseline is
+    the deck the preamble rendered: unchanged → "", changed mid-turn → the deck
+    as it is now (what the edit point appends as the current-deck block)."""
+
+    def setUp(self):
+        from chat.models import ChatThread, SlideSet
+        from guardrails.service import GuardrailVerdict
+
+        User = get_user_model()
+        self.user = User.objects.create_user(
+            email=f"wb+{uuid.uuid4().hex[:6]}@ex.com", password="x"
+        )
+        self.thread = ChatThread.objects.create(created_by=self.user, title="t")
+        self.deck = SlideSet.objects.create(
+            thread=self.thread, title="Deck", is_active=True,
+            content={"version": 1, "size": {"w": 960, "h": 540}, "slides": [
+                {"id": "s1", "name": "A", "elements": []},
+            ]},
+        )
+        gr = mock.patch(
+            "guardrails.service.run_classifier_pipeline",
+            new_callable=mock.AsyncMock,
+            return_value=GuardrailVerdict(action="allow"),
+        )
+        gr.start()
+        self.addCleanup(gr.stop)
+
+    async def test_provider_wired_with_preamble_baseline(self):
+        import asyncio
+
+        from channels.db import database_sync_to_async
+        from channels.routing import URLRouter
+        from channels.testing import WebsocketCommunicator
+
+        from chat.routing import websocket_urlpatterns
+
+        captured = []
+
+        async def fake_astream(pipeline_id, request, **kw):
+            captured.append(request)
+            return
+            yield  # async generator
+
+        service = mock.MagicMock()
+        service.astream = fake_astream
+        with mock.patch("llm.get_llm_service", return_value=service):
+            communicator = WebsocketCommunicator(URLRouter(websocket_urlpatterns), "/ws/chat/")
+            communicator.scope["user"] = self.user
+            connected, _ = await communicator.connect()
+            self.assertTrue(connected)
+            await communicator.send_json_to({
+                "type": "chat.message", "content": "hi", "thread_id": str(self.thread.id),
+            })
+            for _ in range(100):
+                if captured:
+                    break
+                await asyncio.sleep(0.1)
+            await communicator.disconnect()
+
+        self.assertEqual(len(captured), 1)
+        provider = captured[0].context.deck_block_provider
+        self.assertTrue(callable(provider))
+        # Unchanged since the preamble: the snapshot is exact, no block.
+        self.assertEqual(await database_sync_to_async(provider)(), "")
+
+        # A rewrite mid-turn: the block carries the deck as it is now.
+        def rewrite():
+            from chat.slides.service import write_deck
+
+            write_deck(
+                str(self.thread.id), title="Deck", deck_name="Deck",
+                content={**self.deck.content, "slides": [{"id": "s1", "name": "Renamed", "elements": []}]},
+            )
+
+        await database_sync_to_async(rewrite)()
+        block = await database_sync_to_async(provider)()
+        self.assertIn('(current state): "Deck"', block)
+        self.assertIn("Renamed", block)
 
 
 class SetThemeHandlerTests(TransactionTestCase):

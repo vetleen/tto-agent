@@ -3004,6 +3004,20 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 s["slug"]: s["tool_names"] for s in prefs.allowed_skills
             }
 
+        # Lets the tool loop append ONE current copy of the active deck at edit
+        # points (re-read from the DB), so the slide tools can trim the deck JSON
+        # out of their earlier call arguments and the model edits against the
+        # real canonical text. The baseline is the preamble's snapshot: an
+        # unchanged deck yields no block (the snapshot is still exact). Main
+        # agent only — sub-agents have no deck tools.
+        from chat.slides.deck_block import make_deck_block_provider
+        from chat.slides.service import deck_version
+
+        context.deck_block_provider = make_deck_block_provider(
+            str(thread.id),
+            baseline=deck_version(dynamic_context_data.get("active_slide_set")),
+        )
+
         # Use pre-resolved model from _handle_chat_message, or resolve here
         model = resolved_model
         if model is None:
@@ -3917,19 +3931,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _get_active_deck_for_prompt(self, thread_id):
-        """``(active deck | None, [{"title","active"}...] for every live deck)`` —
-        the active deck is injected in full; the list lets the model know what
-        decks it can switch between with slide_canvas_activate."""
-        from chat.models import SlideSet
-        from chat.slides.service import get_active_deck
+        """``(active deck | None, [{"title","active"}...])`` — see
+        chat.slides.service.active_deck_for_prompt (shared with the edit-point
+        deck block provider wired in _stream_response)."""
+        from chat.slides.service import active_deck_for_prompt
 
-        active = get_active_deck(thread_id)
-        decks = [
-            {"title": d["title"], "active": d["is_active"]}
-            for d in SlideSet.objects.filter(thread_id=thread_id, deleted_at__isnull=True)
-            .order_by("created_at").values("title", "is_active")
-        ]
-        return active, decks
+        return active_deck_for_prompt(thread_id)
 
     def _resolve_canvas_id(self, thread_id, canvas_id=None):
         """Resolve a canvas by ID or fall back to active canvas. Sync helper."""

@@ -107,6 +107,23 @@ class TrimOldToolCallArgsTests(SimpleTestCase):
         out = trim_history_call_args(calls, {"a"}, tool_lookup=lambda name: tool)
         self.assertEqual(out, {"a": {"content": "[trimmed]"}})
 
+    def test_small_slide_edit_untouched(self):
+        """Below trim_args_min_chars (2000) a slide edit keeps its args even though
+        the hook would trim it — small edits aren't worth an edit of history."""
+        from chat.slide_tools import EditDeckTool
+
+        msgs = [
+            Message(role="user", content="q"),
+            _asst("e1", "slide_canvas_edit", {"edits": [{"old_text": "a" * 100, "new_text": "b" * 100}]}),
+            _tool("e1", "ok"),
+            _asst("e2", "web_search", {"q": 1}), _tool("e2", "r"),
+        ]
+        out, n = trim_old_tool_call_args(
+            msgs, protected_call_ids=set(), tool_lookup=lambda name: EditDeckTool(),
+        )
+        self.assertEqual(n, 0)
+        self.assertEqual(out, msgs)
+
 
 class ToolTrimHookTests(SimpleTestCase):
     """The per-tool trim rules (content must stay reachable)."""
@@ -135,14 +152,83 @@ class ToolTrimHookTests(SimpleTestCase):
         edit_args = {"edits": [{"old_text": "a", "new_text": "b"}]}
         self.assertIsNone(SubagentCanvasEditTool().trim_args_at_edit_point(edit_args, later_calls=[]))
 
-    def test_slide_write_only_when_same_deck_rewritten(self):
+    def test_slide_write_trimmed_while_deck_stays_active(self):
+        """A deck write is trimmed whenever its deck is still the active one (its
+        current state is in the Active Slide Deck section / edit-point block) or a
+        later full rewrite replaced it; a later write of ANOTHER named deck keeps it."""
         from chat.slide_tools import WriteDeckTool
 
         args = {"content": {"slides": []}, "deck_name": "Pitch"}
-        other = [ToolCall(id="x", name="slide_canvas_write", arguments={"deck_name": "Other"})]
+        out = WriteDeckTool().trim_args_at_edit_point(args, later_calls=[])
+        self.assertIn("Active Slide Deck", out["content"])
+        self.assertIn("Omitted from this transcript", out["content"])
+        self.assertEqual(out["deck_name"], "Pitch")
         same = [ToolCall(id="y", name="slide_canvas_write", arguments={"deck_name": "Pitch"})]
-        self.assertIsNone(WriteDeckTool().trim_args_at_edit_point(args, later_calls=other))
         self.assertIn("replaced", WriteDeckTool().trim_args_at_edit_point(args, later_calls=same)["content"])
+        other = [ToolCall(id="x", name="slide_canvas_write", arguments={"deck_name": "Other"})]
+        self.assertIsNone(WriteDeckTool().trim_args_at_edit_point(args, later_calls=other))
+        # Unnamed calls target the then-active deck; an unnamed later edit keeps it active.
+        unnamed = {"content": {"slides": []}}
+        later_edit = [ToolCall(id="e", name="slide_canvas_edit", arguments={"edits": []})]
+        self.assertIn(
+            "Active Slide Deck",
+            WriteDeckTool().trim_args_at_edit_point(unnamed, later_calls=later_edit)["content"],
+        )
+        # Idempotent: an already-trimmed write is left alone.
+        self.assertIsNone(WriteDeckTool().trim_args_at_edit_point(out, later_calls=[]))
+
+    def test_slide_write_kept_after_switch(self):
+        """Anything that may have changed which deck is active keeps the JSON (the
+        section / block only ever shows the active deck); irrelevant later calls don't."""
+        from chat.slide_tools import WriteDeckTool
+
+        args = {"content": {"slides": []}, "deck_name": "Pitch"}
+        for switch in (
+            ToolCall(id="a", name="slide_canvas_activate", arguments={"deck_names": ["Other"]}),
+            ToolCall(id="c", name="slides_create_deck", arguments={"title": "New", "layouts": []}),
+            ToolCall(id="d", name="slide_canvas_delete", arguments={"deck_name": "Pitch"}),
+            ToolCall(id="l", name="skill_resource_load", arguments={"template_name": "t", "target": "deck"}),
+            ToolCall(id="t", name="slides_set_theme", arguments={"theme": "slate", "deck_name": "Other"}),
+        ):
+            with self.subTest(switch=switch.name):
+                self.assertIsNone(WriteDeckTool().trim_args_at_edit_point(args, later_calls=[switch]))
+        for harmless in (
+            ToolCall(id="p", name="slides_preview_slide", arguments={"deck_name": "Other"}),
+            ToolCall(id="d2", name="slide_canvas_delete", arguments={"deck_name": "Other"}),
+            ToolCall(id="l2", name="skill_resource_load", arguments={"template_name": "t", "target": "canvas"}),
+            ToolCall(id="w", name="web_search", arguments={"query": "x"}),
+            ToolCall(id="a2", name="slide_canvas_activate", arguments={"deck_names": ["Pitch"]}),
+        ):
+            with self.subTest(harmless=harmless.name):
+                out = WriteDeckTool().trim_args_at_edit_point(args, later_calls=[harmless])
+                self.assertIn("Active Slide Deck", out["content"])
+
+    def test_slide_write_not_superseded_across_a_switch(self):
+        """write("") -> activate("Other") -> write(""): the second write hit another
+        deck, so the first is neither replaced nor safely in the context — kept."""
+        from chat.slide_tools import WriteDeckTool
+
+        args = {"content": {"slides": [{"id": "s1"}]}}
+        later = [
+            ToolCall(id="a", name="slide_canvas_activate", arguments={"deck_names": ["Other"]}),
+            ToolCall(id="w", name="slide_canvas_write", arguments={"content": {}}),
+        ]
+        self.assertIsNone(WriteDeckTool().trim_args_at_edit_point(args, later_calls=later))
+
+    def test_slide_edit_hook_mirrors_write(self):
+        from chat.slide_tools import EditDeckTool
+
+        args = {"edits": [{"old_text": "a", "new_text": "b"}, {"old_text": "c", "new_text": "d"}], "deck_name": ""}
+        out = EditDeckTool().trim_args_at_edit_point(args, later_calls=[])
+        self.assertIn("list of 2 edit(s)", out["edits"])
+        self.assertIn("Active Slide Deck", out["edits"])
+        self.assertIsNone(EditDeckTool().trim_args_at_edit_point(out, later_calls=[]))  # idempotent
+        as_string = {"edits": '[{"old_text": "a", "new_text": "b"}]'}
+        self.assertIn("Omitted", EditDeckTool().trim_args_at_edit_point(as_string, later_calls=[])["edits"])
+        superseded = [ToolCall(id="w", name="slide_canvas_write", arguments={"content": {}})]
+        self.assertIn("replaced", EditDeckTool().trim_args_at_edit_point(args, later_calls=superseded)["edits"])
+        switched = [ToolCall(id="a", name="slide_canvas_activate", arguments={"deck_names": ["Other"]})]
+        self.assertIsNone(EditDeckTool().trim_args_at_edit_point(args, later_calls=switched))
 
     def test_document_edit_points_to_document_read(self):
         from llm.tools.registry import get_tool_registry
@@ -275,6 +361,125 @@ class EditPointManagerTests(TestCase):
         record_thinking_drops(ctx, None)
         self.assertEqual(ctx.observability["thinking_dropped"], 1)
 
+    # -- the main agent's current-deck block ------------------------------
+
+    def _deck_req(self, base, *, provider, notes=(), agent_kind="main"):
+        req = self._req(base, agent_kind=agent_kind)
+        req.context.deck_block_provider = provider
+        req.context.scratchpad_turn_notes.extend(notes)
+        return req
+
+    def _round(self, mgr, req, base, cid, *, real_input_tokens=40_000):
+        out, _ = mgr.finish_round(
+            base + [_asst(cid, "web_search", {"q": cid}), _tool(cid, f"R-{cid}")], req, [],
+            prior_len=len(base), real_input_tokens=real_input_tokens,
+            round_call_ids={cid}, notice=None,
+        )
+        return out
+
+    def test_deck_block_appended_before_scratchpad_block(self):
+        from llm.pipelines.edit_points import DECK_BLOCK_KEY, SCRATCHPAD_BLOCK_KEY
+
+        base = [Message(role="user", content="q"), _asst("c0", "web_search", {"q": 0}), _tool("c0", "R0")]
+        req = self._deck_req(base, provider=lambda: "# Active Slide Deck (current state)\nDECK", notes=["N"])
+        mgr = EditPointManager(SimpleChatPipeline(), req, {})
+        with self.settings(CONTEXT_MIDTURN_KEEP_TOOL_RESULTS=0):
+            out = self._round(mgr, req, base, "c1")
+        self.assertEqual(mgr.edit_rounds, [0])
+        self.assertTrue(out[-2].metadata.get(DECK_BLOCK_KEY))
+        self.assertIn("DECK", out[-2].content)
+        self.assertTrue(out[-1].metadata.get(SCRATCHPAD_BLOCK_KEY))  # scratchpad stays last
+        self.assertEqual(req.context.observability["deck_block_refreshes"], 1)
+        self.assertNotIn("edit_point:deck_block", req.context.observability)
+
+    def test_deck_block_replaced_on_next_edit_point(self):
+        from llm.pipelines.edit_points import DECK_BLOCK_KEY
+
+        state = {"v": 1}
+        base = [Message(role="user", content="q"), _asst("c0", "web_search", {"q": 0}), _tool("c0", "R0")]
+        req = self._deck_req(base, provider=lambda: f"DECK v{state['v']}")
+        mgr = EditPointManager(SimpleChatPipeline(), req, {})
+        with self.settings(CONTEXT_MIDTURN_KEEP_TOOL_RESULTS=0):
+            out = self._round(mgr, req, base, "c1")
+            state["v"] = 2
+            req2 = req.model_copy(update={"messages": out})
+            out2 = self._round(mgr, req2, out, "c2")
+        self.assertEqual(mgr.edit_rounds, [0, 1])
+        blocks = [m for m in out2 if (m.metadata or {}).get(DECK_BLOCK_KEY)]
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(blocks[0].content, "DECK v2")
+        self.assertIs(out2[-1], blocks[0])  # no scratchpad note this turn → the deck block is last
+        self.assertEqual(req.context.observability["deck_block_refreshes"], 2)
+
+    def test_deck_block_provider_empty_or_raising_adds_nothing(self):
+        from contextlib import nullcontext
+
+        from llm.pipelines.edit_points import DECK_BLOCK_KEY
+
+        def boom():
+            raise RuntimeError("db down")
+
+        for provider in (lambda: "", boom, None):
+            with self.subTest(provider=getattr(provider, "__name__", "none")):
+                base = [Message(role="user", content="q"), _asst("c0", "web_search", {"q": 0}), _tool("c0", "R0")]
+                req = self._deck_req(base, provider=provider)
+                mgr = EditPointManager(SimpleChatPipeline(), req, {})
+                quiet = (
+                    self.assertLogs("llm.pipelines.edit_points", level="ERROR")
+                    if provider is boom else nullcontext()
+                )
+                with quiet, self.settings(CONTEXT_MIDTURN_KEEP_TOOL_RESULTS=0):
+                    out = self._round(mgr, req, base, "c1")
+                self.assertEqual(mgr.edit_rounds, [0])  # the edit point itself still happened
+                self.assertFalse(any((m.metadata or {}).get(DECK_BLOCK_KEY) for m in out))
+                self.assertNotIn("deck_block_refreshes", req.context.observability)
+
+    def test_deck_block_not_added_without_an_edit(self):
+        from llm.pipelines.edit_points import DECK_BLOCK_KEY
+
+        base = [Message(role="user", content="q"), _asst("c0", "web_search", {"q": 0}), _tool("c0", "R0")]
+        req = self._deck_req(base, provider=lambda: "DECK")
+        mgr = EditPointManager(SimpleChatPipeline(), req, {})
+        # A quiet round is append-only: no block.
+        out = self._round(mgr, req, base, "c1", real_input_tokens=500)
+        self.assertFalse(any((m.metadata or {}).get(DECK_BLOCK_KEY) for m in out))
+        # Over the ceiling but nothing left to change (everything protected): still no edit, no block.
+        with self.settings(CONTEXT_MIDTURN_KEEP_TOOL_RESULTS=10):
+            out2 = self._round(mgr, req, base, "c1")
+        self.assertFalse(any((m.metadata or {}).get(DECK_BLOCK_KEY) for m in out2))
+        self.assertEqual(mgr.edit_rounds, [])
+        self.assertNotIn("deck_block_refreshes", req.context.observability)
+
+    def test_prune_trims_old_slide_write_and_appends_block(self):
+        from chat.slide_tools import WriteDeckTool
+        from llm.pipelines.edit_points import DECK_BLOCK_KEY
+
+        base = [
+            Message(role="user", content="q"),
+            _asst("w1", "slide_canvas_write", {"content": {"slides": [{"id": "s1", "name": "x" * 5000}]}}),
+            _tool("w1", "ok"),
+            _asst("s1", "web_search", {"q": 1}), _tool("s1", "R1"),
+        ]
+        req = self._deck_req(base, provider=lambda: "# Active Slide Deck (current state)\nDECK")
+        mgr = EditPointManager(SimpleChatPipeline(), req, {"slide_canvas_write": WriteDeckTool()})
+        with self.settings(CONTEXT_MIDTURN_KEEP_TOOL_RESULTS=1):
+            out = self._round(mgr, req, base, "s2")
+        self.assertEqual(mgr.edit_rounds, [0])
+        self.assertIn("Active Slide Deck", out[1].tool_calls[0].arguments["content"])
+        self.assertTrue(out[-1].metadata.get(DECK_BLOCK_KEY))
+
+    def test_subagent_ignores_deck_block_provider(self):
+        from llm.pipelines.edit_points import DECK_BLOCK_KEY
+
+        base = [Message(role="user", content="q"), _asst("c0", "web_search", {"q": 0}), _tool("c0", "R0")]
+        req = self._deck_req(base, provider=lambda: "DECK", agent_kind="subagent")
+        mgr = EditPointManager(SimpleChatPipeline(), req, {})
+        with self.settings(CONTEXT_MIDTURN_KEEP_TOOL_RESULTS=0):
+            out = self._round(mgr, req, base, "c1")
+        self.assertEqual(mgr.edit_rounds, [0])
+        self.assertFalse(any((m.metadata or {}).get(DECK_BLOCK_KEY) for m in out))
+        self.assertNotIn("deck_block_refreshes", req.context.observability)
+
 
 # ---------------------------------------------------------------------------
 # End-to-end: each request extends the previous one except at edit points
@@ -344,11 +549,13 @@ class PrefixInvariantTests(TestCase):
 
     def _run(
         self, *, stream: bool, agent_kind: str, pressure_round: int | None = None,
-        truncated_round: int | None = None,
+        truncated_round: int | None = None, deck_block: bool = False,
     ):
         self._kind = agent_kind
         ctx = RunContext.create(user_id="1")
         ctx.agent_kind = agent_kind
+        if deck_block:
+            ctx.deck_block_provider = lambda: "# Active Slide Deck (current state)\nDECK"
         tool_names = ["document_search", "subagent_scratchpad_append" if agent_kind == "subagent" else "scratchpad_append"]
         request = ChatRequest(
             messages=[Message(role="system", content="sys"), Message(role="user", content="go")],
@@ -461,6 +668,18 @@ class PrefixInvariantTests(TestCase):
                     # The edit really rewrote history (otherwise the test is vacuous).
                     before, after = seen[2][1], seen[3][1]
                     self.assertNotEqual(after[:len(before)], before)
+
+    def test_pressure_round_with_deck_block_is_the_only_edit(self):
+        """The current-deck block is appended INSIDE the edit point (never on a
+        quiet round) and then rides along unchanged — one edit, one cache break."""
+        for stream in (True, False):
+            with self.subTest(stream=stream):
+                seen, ctx = self._run(stream=stream, agent_kind="main", pressure_round=2, deck_block=True)
+                self._assert_extends(seen, {2})
+                self.assertEqual(ctx.observability["edit_points_total"], 1)
+                self.assertEqual(ctx.observability["deck_block_refreshes"], 1)
+                has_block = [any("DECK" in m[1] for m in msgs) for _tools, msgs in seen]
+                self.assertEqual(has_block, [False, False, False, True, True, True])
 
 
 # ---------------------------------------------------------------------------

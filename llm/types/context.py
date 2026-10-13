@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, PrivateAttr
@@ -103,6 +103,12 @@ class RunContext(BaseModel):
     # prefs.allowed_skills so chat_skill_attach can resolve a newly-attached
     # skill's tools without re-deriving org tool-toggle filtering.
     skill_tool_map: dict = Field(default_factory=dict)
+    # Main agent only: a zero-arg callable the tool loop invokes at edit points to
+    # append a fresh "current deck" block (the active slide deck re-read from the
+    # DB, rendered by chat.prompts.render_active_deck_block); "" = nothing to
+    # append. Set by the chat consumer (chat/slides/deck_block.py); None for
+    # sub-agents, side calls and tests.
+    deck_block_provider: Optional[Callable[[], str]] = None
     # Web image candidates surfaced by web_fetch(include_images=True), keyed by a
     # run-monotonic handle ("img-1", "img-2", …). web_image_view resolves a
     # handle to its source URL. Each value: {"url", "page_url", "filename", "alt"}.

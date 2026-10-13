@@ -173,6 +173,57 @@ class LoadHistoryStubbingTests(TransactionTestCase):
         )()
         self.assertEqual(stored.metadata["tool_calls"][0]["arguments"]["content"], big)
 
+    @override_settings(CONTEXT_RAW_TOOL_TURNS=2)
+    async def test_old_slide_write_args_trimmed_between_turns(self):
+        """An old slide_canvas_write's deck JSON points at the Active Slide Deck
+        section the next preamble regenerates; a recent edit keeps its args and
+        the stored row is untouched."""
+        deck = {"version": 1, "slides": [{"id": "s1", "name": "x" * 3000}]}
+        await self._msg("Question one", role="user")
+        await self._msg("", role="assistant", tool_calls=[
+            {"id": "d-old", "name": "slide_canvas_write", "arguments": {"content": deck}},
+        ])
+        await self._msg('{"status": "ok"}', role="tool", tool_call_id="d-old")
+        await self._msg("Question two", role="user")
+        await self._msg("Answer two", role="assistant")
+        await self._msg("Question three", role="user")
+        edits = [{"old_text": "a", "new_text": "b"}]
+        await self._msg("", role="assistant", tool_calls=[
+            {"id": "e-new", "name": "slide_canvas_edit", "arguments": {"edits": edits}},
+        ])
+        await self._msg('{"status": "ok"}', role="tool", tool_call_id="e-new")
+
+        messages = (await self.consumer._load_history(self.thread))["messages"]
+        calls = {tc["id"]: tc for m in messages for tc in m.get("tool_calls") or []}
+        self.assertIn("Active Slide Deck", calls["d-old"]["arguments"]["content"])
+        self.assertEqual(calls["e-new"]["arguments"]["edits"], edits)
+        stored = await database_sync_to_async(
+            lambda: ChatMessage.objects.filter(thread=self.thread, role="assistant").order_by("created_at").first()
+        )()
+        self.assertEqual(stored.metadata["tool_calls"][0]["arguments"]["content"], deck)
+
+    @override_settings(CONTEXT_RAW_TOOL_TURNS=2)
+    async def test_old_slide_write_kept_when_deck_switched_in_a_later_turn(self):
+        """A later turn activated another deck, so the preamble no longer shows
+        this call's deck — its JSON must stay."""
+        deck = {"version": 1, "slides": [{"id": "s1", "name": "x" * 3000}]}
+        await self._msg("Question one", role="user")
+        await self._msg("", role="assistant", tool_calls=[
+            {"id": "d-old", "name": "slide_canvas_write", "arguments": {"content": deck, "deck_name": "Pitch"}},
+        ])
+        await self._msg('{"status": "ok"}', role="tool", tool_call_id="d-old")
+        await self._msg("Question two", role="user")
+        await self._msg("", role="assistant", tool_calls=[
+            {"id": "a-1", "name": "slide_canvas_activate", "arguments": {"deck_names": ["Other"]}},
+        ])
+        await self._msg('{"status": "ok"}', role="tool", tool_call_id="a-1")
+        await self._msg("Question three", role="user")
+        await self._msg("Answer three", role="assistant")
+
+        messages = (await self.consumer._load_history(self.thread))["messages"]
+        calls = {tc["id"]: tc for m in messages for tc in m.get("tool_calls") or []}
+        self.assertEqual(calls["d-old"]["arguments"]["content"], deck)
+
 
 class SummariseExcludesToolNoiseTests(TransactionTestCase):
     def setUp(self):

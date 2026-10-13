@@ -19,7 +19,7 @@ from io import BytesIO
 from pydantic import BaseModel, Field, field_validator
 
 from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
-from llm.tools.interfaces import omitted_arg_marker
+from llm.tools.interfaces import is_omitted_arg, omitted_arg_marker
 
 # The slides_add_slide layout ids, sourced from the seed catalogue so this
 # always matches what actually exists (no hand-maintained list to go stale).
@@ -28,6 +28,71 @@ from chat.slides.layouts import layout_catalog
 _LAYOUT_IDS = ", ".join(c["id"] for c in layout_catalog())
 # A one-line-per-layout menu (id: what it's for) so the model picks confidently.
 _LAYOUT_MENU = "\n".join(f'- {c["id"]}: {c["description"]}' for c in layout_catalog())
+
+
+# ---------------------------------------------------------------------------
+# Argument trimming (edit points / between turns)
+# ---------------------------------------------------------------------------
+# The deck JSON in an OLD slide_canvas_write / slide_canvas_edit call is replaced
+# with a marker once the deck's current state is reachable elsewhere: mid-turn the
+# tool loop appends a "current state" deck block at the same edit point
+# (chat/slides/deck_block.py); between turns the per-turn preamble re-renders the
+# active deck. Both only cover the ACTIVE deck, so a call is trimmed only while
+# no later call could have made a different deck active. The hooks must work
+# without a RunContext (between turns they run on the shared registry instances),
+# so the rule is derived from ``later_calls`` alone.
+_SWITCH = object()  # the active deck changed to something the args can't name
+# Tools that end with service.activate_deck(...) on the deck they touched.
+_TOUCH_TOOLS = ("slide_canvas_write", "slide_canvas_edit", "slides_add_slide", "slides_set_theme")
+_DECK_IN_CONTEXT = 'The deck as it is now is in the latest "Active Slide Deck" section of your context.'
+_REPLACED = "A later slide_canvas_write of this deck replaced it."
+
+
+def _later_target(call):
+    """What a later call leaves as the active deck: a title, ``""`` (the deck that
+    was active when it ran), ``_SWITCH``, ``("delete", name)``, or ``None`` when
+    the call cannot change which deck is active."""
+    name = getattr(call, "name", "") or ""
+    args = getattr(call, "arguments", None) or {}
+    if name in _TOUCH_TOOLS:
+        return args.get("deck_name") or ""
+    if name == "slides_create_deck":
+        return _SWITCH
+    if name == "slide_canvas_activate":
+        names = [n for n in (args.get("deck_names") or []) if n]
+        return names[0] if len(names) == 1 else _SWITCH
+    if name == "slide_canvas_delete":
+        return ("delete", args.get("deck_name") or "")
+    if name == "skill_resource_load":
+        # target="deck" creates or rewrites a deck and activates it either way.
+        return _SWITCH if args.get("target") == "deck" else None
+    return None
+
+
+def _deck_state_after(deck: str, later_calls) -> str:
+    """``"superseded"`` (a later full rewrite replaced this call's deck),
+    ``"active"`` (its deck is still the active one, so its current state is in
+    the context) or ``"unknown"`` (a later call may have switched decks — keep
+    the args). ``deck`` is the call's ``deck_name``; ``""`` = the then-active deck.
+    Walks ``later_calls`` in order and stops at the first possible switch."""
+    for call in later_calls:
+        target = _later_target(call)
+        if target is None:
+            continue
+        if target is _SWITCH:
+            return "unknown"
+        if isinstance(target, tuple):  # ("delete", name)
+            if deck and target[1] and target[1] != deck:
+                continue  # another named deck was deleted; ours stays as it was
+            return "unknown"
+        if target and deck and target != deck:
+            return "unknown"  # a different named deck became active
+        if target and not deck:
+            return "unknown"  # can't tell whether the named deck is ours
+        if (getattr(call, "name", "") or "") == "slide_canvas_write":
+            return "superseded"
+        # The same deck was touched again (edit/add/theme) — still the active one.
+    return "active"
 
 
 # ---------------------------------------------------------------------------
@@ -325,19 +390,14 @@ class WriteDeckTool(ContextAwareTool):
     args_schema: type[BaseModel] = WriteDeckInput
 
     def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> dict | None:
-        # No deck read tool, so only a later full rewrite of the same deck makes
-        # this call's JSON moot.
-        deck = args.get("deck_name") or ""
-        superseded = any(
-            getattr(c, "name", "") == "slide_canvas_write"
-            and ((getattr(c, "arguments", None) or {}).get("deck_name") or "") == deck
-            for c in later_calls
-        )
-        if not superseded or args.get("content") is None:
+        content = args.get("content")
+        if content is None or is_omitted_arg(content):
             return None
-        return {**args, "content": omitted_arg_marker(
-            "deck JSON", "A later slide_canvas_write of this deck replaced it.",
-        )}
+        state = _deck_state_after(args.get("deck_name") or "", later_calls)
+        if state == "unknown":
+            return None
+        where = _REPLACED if state == "superseded" else _DECK_IN_CONTEXT
+        return {**args, "content": omitted_arg_marker("deck JSON", where)}
 
     def _run(self, content=None, title: str = "", deck_name: str = "", **kwargs) -> str:
         from chat.slides import schema, service
@@ -448,6 +508,17 @@ class EditDeckTool(ContextAwareTool):
         "`class` unless a run sets `font`."
     )
     args_schema: type[BaseModel] = EditDeckInput
+
+    def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> dict | None:
+        edits = args.get("edits")
+        if edits is None or is_omitted_arg(edits):
+            return None
+        state = _deck_state_after(args.get("deck_name") or "", later_calls)
+        if state == "unknown":
+            return None
+        what = f"list of {len(edits)} edit(s)" if isinstance(edits, list) else "edits"
+        where = _REPLACED if state == "superseded" else _DECK_IN_CONTEXT
+        return {**args, "edits": omitted_arg_marker(what, where)}
 
     def _run(self, edits, deck_name: str = "", **kwargs) -> str:
         from chat.edit_utils import apply_unique_text_edits

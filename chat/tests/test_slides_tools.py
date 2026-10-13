@@ -697,3 +697,75 @@ class ThemeToolTests(SlideToolTests):
         deck = SlideSet.objects.get(pk=r["deck_id"])
         self.assertEqual(deck.content["theme"]["_theme_id"], "tuser1")
         self.assertEqual(deck.content["theme"]["footer"]["sections"][0]["content"], "logo")
+
+
+class DeckBlockProviderTests(TestCase):
+    """``chat.slides.deck_block.make_deck_block_provider`` — the "current deck"
+    block the tool loop appends at an edit point, re-read from the DB."""
+
+    def setUp(self):
+        User = get_user_model()
+        self.user = User.objects.create_user(email=f"db+{uuid.uuid4().hex[:6]}@ex.com", password="x")
+        self.thread = ChatThread.objects.create(created_by=self.user, title="t")
+        self.ctx = RunContext(run_id="r1", conversation_id=str(self.thread.id), user_id=str(self.user.id))
+
+    def _run(self, tool, **kw):
+        tool.set_context(self.ctx)
+        return json.loads(tool._run(**kw))
+
+    def _provider(self, baseline):
+        from chat.slides.deck_block import make_deck_block_provider
+
+        return make_deck_block_provider(str(self.thread.id), baseline=baseline)
+
+    def _active_version(self):
+        from chat.slides.service import deck_version, get_active_deck
+
+        return deck_version(get_active_deck(str(self.thread.id)))
+
+    def test_no_deck_returns_empty(self):
+        self.assertEqual(self._provider(None)(), "")
+
+    def test_unchanged_deck_returns_empty(self):
+        """The preamble snapshot is still exact → no block (it would be dead weight)."""
+        self._run(CreateDeckTool(), title="Deck A", layouts=["title"])
+        self.assertEqual(self._provider(self._active_version())(), "")
+
+    def test_changed_deck_renders_current_canonical_json(self):
+        from chat.prompts import ACTIVE_DECK_BLOCK_HEADER
+
+        self._run(CreateDeckTool(), title="Deck A", layouts=["title"])
+        baseline = self._active_version()
+        r = self._run(WriteDeckTool(), content=_deck_json())
+        self.assertEqual(r["status"], "ok")
+        deck = SlideSet.objects.get(pk=r["deck_id"])
+        block = self._provider(baseline)()
+        self.assertTrue(block.startswith(f'{ACTIVE_DECK_BLOCK_HEADER}: "Deck A"'))
+        self.assertIn("supersedes", block)
+        self.assertIn(canonical_deck_text(deck.content), block)
+        self.assertIn("Hello Deck", block)
+
+    def test_switched_active_deck_renders_block_with_inventory(self):
+        """Activating an unmodified deck changes the pk, not updated_at — the block
+        must still appear (the preamble shows the wrong deck)."""
+        self._run(CreateDeckTool(), title="Deck A", layouts=["title"])
+        self._run(CreateDeckTool(), title="Deck B", layouts=["title"])  # B is active now
+        baseline = self._active_version()  # the preamble rendered B
+        r = self._run(ActivateDeckTool(), deck_names=["Deck A"])
+        self.assertEqual(r["status"], "ok")
+        block = self._provider(baseline)()
+        self.assertIn('(current state): "Deck A"', block)
+        self.assertIn('Decks in this thread: "Deck A" (active), "Deck B"', block)
+
+    def test_new_deck_from_no_deck_baseline_renders_block(self):
+        self._run(CreateDeckTool(), title="Fresh", layouts=["title", "bullets"])
+        block = self._provider(None)()
+        self.assertIn('"Fresh"', block)
+        self.assertIn('"s2"', block)
+
+    def test_provider_never_raises(self):
+        self._run(CreateDeckTool(), title="Deck A", layouts=["title"])
+        with mock.patch(
+            "chat.slides.service.active_deck_for_prompt", side_effect=RuntimeError("db down"),
+        ), self.assertLogs("chat.slides.deck_block", level="ERROR"):
+            self.assertEqual(self._provider(None)(), "")

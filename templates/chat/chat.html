@@ -5141,9 +5141,12 @@
     // pending, re-request deck state on a backing-off timer to pull in the
     // renders whose event never arrived — no F5. Unchanged slides keep their
     // cached image URL, so only the freshly-rendered slides actually re-fetch.
-    // Bounded, so a genuinely failed render doesn't poll forever.
+    // render_failed / settle / close() stop it; otherwise it keeps a slow steady
+    // poll for as long as the panel is open — deliberately uncapped: a render
+    // queued behind a busy or restarting worker can take minutes (~5 min seen in
+    // production), and a capped poll stranded the filmstrip until an F5.
     var reconcileTimer = null, reconcileTries = 0;
-    var RECONCILE_MAX_TRIES = 8;
+    var RECONCILE_STEADY_MS = 30000;   // after the 2.5s → 15s back-off
     function pendingCount() { return slides.filter(function(s) { return s.status === "queued" || s.status === "rendering"; }).length; }
     function anyPending() { return pendingCount() > 0; }
     function stopReconcile() { if (reconcileTimer) { clearTimeout(reconcileTimer); reconcileTimer = null; } reconcileTries = 0; }
@@ -5155,8 +5158,10 @@
     }
     function scheduleReconcile() {
       if (!anyPending()) { stopReconcile(); return; }   // everything settled — nothing to poll
-      if (reconcileTimer || reconcileTries >= RECONCILE_MAX_TRIES) return;
-      var delay = Math.min(2500 * Math.pow(1.6, reconcileTries), 15000);  // ~2.5s → 15s, ~8 tries
+      if (reconcileTimer) return;
+      var delay = reconcileTries >= 8
+        ? RECONCILE_STEADY_MS
+        : Math.min(2500 * Math.pow(1.6, reconcileTries), 15000);  // ~2.5s → 15s over ~8 tries, then steady
       reconcileTimer = setTimeout(function() {
         reconcileTimer = null;
         if (!anyPending()) { stopReconcile(); return; }
@@ -5165,8 +5170,8 @@
         scheduleReconcile();   // re-arm for the next attempt (becomes a no-op once nothing's pending)
       }, delay);
     }
-    // The render-status bar's manual "Check now" — an escape hatch when the auto
-    // poll has backed off or hit its cap. Restarts the backoff and re-hydrates now.
+    // The render-status bar's manual "Check now" — for the impatient while the
+    // auto poll is in its slow phase. Restarts the backoff and re-hydrates now.
     function setRenderCheckBusy(b) {
       if (renderCheckBtn) renderCheckBtn.disabled = b;
       if (renderCheckIcon) renderCheckIcon.classList.toggle("hidden", b);
@@ -5178,7 +5183,7 @@
       setRenderCheckBusy(true);
       setTimeout(function() { setRenderCheckBusy(false); }, 1200);  // brief feedback; the bar hides on settle
       reconcileNow();
-      scheduleReconcile();                                       // (re-)arm the auto-poll even past the cap
+      scheduleReconcile();                                       // (re-)arm the auto-poll at the fast step
     }
     // Header "Re-render" button: forces a fresh render of every slide (the
     // server blanks the per-slide render cache). Spins until the server acks,
