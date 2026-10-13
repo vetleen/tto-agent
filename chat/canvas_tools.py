@@ -161,7 +161,8 @@ class WriteCanvasTool(ContextAwareTool):
     description: str = (
         "Create or completely rewrite the canvas document for this conversation. "
         "Use this when starting a document from scratch or doing a full rewrite. "
-        "For targeted changes to an existing document, prefer the canvas_edit tool instead."
+        "For targeted changes to an existing document, prefer the canvas_edit tool instead. "
+        "Content over 75,000 characters is rejected; split long documents across canvases."
     )
     args_schema: type[BaseModel] = WriteCanvasInput
 
@@ -180,6 +181,7 @@ class WriteCanvasTool(ContextAwareTool):
             activate_canvas,
             clip_to_canvas,
             create_canvas_checkpoint,
+            oversized_content_rejection,
             snapshot_user_edits,
             truncation_result_fields,
         )
@@ -187,6 +189,12 @@ class WriteCanvasTool(ContextAwareTool):
         thread_id = self.context.conversation_id if self.context else None
         if not thread_id:
             return json.dumps({"status": "error", "message": "No thread context available."})
+
+        # A body over the cap is a runaway, not a document: refuse it before
+        # touching the canvas (the clip below stays as a defensive backstop).
+        rejection = oversized_content_rejection(content)
+        if rejection:
+            return json.dumps(rejection)
 
         # A full rewrite replaces whatever the canvas held, so it also replaces the
         # truncation marker / source link: set when this write is cut, else cleared.
@@ -283,7 +291,8 @@ class EditCanvasTool(ContextAwareTool):
         "only need to change specific parts. Each edit specifies old_text to find "
         "and new_text to replace it with. The old_text must match exactly once in "
         "the document — if it appears multiple times, include more surrounding "
-        "context to make it unique. If no canvas exists yet, use canvas_write first."
+        "context to make it unique. If no canvas exists yet, use canvas_write first. "
+        "A replacement text over 75,000 characters is rejected."
     )
     args_schema: type[BaseModel] = EditCanvasInput
 
@@ -294,11 +303,28 @@ class EditCanvasTool(ContextAwareTool):
         return {**args, "edits": _canvas_read_marker(f"list of {len(edits)} edit(s)")}
 
     def _run(self, edits: list[dict] | list[EditItem], canvas_name: str = "", **kwargs) -> str:
-        from chat.services import resolve_canvas
+        from chat.services import (
+            large_replacement_hint,
+            oversized_edit_rejection,
+            resolve_canvas,
+        )
 
         thread_id = self.context.conversation_id if self.context else None
         if not thread_id:
             return json.dumps({"status": "error", "message": "No thread context available."})
+
+        pairs = [
+            (
+                edit.get("old_text", "") if isinstance(edit, dict) else edit.old_text,
+                edit.get("new_text", "") if isinstance(edit, dict) else edit.new_text,
+            )
+            for edit in edits
+        ]
+        # A replacement text over the cap is a runaway, not an edit: refuse it
+        # before resolving or matching anything.
+        rejection = oversized_edit_rejection(pairs)
+        if rejection:
+            return json.dumps(rejection)
 
         canvas, err = resolve_canvas(thread_id, canvas_name or None)
         if err:
@@ -311,27 +337,24 @@ class EditCanvasTool(ContextAwareTool):
         # buffer) so one edit can't match text another edit just inserted.
         from chat.edit_utils import apply_unique_text_edits
 
-        pairs = [
-            (
-                edit.get("old_text", "") if isinstance(edit, dict) else edit.old_text,
-                edit.get("new_text", "") if isinstance(edit, dict) else edit.new_text,
-            )
-            for edit in edits
-        ]
         new_content, applied, failed = apply_unique_text_edits(canvas.content, pairs)
+        hint = large_replacement_hint(failed)
 
         # Nothing matched — report an error and leave the canvas untouched (no
         # save, no checkpoint), mirroring document_edit. Returning "ok" here would
         # let the model believe the edit succeeded.
         if applied == 0:
-            return json.dumps({
+            result = {
                 "status": "error",
                 "applied": 0,
                 "failed": failed,
                 "message": "No edits applied.",
                 "title": canvas.title,
                 "canvas_id": str(canvas.pk),
-            })
+            }
+            if hint:
+                result["hint"] = hint
+            return json.dumps(result)
 
         # Preserve any uncommitted user edits before applying AI edits.
         from chat.services import snapshot_user_edits
@@ -382,6 +405,8 @@ class EditCanvasTool(ContextAwareTool):
             "title": canvas.title,
             "canvas_id": str(canvas.pk),
         }
+        if hint:
+            result["hint"] = hint
         if original_chars:
             result.update(truncation_result_fields(original_chars))
         if stripped_images:

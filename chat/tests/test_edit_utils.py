@@ -59,6 +59,14 @@ class ApplyUniqueTextEditsTests(SimpleTestCase):
         self.assertEqual(applied, 2)
         self.assertEqual(failed, [])
 
+    def test_failed_entries_carry_new_text_chars(self):
+        _text, _applied, failed = apply_unique_text_edits(
+            "hello", [("world", "x" * 500), ("", "y"), ("hel", "a"), ("hello", "b")]
+        )
+        self.assertEqual([f["new_text_chars"] for f in failed], [500, 1, 1])
+        self.assertEqual(failed[0]["error"], "Text not found.")
+        self.assertEqual(failed[0]["old_text"], "world")
+
 
 class AppendWithAnchorTests(SimpleTestCase):
     def test_empty_canvas_returns_text_only(self):

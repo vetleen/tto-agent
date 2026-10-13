@@ -1049,6 +1049,33 @@ class ObservabilityFieldTests(TestCase):
         self.assertIsNone(log.tool_call_count)
         self.assertIsNone(log.prune_count)
         self.assertIsNone(log.tool_result_tokens)
+        self.assertIsNone(log.output_truncated_rounds)
+
+    def test_output_truncated_rounds_persisted(self):
+        request = _make_request()
+        request.context.bump_stat("output_truncated_rounds", 2)
+        response = ChatResponse(
+            message=Message(role="assistant", content="done"),
+            model="gpt-4o-mini", usage=None, metadata={},
+        )
+        log_call(request, response, duration_ms=10)
+        self.assertEqual(_get_log(request).output_truncated_rounds, 2)
+
+    def test_stream_persists_output_truncated_rounds(self):
+        request = _make_request(stream=True)
+        request.context.bump_stat("output_truncated_rounds", 1)
+        run_id = request.context.run_id
+        events = [
+            StreamEvent(
+                event_type="message_end",
+                data={"input_tokens": 10, "output_truncated": True, "stop_reason": "repetition"},
+                sequence=1, run_id=run_id,
+            ),
+        ]
+        log_stream(request, _acc(events), duration_ms=100)
+        log = _get_log(request)
+        self.assertEqual(log.output_truncated_rounds, 1)
+        self.assertEqual(log.stop_reason, "repetition")
 
     def test_prune_count_zero_when_tools_ran_without_pruning(self):
         request = _make_request()

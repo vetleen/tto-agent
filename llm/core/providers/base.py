@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 from llm.core.interfaces import ChatModel
 from llm.core.langchain_utils import to_langchain_messages, parse_tool_calls_from_ai_message
+from llm.core.output_guard import OutputGuard
 from llm.service.errors import (
     LLMAuthError,
     LLMConnectionError,
@@ -383,6 +384,16 @@ def _wait_before_retry(wait: float, *, cancel_event=None, cancel_check=None, dea
     return not _is_cancelled(cancel_event, cancel_check)
 
 
+def _close_quietly(gen) -> None:
+    """Close a provider stream generator (tests hand the loop a plain list)."""
+    close = getattr(gen, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:  # pragma: no cover - best effort
+            logger.debug("Closing the provider stream raised", exc_info=True)
+
+
 class BaseLangChainChatModel(ChatModel):
     """Shared generate/stream logic for all LangChain-backed providers.
 
@@ -395,6 +406,10 @@ class BaseLangChainChatModel(ChatModel):
     _client: object  # LangChain BaseChatModel instance
     _provider_label: str = "LLM"
     _provider_id: str | None = None  # e.g. "openai", "anthropic", "google_genai"
+    # Client kwarg that caps output tokens for this provider ("max_tokens" for
+    # ChatOpenAI, "max_output_tokens" for ChatGoogleGenerativeAI). None = the
+    # adapter manages its own cap (Anthropic: max_tokens travels with thinking).
+    _output_cap_param: str | None = None
 
     def __init__(self, model_name: str, client: object) -> None:
         self.name = model_name
@@ -423,13 +438,39 @@ class BaseLangChainChatModel(ChatModel):
 
     @staticmethod
     def _extract_response_metadata(result: object) -> dict:
-        """Extract stop_reason, provider_model_id, and full response_metadata."""
+        """Extract stop_reason, provider_model_id, output_truncated and the full
+        response_metadata.
+
+        ``output_truncated`` is True when the provider stopped at the output
+        cap: Anthropic ``stop_reason == "max_tokens"``, Chat Completions
+        ``finish_reason == "length"``, Gemini ``"MAX_TOKENS"`` (substring —
+        langchain concatenates per-chunk finish reasons, e.g. ``"STOPSTOP"``),
+        and the Responses API, which has no finish_reason and reports
+        ``status == "incomplete"`` with ``incomplete_details.reason ==
+        "max_output_tokens"``; its empty stop_reason is normalised to that
+        string so the log row is not blank.
+        """
         resp_meta = getattr(result, "response_metadata", None) or {}
-        stop = (
+        stop = str(
             resp_meta.get("stop_reason")       # Anthropic
-            or resp_meta.get("finish_reason")   # OpenAI
+            or resp_meta.get("finish_reason")   # OpenAI / Gemini
             or ""
         )
+        incomplete = resp_meta.get("incomplete_details")
+        if isinstance(incomplete, dict):
+            incomplete_reason = incomplete.get("reason")
+        else:
+            incomplete_reason = getattr(incomplete, "reason", None)
+        truncated = bool(
+            stop in ("max_tokens", "length")
+            or "MAX_TOKENS" in stop
+            or (
+                resp_meta.get("status") == "incomplete"
+                and incomplete_reason == "max_output_tokens"
+            )
+        )
+        if truncated and not stop:
+            stop = "max_output_tokens"
         model_id = (
             resp_meta.get("model_id")           # Anthropic
             or resp_meta.get("model_name")      # OpenAI
@@ -440,6 +481,7 @@ class BaseLangChainChatModel(ChatModel):
             "response_metadata": resp_meta,
             "stop_reason": stop,
             "provider_model_id": model_id,
+            "output_truncated": truncated,
         }
 
     @staticmethod
@@ -510,12 +552,26 @@ class BaseLangChainChatModel(ChatModel):
             return {"tool_choice": "none"}
         return {}
 
+    def _bind_output_cap(self, client, request: ChatRequest):
+        """Bind the per-request output-token cap (``output_token_cap``) onto
+        *client*, so a runaway response (a repetition loop, a document pasted
+        whole) is cut by the provider instead of running to the model's
+        maximum. A ``.bind`` leaves the factory's client cache untouched."""
+        param = self._output_cap_param
+        if not param:
+            return client
+        from llm.context_budget import output_token_cap
+
+        cap = output_token_cap(self.name, (request.params or {}).get("thinking_level"))
+        return client.bind(**{param: cap})
+
     def _get_streaming_client(self, request: ChatRequest):
-        """Return the LangChain client for streaming (reasoning variant + tools)."""
+        """Return the LangChain client for streaming and generate (reasoning
+        variant + tools + output cap)."""
         client = self._get_reasoning_client(request)
         if request.tool_schemas:
             client = client.bind_tools(request.tool_schemas, **self._tool_choice_kwargs(request))
-        return client
+        return self._bind_output_cap(client, request)
 
     def _structured_output_kwargs(self) -> dict:
         """Extra ``with_structured_output`` kwargs for this provider."""
@@ -583,6 +639,30 @@ class BaseLangChainChatModel(ChatModel):
                 self.name,
             )
         return data
+
+    def _estimate_aborted_usage(self, messages, request: ChatRequest, generated_text: str) -> dict:
+        """Usage for a stream we closed early. Providers put usage on the final
+        chunk, which never arrives, so estimate it (flagged ``usage_estimated``)
+        rather than log NULL for exactly the round that cost real money."""
+        try:
+            from core.tokens import count_tokens, estimate_chat_request_tokens
+
+            output_tokens = count_tokens(generated_text)
+            input_tokens = estimate_chat_request_tokens(messages, request.tool_schemas)
+            cost = calculate_cost(self.name, input_tokens, output_tokens, None, None)
+        except Exception:  # pragma: no cover - metrics must never break a turn
+            logger.debug("Failed to estimate usage for an aborted stream", exc_info=True)
+            return {}
+        return {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+            "cached_tokens": None,
+            "cache_write_tokens": None,
+            "reasoning_tokens": None,
+            "cost_usd": float(cost) if cost is not None else None,
+            "usage_estimated": True,
+        }
 
     def _get_callbacks(self, request: ChatRequest) -> list:
         """Build the callbacks list for a generate/stream call."""
@@ -840,16 +920,24 @@ class BaseLangChainChatModel(ChatModel):
         # content (duplicate thinking/text on the client), so it becomes a
         # terminal error instead.
         events_yielded = False
+        # Degenerate-output guard over visible text, thinking and tool-call
+        # argument fragments. A flagged stream is closed at once and reported as
+        # a truncated round (message_end with output_truncated), never as an
+        # error: an error event fails sub-agent runs and ends the main turn.
+        guard = OutputGuard()
+        abort_reason: str | None = None
 
         stream_succeeded = False
         last_exc: Exception | None = None
         for attempt in range(_RATE_LIMIT_MAX_RETRIES + 1):
             try:
-                for chunk in client.stream(lc_messages, config=config):
+                gen = client.stream(lc_messages, config=config)
+                for chunk in gen:
                     last_chunk = chunk
                     chunks.append(chunk)
 
-                    for event_type, event_data in self._parse_chunk(chunk):
+                    parsed = self._parse_chunk(chunk)
+                    for event_type, event_data in parsed:
                         if event_type == "token":
                             output_text_parts.append(event_data.get("text", ""))
                         events_yielded = True
@@ -860,6 +948,12 @@ class BaseLangChainChatModel(ChatModel):
                             run_id=run_id,
                         )
                         sequence += 1
+                    abort_reason = guard.observe(chunk, parsed)
+                    if abort_reason:
+                        # Stop generation now: closing the generator closes the
+                        # SDK's HTTP response, so the provider stops billing.
+                        _close_quietly(gen)
+                        break
                 stream_succeeded = True
                 break
             except Exception as exc:
@@ -919,6 +1013,8 @@ class BaseLangChainChatModel(ChatModel):
                     last_chunk = None
                     accumulated = None
                     output_text_parts = []
+                    guard = OutputGuard()
+                    abort_reason = None
                 else:
                     classified = classify_api_error(exc, self._provider_label)
                     log_fn = getattr(logger, classified.log_level, logger.error)
@@ -975,11 +1071,25 @@ class BaseLangChainChatModel(ChatModel):
         # LangChain may append a trailing empty chunk with chunk_position="last"
         # that lacks usage_metadata; the accumulated message retains it.
         usage_source = accumulated if accumulated is not None else last_chunk
-        end_data = self._extract_stream_usage(usage_source, "".join(output_text_parts))
+        # After an abort the provider's final usage chunk never arrived: pass no
+        # text so the "no usage_metadata" warning stays quiet, estimate below.
+        end_data = self._extract_stream_usage(
+            usage_source, "" if abort_reason else "".join(output_text_parts)
+        )
         end_data["model"] = self.name
         if usage_source:
             resp_meta = self._extract_response_metadata(usage_source)
             end_data.update(resp_meta)
+        if abort_reason:
+            end_data["output_truncated"] = True
+            end_data["stop_reason"] = abort_reason
+            if not end_data.get("output_tokens"):
+                end_data.update(self._estimate_aborted_usage(messages, request, guard.text()))
+            logger.warning(
+                "LLM stream aborted for degenerate output after %d chars reason=%s "
+                "model=%s provider=%s run_id=%s",
+                guard.total_chars, abort_reason, self.name, self._provider_label, run_id,
+            )
 
         # Include accumulated content and tool_calls for pipeline consumption
         if accumulated is not None:

@@ -44,6 +44,36 @@ _DEFAULT_OUTPUT_RESERVATION = 32_000
 # tool-loop round pruned.
 _MAX_RESERVATION_FRACTION_OF_AIM = 0.25
 
+# Hard output cap sent to the provider (``max_tokens`` / ``max_output_tokens``)
+# by effort. Deliberately looser than _EFFORT_OUTPUT_RESERVATION: the
+# reservation is the *typical* output we budget the input around, the cap is
+# the *worst case* we let the provider bill before a runaway (a repetition loop,
+# a document pasted whole) is cut off. On OpenAI and Gemini the cap includes
+# reasoning tokens, and a full 75k-char canvas write is ~20k tokens, so even low
+# effort needs headroom above the 16k reservation. Capped by the model's
+# registry max_output_tokens, never by the context aim (every registered
+# model's window is far above aim + cap).
+_EFFORT_OUTPUT_CAP = {
+    "low": 24_000,
+    "medium": 32_000,
+    "high": 48_000,
+    "xhigh": 64_000,
+    "max": 64_000,
+}
+_DEFAULT_OUTPUT_CAP = 32_000
+# Unregistered models: nothing known about their window, stay conservative.
+_UNREGISTERED_OUTPUT_CAP = 32_000
+
+
+def output_token_cap(model: str | None, effort: str | None = None) -> int:
+    """Maximum output tokens to let the provider generate in one call."""
+    base = _EFFORT_OUTPUT_CAP.get((effort or "").lower(), _DEFAULT_OUTPUT_CAP)
+    info = get_model_info(model) if model else None
+    if info is None:
+        return min(base, _UNREGISTERED_OUTPUT_CAP)
+    max_out = getattr(info, "max_output_tokens", None)
+    return min(base, max_out) if max_out else base
+
 
 def output_reservation(
     model: str | None, effort: str | None = None, aim: int | None = None,
@@ -102,4 +132,9 @@ def history_budget(
     return max(ceiling - overhead, floor)
 
 
-__all__ = ["output_reservation", "request_input_ceiling", "history_budget"]
+__all__ = [
+    "output_reservation",
+    "output_token_cap",
+    "request_input_ceiling",
+    "history_budget",
+]

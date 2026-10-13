@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import logging
 import re
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from core.file_types import (
@@ -61,6 +62,72 @@ def truncation_result_fields(original_chars: int, *, hint: str = "") -> dict:
         "kept_chars": CANVAS_MAX_CHARS,
         "truncation_note": note,
     }
+
+
+def oversized_content_rejection(content: str | None) -> dict | None:
+    """The tool result for a model-authored canvas body over the cap, or None.
+
+    A payload this large is a runaway, not a document: refusing it up front
+    (nothing written, no checkpoint) keeps the clip path for content that
+    arrives whole from elsewhere (imports, document_open_to_canvas, pastes).
+    """
+    n = len(content or "")
+    if n <= CANVAS_MAX_CHARS:
+        return None
+    return {
+        "status": "error",
+        "message": (
+            f"Rejected: content is {n:,} characters; the canvas limit is "
+            f"{CANVAS_MAX_CHARS:,}. Nothing was written. Shorten it or split it "
+            "across canvases."
+        ),
+    }
+
+
+def oversized_edit_rejection(
+    pairs: Iterable[tuple[str, str]], *, write_tool: str = "canvas_write",
+) -> dict | None:
+    """The tool result for an edit call whose replacement text alone exceeds
+    the canvas cap, or None. Checked before any matching, so nothing changes."""
+    rejected = [
+        {"index": i, "new_text_chars": len(new_text or "")}
+        for i, (_old, new_text) in enumerate(pairs)
+        if len(new_text or "") > CANVAS_MAX_CHARS
+    ]
+    if not rejected:
+        return None
+    first = rejected[0]
+    return {
+        "status": "error",
+        "applied": 0,
+        "message": (
+            f"Rejected: edit {first['index'] + 1} has a new_text of "
+            f"{first['new_text_chars']:,} characters; the canvas limit is "
+            f"{CANVAS_MAX_CHARS:,}. Nothing was changed. Re-issue a short, targeted "
+            f"edit, or use {write_tool} for a full rewrite under the limit."
+        ),
+        "rejected_edits": rejected,
+    }
+
+
+# A failed edit whose replacement text is larger than this gets a steer: a model
+# that retries such an edit verbatim burns minutes per attempt.
+LARGE_REPLACEMENT_HINT_CHARS = 10_000
+
+
+def large_replacement_hint(
+    failed: list[dict], *, write_tool: str = "canvas_write",
+) -> str | None:
+    """A hint for the edit result when a failed edit's ``new_text`` is far too
+    large for a targeted edit (``new_text_chars`` comes from edit_utils)."""
+    largest = max((f.get("new_text_chars") or 0 for f in failed), default=0)
+    if largest <= LARGE_REPLACEMENT_HINT_CHARS:
+        return None
+    return (
+        f"A replacement text of {largest:,} characters is far larger than a "
+        "targeted edit; re-issue a short edit (a few lines of old_text to "
+        f"new_text) or use {write_tool} to rewrite the document."
+    )
 
 
 MAX_CANVASES_PER_THREAD = 10

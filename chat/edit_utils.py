@@ -21,31 +21,40 @@ def apply_unique_text_edits(
 
     ``edits`` is an iterable of ``(old_text, new_text)`` pairs. Returns
     ``(new_text, applied, failed)`` where ``failed`` is a list of
-    ``{"old_text": <truncated>, "error": <message>}`` dicts (in input order). An
-    edit fails if its ``old_text`` is empty, is absent from ``original``, appears
-    more than once, or overlaps the span of an already-accepted edit in this call.
+    ``{"old_text": <truncated>, "new_text_chars": <int>, "error": <message>}``
+    dicts (in input order; the size lets callers spot a runaway replacement).
+    An edit fails if its ``old_text`` is empty, is absent from ``original``,
+    appears more than once, or overlaps the span of an already-accepted edit in
+    this call.
     """
     accepted: list[tuple[int, int, str]] = []  # (start, end, new_text)
     failed: list[dict] = []
 
+    def _fail(old_text: str, new_text: str, error: str) -> None:
+        failed.append({
+            "old_text": (old_text or "")[:80],
+            "new_text_chars": len(new_text or ""),
+            "error": error,
+        })
+
     for old_text, new_text in edits:
         if not old_text:
-            failed.append({"old_text": (old_text or "")[:80], "error": "Empty old_text."})
+            _fail(old_text, new_text, "Empty old_text.")
             continue
         count = original.count(old_text)
         if count == 0:
-            failed.append({"old_text": old_text[:80], "error": "Text not found."})
+            _fail(old_text, new_text, "Text not found.")
             continue
         if count > 1:
-            failed.append({
-                "old_text": old_text[:80],
-                "error": f"Found {count} matches — add more surrounding text to make it unique.",
-            })
+            _fail(
+                old_text, new_text,
+                f"Found {count} matches — add more surrounding text to make it unique.",
+            )
             continue
         start = original.find(old_text)
         end = start + len(old_text)
         if any(start < a_end and a_start < end for a_start, a_end, _ in accepted):
-            failed.append({"old_text": old_text[:80], "error": "Overlaps another edit in this call."})
+            _fail(old_text, new_text, "Overlaps another edit in this call.")
             continue
         accepted.append((start, end, new_text))
 

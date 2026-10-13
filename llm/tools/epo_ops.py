@@ -276,10 +276,25 @@ def _invalidate_token() -> None:
 _FAULT_CODE_RE = re.compile(r"<(?:[\w-]+:)?code>\s*([^<]*?)\s*</", re.IGNORECASE)
 _FAULT_MESSAGE_RE = re.compile(r"<(?:[\w-]+:)?message>\s*([^<]*?)\s*</", re.IGNORECASE)
 
-# OPS answers a query it cannot evaluate (malformed CPC, sentinel dates, ...)
-# with 500 SERVER.DomainAccess "please try again later" — deterministically, so
-# retrying the same query only burns minutes of backoff.
-_BAD_QUERY_FAULT = "SERVER.DomainAccess"
+# 500 SERVER.DomainAccess "please try again later" is ambiguous: OPS sends the
+# byte-identical fault (same body, same headers) for a query it cannot evaluate
+# (malformed CPC, sentinel dates, ...) AND when its back end is overloaded — and
+# under load the same input flips between DomainAccess and 404 (prod 2026-10-13).
+# So: retry once after a short wait, then let a known-good health probe decide
+# whether OPS is down or this query is the likely problem.
+_DOMAIN_ACCESS_FAULT = "SERVER.DomainAccess"
+_DOMAIN_ACCESS_RETRY_WAIT = 8.0
+_HEALTH_CACHE_PREFIX = "epo_ops_health_v1:"
+_HEALTH_TTL = 60
+_HEALTH_LOCK_TTL = 30
+_HEALTH_WAIT_SECONDS = 10
+# One known-good request per OPS service (throttling and outages are per service).
+_HEALTH_PROBES = {
+    "search": ("published-data/search", {"q": "pn=EP1000000"}),
+    "retrieval": ("published-data/publication/docdb/EP.1000000.A1/biblio", {}),
+    "inpadoc": ("family/publication/docdb/EP.1000000.A1", {}),
+    "other": ("published-data/publication/docdb/EP.1000000.A1/biblio", {}),
+}
 # EPO's fair-use detector ("recent behaviour implies you are a robot ... try
 # again later"): a 403 that is transient, not an auth problem.
 _ROBOT_FAULT = "CLIENT.RobotDetected"
@@ -310,6 +325,113 @@ def _parse_ops_fault(response) -> tuple[str, str, str]:
         msg_m.group(1).strip() if msg_m else "",
         str(rejection).strip(),
     )
+
+
+def _probe_ops_health(service: str, context=None) -> str:
+    """One known-good OPS request for ``service``: "up", "down" or "unknown".
+
+    "down" = 5xx / timeout / connection failure (OPS cannot serve even a trivial
+    request); "unknown" = anything else (robot detection, quota, auth). Logged
+    as its own ``OpsUsageLog`` row so its quota use stays visible.
+    """
+    path, params = _HEALTH_PROBES.get(service, _HEALTH_PROBES["other"])
+    token = _get_access_token()
+    if not token:
+        return "unknown"
+    started = time.monotonic()
+    status = None
+    code = ""
+    message = ""
+    try:
+        _ops_rate_limiter.acquire(path)
+        response = requests.get(
+            f"{_base_url()}/{_REST_PREFIX}/{path}",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            params=params,
+            timeout=15,
+        )
+        _ops_rate_limiter.observe(getattr(response, "headers", None))
+        status = response.status_code
+        if status == 200:
+            result = "up"
+        else:
+            code, message, _ = _parse_ops_fault(response)
+            result = "down" if status >= 500 else "unknown"
+    except requests.exceptions.RequestException as e:
+        result, code, message = "down", type(e).__name__, str(e)
+    except Exception as e:
+        result, code, message = "unknown", type(e).__name__, str(e)
+    _log_ops_usage(
+        context,
+        "ops_health_probe",
+        outcome="ok" if result == "up" else "error",
+        http_status=status,
+        error_code=code,
+        error_message=f"health={result}; {message}".strip(),
+        request_path=path,
+        query=str(params.get("q", "")),
+        duration_ms=int((time.monotonic() - started) * 1000),
+    )
+    return result
+
+
+def _ops_health(service: str, context=None) -> str:
+    """Whether OPS can serve ``service`` right now: "up", "down" or "unknown".
+
+    Shared across workers for ``_HEALTH_TTL`` seconds so parallel sub-agents
+    hitting the same failure spend one probe, not one each. Never raises.
+    """
+    from django.core.cache import cache
+
+    key = _HEALTH_CACHE_PREFIX + service
+    try:
+        cached = cache.get(key)
+        if cached:
+            return cached
+        if not cache.add(key + ":lock", 1, timeout=_HEALTH_LOCK_TTL):
+            # Another caller is probing; wait briefly for its answer.
+            for _ in range(_HEALTH_WAIT_SECONDS):
+                time.sleep(1)
+                cached = cache.get(key)
+                if cached:
+                    return cached
+            return "unknown"
+    except Exception:
+        logger.debug("EPO OPS: health cache unavailable, probing directly")
+    result = _probe_ops_health(service, context)
+    try:
+        cache.set(key, result, timeout=_HEALTH_TTL)
+        cache.delete(key + ":lock")
+    except Exception:
+        pass
+    return result
+
+
+def _domain_access_error(path: str, context, can_probe: bool) -> tuple[dict, str]:
+    """The model-facing error for a DomainAccess that survived its retry, plus
+    the diagnosis recorded in the usage log (outage / query / unknown)."""
+    health = _ops_health(_service_for_path(path), context) if can_probe else "unknown"
+    if health == "down":
+        logger.warning("EPO OPS unavailable (DomainAccess, health probe down) path=%s", path)
+        return {"error": (
+            "EPO OPS is temporarily unavailable (SERVER.DomainAccess): a known-good test query "
+            "also failed, so this is not caused by your query — do not rewrite it. Wait a few "
+            "minutes before retrying, and tell the user patent search is degraded right now."
+        )}, "outage"
+    if health == "up":
+        logger.warning("EPO OPS could not process query (DomainAccess, health probe up) path=%s", path)
+        return {"error": (
+            "EPO OPS could not process this request (SERVER.DomainAccess), even on a retry, while "
+            "a simple test query works. This could be a problem with this particular query: try "
+            "simplifying it (fewer keywords or concepts), check the CPC symbols (e.g. A61B8/06) "
+            "and the publication-number format."
+        )}, "query"
+    logger.warning("EPO OPS could not process request (DomainAccess, health unknown) path=%s", path)
+    return {"error": (
+        "EPO OPS could not process this request (SERVER.DomainAccess). This may be temporary "
+        "on EPO's side or a problem with this query: try once more in a few minutes, or "
+        "simplify the query (fewer keywords, check CPC symbols and number format)."
+    )}, "unknown"
 
 
 def _ops_request(
@@ -351,6 +473,7 @@ def _ops_request(
     last_code = ""
     last_message = ""
     refreshed = False
+    domain_retried = False
     for attempt in range(1 + _MAX_RETRIES):
         token = _get_access_token(force_refresh=refreshed)
         if not token:
@@ -413,24 +536,35 @@ def _ops_request(
                     if may_retry:
                         continue
                 break
-            if status in (401, 403) and not refreshed:
+            # OPS also signals an expired/revoked token as 400 invalid_access_token.
+            token_rejected = status in (401, 403) or (
+                status == 400 and "invalid_access_token" in f"{code} {message}"
+            )
+            if token_rejected and not refreshed:
                 # Token may have been revoked before its TTL — refresh once.
                 logger.info("EPO OPS %s, refreshing token and retrying", status)
                 _invalidate_token()
                 refreshed = True
                 continue
-            if status == 500 and code == _BAD_QUERY_FAULT:
-                logger.warning("EPO OPS could not process query (%s) path=%s", code, path)
+            if status == 500 and code == _DOMAIN_ACCESS_FAULT:
+                can_retry = False
+                if not domain_retried:
+                    domain_retried = True
+                    logger.info("EPO OPS %s (attempt %d), retrying once path=%s", code, attempt + 1, path)
+                    nap, can_retry = _deadline_capped_wait(_DOMAIN_ACCESS_RETRY_WAIT, context)
+                    if nap > 0:
+                        time.sleep(nap)
+                    if can_retry:
+                        continue
+                remaining = getattr(context, "remaining_seconds", None)
+                can_probe = not callable(remaining) or (remaining() or 0) > 0
+                result, diagnosis = _domain_access_error(path, context, can_probe)
                 return _done(
-                    {"error": (
-                        f"EPO OPS could not process this query ({code}). This is almost always "
-                        "the query itself, not an outage, so retrying it unchanged will not help: "
-                        "use fewer keywords, check the CPC symbol (e.g. A61B8/06), or drop a filter."
-                    )},
+                    result,
                     "error",
                     http_status=status,
                     error_code=code,
-                    error_message=message,
+                    error_message=f"diagnosis={diagnosis}; {message}",
                 )
             if status == 429 or (status is not None and status >= 500):
                 wait = _RATE_LIMIT_BACKOFF_SCHEDULE[min(attempt, len(_RATE_LIMIT_BACKOFF_SCHEDULE) - 1)]

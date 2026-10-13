@@ -84,6 +84,68 @@ def _iteration_notice(
     return Message(role="user", content=warning_text)
 
 
+# A round is "truncated" when the provider cut it at the output cap or the
+# stream guard aborted it for degenerate repetition (end_data/metadata
+# ``output_truncated``). Its tool calls are never run: a cut-off call's JSON was
+# repaired by LangChain's partial parser, so the arguments may be silently
+# truncated. After this many in a row the loop gives up on tools and streams the
+# final answer, like the deadline path.
+_MAX_CONSECUTIVE_TRUNCATED_ROUNDS = 2
+_TRUNCATED_TOOL_LABEL = "Not run — output was cut off"
+
+
+def _truncated_call_result(tool_name: str, stop_reason: str) -> str:
+    """The synthetic tool result for a call the model never finished emitting."""
+    return json.dumps({
+        "status": "error",
+        "error": "output_truncated",
+        "message": (
+            f"Your output hit the output limit or started repeating ({stop_reason}) "
+            f"before this {tool_name} call was complete, so it was NOT run. "
+            "Re-issue it with a much shorter payload; split large content across "
+            "several smaller calls."
+        ),
+    })
+
+
+def _truncated_round_notice(stop_reason: str, progress: Message | None) -> Message:
+    """The user message appended after a truncated round. Absorbs the iteration
+    progress notice so the round ends in a single user turn (appended after the
+    tool results, never edited into earlier history)."""
+    text = (
+        f"[Your previous output was cut off ({stop_reason}) and discarded. Nothing "
+        "ran. Continue with a shorter output; write long documents in parts, "
+        "each well under 75,000 characters.]"
+    )
+    if progress is not None and progress.content:
+        text = f"{text} {progress.content}"
+    return Message(role="user", content=text)
+
+
+def _usable_tool_call_dicts(tool_call_dicts) -> list[dict]:
+    """Drop calls whose name or id never arrived: a fragment cut before the name
+    yields ``name == ""``, which the provider rejects when it is replayed."""
+    return [tc for tc in (tool_call_dicts or []) if tc.get("name") and tc.get("id")]
+
+
+def _assistant_replay_meta(end_data: dict) -> dict:
+    """Provider state the assistant message must carry back on the next call."""
+    meta: dict = {}
+    content_blocks = end_data.get("content_blocks")
+    if content_blocks:
+        # Carry the provider's native thinking/redacted_thinking blocks (with
+        # signatures) so to_langchain_messages can echo them back — Anthropic
+        # 400s on a thinking+tool-use turn whose blocks were dropped and the
+        # assistant message rebuilt from plain text.
+        meta["content_blocks"] = content_blocks
+    replay_ak = end_data.get("additional_kwargs")
+    if replay_ak:
+        # e.g. Gemini function-call thought signatures — must round-trip or
+        # Gemini 3 rejects the follow-up with 400 INVALID_ARGUMENT.
+        meta["additional_kwargs"] = replay_ak
+    return meta
+
+
 _safe_result_dict = parse_tool_result
 
 
@@ -213,7 +275,9 @@ class SimpleChatPipeline(BasePipeline):
             }
             data.update({k: v for k, v in usage_map.items() if v is not None})
         if response.metadata:
-            for key in ("response_metadata", "stop_reason", "provider_model_id"):
+            for key in (
+                "response_metadata", "stop_reason", "provider_model_id", "output_truncated",
+            ):
                 if key in response.metadata:
                     data[key] = response.metadata[key]
         return data
@@ -573,6 +637,7 @@ class SimpleChatPipeline(BasePipeline):
             })
 
         effective_max = max_iterations if max_iterations is not None else self.max_tool_iterations
+        truncated_streak = 0
         for i in range(effective_max):
             if cancel_check and cancel_check():
                 return ChatResponse(
@@ -595,6 +660,65 @@ class SimpleChatPipeline(BasePipeline):
                 req.context, (response.metadata or {}).get("response_metadata"),
             )
             msg = response.message
+            agent_kind = getattr(req.context, "agent_kind", "main") if req.context else "main"
+
+            if (response.metadata or {}).get("output_truncated"):
+                truncated_streak += 1
+                stop_reason = str((response.metadata or {}).get("stop_reason") or "output cap")
+                usable_calls = [tc for tc in (msg.tool_calls or []) if tc.name and tc.id]
+                if req.context:
+                    req.context.bump_stat("output_truncated_rounds")
+                logger.warning(
+                    "Tool-loop round truncated (stop_reason=%s) at iteration %d; "
+                    "skipping %d tool call(s) model=%s",
+                    stop_reason, i, len(usable_calls), req.model,
+                )
+                visible = bool(str(msg.content or "").strip())
+                if usable_calls or agent_kind != "main" or not visible:
+                    # Never run a cut-off call (its arguments may be silently
+                    # truncated); pair each with an error result and tell the
+                    # model to re-issue a shorter one. Appends only.
+                    prior_len = len(req.messages)
+                    new_messages = list(req.messages)
+                    results: list = []
+                    if usable_calls:
+                        new_messages.append(msg.model_copy(update={"tool_calls": usable_calls}))
+                        results = [
+                            (tc, _truncated_call_result(tc.name, stop_reason))
+                            for tc in usable_calls
+                        ]
+                        for tc, result_str in results:
+                            new_messages.append(
+                                Message(role="tool", content=result_str, tool_call_id=tc.id)
+                            )
+                        self._record_tool_round_stats(req.context, results)
+                    notice = _truncated_round_notice(
+                        stop_reason,
+                        _iteration_notice(i, effective_max, deadline_dt, agent_kind),
+                    )
+                    new_messages, tools = edits.finish_round(
+                        new_messages, req, tools,
+                        prior_len=prior_len,
+                        real_input_tokens=(response.usage.prompt_tokens if response.usage else 0),
+                        round_call_ids={tc.id for tc in usable_calls},
+                        notice=notice,
+                    )
+                    req = req.model_copy(update={"messages": new_messages, "tool_schemas": tools})
+                    if truncated_streak >= _MAX_CONSECUTIVE_TRUNCATED_ROUNDS:
+                        logger.warning(
+                            "Tool loop hit %d consecutive truncated rounds at iteration %d; "
+                            "stripping tools for final generate",
+                            truncated_streak, i,
+                        )
+                        break
+                    continue
+                # A cut plain-text answer for the main agent ends the turn as
+                # usual (the flag rides on the response metadata).
+                msg = msg.model_copy(update={"tool_calls": None})
+                response = response.model_copy(update={"message": msg})
+            else:
+                truncated_streak = 0
+
             if not msg.tool_calls:
                 return _with_aggregate(response)
 
@@ -739,6 +863,7 @@ class SimpleChatPipeline(BasePipeline):
                 run_id=run_id,
             )
 
+        truncated_streak = 0
         for i in range(max_iterations):
             if _is_cancelled():
                 return
@@ -791,9 +916,105 @@ class SimpleChatPipeline(BasePipeline):
                 agg_cost_usd = (agg_cost_usd or 0.0) + iter_cost
 
             record_thinking_drops(req.context, end_data.get("response_metadata"))
+            agent_kind = getattr(req.context, "agent_kind", "main") if req.context else "main"
 
             # Check for tool calls
             tool_call_dicts = end_data.get("tool_calls")
+
+            if end_data.get("output_truncated"):
+                truncated_streak += 1
+                stop_reason = str(end_data.get("stop_reason") or "output cap")
+                usable = _usable_tool_call_dicts(tool_call_dicts)
+                if ctx:
+                    ctx.bump_stat("output_truncated_rounds")
+                logger.warning(
+                    "Streaming tool-loop round truncated (stop_reason=%s) at iteration %d; "
+                    "skipping %d tool call(s) model=%s run_id=%s",
+                    stop_reason, i, len(usable), req.model, run_id,
+                )
+                visible = bool(str(end_data.get("content") or "").strip())
+                if usable or agent_kind != "main" or not visible:
+                    # Never run a cut-off call (its arguments may be silently
+                    # truncated); pair each with an error result and tell the
+                    # model to re-issue a shorter one. Appends only.
+                    skipped_calls = [
+                        ToolCall(id=tc["id"], name=tc["name"], arguments=tc.get("arguments", {}))
+                        for tc in usable
+                    ]
+                    prior_len = len(req.messages)
+                    new_messages = list(req.messages)
+                    if skipped_calls:
+                        new_messages.append(
+                            Message(
+                                role="assistant",
+                                content=end_data.get("content", ""),
+                                tool_calls=skipped_calls,
+                                metadata=_assistant_replay_meta(end_data),
+                            )
+                        )
+                        for tc in skipped_calls:
+                            tool = tool_by_name.get(tc.name)
+                            yield StreamEvent(
+                                event_type="tool_start",
+                                data={
+                                    "tool_name": tc.name,
+                                    "tool_call_id": tc.id,
+                                    "arguments": tc.arguments,
+                                    "display_label": tool.start_label if tool else "Working...",
+                                },
+                                sequence=sequence,
+                                run_id=run_id,
+                            )
+                            sequence += 1
+                        results = [
+                            (tc, _truncated_call_result(tc.name, stop_reason))
+                            for tc in skipped_calls
+                        ]
+                        self._record_tool_round_stats(req.context, results)
+                        for tc, result_str in results:
+                            yield StreamEvent(
+                                event_type="tool_end",
+                                data={
+                                    "tool_name": tc.name,
+                                    "tool_call_id": tc.id,
+                                    "result": result_str,
+                                    "display_label": _TRUNCATED_TOOL_LABEL,
+                                    "is_error": True,
+                                },
+                                sequence=sequence,
+                                run_id=run_id,
+                            )
+                            sequence += 1
+                            new_messages.append(
+                                Message(role="tool", content=result_str, tool_call_id=tc.id)
+                            )
+                    notice = _truncated_round_notice(
+                        stop_reason,
+                        _iteration_notice(i, max_iterations, deadline_dt, agent_kind),
+                    )
+                    new_messages, tools = edits.finish_round(
+                        new_messages, req, tools,
+                        prior_len=prior_len,
+                        real_input_tokens=(end_data.get("input_tokens") or 0),
+                        round_call_ids={tc.id for tc in skipped_calls},
+                        notice=notice,
+                    )
+                    req = req.model_copy(update={"messages": new_messages, "tool_schemas": tools})
+                    if truncated_streak >= _MAX_CONSECUTIVE_TRUNCATED_ROUNDS:
+                        logger.warning(
+                            "Streaming tool loop hit %d consecutive truncated rounds at "
+                            "iteration %d; stripping tools for final stream",
+                            truncated_streak, i,
+                        )
+                        break
+                    continue
+                # A cut plain-text answer for the main agent: the user already
+                # saw the text, so end the turn as usual (the flag rides on the
+                # final message_end) instead of retrying into the same bubble.
+                tool_call_dicts = None
+            else:
+                truncated_streak = 0
+
             if not tool_call_dicts:
                 # Final iteration — response already streamed. Emit message_end with aggregates.
                 end_data["input_tokens"] = agg_input_tokens
@@ -820,27 +1041,13 @@ class SimpleChatPipeline(BasePipeline):
                 ToolCall(id=tc["id"], name=tc["name"], arguments=tc.get("arguments", {}))
                 for tc in tool_call_dicts
             ]
-            assistant_content = end_data.get("content", "")
-            assistant_meta = {}
-            content_blocks = end_data.get("content_blocks")
-            if content_blocks:
-                # Carry the provider's native thinking/redacted_thinking blocks
-                # (with signatures) so to_langchain_messages can echo them back —
-                # Anthropic 400s on a thinking+tool-use turn whose blocks were
-                # dropped and the assistant message rebuilt from plain text.
-                assistant_meta["content_blocks"] = content_blocks
-            replay_ak = end_data.get("additional_kwargs")
-            if replay_ak:
-                # e.g. Gemini function-call thought signatures — must round-trip
-                # or Gemini 3 rejects the follow-up with 400 INVALID_ARGUMENT.
-                assistant_meta["additional_kwargs"] = replay_ak
             prior_len = len(req.messages)
             new_messages = list(req.messages) + [
                 Message(
                     role="assistant",
-                    content=assistant_content,
+                    content=end_data.get("content", ""),
                     tool_calls=parsed_tool_calls,
-                    metadata=assistant_meta,
+                    metadata=_assistant_replay_meta(end_data),
                 )
             ]
 

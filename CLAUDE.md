@@ -272,12 +272,30 @@ slide number (pptx) or page (PDF) so search cites them.
 **Observability**: each turn's `LLMCallLog` row carries `tool_call_count`, `prune_count`
 (mid-turn compactions), `edit_point_count` + `edit_points` (per-kind breakdown — each is a
 cache break), `thinking_dropped_count` (Anthropic preserved-thinking drops),
-`tool_result_tokens` (raw tool-output volume), and
+`tool_result_tokens` (raw tool-output volume), `output_truncated_rounds` (rounds cut by the
+output cap or aborted by the repetition guard, see below), and
 `estimated_input_tokens` (our pre-send estimate, summed per round — compare against the
 provider's actual `input_tokens` to calibrate the estimator that drives pruning). All are
 accumulated on `RunContext.observability` (via `bump_stat`) and written by
 `llm/service/logger.py`. Use these to reason about tool-loop cost and pruning pressure
 (e.g. a future tool-result budget).
+
+**Output cap + repetition guard** (a 255k-char `" | | |"` runaway inside a `canvas_edit`
+argument once streamed for 12 minutes per attempt): every OpenAI/Gemini request carries
+`output_token_cap(model, effort)` (`llm/context_budget.py`, bound in
+`BaseLangChainChatModel._get_streaming_client`; Anthropic keeps its own `max_tokens` next to
+its thinking config), and `BaseLangChainChatModel.stream()` runs `llm/core/output_guard.py`
+over text, thinking and tool-argument deltas — a zlib-incompressible window closes the
+provider stream early. Either case lands in `message_end` as `output_truncated=True` with a
+`stop_reason` (`max_tokens`/`length`/`MAX_TOKENS`/`max_output_tokens`/`repetition`/
+`output_ceiling`; usage is estimated when the final usage chunk never arrived,
+`usage_estimated=True`), **never** as an `error` event. The tool loop (`simple_chat.py`)
+never executes a truncated round's calls (LangChain repairs cut-off JSON silently): each gets
+a synthetic error result (`tool_end` label "Not run — output was cut off"), the model gets a
+user notice, two in a row fall through to the final tool-less call; a main-agent round whose
+visible answer was cut ends the turn as usual. `canvas_write`/`canvas_edit` (and the
+sub-agent twins) reject a payload over `CANVAS_MAX_CHARS` up front instead of clipping it, and
+a failed edit reports `new_text_chars` plus a `hint` when the replacement is absurdly large.
 
 ## Logging
 

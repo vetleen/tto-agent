@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from django.test import SimpleTestCase
 
+from llm.context_budget import output_token_cap
 from llm.core.providers.anthropic import AnthropicChatModel
 from llm.core.providers.gemini import GeminiChatModel
 from llm.core.providers.openai import OpenAIChatModel
@@ -247,3 +248,78 @@ class GeminiReasoningTests(SimpleTestCase):
         model = GeminiChatModel("gemini/gemini-3.7-flash", MagicMock())
         with self.assertRaisesRegex(ValueError, "bad effort"):
             model._get_streaming_client(_request("medium"))
+
+
+class OutputCapBindingTests(SimpleTestCase):
+    """OpenAI and Gemini requests carry a per-request output-token cap; Anthropic
+    manages its own ``max_tokens`` alongside its thinking config."""
+
+    @patch("llm.core.providers.openai.create_variant_client")
+    def test_openai_binds_max_tokens(self, create_variant):
+        variant = MagicMock()
+        create_variant.return_value = variant
+        model = OpenAIChatModel("openai/gpt-5.6-sol", MagicMock())
+        result = model._get_streaming_client(_request("high"))
+        variant.bind.assert_called_once_with(
+            max_tokens=output_token_cap("openai/gpt-5.6-sol", "high")
+        )
+        self.assertIs(result, variant.bind.return_value)
+
+    @patch("llm.core.providers.openai.create_variant_client")
+    def test_openai_cap_is_bound_after_tools(self, create_variant):
+        variant = MagicMock()
+        create_variant.return_value = variant
+        model = OpenAIChatModel("openai/gpt-5.6-sol", MagicMock())
+        req = _request("medium").model_copy(update={"tool_schemas": [MagicMock()]})
+        result = model._get_streaming_client(req)
+        with_tools = variant.bind_tools.return_value
+        with_tools.bind.assert_called_once_with(
+            max_tokens=output_token_cap("openai/gpt-5.6-sol", "medium")
+        )
+        self.assertIs(result, with_tools.bind.return_value)
+
+    def test_openai_without_reasoning_level_still_capped(self):
+        client = MagicMock()
+        model = OpenAIChatModel("openai/gpt-5.6-sol", client)
+        model._get_streaming_client(_request(None))
+        client.bind.assert_called_once_with(max_tokens=output_token_cap("openai/gpt-5.6-sol", None))
+
+    @patch("llm.core.providers.openai.create_variant_client")
+    def test_openai_generate_uses_the_capped_client(self, create_variant):
+        from langchain_core.messages import AIMessage
+
+        variant = MagicMock()
+        create_variant.return_value = variant
+        bound = variant.bind.return_value
+        bound.invoke.return_value = AIMessage(content="hi")
+        model = OpenAIChatModel("openai/gpt-5.6-sol", MagicMock())
+        response = model.generate(_request("high"))
+        bound.invoke.assert_called_once()
+        self.assertEqual(response.message.content, "hi")
+        self.assertFalse(response.metadata["output_truncated"])
+
+    @patch("llm.core.providers.gemini.create_variant_client")
+    def test_gemini_binds_max_output_tokens(self, create_variant):
+        variant = MagicMock()
+        create_variant.return_value = variant
+        model = GeminiChatModel("gemini/gemini-3.8-flash", MagicMock())
+        result = model._get_streaming_client(_request("medium"))
+        variant.bind.assert_called_once_with(
+            max_output_tokens=output_token_cap("gemini/gemini-3.8-flash", "medium")
+        )
+        self.assertIs(result, variant.bind.return_value)
+
+    @patch("llm.core.providers.anthropic.create_variant_client")
+    def test_anthropic_binds_only_cache_control(self, create_variant):
+        variant = MagicMock()
+        create_variant.return_value = variant
+        model = AnthropicChatModel("anthropic/claude-opus-5-5", MagicMock())
+        model._get_streaming_client(_request("high"))
+        variant.bind.assert_called_once_with(cache_control={"type": "ephemeral"})
+
+    @patch("llm.core.providers.openai.create_variant_client")
+    def test_structured_client_is_not_capped(self, create_variant):
+        variant = MagicMock()
+        create_variant.return_value = variant
+        OpenAIChatModel("openai/gpt-5.6-sol", MagicMock()).structured_client(_request("max"), object())
+        variant.bind.assert_not_called()

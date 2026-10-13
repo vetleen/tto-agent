@@ -837,14 +837,21 @@ class CreateSubagentToolSpecializationTests(TestCase):
     def setUp(self):
         from agent_skills.models import AgentSkill
 
+        from agent_skills.resources import compute_skill_content_hash
+
         AgentSkill.objects.all().delete()
         self.user = User.objects.create_user(email="spec_tool@test.com", password="pass")
         self.thread = ChatThread.objects.create(created_by=self.user)
-        AgentSkill.objects.create(
+        skill = AgentSkill.objects.create(
             slug="web-researcher", name="Web Researcher", level="user",
             created_by=self.user, audience="subagent",
             tool_names=["skill_resource_view"],
         )
+        # chat_subagent_create applies the same safety-scan gate as
+        # chat_skill_attach: a user skill is on offer only once its scan passed.
+        skill.scan_state = AgentSkill.ScanState.APPROVED
+        skill.approved_content_hash = compute_skill_content_hash(skill)
+        skill.save(update_fields=["scan_state", "approved_content_hash"])
 
     def test_unknown_type_rejected(self):
         ctx = _ctx(self.user.pk, self.thread.id)

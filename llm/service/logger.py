@@ -202,6 +202,8 @@ def _observability_fields(context) -> dict:
         "edit_point_count": obs.get("edit_points_total", 0) if had_tools else None,
         "edit_points": edit_kinds or None,
         "thinking_dropped_count": obs.get("thinking_dropped", 0) if had_tools else None,
+        # NULL = never happened (a cut round can occur before any tool ran).
+        "output_truncated_rounds": obs.get("output_truncated_rounds"),
     }
 
 

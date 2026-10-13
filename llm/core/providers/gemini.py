@@ -19,6 +19,8 @@ class GeminiChatModel(BaseLangChainChatModel):
     _API_MODEL_PREFIX = "gemini/"
     _provider_label = "Gemini"
     _provider_id = "google_genai"
+    # The call-time key langchain-google-genai reads into generation_config.
+    _output_cap_param = "max_output_tokens"
 
     def __init__(self, model_name: str, client: object) -> None:
         super().__init__(model_name, client)
@@ -43,12 +45,6 @@ class GeminiChatModel(BaseLangChainChatModel):
             thinking_level=level,
             include_thoughts=True,
         )
-
-    def _get_streaming_client(self, request: ChatRequest):
-        client = self._get_reasoning_client(request)
-        if request.tool_schemas:
-            client = client.bind_tools(request.tool_schemas, **self._tool_choice_kwargs(request))
-        return client
 
     def _extract_replay_metadata(self, lc_message) -> dict:
         """Carry Gemini function-call thought signatures through the tool loop.

@@ -259,6 +259,27 @@ class EditCanvasToolTests(TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("canvas_write", result["message"])
 
+    def test_no_match_with_large_replacement_adds_hint(self):
+        # A failed edit whose replacement is far too big for a targeted edit
+        # steers the model to a short edit or a rewrite instead of a retry.
+        self._setup_canvas("Some content here.")
+        result = _invoke(EditCanvasTool, {
+            "edits": [{"old_text": "not in text", "new_text": "y" * 12_000, "reason": ""}]
+        }, _ctx(self.user.pk, self.thread.id))
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["failed"][0]["new_text_chars"], 12_000)
+        self.assertIn("12,000 characters", result["hint"])
+        self.assertIn("canvas_write", result["hint"])
+
+    def test_no_match_with_small_replacement_has_no_hint(self):
+        self._setup_canvas("Some content here.")
+        result = _invoke(EditCanvasTool, {
+            "edits": [{"old_text": "not in text", "new_text": "short", "reason": ""}]
+        }, _ctx(self.user.pk, self.thread.id))
+        self.assertEqual(result["status"], "error")
+        self.assertNotIn("hint", result)
+        self.assertEqual(result["failed"][0]["new_text_chars"], 5)
+
     def test_edit_snapshots_uncommitted_user_edits(self):
         """AI edits over user content that isn't checkpointed yet must
         auto-snapshot it first so it's recoverable from history."""
@@ -2503,12 +2524,63 @@ class CanvasTruncationReportingTests(TestCase):
         self.assertIn("Tell the user", fields["truncation_note"])
         self.assertTrue(fields["truncation_note"].endswith("Use the read tools."))
 
-    def test_write_over_cap_reports_and_sets_marker(self):
+    def test_write_over_cap_is_rejected_and_nothing_saved(self):
+        # A model-authored body over the cap is a runaway, not a document: it is
+        # refused up front instead of clipped (clipping stays for imports etc.).
         result = _invoke(WriteCanvasTool, {"title": "Big", "content": "x" * (self.cap + 10)}, self.ctx)
-        self.assertTrue(result["truncated"])
-        self.assertEqual(result["original_chars"], self.cap + 10)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("75,010 characters", result["message"])
+        self.assertIn("75,000", result["message"])
+        self.assertIn("Nothing was written", result["message"])
+        self.assertNotIn("truncated", result)
+        self.assertFalse(ChatCanvas.objects.filter(thread=self.thread, title="Big").exists())
+
+    def test_write_at_cap_is_accepted(self):
+        result = _invoke(WriteCanvasTool, {"title": "Big", "content": "x" * self.cap}, self.ctx)
+        self.assertEqual(result["status"], "ok")
+        self.assertNotIn("truncated", result)
+
+    def test_write_over_cap_leaves_existing_canvas_and_checkpoints_untouched(self):
+        _invoke(WriteCanvasTool, {"title": "Big", "content": "keep"}, self.ctx)
         canvas = ChatCanvas.objects.get(thread=self.thread, title="Big")
-        self.assertEqual(canvas.truncated_from_chars, self.cap + 10)
+        checkpoints = canvas.checkpoints.count()
+        result = _invoke(WriteCanvasTool, {"title": "Big", "content": "x" * (self.cap + 1)}, self.ctx)
+        self.assertEqual(result["status"], "error")
+        canvas.refresh_from_db()
+        self.assertEqual(canvas.content, "keep")
+        self.assertEqual(canvas.checkpoints.count(), checkpoints)
+
+    def test_edit_with_oversized_new_text_is_rejected_before_matching(self):
+        canvas = ChatCanvas.objects.create(thread=self.thread, title="Big", content="hello")
+        result = _invoke(
+            EditCanvasTool,
+            {"canvas_name": "Big", "edits": [{"old_text": "hello", "new_text": "x" * (self.cap + 1)}]},
+            self.ctx,
+        )
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["applied"], 0)
+        self.assertIn("edit 1", result["message"])
+        self.assertIn("75,001 characters", result["message"])
+        self.assertIn("Nothing was changed", result["message"])
+        self.assertEqual(result["rejected_edits"], [{"index": 0, "new_text_chars": self.cap + 1}])
+        canvas.refresh_from_db()
+        self.assertEqual(canvas.content, "hello")
+        self.assertEqual(canvas.checkpoints.count(), 0)
+
+    def test_edit_with_one_oversized_new_text_rejects_the_whole_call(self):
+        canvas = ChatCanvas.objects.create(thread=self.thread, title="Big", content="hello world")
+        result = _invoke(
+            EditCanvasTool,
+            {"canvas_name": "Big", "edits": [
+                {"old_text": "hello", "new_text": "hi"},
+                {"old_text": "world", "new_text": "y" * (self.cap + 5)},
+            ]},
+            self.ctx,
+        )
+        self.assertEqual(result["status"], "error")
+        self.assertIn("edit 2", result["message"])
+        canvas.refresh_from_db()
+        self.assertEqual(canvas.content, "hello world")
 
     def test_fitting_rewrite_clears_marker_and_source(self):
         from documents.models import DataRoom

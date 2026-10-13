@@ -78,10 +78,9 @@ class AnthropicChatModel(BaseLangChainChatModel):
         return {}
 
     def _get_streaming_client(self, request: ChatRequest):
-        client = self._get_reasoning_client(request)
-
-        if request.tool_schemas:
-            client = client.bind_tools(request.tool_schemas, **self._tool_choice_kwargs(request))
+        # Reasoning variant + tools; no output cap bound here (max_tokens travels
+        # with the thinking config, see _get_*_thinking_client).
+        client = super()._get_streaming_client(request)
 
         # Automatic prefix caching: langchain-anthropic places this on the
         # last eligible message block; Anthropic's lookback window finds

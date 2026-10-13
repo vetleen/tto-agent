@@ -342,7 +342,10 @@ class PrefixInvariantTests(TestCase):
             {"id": f"n{i}", "name": note_tool, "arguments": {"note": f"finding {i} " + "y" * 300}},
         ]
 
-    def _run(self, *, stream: bool, agent_kind: str, pressure_round: int | None = None):
+    def _run(
+        self, *, stream: bool, agent_kind: str, pressure_round: int | None = None,
+        truncated_round: int | None = None,
+    ):
         self._kind = agent_kind
         ctx = RunContext.create(user_id="1")
         ctx.agent_kind = agent_kind
@@ -372,6 +375,9 @@ class PrefixInvariantTests(TestCase):
                     data["tool_calls"] = self._calls(i)
                 else:
                     data["content"] = "final"
+                if i == truncated_round:
+                    data["output_truncated"] = True
+                    data["stop_reason"] = "repetition"
 
                 def gen():
                     yield StreamEvent(event_type="message_start", data={}, sequence=1, run_id="")
@@ -388,7 +394,10 @@ class PrefixInvariantTests(TestCase):
                     message=Message(role="assistant", content="" if calls else "final", tool_calls=calls),
                     model="gpt-5.4",
                     usage=Usage(prompt_tokens=input_tokens(i), completion_tokens=10, total_tokens=0),
-                    metadata={},
+                    metadata=(
+                        {"output_truncated": True, "stop_reason": "repetition"}
+                        if i == truncated_round else {}
+                    ),
                 )
 
             fake_model = MagicMock()
@@ -425,6 +434,21 @@ class PrefixInvariantTests(TestCase):
                     self.assertTrue(any("earlier tool result above" in m[1] for m in last_msgs))
                     # The final call kept its tools bound (tool_choice="none").
                     self.assertEqual(seen[-1][0], seen[-2][0])
+
+    def test_truncated_round_stays_append_only(self):
+        # A cut-off round appends an assistant message, one error result per
+        # skipped call and a user notice — never an edit of earlier history.
+        for stream in (True, False):
+            for kind in ("main", "subagent"):
+                with self.subTest(stream=stream, agent_kind=kind):
+                    seen, ctx = self._run(stream=stream, agent_kind=kind, truncated_round=1)
+                    self.assertEqual(len(seen), self.ROUNDS + 1)
+                    self._assert_extends(seen, set())
+                    self.assertEqual(ctx.observability.get("edit_points_total", 0), 0)
+                    self.assertEqual(ctx.observability["output_truncated_rounds"], 1)
+                    after = seen[2][1]
+                    self.assertTrue(any("NOT run" in m[1] for m in after))
+                    self.assertTrue(any("cut off" in m[1] for m in after))
 
     def test_pressure_round_is_the_only_edit(self):
         for stream in (True, False):

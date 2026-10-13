@@ -105,7 +105,9 @@ class _StreamCollapser:
                 reasoning_tokens=last_end.get("reasoning_tokens"),
                 cost_usd=last_end.get("cost_usd"),
             )
-            for key in ("response_metadata", "stop_reason", "provider_model_id"):
+            for key in (
+                "response_metadata", "stop_reason", "provider_model_id", "output_truncated",
+            ):
                 if key in last_end:
                     metadata[key] = last_end[key]
 

@@ -80,6 +80,10 @@ class LLMCallLog(models.Model):
     # Replayed thinking blocks the provider dropped this turn (Anthropic
     # input_transformations, reported only for binds_thinking_to_prefix models).
     thinking_dropped_count = models.PositiveIntegerField(null=True, blank=True)
+    # Tool-loop rounds whose output the provider cut at the output cap or the
+    # stream guard aborted for degenerate repetition (their tool calls were not
+    # run). NULL when it never happened.
+    output_truncated_rounds = models.PositiveIntegerField(null=True, blank=True)
 
     # Status / errors
     status = models.CharField(

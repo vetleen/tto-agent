@@ -19,6 +19,9 @@ class OpenAIChatModel(BaseLangChainChatModel):
     _API_MODEL_PREFIX = "openai/"
     _provider_label = "OpenAI"
     _provider_id = "openai"
+    # langchain-openai renames a bound max_tokens to max_completion_tokens
+    # (Chat Completions) or max_output_tokens (Responses API).
+    _output_cap_param = "max_tokens"
 
     def __init__(self, model_name: str, client: object) -> None:
         super().__init__(model_name, client)
@@ -48,12 +51,6 @@ class OpenAIChatModel(BaseLangChainChatModel):
             provider="openai",
             reasoning=reasoning,
         )
-
-    def _get_streaming_client(self, request: ChatRequest):
-        client = self._get_reasoning_client(request)
-        if request.tool_schemas:
-            client = client.bind_tools(request.tool_schemas, **self._tool_choice_kwargs(request))
-        return client
 
     @staticmethod
     def _extract_text(content) -> str:

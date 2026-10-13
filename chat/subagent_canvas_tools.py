@@ -126,11 +126,20 @@ class SubagentCanvasWriteTool(ContextAwareTool):
         )}
 
     def _run(self, content: str, title: str = "", **kwargs) -> str:
-        from chat.services import clip_to_canvas, truncation_result_fields
+        from chat.services import (
+            clip_to_canvas,
+            oversized_content_rejection,
+            truncation_result_fields,
+        )
 
         run, err = _resolve_run(self.context)
         if err:
             return err
+
+        # A body over the cap is a runaway, not a deliverable: refuse it up front.
+        rejection = oversized_content_rejection(content)
+        if rejection:
+            return json.dumps(rejection)
 
         run.canvas, original_chars = clip_to_canvas(content)
         update_fields = ["canvas"]
@@ -171,7 +180,12 @@ class SubagentCanvasEditTool(ContextAwareTool):
 
     def _run(self, edits: list[dict] | list[EditItem], **kwargs) -> str:
         from chat.edit_utils import apply_unique_text_edits
-        from chat.services import clip_to_canvas, truncation_result_fields
+        from chat.services import (
+            clip_to_canvas,
+            large_replacement_hint,
+            oversized_edit_rejection,
+            truncation_result_fields,
+        )
 
         run, err = _resolve_run(self.context)
         if err:
@@ -184,19 +198,26 @@ class SubagentCanvasEditTool(ContextAwareTool):
             )
             for edit in edits
         ]
+        # A replacement text over the cap is a runaway, not an edit.
+        rejection = oversized_edit_rejection(pairs, write_tool="subagent_canvas_write")
+        if rejection:
+            return json.dumps(rejection)
+
         new_content, applied, failed = apply_unique_text_edits(run.canvas, pairs)
+        hint = large_replacement_hint(failed, write_tool="subagent_canvas_write")
 
         # Nothing matched — leave the canvas untouched and report an error, so the
         # model doesn't believe the edit succeeded (mirrors canvas_edit).
         if applied == 0:
-            return json.dumps(
-                {
-                    "status": "error",
-                    "applied": 0,
-                    "failed": failed,
-                    "message": "No edits applied.",
-                }
-            )
+            result = {
+                "status": "error",
+                "applied": 0,
+                "failed": failed,
+                "message": "No edits applied.",
+            }
+            if hint:
+                result["hint"] = hint
+            return json.dumps(result)
 
         run.canvas, original_chars = clip_to_canvas(new_content)
         run.save(update_fields=["canvas"])
@@ -207,6 +228,8 @@ class SubagentCanvasEditTool(ContextAwareTool):
             "failed": failed,
             "content": run.canvas,
         }
+        if hint:
+            result["hint"] = hint
         if original_chars:
             result.update(truncation_result_fields(original_chars))
         return json.dumps(result)

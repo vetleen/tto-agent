@@ -81,6 +81,40 @@ class GetHistoryBudgetTests(TestCase):
         # 128k default window − 32k − 8k − 24k = 64k.
         self.assertEqual(get_history_budget("unknown"), 64_000)
 
+    def test_output_token_cap_by_effort(self):
+        # The provider-side cap is looser than the input-budget reservation:
+        # it is the worst case we let the provider bill, reasoning included.
+        from llm.context_budget import output_token_cap
+
+        self.assertEqual(output_token_cap("openai/gpt-6-luna", "low"), 24_000)
+        self.assertEqual(output_token_cap("openai/gpt-6-luna", "medium"), 32_000)
+        self.assertEqual(output_token_cap("openai/gpt-6-luna", "high"), 48_000)
+        self.assertEqual(output_token_cap("openai/gpt-6-luna", "xhigh"), 64_000)
+        self.assertEqual(output_token_cap("openai/gpt-6-luna", "max"), 64_000)
+        # Unknown / absent effort → the default.
+        self.assertEqual(output_token_cap("openai/gpt-6-luna", None), 32_000)
+        self.assertEqual(output_token_cap("openai/gpt-6-luna", "none"), 32_000)
+
+    def test_output_token_cap_clamped_by_registry_max_output(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from llm.context_budget import output_token_cap
+
+        with patch(
+            "llm.context_budget.get_model_info",
+            return_value=SimpleNamespace(max_output_tokens=16_384),
+        ):
+            self.assertEqual(output_token_cap("small-model", "max"), 16_384)
+            self.assertEqual(output_token_cap("small-model", "low"), 16_384)
+
+    def test_output_token_cap_unregistered_model_is_conservative(self):
+        from llm.context_budget import output_token_cap
+
+        self.assertEqual(output_token_cap("unknown-model-xyz", "max"), 32_000)
+        self.assertEqual(output_token_cap("unknown-model-xyz", "low"), 24_000)
+        self.assertEqual(output_token_cap(None, "high"), 32_000)
+
     def test_higher_effort_reserves_more_output(self):
         # high effort → 40k output reservation → less history.
         self.assertEqual(

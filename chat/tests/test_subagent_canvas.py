@@ -131,7 +131,7 @@ class SubagentCanvasWriteEditTests(TestCase):
         self.assertEqual(self.run.canvas, "Hello world")
         self.assertEqual(self.run.canvas_title, "Doc")
 
-    def test_write_truncates_at_cap(self):
+    def test_write_over_cap_is_rejected(self):
         from chat.services import CANVAS_MAX_CHARS
 
         out = _invoke(
@@ -139,11 +139,39 @@ class SubagentCanvasWriteEditTests(TestCase):
             {"content": "x" * (CANVAS_MAX_CHARS + 50)},
             self.ctx,
         )
+        self.assertEqual(out["status"], "error")
+        self.assertIn("Nothing was written", out["message"])
+        self.assertIn("75,050 characters", out["message"])
         self.run.refresh_from_db()
-        self.assertEqual(len(self.run.canvas), CANVAS_MAX_CHARS)
-        # Reported, not silent.
-        self.assertTrue(out["truncated"])
-        self.assertEqual(out["original_chars"], CANVAS_MAX_CHARS + 50)
+        self.assertEqual(self.run.canvas, "")
+
+    def test_edit_oversized_new_text_is_rejected(self):
+        from chat.services import CANVAS_MAX_CHARS
+
+        self.run.canvas = "original text"
+        self.run.save(update_fields=["canvas"])
+        out = _invoke(
+            SubagentCanvasEditTool,
+            {"edits": [{"old_text": "original", "new_text": "x" * (CANVAS_MAX_CHARS + 1)}]},
+            self.ctx,
+        )
+        self.assertEqual(out["status"], "error")
+        self.assertIn("subagent_canvas_write", out["message"])
+        self.assertEqual(out["rejected_edits"][0]["index"], 0)
+        self.run.refresh_from_db()
+        self.assertEqual(self.run.canvas, "original text")
+
+    def test_edit_no_match_with_large_replacement_adds_hint(self):
+        self.run.canvas = "original text"
+        self.run.save(update_fields=["canvas"])
+        out = _invoke(
+            SubagentCanvasEditTool,
+            {"edits": [{"old_text": "absent", "new_text": "y" * 12_000}]},
+            self.ctx,
+        )
+        self.assertEqual(out["status"], "error")
+        self.assertEqual(out["failed"][0]["new_text_chars"], 12_000)
+        self.assertIn("subagent_canvas_write", out["hint"])
 
     def test_edit_applies_and_echoes_content(self):
         self.run.canvas = "The quick brown fox"

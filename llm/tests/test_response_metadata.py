@@ -60,6 +60,49 @@ class ExtractResponseMetadataTests(TestCase):
         meta = BaseLangChainChatModel._extract_response_metadata(result)
         self.assertEqual(meta["stop_reason"], "")
         self.assertEqual(meta["provider_model_id"], "")
+        self.assertFalse(meta["output_truncated"])
+
+    def test_output_truncated_false_on_normal_stop(self):
+        for meta_in in ({"stop_reason": "end_turn"}, {"finish_reason": "stop"},
+                        {"finish_reason": "STOP"}, {"status": "completed"}):
+            with self.subTest(meta=meta_in):
+                meta = BaseLangChainChatModel._extract_response_metadata(_FakeResult(meta_in))
+                self.assertFalse(meta["output_truncated"])
+
+    def test_output_truncated_per_provider_format(self):
+        cases = [
+            ({"stop_reason": "max_tokens"}, "max_tokens"),
+            ({"finish_reason": "length"}, "length"),
+            ({"finish_reason": "MAX_TOKENS"}, "MAX_TOKENS"),
+            # langchain concatenates per-chunk Gemini finish reasons.
+            ({"finish_reason": "STOPMAX_TOKENS"}, "STOPMAX_TOKENS"),
+            (
+                {"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"}},
+                "max_output_tokens",
+            ),
+        ]
+        for meta_in, expected_stop in cases:
+            with self.subTest(meta=meta_in):
+                meta = BaseLangChainChatModel._extract_response_metadata(_FakeResult(meta_in))
+                self.assertTrue(meta["output_truncated"])
+                self.assertEqual(meta["stop_reason"], expected_stop)
+
+    def test_responses_api_incomplete_details_object(self):
+        class _Incomplete:
+            reason = "max_output_tokens"
+
+        meta = BaseLangChainChatModel._extract_response_metadata(
+            _FakeResult({"status": "incomplete", "incomplete_details": _Incomplete()})
+        )
+        self.assertTrue(meta["output_truncated"])
+        self.assertEqual(meta["stop_reason"], "max_output_tokens")
+
+    def test_responses_api_other_incomplete_reason_is_not_truncated(self):
+        meta = BaseLangChainChatModel._extract_response_metadata(
+            _FakeResult({"status": "incomplete", "incomplete_details": {"reason": "content_filter"}})
+        )
+        self.assertFalse(meta["output_truncated"])
+        self.assertEqual(meta["stop_reason"], "")
 
 
 class ExtractReasoningTokensTests(TestCase):

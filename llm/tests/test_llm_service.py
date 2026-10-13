@@ -447,6 +447,17 @@ class RunViaStreamTests(TestCase):
         self.assertEqual(resp.message.content, "y")
         self.assertEqual(resp.usage.total_tokens, 150)
 
+    def test_collapse_carries_output_truncated(self):
+        events = [
+            self._ev("message_start"),
+            self._ev("token", text="partial"),
+            self._ev("message_end", input_tokens=1, output_tokens=1, total_tokens=2,
+                     output_truncated=True, stop_reason="repetition"),
+        ]
+        resp = LLMService._collapse_stream_events(events, self._req())
+        self.assertTrue(resp.metadata["output_truncated"])
+        self.assertEqual(resp.metadata["stop_reason"], "repetition")
+
     def test_collapse_error_event_raises_mapped_exception(self):
         # Retryable types must be preserved so is_retryable_subagent_error works.
         cases = [
