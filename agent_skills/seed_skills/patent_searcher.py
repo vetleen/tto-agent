@@ -96,9 +96,14 @@ results are pruned, the scratchpad is not.
 
 ## 5. Known limits
 EPO's service covers patent publications only (papers appear only as citations inside
-records). Applications filed in the last ~18 months are not yet published. Full text
-exists mainly for EP and WO. Very recent documents may not carry CPC codes yet.
-Results list newest first and stop at position 2000.
+records). Applications filed in the last ~18 months are not yet published. Very recent
+documents may not carry CPC codes yet. Results list newest first and stop at position 2000.
+
+Claims and description text exist only for EP, WO, AT, BE, BG, CA, CH, CY, CZ, DK, EE,
+ES, FR, GB, GR, HR, IE, IT, LT, LU, MC, MD, ME, NO, PL, PT, RO, RS, SE and SK documents —
+**not** for US, CN, JP, KR or other offices. For those, find an EP or WO member with
+patent_epoops_family and read its claims; if there is none, work from the bibliography
+and abstract, and say so in the report.
 """,
     "tool_names": [
         "patent_epoops_search",

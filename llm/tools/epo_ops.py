@@ -179,6 +179,14 @@ _PART_TO_CONSTITUENT = {
 
 _ATTRIBUTION = "_Source: EPO / Espacenet (Open Patent Services)._"
 
+# Authorities whose claims/description OPS holds (Reference Guide v1.3.19,
+# §3.1.2). Anything else (US, CN, JP, KR, ...) answers CLIENT.InvalidCountryCode.
+_FULLTEXT_AUTHORITIES = (
+    "EP", "WO", "AT", "BE", "BG", "CA", "CH", "CY", "CZ", "DK", "EE", "ES", "FR", "GB", "GR",
+    "HR", "IE", "IT", "LT", "LU", "MC", "MD", "ME", "NO", "PL", "PT", "RO", "RS", "SE", "SK",
+)
+_FULLTEXT_AUTHORITIES_TEXT = ", ".join(_FULLTEXT_AUTHORITIES)
+
 
 # --------------------------------------------------------------------------- #
 # Credentials & token.
@@ -547,8 +555,7 @@ def _ops_request(
                 refreshed = True
                 continue
             if status == 500 and code == _DOMAIN_ACCESS_FAULT:
-                can_retry = False
-                if not domain_retried:
+                if not domain_retried and attempt < _MAX_RETRIES:
                     domain_retried = True
                     logger.info("EPO OPS %s (attempt %d), retrying once path=%s", code, attempt + 1, path)
                     nap, can_retry = _deadline_capped_wait(_DOMAIN_ACCESS_RETRY_WAIT, context)
@@ -556,8 +563,9 @@ def _ops_request(
                         time.sleep(nap)
                     if can_retry:
                         continue
-                remaining = getattr(context, "remaining_seconds", None)
-                can_probe = not callable(remaining) or (remaining() or 0) > 0
+                remaining_fn = getattr(context, "remaining_seconds", None)
+                remaining = remaining_fn() if callable(remaining_fn) else None
+                can_probe = remaining is None or remaining > 0
                 result, diagnosis = _domain_access_error(path, context, can_probe)
                 return _done(
                     result,
@@ -952,14 +960,26 @@ def _concept_clause(concept: dict, default_field: str, include_subgroups: bool =
 
 
 _WO_OLD_RE = re.compile(r"^WO(\d{4})(\d{6})$")
+# US pre-grant publications (2001+) as USPTO/Google print them: year + 7-digit
+# serial with a leading zero. OPS (docdb) knows them as year + 6 digits.
+_US_PREGRANT_RE = re.compile(r"^US(20\d{2})0(\d{6})$")
 
 
-def _wo_short_form(number: str) -> str:
-    """WO numbers up to 2003 are known to OPS in the short form only:
-    ``WO2003059327`` → ``WO03059327`` (the long form 404s); 2004+ stay long."""
+def _ops_number_form(number: str) -> str:
+    """The form OPS knows a kind-less publication number by (validated live):
+
+    - WO numbers up to 2003 are short only: ``WO2003059327`` → ``WO03059327``
+      (the long form 404s); 2004+ stay long.
+    - US pre-grant publications drop the serial's leading zero:
+      ``US20140272569`` → ``US2014272569`` (the long form 404s or 500s).
+      Granted US patents (≤ 8 digits, no year) are unaffected.
+    """
     m = _WO_OLD_RE.match(number)
     if m and int(m.group(1)) <= 2003:
         return f"WO{m.group(1)[2:]}{m.group(2)}"
+    m = _US_PREGRANT_RE.match(number)
+    if m:
+        return f"US{m.group(1)}{m.group(2)}"
     return number
 
 
@@ -969,7 +989,7 @@ def _citation_number(raw: str) -> str:
     if not n:
         return ""
     n = re.sub(r"^([A-Z]{2}\d+)[A-Z]\d?$", r"\1", n)
-    return _wo_short_form(n)
+    return _ops_number_form(n)
 
 
 def _build_cql(
@@ -1101,8 +1121,8 @@ def _docdb_ref(raw: str) -> tuple[str, str] | None:
     m = _DOCDB_SPLIT_RE.match(n)
     if m:
         country, number, kind = m.group(1), m.group(2), (m.group(3) or "")
-        if country == "WO":
-            number = _wo_short_form(f"WO{number}")[2:]
+        if country in ("WO", "US"):
+            number = _ops_number_form(f"{country}{number}")[2:]
         # Skip an empty kind so a kind-less number yields "EP.1000000", not the
         # trailing-dot "EP.1000000." that OPS rejects with a 404.
         return "docdb", ".".join(part for part in (country, number, kind) if part)
@@ -2346,7 +2366,8 @@ class PatentEpoOpsGetInput(ReasonBaseModel):
         description=(
             "Which part to retrieve: biblio (bibliographic data + abstract), abstract, "
             "claims, description, or all (biblio + abstract). Default biblio. "
-            "claims/description are large and only available for some authorities (EP/WO)."
+            "claims/description are large and only available for these authorities: "
+            f"{_FULLTEXT_AUTHORITIES_TEXT} (not US, CN, JP, KR or others)."
         ),
     )
     part: int = Field(
@@ -2374,8 +2395,9 @@ class PatentEpoOpsGetTool(ContextAwareTool):
         "date, CPC codes, abstract and cited references), abstract, claims, description, or "
         "all. A long claims/description text arrives in numbered parts: read part=1, then "
         "the parts the result points to, until the features you are checking are found or "
-        "the text is exhausted. Claims/description exist mainly for EP and WO documents — "
-        "for others, find an EP/WO member with patent_epoops_family. Cited references list "
+        "the text is exhausted. Claims/description exist only for EP, WO and a set of European "
+        "offices (see parts) — not for US, CN, JP or KR documents: for those, find an EP/WO "
+        "member with patent_epoops_family. Cited references list "
         "what the examiner "
         "(category X: relevant alone, Y: in combination, A: background) and the applicant "
         "cited; for a close document these are prime prior-art candidates, and "
@@ -2423,9 +2445,10 @@ class PatentEpoOpsGetTool(ContextAwareTool):
         elif parts in ("claims", "description") and "404" in data["error"]:
             # Seen live: EP2252273A1 claims → 404 while its WO member had them.
             return (
-                f"No {parts} text at EPO for {display}. EPO holds full text mainly for EP and WO "
-                "publications, and an EP application that entered from a PCT application has its "
-                "text under the WO number — use patent_epoops_family to find the WO (or another "
+                f"No {parts} text at EPO for {display}. EPO holds full text only for "
+                f"{_FULLTEXT_AUTHORITIES_TEXT} publications (not US, CN, JP, KR or others), and "
+                "an EP application that entered from a PCT application has its text under the "
+                "WO number — use patent_epoops_family to find the WO (or another "
                 "EP/WO) member and request its claims."
             )
         return _format_get(data, display, parts, part)

@@ -82,6 +82,18 @@ class PatentSearcherSeedTests(TestCase):
             ["Patent Search Report (general)"],
         )
 
+    def test_known_limits_list_fulltext_authorities(self):
+        # Sub-agents kept asking for claims of CN/KR/US documents
+        # (CLIENT.InvalidCountryCode); the skill names the offices OPS holds
+        # full text for, in step with the tool's list.
+        from llm.tools.epo_ops import _FULLTEXT_AUTHORITIES
+
+        skill = AgentSkill.objects.get(slug="patent-searcher", level="system")
+        text = " ".join(skill.instructions.split())
+        for code in _FULLTEXT_AUTHORITIES:
+            self.assertRegex(text, rf"\b{code}\b")
+        self.assertIn("**not** for US, CN, JP, KR", text)
+
     def test_filter_keeps_patent_tools_for_subagent(self):
         kept = filter_to_skill_tools(
             _PATENT_TOOLS + ["skill_resource_view"], skill_audience="subagent"

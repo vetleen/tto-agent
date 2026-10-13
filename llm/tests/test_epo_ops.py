@@ -578,17 +578,27 @@ class OpsRequestTests(TestCase):
         self.assertIn("failed after retries", warnings[0].getMessage())
 
     @patch("llm.tools.epo_ops.time.sleep")
+    @patch("llm.tools.epo_ops._invalidate_token")
     @patch("llm.tools.epo_ops.requests.get")
-    def test_500_domain_access_fails_fast(self, mock_get, sleep):
-        """OPS's bad-query 500 is deterministic: no retries, no backoff, actionable message."""
-        mock_get.return_value = _mock_http_error(
-            500, text=_fault_xml("SERVER.DomainAccess", "The request could not be processed")
-        )
+    def test_400_invalid_access_token_refreshes_once(self, mock_get, invalidate, _sleep):
+        """OPS reports an expired token as 400 invalid_access_token (prod 2026-10-13)."""
+        mock_get.side_effect = [
+            _mock_http_error(400, text=_fault_xml("400", "invalid_access_token")),
+            _mock_ok({"ok": 1}),
+        ]
         data = _ops_request("published-data/search/biblio", {"q": "x"}, tool_name="patent_epoops_search")
+        self.assertEqual(data, {"ok": 1})
+        invalidate.assert_called_once()
+        self.assertEqual(mock_get.call_count, 2)
+
+    @patch("llm.tools.epo_ops._invalidate_token")
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_other_400_does_not_refresh(self, mock_get, invalidate):
+        mock_get.return_value = _mock_http_error(400, text=_fault_xml("CLIENT.CQL", "bad syntax"))
+        data = _ops_request("published-data/search/biblio", {"q": "x"}, tool_name="patent_epoops_search")
+        invalidate.assert_not_called()
         self.assertEqual(mock_get.call_count, 1)
-        sleep.assert_not_called()
-        self.assertIn("SERVER.DomainAccess", data["error"])
-        self.assertNotIn("unavailable", data["error"])
+        self.assertIn("will not resolve by retrying", data["error"])
 
     @patch("llm.tools.epo_ops._invalidate_token")
     @patch("llm.tools.epo_ops.requests.get")
@@ -667,6 +677,123 @@ class OpsRequestTests(TestCase):
 # Token flow.
 # --------------------------------------------------------------------------- #
 @override_settings(EPO_OPS_KEY="k", EPO_OPS_SECRET="s", CACHES=_LOCMEM_CACHE)
+def _domain_access():
+    return _mock_http_error(
+        500, text=_fault_xml("SERVER.DomainAccess", "The request could not be processed")
+    )
+
+
+class DomainAccessTests(TestCase):
+    """500 SERVER.DomainAccess is ambiguous (bad query OR overloaded OPS): retry
+    once, then a cached known-good health probe decides what to tell the model."""
+
+    PATH = "published-data/search"
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        self.addCleanup(cache.clear)
+        p = patch("llm.tools.epo_ops._ops_rate_limiter")
+        p.start()
+        self.addCleanup(p.stop)
+        p2 = patch("llm.tools.epo_ops._get_access_token", return_value="tok")
+        p2.start()
+        self.addCleanup(p2.stop)
+        p3 = patch("llm.tools.epo_ops.time.sleep")
+        self.sleep = p3.start()
+        self.addCleanup(p3.stop)
+
+    def _call(self, context=None):
+        return _ops_request(self.PATH, {"q": 'ta="x"'}, tool_name="patent_epoops_search", context=context)
+
+    def _tool_row(self):
+        from llm.models import OpsUsageLog
+
+        return OpsUsageLog.objects.get(tool_name="patent_epoops_search")
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_retry_succeeds_without_probe(self, mock_get):
+        mock_get.side_effect = [_domain_access(), _mock_ok({"ok": 1})]
+        self.assertEqual(self._call(), {"ok": 1})
+        self.assertEqual(mock_get.call_count, 2)
+        self.sleep.assert_called_once_with(8.0)
+        self.assertEqual(self._tool_row().attempts, 2)
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_probe_down_reports_outage(self, mock_get):
+        mock_get.side_effect = [_domain_access(), _domain_access(), _domain_access()]
+        data = self._call()
+        self.assertEqual(mock_get.call_count, 3)
+        # The third request is the known-good probe.
+        self.assertEqual(mock_get.call_args.kwargs["params"], {"q": "pn=EP1000000"})
+        self.assertIn("temporarily unavailable", data["error"])
+        self.assertIn("not caused by your query", data["error"])
+        row = self._tool_row()
+        self.assertEqual(row.error_code, "SERVER.DomainAccess")
+        self.assertTrue(row.error_message.startswith("diagnosis=outage;"))
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_probe_up_suggests_query_humbly(self, mock_get):
+        mock_get.side_effect = [_domain_access(), _domain_access(), _mock_ok({"ok": 1})]
+        data = self._call()
+        self.assertIn("could be a problem with this particular query", data["error"])
+        self.assertNotIn("unavailable", data["error"])
+        self.assertTrue(self._tool_row().error_message.startswith("diagnosis=query;"))
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_probe_inconclusive_is_neutral(self, mock_get):
+        robot = _mock_http_error(403, text=_fault_xml("CLIENT.RobotDetected", "robot"))
+        mock_get.side_effect = [_domain_access(), _domain_access(), robot]
+        data = self._call()
+        self.assertIn("may be temporary", data["error"])
+        self.assertTrue(self._tool_row().error_message.startswith("diagnosis=unknown;"))
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_probe_timeout_counts_as_down(self, mock_get):
+        import requests as req
+
+        mock_get.side_effect = [_domain_access(), _domain_access(), req.exceptions.Timeout("slow")]
+        self.assertIn("temporarily unavailable", self._call()["error"])
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_probe_result_is_shared_for_a_minute(self, mock_get):
+        mock_get.side_effect = [_domain_access(), _domain_access(), _domain_access(),
+                                _domain_access(), _domain_access()]
+        self._call()
+        data = self._call()
+        # 2 + probe, then 2 without a second probe.
+        self.assertEqual(mock_get.call_count, 5)
+        self.assertIn("temporarily unavailable", data["error"])
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_probe_is_logged_as_its_own_row(self, mock_get):
+        from llm.models import OpsUsageLog
+
+        mock_get.side_effect = [_domain_access(), _domain_access(), _mock_ok({"ok": 1})]
+        self._call()
+        probe = OpsUsageLog.objects.get(tool_name="ops_health_probe")
+        self.assertEqual(probe.outcome, "ok")
+        self.assertEqual(probe.query, "pn=EP1000000")
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_retrieval_path_probes_retrieval(self, mock_get):
+        mock_get.side_effect = [_domain_access(), _domain_access(), _mock_ok({"ok": 1})]
+        _ops_request("published-data/publication/docdb/US.2014272569.A1/biblio", {},
+                     tool_name="patent_epoops_get")
+        self.assertIn("docdb/EP.1000000.A1/biblio", mock_get.call_args.args[0])
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_deadline_reached_skips_retry_and_probe(self, mock_get):
+        mock_get.return_value = _domain_access()
+        ctx = MagicMock()
+        ctx.remaining_seconds.return_value = 0
+        ctx.user_id = None
+        data = self._call(context=ctx)
+        self.assertEqual(mock_get.call_count, 1)
+        self.assertIn("may be temporary", data["error"])
+
+
 class TokenTests(TestCase):
     def setUp(self):
         from django.core.cache import cache
@@ -904,8 +1031,10 @@ class OpsOutcomeLogTests(TestCase):
         self.assertEqual(row.http_status, 404)
         self.assertEqual(row.error_code, "SERVER.EntityNotFound")
 
+    @patch("llm.tools.epo_ops._ops_health", return_value="up")
+    @patch("llm.tools.epo_ops.time.sleep")
     @patch("llm.tools.epo_ops.requests.get")
-    def test_domain_access_row_keeps_fault_and_query(self, mock_get):
+    def test_domain_access_row_keeps_fault_and_query(self, mock_get, _sleep, _health):
         mock_get.return_value = _mock_http_error(
             500, text=_fault_xml("SERVER.DomainAccess", "The request could not be processed")
         )
@@ -914,8 +1043,9 @@ class OpsOutcomeLogTests(TestCase):
         self.assertEqual(row.outcome, "error")
         self.assertEqual(row.http_status, 500)
         self.assertEqual(row.error_code, "SERVER.DomainAccess")
-        self.assertEqual(row.error_message, "The request could not be processed")
+        self.assertEqual(row.error_message, "diagnosis=query; The request could not be processed")
         self.assertEqual(row.query, 'cpc="A61B8 06"')
+        self.assertEqual(row.attempts, 2)
 
     @patch("llm.tools.epo_ops.time.sleep")
     @patch("llm.tools.epo_ops.requests.get")
@@ -1393,6 +1523,24 @@ class CitationNumberTests(TestCase):
     def test_docdb_ref_uses_wo_short_form(self):
         self.assertEqual(_docdb_ref("WO2003059327A1"), ("docdb", "WO.03059327.A1"))
         self.assertEqual(_docdb_ref("WO2019154667A1"), ("docdb", "WO.2019154667.A1"))
+
+    def test_us_pregrant_long_form_drops_serial_zero(self):
+        # OPS knows US pre-grant pubs as year + 6 digits; the USPTO/Google long
+        # form 404s or 500s (verified live 2026-10-13).
+        self.assertEqual(_docdb_ref("US20140272569A1"), ("docdb", "US.2014272569.A1"))
+        self.assertEqual(_docdb_ref("US 2020/0306745 A1"), ("docdb", "US.2020306745.A1"))
+        self.assertEqual(_docdb_ref("US20200306745"), ("docdb", "US.2020306745"))
+        self.assertEqual(_citation_number("US20200306745"), "US2020306745")
+        self.assertEqual(_citation_number("US20140255770A1"), "US2014255770")
+
+    def test_other_us_numbers_unchanged(self):
+        self.assertEqual(_docdb_ref("US2014272569A1"), ("docdb", "US.2014272569.A1"))
+        self.assertEqual(_docdb_ref("US9876543B2"), ("docdb", "US.9876543.B2"))
+        self.assertEqual(_docdb_ref("US10123456B2"), ("docdb", "US.10123456.B2"))
+        self.assertEqual(_citation_number("US10123456B2"), "US10123456")
+
+    def test_publication_filter_uses_short_us_form(self):
+        self.assertEqual(_build_cql(publication="US20140272569A1"), "pn=US2014272569")
 
 
 def _doc(country, number, kind, family, title="T", date="20200101"):
