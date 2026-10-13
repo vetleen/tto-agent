@@ -423,16 +423,15 @@ def _domain_access_error(path: str, context, can_probe: bool) -> tuple[dict, str
         logger.warning("EPO OPS unavailable (DomainAccess, health probe down) path=%s", path)
         return {"error": (
             "EPO OPS is temporarily unavailable (SERVER.DomainAccess): a known-good test query "
-            "also failed, so this is not caused by your query — do not rewrite it. Wait a few "
-            "minutes before retrying, and tell the user patent search is degraded right now."
+            "also failed, so this is not caused by your query. Wait a few "
+            "minutes before retrying, and tell the user EPO patent search is degraded right now."
         )}, "outage"
     if health == "up":
         logger.warning("EPO OPS could not process query (DomainAccess, health probe up) path=%s", path)
         return {"error": (
             "EPO OPS could not process this request (SERVER.DomainAccess), even on a retry, while "
             "a simple test query works. This could be a problem with this particular query: try "
-            "simplifying it (fewer keywords or concepts), check the CPC symbols (e.g. A61B8/06) "
-            "and the publication-number format."
+            "simplifying it (fewer keywords or concepts), or check for typos."
         )}, "query"
     logger.warning("EPO OPS could not process request (DomainAccess, health unknown) path=%s", path)
     return {"error": (
