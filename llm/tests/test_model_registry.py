@@ -1,5 +1,6 @@
 """Tests for the curated model registry."""
 
+from datetime import date
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -17,9 +18,8 @@ from llm.model_registry import (
     get_model_tier,
     get_models_by_tier,
     get_models_for_slot,
-    get_models_with_min_stars,
     get_registered_model_ids,
-    is_model_valid_for_slot,
+    model_fits_slot,
     normalize_model_ids,
 )
 
@@ -38,6 +38,7 @@ EXPECTED_IDS = [
     "anthropic/claude-sonnet-5-5",
     "anthropic/claude-sonnet-5",
     "anthropic/claude-haiku-5-5",
+    "gemini/gemini-4-argon",
     "gemini/gemini-3.1-pro-preview",
     "gemini/gemini-3.8-flash",
     "gemini/gemini-3.5-flash-lite",
@@ -82,6 +83,7 @@ class RegistryTests(SimpleTestCase):
             "anthropic/claude-sonnet-5-5": (("low", "medium", "high", "xhigh", "max"), "high"),
             "anthropic/claude-sonnet-5": (("off", "low", "medium", "high", "xhigh", "max"), "high"),
             "anthropic/claude-haiku-5-5": (("off", "low", "medium", "high", "xhigh", "max"), "medium"),
+            "gemini/gemini-4-argon": (("low", "medium", "high"), "medium"),
             "gemini/gemini-3.1-pro-preview": (("low", "medium", "high"), "high"),
             "gemini/gemini-3.8-flash": (("low", "medium", "high"), "medium"),
             "gemini/gemini-3.5-flash-lite": (("minimal", "low", "medium", "high"), "minimal"),
@@ -148,6 +150,27 @@ class RegistryTests(SimpleTestCase):
         # Intro pricing doubles on 2027-01-01.
         self.assertEqual(info.price_changes[0].output_price, Decimal("7.50"))
         self.assertEqual(info.context_window, 1_048_576)
+
+    def test_gemini_4_argon_metadata(self):
+        info = get_model_info("gemini/gemini-4-argon")
+        self.assertEqual(info.api_model, "gemini-4-argon")
+        self.assertEqual(info.provider, "google_genai")
+        self.assertEqual(info.stars, 5)
+        self.assertTrue(info.flagship)
+        # Unified 1M input+output window; 64K output per request.
+        self.assertEqual(info.context_window, 1_048_576)
+        self.assertEqual(info.max_output_tokens, 65_536)
+        self.assertEqual(info.input_price, Decimal("2.00"))
+        self.assertEqual(info.cached_input_price, Decimal("0.10"))
+        self.assertEqual(info.output_price, Decimal("10.00"))
+        self.assertIsNone(info.cache_write_price)
+        self.assertIsNone(info.long_context_threshold)
+        # Introductory pricing doubles on 2026-12-01.
+        (change,) = info.price_changes
+        self.assertEqual(change.starts_on, date(2026, 12, 1))
+        self.assertEqual(change.input_price, Decimal("4.00"))
+        self.assertEqual(change.cached_input_price, Decimal("0.20"))
+        self.assertEqual(change.output_price, Decimal("20.00"))
 
     def test_anthropic_thinking_transport_is_explicit(self):
         for model_id in EXPECTED_IDS:
@@ -292,51 +315,37 @@ class TierTests(SimpleTestCase):
                 "openai/gpt-6-astra",
                 "anthropic/claude-fable-5-1",
                 "anthropic/claude-fable-5",
+                "gemini/gemini-4-argon",
             ],
         )
 
-    def test_slot_validation(self):
-        self.assertTrue(is_model_valid_for_slot("openai/gpt-5.4-nano", "cheap"))
-        self.assertTrue(is_model_valid_for_slot("openai/gpt-6-luna", "cheap"))
+    def test_slot_fit(self):
+        # Fit only steers automatic picks; explicit defaults may be any model.
+        self.assertTrue(model_fits_slot("openai/gpt-5.4-nano", "cheap"))
+        self.assertTrue(model_fits_slot("openai/gpt-6-luna", "cheap"))
         # Luna's 2 stars now clear the mid slot's floor (overlap is intended).
-        self.assertTrue(is_model_valid_for_slot("openai/gpt-6-luna", "mid"))
-        self.assertFalse(is_model_valid_for_slot("openai/gpt-5.4-nano", "mid"))
-        self.assertTrue(is_model_valid_for_slot("openai/gpt-5.6-terra", "mid"))
+        self.assertTrue(model_fits_slot("openai/gpt-6-luna", "mid"))
+        self.assertFalse(model_fits_slot("openai/gpt-5.4-nano", "mid"))
+        self.assertTrue(model_fits_slot("openai/gpt-5.6-terra", "mid"))
         # Primary requires 3 stars: Sonnet-class models stay eligible.
-        self.assertTrue(is_model_valid_for_slot("openai/gpt-5.6-terra", "primary"))
-        self.assertTrue(is_model_valid_for_slot("anthropic/claude-sonnet-5", "primary"))
-        self.assertTrue(is_model_valid_for_slot("openai/gpt-5.6-sol", "primary"))
-        self.assertTrue(is_model_valid_for_slot("openai/gpt-6-astra", "primary"))
-        self.assertTrue(is_model_valid_for_slot("anthropic/claude-fable-5-1", "primary"))
-        self.assertFalse(is_model_valid_for_slot("openai/gpt-6-luna", "primary"))
-        self.assertFalse(is_model_valid_for_slot("anthropic/claude-haiku-5-5", "primary"))
+        self.assertTrue(model_fits_slot("openai/gpt-5.6-terra", "primary"))
+        self.assertTrue(model_fits_slot("anthropic/claude-sonnet-5", "primary"))
+        self.assertTrue(model_fits_slot("openai/gpt-5.6-sol", "primary"))
+        self.assertTrue(model_fits_slot("openai/gpt-6-astra", "primary"))
+        self.assertTrue(model_fits_slot("anthropic/claude-fable-5-1", "primary"))
+        self.assertFalse(model_fits_slot("openai/gpt-6-luna", "primary"))
+        self.assertFalse(model_fits_slot("anthropic/claude-haiku-5-5", "primary"))
         # Haiku 5.5 displays at its >100K band ($0.50 input), so it isn't cheap.
-        self.assertFalse(is_model_valid_for_slot("anthropic/claude-haiku-5-5", "cheap"))
+        self.assertFalse(model_fits_slot("anthropic/claude-haiku-5-5", "cheap"))
+        self.assertTrue(model_fits_slot("gemini/gemini-4-argon", "primary"))
+        self.assertFalse(model_fits_slot("gemini/gemini-4-argon", "cheap"))
 
     def test_get_models_for_slot_canonicalizes_filter(self):
         allowed = ["openai/gpt-5.4-nano", "openai/gpt-5.4"]
         self.assertEqual(get_models_for_slot("cheap", allowed), ["openai/gpt-5.4-nano"])
         self.assertEqual(get_models_for_slot("primary", allowed), ["openai/gpt-5.6-terra"])
 
-    def test_models_with_min_stars(self):
-        self.assertEqual(len(get_models_with_min_stars(1)), len(EXPECTED_IDS))
-        two_up = get_models_with_min_stars(2)
-        self.assertNotIn("openai/gpt-5.4-nano", two_up)
-        self.assertNotIn("gemini/gemini-3.5-flash-lite", two_up)
-        self.assertIn("openai/gpt-6-luna", two_up)
-        three_up = get_models_with_min_stars(3)
-        self.assertIn("anthropic/claude-sonnet-5", three_up)
-        self.assertNotIn("anthropic/claude-haiku-5-5", three_up)
-        self.assertEqual(
-            get_models_with_min_stars(5),
-            [
-                "openai/gpt-6-astra",
-                "anthropic/claude-fable-5-1",
-                "anthropic/claude-fable-5",
-            ],
-        )
-
-    def test_only_astra_and_fables_are_flagships(self):
+    def test_flagships(self):
         flagships = [
             model_id
             for model_id in EXPECTED_IDS
@@ -348,5 +357,6 @@ class TierTests(SimpleTestCase):
                 "openai/gpt-6-astra",
                 "anthropic/claude-fable-5-1",
                 "anthropic/claude-fable-5",
+                "gemini/gemini-4-argon",
             ],
         )

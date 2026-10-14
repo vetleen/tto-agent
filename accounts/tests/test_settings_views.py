@@ -284,9 +284,9 @@ class OrgSettingsAccessTests(TestCase):
         # "No override" follows the org's mid / primary tier models.
         self.assertEqual(rows["subagent_mid"]["default_slot"], "mid")
         self.assertEqual(rows["subagent_top"]["default_slot"], "primary")
-        # subagent_top's 3-star floor: sol (4*) qualifies, luna (2*) does not.
+        # No star floor: every allowed model is offered, luna (2*) included.
         self.assertIn("openai/gpt-5.6-sol", rows["subagent_top"]["eligible_models"])
-        self.assertNotIn("openai/gpt-5.6-luna", rows["subagent_top"]["eligible_models"])
+        self.assertIn("openai/gpt-5.6-luna", rows["subagent_top"]["eligible_models"])
         # They render in the Sub-agents section, not the generic feature list.
         feature_keys = {row["key"] for row in response.context["org_features"]}
         self.assertNotIn("subagent_mid", feature_keys)
@@ -1415,7 +1415,7 @@ class AgentAttachSkillsPreferenceViewTests(TestCase):
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
 class TierValidationOnModelUpdateTests(TestCase):
-    """Tier validation remains on organization-managed model defaults."""
+    """Organization-managed model defaults accept any allowed model."""
 
     def setUp(self):
         self.password = "test-pass-123"
@@ -1443,15 +1443,29 @@ class TierValidationOnModelUpdateTests(TestCase):
     @patch("llm.service.policies.get_allowed_models", return_value=[
         "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
     ])
-    def test_org_rejects_wrong_tier(self, mock_models):
+    def test_org_accepts_any_allowed_model_for_any_tier(self, mock_models):
         self.client.login(email=self.user.email, password=self.password)
         response = self.client.post(
             reverse("accounts:org_models_update"),
             json.dumps({"tier": "cheap", "model": "openai/gpt-5.4"}),
             content_type="application/json",
         )
+        self.assertEqual(response.status_code, 200)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.preferences["models"]["cheap"], "openai/gpt-5.4")
+
+    @patch("llm.service.policies.get_allowed_models", return_value=[
+        "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
+    ])
+    def test_org_still_rejects_model_outside_allow_list(self, mock_models):
+        self.client.login(email=self.user.email, password=self.password)
+        response = self.client.post(
+            reverse("accounts:org_models_update"),
+            json.dumps({"tier": "cheap", "model": "anthropic/claude-fable-5-1"}),
+            content_type="application/json",
+        )
         self.assertEqual(response.status_code, 400)
-        self.assertIn("cannot be used", response.json()["error"])
+        self.assertIn("not in allowed list", response.json()["error"])
 
     @patch("llm.service.policies.get_allowed_models", return_value=[
         "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
@@ -1626,15 +1640,19 @@ class OrgFeatureModelUpdateTests(TestCase):
         "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
         "openai/gpt-5.6-sol", "openai/gpt-5.6-luna",
     ])
-    def test_rejects_too_low_tier_for_subagent_top(self, mock_models):
-        # subagent_top's floor is 3 stars; luna's 2 stars fall short.
+    def test_accepts_low_star_model_for_subagent_top(self, mock_models):
+        # No star floor: luna's 2 stars are fine for top-tier sub-agents.
         self.client.login(email=self.admin_user.email, password=self.password)
         response = self.client.post(
             self.url,
             json.dumps({"feature": "subagent_top", "model": "openai/gpt-5.6-luna"}),
             content_type="application/json",
         )
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 200)
+        self.org.refresh_from_db()
+        self.assertEqual(
+            self.org.preferences["feature_models"]["subagent_top"], "openai/gpt-5.6-luna"
+        )
 
     @patch("llm.service.policies.get_allowed_models", return_value=[
         "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
@@ -1652,16 +1670,16 @@ class OrgFeatureModelUpdateTests(TestCase):
     @patch("llm.service.policies.get_allowed_models", return_value=[
         "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
     ])
-    def test_rejects_too_low_tier(self, mock_models):
+    def test_accepts_one_star_model_for_chat(self, mock_models):
         self.client.login(email=self.admin_user.email, password=self.password)
-        # Chat's floor is 2 stars; nano's 1 star falls short.
         response = self.client.post(
             self.url,
             json.dumps({"feature": "chat", "model": "openai/gpt-5.4-nano"}),
             content_type="application/json",
         )
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("tier too low", response.json()["error"])
+        self.assertEqual(response.status_code, 200)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.preferences["feature_models"]["chat"], "openai/gpt-5.4-nano")
 
     def test_requires_admin(self):
         self.client.login(email=self.member_user.email, password=self.password)

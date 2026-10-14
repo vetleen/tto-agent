@@ -87,8 +87,22 @@ class BenchmarkDataTests(SimpleTestCase):
             ],
         )
 
-    def test_livebench_if_covers_every_model(self):
-        self.assertEqual(missing_models(BENCHMARK_LIVEBENCH_IF), [])
+    def test_livebench_if_missing_models(self):
+        # Gemini 4 Argon is not in a LiveBench release yet (checked 2026-10-14).
+        self.assertEqual(missing_models(BENCHMARK_LIVEBENCH_IF), ["gemini/gemini-4-argon"])
+
+    def test_gemini_4_argon_scores(self):
+        # AA and LMArena only run Argon at high.
+        expected = {
+            BENCHMARK_GDPVAL: 1624,
+            BENCHMARK_GDP_PDF: 21.8,
+            BENCHMARK_OMNISCIENCE: 15.1,
+            BENCHMARK_ARENA_BUSINESS: 1521,
+        }
+        for key, score in expected.items():
+            with self.subTest(key=key):
+                rows = get_scores(key, "gemini/gemini-4-argon")
+                self.assertEqual([(s.effort, s.score) for s in rows], [("high", score)])
 
     def test_haiku_5_5_scores(self):
         # Every effort level on AA; LiveBench lists only xhigh and max.
@@ -108,10 +122,13 @@ class BenchmarkDataTests(SimpleTestCase):
     def test_response_time(self):
         bench = get_benchmark(BENCHMARK_RESPONSE_TIME)
         self.assertFalse(bench.higher_is_better)
-        # AA has no 100K timing for these (checked 2026-10-11).
+        # AA has no 100K timing for these (checked 2026-10-11; Argon 2026-10-14).
         self.assertEqual(
             missing_models(BENCHMARK_RESPONSE_TIME),
-            ["openai/gpt-5.6-sol", "openai/gpt-5.4-nano", "anthropic/claude-fable-5"],
+            [
+                "openai/gpt-5.6-sol", "openai/gpt-5.4-nano", "anthropic/claude-fable-5",
+                "gemini/gemini-4-argon",
+            ],
         )
         for s in bench.scores:
             with self.subTest(model=s.model_id, effort=s.effort):

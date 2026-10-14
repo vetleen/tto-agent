@@ -451,12 +451,8 @@ def org_settings_page(request):
     # The Model-defaults and Feature-override dropdowns are server-rendered only
     # with the currently-allowed models; the client uses this to re-populate them
     # live when the admin toggles the allowed-models checklist (no page reload).
-    from llm.model_registry import get_models_for_slot
     model_options = {
-        "tiers": {
-            key: get_models_for_slot(key, system_models)
-            for key in ("primary", "mid", "cheap")
-        },
+        "tiers": {key: list(system_models) for key in ("primary", "mid", "cheap")},
         "features": {
             row["key"]: row["eligible_models"]
             for row in build_feature_rows(
@@ -1304,11 +1300,6 @@ def org_models_update(request):
         if model not in effective:
             return JsonResponse({"error": "Model not in allowed list"}, status=400)
 
-        from llm.model_registry import is_model_valid_for_slot
-
-        if not is_model_valid_for_slot(model, tier):
-            return JsonResponse({"error": f"This model cannot be used as a {tier} model."}, status=400)
-
     def mutate(prefs):
         models = prefs.get("models", {})
         models[tier] = model
@@ -1684,7 +1675,6 @@ def org_skills_update(request):
 def org_feature_model_update(request):
     """Set org's preferred model for a specific feature."""
     from core.preferences import FEATURE_DEFAULTS
-    from llm.model_registry import get_model_info
     from llm.service.policies import get_allowed_models
 
     membership = request.org_membership
@@ -1699,9 +1689,7 @@ def org_feature_model_update(request):
     if feature not in FEATURE_DEFAULTS:
         return JsonResponse({"error": "Unknown feature"}, status=400)
 
-    _fdef = FEATURE_DEFAULTS[feature]
-    min_stars, scope = _fdef.min_stars, _fdef.scope
-    if scope != "org":
+    if FEATURE_DEFAULTS[feature].scope != "org":
         return JsonResponse({"error": "This feature is not org-configurable"}, status=400)
 
     if model:
@@ -1710,9 +1698,6 @@ def org_feature_model_update(request):
         effective = [m for m in org_allowed if m in system_models] if org_allowed else list(system_models)
         if model not in effective:
             return JsonResponse({"error": "Model not in allowed list"}, status=400)
-        info = get_model_info(model)
-        if info and info.capability_stars < min_stars:
-            return JsonResponse({"error": f"Model tier too low for this feature (minimum: {min_stars} stars)"}, status=400)
 
     tier = next((t for t, f in _SUBAGENT_TIER_FEATURES.items() if f == feature), None)
 

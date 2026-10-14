@@ -38,13 +38,13 @@ def build_feature_rows(
     only) adds the effective value after the full cascade.
     """
     from core.preferences import FEATURE_DEFAULTS
-    from llm.model_registry import get_models_with_min_stars
 
     rows = []
     for fkey, fdef in FEATURE_DEFAULTS.items():
         if fdef.scope != scope:
             continue
-        eligible = [m for m in get_models_with_min_stars(fdef.min_stars) if m in eligible_allowed]
+        # Any allowed model may serve any feature; only modality narrows it.
+        eligible = list(eligible_allowed)
         if fdef.required_modality:
             from llm.display import supports_modality
 
@@ -70,9 +70,10 @@ def build_feature_rows(
 
 
 def build_tier_rows(defaults: dict[str, str], allowed: list[str]) -> list[dict]:
-    """Build the primary/mid/cheap tier rows for a settings page."""
-    from llm.model_registry import get_models_for_slot
+    """Build the primary/mid/cheap tier rows for a settings page.
 
+    Every allowed model is offered for every tier.
+    """
     descriptions = {
         "primary": ("Primary model", "Used for important tasks like chat and writing."),
         "mid": ("Mid model", "Used for tasks that don't need the best model, like text summarization or tagging."),
@@ -84,7 +85,7 @@ def build_tier_rows(defaults: dict[str, str], allowed: list[str]) -> list[dict]:
             "label": label,
             "desc": desc,
             "default_model": defaults[key],
-            "slot_models": get_models_for_slot(key, allowed),
+            "slot_models": list(allowed),
         }
         for key, (label, desc) in descriptions.items()
     ]

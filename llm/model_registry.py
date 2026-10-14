@@ -21,8 +21,9 @@ TIER_ORDER = {
     TIER_FLAGSHIP: 3,
 }
 
-# Slot eligibility floors on capability stars. The cheap slot has no star
-# floor — it is price-defined (a model qualifies via the cheap category).
+# Star floors a model must meet to be AUTO-picked for a slot (see
+# model_fits_slot). The cheap slot has no star floor — it is price-defined (a
+# model qualifies via the cheap category). Explicit admin choices ignore these.
 SLOT_MIN_STARS: dict[str, int] = {
     "mid": 2,
     "primary": 3,
@@ -355,6 +356,23 @@ _MODELS: dict[str, ModelInfo] = {
         display_long_context_price=True,
     ),
     # Google Gemini
+    "gemini/gemini-4-argon": ModelInfo(
+        display_name="Gemini 4 Argon", provider="google_genai",
+        api_model="gemini-4-argon", stars=5, flagship=True,
+        # No off/minimal; provider default is medium. The 1M window is shared
+        # by input and output.
+        reasoning_levels=("low", "medium", "high"), default_reasoning_level="medium",
+        input_modalities=_MULTIMODAL, context_window=1_048_576,
+        max_output_tokens=65_536,
+        # Introductory pricing through 2026-11-30; no long-context band.
+        input_price=Decimal("2.00"), cached_input_price=Decimal("0.10"),
+        output_price=Decimal("10.00"),
+        price_changes=(PriceChange(
+            starts_on=date(2026, 12, 1), input_price=Decimal("4.00"),
+            cached_input_price=Decimal("0.20"), cache_write_price=None,
+            cache_write_1h_price=None, output_price=Decimal("20.00"),
+        ),),
+    ),
     "gemini/gemini-3.1-pro-preview": ModelInfo(
         display_name="Gemini 3.1 Pro Preview", provider="google_genai",
         api_model="gemini-3.1-pro-preview", stars=3,
@@ -469,11 +487,12 @@ def get_models_by_tier(tier: str) -> list[str]:
     return [mid for mid, info in _MODELS.items() if tier in info.tiers]
 
 
-def get_models_with_min_stars(min_stars: int) -> list[str]:
-    return [mid for mid, info in _MODELS.items() if info.capability_stars >= min_stars]
+def model_fits_slot(model_id: str, slot: str) -> bool:
+    """Whether the model suits a slot (cheap by price, others by stars).
 
-
-def is_model_valid_for_slot(model_id: str, slot: str) -> bool:
+    A preference for automatic picks only: an admin may set any allowed model
+    as any slot or feature default.
+    """
     info = get_model_info(model_id)
     if info is None:
         return False
@@ -485,7 +504,7 @@ def is_model_valid_for_slot(model_id: str, slot: str) -> bool:
 
 def get_models_for_slot(slot: str, allowed_models: list[str] | None = None) -> list[str]:
     candidates = normalize_model_ids(allowed_models) if allowed_models else list(_MODELS)
-    return [m for m in candidates if is_model_valid_for_slot(m, slot)]
+    return [m for m in candidates if model_fits_slot(m, slot)]
 
 
 __all__ = [
@@ -493,6 +512,5 @@ __all__ = [
     "TIER_CHEAP", "TIER_MID", "TIER_STANDARD", "TIER_FLAGSHIP", "TIER_ORDER",
     "SLOT_MIN_STARS", "canonical_model_id", "normalize_model_ids",
     "get_model_info", "get_registered_model_ids", "get_model_tier",
-    "get_models_by_tier", "get_models_with_min_stars",
-    "is_model_valid_for_slot", "get_models_for_slot",
+    "get_models_by_tier", "model_fits_slot", "get_models_for_slot",
 ]

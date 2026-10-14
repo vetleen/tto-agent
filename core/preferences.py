@@ -82,9 +82,8 @@ class ResolvedPreferences:
 class FeatureDefault:
     """Per-feature model-selection policy.
 
-    default_slot: tier used by default ("primary", "mid", "cheap").
-    min_stars: minimum capability stars allowed (1-5; see
-        ModelInfo.capability_stars in llm/model_registry.py).
+    default_slot: tier used by default ("primary", "mid", "cheap"). An org
+        override may be any allowed model, whatever its stars.
     scope: "org" exposes a dedicated organization override; "user" identifies
         features that follow the organization's tier defaults. Chat also allows
         an individual thread override, stored on the thread rather than in user
@@ -95,44 +94,42 @@ class FeatureDefault:
     """
 
     default_slot: str
-    min_stars: int
     scope: str
     required_modality: str | None = None
 
 
 # Per-feature model catalog.
 FEATURE_DEFAULTS: dict[str, FeatureDefault] = {
-    "chat": FeatureDefault("primary", 2, "org"),
-    "thread_title": FeatureDefault("cheap", 1, "user"),
-    "thread_emoji": FeatureDefault("cheap", 1, "user"),
-    "canvas_title": FeatureDefault("cheap", 1, "user"),
-    "image_description": FeatureDefault("cheap", 1, "user"),
-    "message_summary": FeatureDefault("mid", 2, "org"),
-    "guardrails_classifier": FeatureDefault("cheap", 1, "org"),
-    "guardrails_reviewer": FeatureDefault("primary", 3, "org"),
-    "document_description": FeatureDefault("mid", 2, "org"),
+    "chat": FeatureDefault("primary", "org"),
+    "thread_title": FeatureDefault("cheap", "user"),
+    "thread_emoji": FeatureDefault("cheap", "user"),
+    "canvas_title": FeatureDefault("cheap", "user"),
+    "image_description": FeatureDefault("cheap", "user"),
+    "message_summary": FeatureDefault("mid", "org"),
+    "guardrails_classifier": FeatureDefault("cheap", "org"),
+    "guardrails_reviewer": FeatureDefault("primary", "org"),
+    "document_description": FeatureDefault("mid", "org"),
     # Describes images uploaded to data rooms; needs a vision-capable model.
-    "document_image_description": FeatureDefault("mid", 2, "org", required_modality="image"),
+    "document_image_description": FeatureDefault("mid", "org", required_modality="image"),
     # Describes spreadsheet sheets + adjudicates header rows from a rendered
     # tile; needs vision. Unlike images, spreadsheets degrade (heuristic
     # headers, no descriptions) instead of blocking upload when unavailable.
-    "spreadsheet_description": FeatureDefault("mid", 2, "org", required_modality="image"),
-    "skill_emoji": FeatureDefault("cheap", 1, "org"),
-    "guardrail_chunk_scan": FeatureDefault("cheap", 1, "org"),
-    "guardrail_web_scan": FeatureDefault("cheap", 1, "org"),
+    "spreadsheet_description": FeatureDefault("mid", "org", required_modality="image"),
+    "skill_emoji": FeatureDefault("cheap", "org"),
+    "guardrail_chunk_scan": FeatureDefault("cheap", "org"),
+    "guardrail_web_scan": FeatureDefault("cheap", "org"),
     # Two-stage PII scan: the cheap classifier only raises Art. 9/10 candidate
     # flags; the primary-model reviewer makes the final quarantine decision
     # (documents/services/pii_review.py). Ordinary-category tags stay
     # classifier-only.
-    "pii_scan": FeatureDefault("cheap", 1, "org"),
-    "pii_reviewer": FeatureDefault("primary", 3, "org"),
+    "pii_scan": FeatureDefault("cheap", "org"),
+    "pii_reviewer": FeatureDefault("primary", "org"),
     # Per-tier model for sub-agent runs, keyed to SubAgentRun.model_tier
     # ("mid"/"top"). default_slot mid/primary means "no override" resolves to the
     # org's mid_model / top_model — identical to the historical behavior in
-    # chat.subagent_service.resolve_subagent_model. Star floors match the mid /
-    # primary slots so the org's own tier models always qualify.
-    "subagent_mid": FeatureDefault("mid", 2, "org"),
-    "subagent_top": FeatureDefault("primary", 3, "org"),
+    # chat.subagent_service.resolve_subagent_model.
+    "subagent_mid": FeatureDefault("mid", "org"),
+    "subagent_top": FeatureDefault("primary", "org"),
 }
 
 _SLOT_TO_ATTR = {"primary": "top_model", "mid": "mid_model", "cheap": "cheap_model"}
@@ -547,7 +544,6 @@ def get_preferences(user) -> ResolvedPreferences:
 
     # Resolve per-feature model overrides
     from llm.display import supports_modality
-    from llm.model_registry import get_model_info
 
     slot_model = {"primary": top_model, "mid": mid_model, "cheap": cheap_model}
     org_feature_prefs = org_prefs.get("feature_models") or {}
@@ -565,10 +561,8 @@ def get_preferences(user) -> ResolvedPreferences:
 
         override = _match_allowed_model(override, pool)
         if override and override in pool:
-            info = get_model_info(override)
-            if info and info.capability_stars >= fdef.min_stars:
-                feature_models[fkey] = override
-                continue
+            feature_models[fkey] = override
+            continue
 
         default_model = slot_model.get(fdef.default_slot, top_model)
         if fdef.required_modality and default_model not in pool:
@@ -618,23 +612,17 @@ def _resolve_tier(
     ``user_choice`` remains for internal compatibility, but normal preference
     resolution intentionally passes ``None``: persistent model selection is
     organization-managed. Resolution order is org default, system default,
-    first valid allowed model, then empty string.
+    first allowed model that fits ``slot``, then empty string. Explicit
+    defaults may be any allowed model; only the automatic pick looks at fit.
     """
-    from llm.model_registry import is_model_valid_for_slot
+    from llm.model_registry import model_fits_slot
 
     user_choice = _match_allowed_model(user_choice, effective_allowed)
     org_default = _match_allowed_model(org_default, effective_allowed)
     system_default = _match_allowed_model(system_default, effective_allowed) or ""
 
     def _valid(model_id: str | None) -> bool:
-        if not model_id or model_id not in effective_allowed:
-            return False
-        if slot and not is_model_valid_for_slot(model_id, slot):
-            return False
-        return True
-
-    if user_choice and user_choice in effective_allowed and not _valid(user_choice):
-        logger.info("Tier constraint: user choice %s skipped for slot %s", user_choice, slot)
+        return bool(model_id) and model_id in effective_allowed
 
     if _valid(user_choice):
         return user_choice
@@ -646,10 +634,11 @@ def _resolve_tier(
         return system_default
 
     for m in effective_allowed:
-        if slot is None or is_model_valid_for_slot(m, slot):
+        if slot is None or model_fits_slot(m, slot):
             return m
 
-    # No valid model in the effective allowed list. Do NOT fall back to the
+    # No fitting model in the effective allowed list (get_preferences then
+    # borrows the next slot up). Do NOT fall back to the
     # system default here — that would bypass org-level restrictions when the
     # org's allowed_models list has no overlap with the system list.
     return ""
@@ -726,7 +715,6 @@ def resolve_org_feature_model(org_id: int | None, feature_key: str) -> str:
     Celery tasks or system contexts where only the org ID is available.
     """
     from accounts.models import Organization
-    from llm.model_registry import get_model_info
     from llm.service.policies import get_allowed_models
 
     feature_def = FEATURE_DEFAULTS.get(feature_key)
@@ -734,7 +722,6 @@ def resolve_org_feature_model(org_id: int | None, feature_key: str) -> str:
         return getattr(django_settings, "LLM_DEFAULT_MODEL", "") or ""
 
     default_slot = feature_def.default_slot
-    min_stars = feature_def.min_stars
     sys_models = _get_system_model_defaults()
     system_allowed = get_allowed_models()
 
@@ -773,9 +760,7 @@ def resolve_org_feature_model(org_id: int | None, feature_key: str) -> str:
         (org_prefs.get("feature_models") or {}).get(feature_key), effective_allowed
     )
     if override and override in effective_allowed:
-        info = get_model_info(override)
-        if info and info.capability_stars >= min_stars:
-            return override
+        return override
 
     # Fall back to org's tier default → system tier default
     org_models = org_prefs.get("models", {})

@@ -853,7 +853,7 @@ class TranscriptionLanguageCascadeTest(TestCase):
 
 
 class TierConstraintTest(TestCase):
-    """Tier constraints prevent wrong-tier models from being used."""
+    """Any allowed model may fill any slot; fit only steers automatic picks."""
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
@@ -865,22 +865,52 @@ class TierConstraintTest(TestCase):
         "anthropic/claude-opus-4-6",
     ])
     @patch("llm.tools.registry.get_tool_registry")
-    def test_standard_model_rejected_for_cheap_slot(self, mock_registry, mock_allowed):
-        """Opus saved as cheap model → falls back to the actual cheap model."""
+    def test_org_standard_model_accepted_for_cheap_slot(self, mock_registry, mock_allowed):
+        """Opus set as the org's cheap model is used as the cheap model."""
         mock_registry.return_value.list_tools.return_value = {}
 
         user = _create_user(email="tier-cheap@example.com")
         org = Organization.objects.create(name="TierOrg", slug="tierorg", preferences={
             "allowed_models": ["openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano", "anthropic/claude-opus-4-6"],
+            "models": {"cheap": "anthropic/claude-opus-4-6"},
         })
         Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
 
-        settings = UserSettings.objects.get(user=user)
-        settings.preferences = {"models": {"cheap": "anthropic/claude-opus-4-6"}}
-        settings.save()
-
         prefs = get_preferences(user)
-        self.assertNotEqual(prefs.cheap_model, "anthropic/claude-opus-4-6")
+        self.assertEqual(prefs.cheap_model, "anthropic/claude-opus-4-6")
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5.4",
+        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_CHEAP_MODEL="anthropic/claude-fable-5-1",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=[
+        "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
+        "anthropic/claude-fable-5-1",
+    ])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_system_default_outside_slot_is_honored(self, mock_registry, mock_allowed):
+        mock_registry.return_value.list_tools.return_value = {}
+
+        user = _create_user(email="tier-env@example.com")
+        prefs = get_preferences(user)
+        self.assertEqual(prefs.cheap_model, "anthropic/claude-fable-5-1")
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5.4",
+        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_CHEAP_MODEL="",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=[
+        "anthropic/claude-fable-5-1", "openai/gpt-5.4", "openai/gpt-5.4-nano",
+    ])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_automatic_cheap_pick_prefers_a_cheap_model(self, mock_registry, mock_allowed):
+        """With nothing configured, the cheap slot skips Fable for Nano."""
+        mock_registry.return_value.list_tools.return_value = {}
+
+        user = _create_user(email="tier-auto@example.com")
+        prefs = get_preferences(user)
         self.assertEqual(prefs.cheap_model, "openai/gpt-5.4-nano")
 
     @override_settings(
@@ -1056,9 +1086,10 @@ class FeatureModelOverrideTest(TestCase):
         "openai/gpt-5.4", "openai/gpt-5.6-luna", "openai/gpt-5.4-nano",
     ])
     @patch("llm.tools.registry.get_tool_registry")
-    def test_subagent_top_override_below_min_stars_falls_back(self, mock_registry, mock_allowed):
-        # luna is 2 stars; subagent_top's floor is 3, so the override is rejected
-        # and the tier falls back to the org's primary (top) model.
+    def test_subagent_top_override_with_few_stars_is_honored(self, mock_registry, mock_allowed):
+        # Luna is 2 stars; there is no star floor, so the override is used.
+        from llm.model_registry import canonical_model_id
+
         mock_registry.return_value.list_tools.return_value = {}
 
         user = _create_user(email="subagent-top-lowstar@example.com")
@@ -1075,8 +1106,11 @@ class FeatureModelOverrideTest(TestCase):
         Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
 
         prefs = get_preferences(user)
-        self.assertEqual(prefs.feature_models["subagent_top"], prefs.top_model)
-        self.assertEqual(prefs.feature_models["subagent_top"], "openai/gpt-5.4")
+        self.assertEqual(
+            canonical_model_id(prefs.feature_models["subagent_top"]),
+            canonical_model_id("openai/gpt-5.6-luna"),
+        )
+        self.assertNotEqual(prefs.feature_models["subagent_top"], prefs.top_model)
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.6-sol",
@@ -1274,17 +1308,17 @@ class ResolveOrgFeatureModelTest(TestCase):
         "openai/gpt-5.4", "gemini/gemini-3.5-flash", "openai/gpt-5.4-nano",
         "gemini/gemini-3.1-flash-lite",
     ])
-    def test_org_feature_override_below_min_tier_falls_back(self, mock_allowed):
+    def test_org_feature_override_with_few_stars_is_honored(self, mock_allowed):
         from core.preferences import resolve_org_feature_model
+        from llm.model_registry import canonical_model_id
 
-        # gemini-3.1-flash-lite (→ 3.5-flash-lite, 1 star) is below
-        # document_description's 2-star minimum, so the override is ignored
-        # and the mid default applies.
+        # gemini-3.1-flash-lite (→ 3.5-flash-lite, 1 star) on a mid-slot
+        # feature: there is no star floor, so the override is used.
         org = Organization.objects.create(name="FeatOrg2", slug="featorg2", preferences={
             "feature_models": {"document_description": "gemini/gemini-3.1-flash-lite"},
         })
         model = resolve_org_feature_model(org.pk, "document_description")
-        self.assertEqual(model, "gemini/gemini-3.5-flash")
+        self.assertEqual(canonical_model_id(model), "gemini/gemini-3.5-flash-lite")
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
