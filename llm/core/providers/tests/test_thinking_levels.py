@@ -243,6 +243,52 @@ class GeminiReasoningTests(SimpleTestCase):
             {"additional_kwargs": {key: {"call_1": "signature"}}},
         )
 
+    def test_thinking_parts_are_parsed(self):
+        # langchain-google-genai 4.x shape for thought summaries.
+        model = GeminiChatModel("gemini/gemini-3.8-flash", MagicMock())
+        chunk = SimpleNamespace(content=[
+            {"type": "thinking", "thinking": "Plan", "index": "0"},
+            {"type": "text", "text": "Answer", "index": "1"},
+        ])
+        self.assertEqual(
+            model._parse_chunk(chunk),
+            [("thinking", {"text": "Plan"}), ("token", {"text": "Answer"})],
+        )
+
+    def test_legacy_thought_parts_still_parsed(self):
+        model = GeminiChatModel("gemini/gemini-3.8-flash", MagicMock())
+        chunk = SimpleNamespace(content=[{"thought": True, "text": "Plan"}])
+        self.assertEqual(model._parse_chunk(chunk), [("thinking", {"text": "Plan"})])
+
+    def test_signature_only_text_part_yields_nothing(self):
+        model = GeminiChatModel("gemini/gemini-3.8-flash", MagicMock())
+        chunk = SimpleNamespace(content=[
+            {"type": "text", "text": "", "extras": {"signature": "abc"}, "index": "1"},
+        ])
+        self.assertEqual(model._parse_chunk(chunk), [])
+
+    def test_guard_sees_gemini_thinking(self):
+        # A runaway inside Gemini's reasoning must trip the repetition guard.
+        from langchain_core.messages import AIMessageChunk
+
+        chunks = [
+            AIMessageChunk(content=[{"type": "thinking", "thinking": " |" * 200, "index": "0"}])
+            for _ in range(120)
+        ]
+        client = MagicMock()
+        client.stream = MagicMock(return_value=iter(chunks))
+        client.bind = MagicMock(return_value=client)
+        model = GeminiChatModel("gemini/gemini-3.8-flash", client)
+        request = ChatRequest(
+            messages=[{"role": "user", "content": "hi"}], model="gemini/gemini-3.8-flash",
+            stream=True,
+        )
+        events = list(model.stream(request))
+        self.assertTrue(any(e.event_type == "thinking" for e in events))
+        end = next(e for e in events if e.event_type == "message_end")
+        self.assertTrue(end.data["output_truncated"])
+        self.assertEqual(end.data["stop_reason"], "repetition")
+
     @patch("llm.core.providers.gemini.create_variant_client", side_effect=ValueError("bad effort"))
     def test_invalid_provider_config_is_not_silently_disabled(self, _create_variant):
         model = GeminiChatModel("gemini/gemini-3.7-flash", MagicMock())

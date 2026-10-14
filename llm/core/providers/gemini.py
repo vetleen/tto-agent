@@ -61,14 +61,19 @@ class GeminiChatModel(BaseLangChainChatModel):
 
     def _parse_chunk(self, chunk) -> list[tuple[str, dict]]:
         content = getattr(chunk, "content", None)
-        # Gemini thinking: content is a list of typed parts
+        # Gemini thinking: content is a list of typed parts. langchain-google-genai
+        # 4.x sends thought summaries as {"type": "thinking", "thinking": ...};
+        # older versions marked a text part with thought=True.
         if isinstance(content, list):
             results: list[tuple[str, dict]] = []
             for part in content:
                 if not isinstance(part, dict):
                     continue
-                # Gemini marks thinking parts with thought=True
-                if part.get("thought"):
+                if part.get("type") == "thinking":
+                    text = part.get("thinking", "")
+                    if text:
+                        results.append(("thinking", {"text": text}))
+                elif part.get("thought"):
                     text = part.get("text", "")
                     if text:
                         results.append(("thinking", {"text": text}))
