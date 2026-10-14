@@ -180,7 +180,8 @@ _PART_TO_CONSTITUENT = {
 _ATTRIBUTION = "_Source: EPO / Espacenet (Open Patent Services)._"
 
 # Authorities whose claims/description OPS holds (Reference Guide v1.3.19,
-# §3.1.2). Anything else (US, CN, JP, KR, ...) answers CLIENT.InvalidCountryCode.
+# §3.1.2). Anything else (US, CN, JP, KR, ...) answers CLIENT.InvalidCountryCode,
+# so patent_epoops_get answers such requests locally instead of asking OPS.
 _FULLTEXT_AUTHORITIES = (
     "EP", "WO", "AT", "BE", "BG", "CA", "CH", "CY", "CZ", "DK", "EE", "ES", "FR", "GB", "GR",
     "HR", "IE", "IT", "LT", "LU", "MC", "MD", "ME", "NO", "PL", "PT", "RO", "RS", "SE", "SK",
@@ -296,13 +297,30 @@ _HEALTH_CACHE_PREFIX = "epo_ops_health_v1:"
 _HEALTH_TTL = 60
 _HEALTH_LOCK_TTL = 30
 _HEALTH_WAIT_SECONDS = 10
-# One known-good request per OPS service (throttling and outages are per service).
+# One known-good request per OPS back end: ``(path, params, accept)``. Outages
+# are per back end, so a probe must hit the same one as the failing call. The
+# classification scheme shares the "other" *throttle* bucket with everything
+# unclassified but is its own service: on 2026-10-13 a classification overload
+# (five trivial queries 500'd within a minute) probed the retrieval service,
+# found it up and told the agent to "simplify the query" (WILFRED-9H). The
+# classification probe was verified live 2026-10-14 (200, 5.8 kB of XML).
 _HEALTH_PROBES = {
-    "search": ("published-data/search", {"q": "pn=EP1000000"}),
-    "retrieval": ("published-data/publication/docdb/EP.1000000.A1/biblio", {}),
-    "inpadoc": ("family/publication/docdb/EP.1000000.A1", {}),
-    "other": ("published-data/publication/docdb/EP.1000000.A1/biblio", {}),
+    "search": ("published-data/search", {"q": "pn=EP1000000"}, "application/json"),
+    "retrieval": ("published-data/publication/docdb/EP.1000000.A1/biblio", {}, "application/json"),
+    "inpadoc": ("family/publication/docdb/EP.1000000.A1", {}, "application/json"),
+    "classification": (
+        "classification/cpc/A61B8/00", {"ancestors": "false", "depth": "0"}, "application/cpc+xml",
+    ),
+    "other": ("published-data/publication/docdb/EP.1000000.A1/biblio", {}, "application/json"),
 }
+
+
+def _probe_key_for_path(path: str) -> str:
+    """Which health probe answers for ``path``: the throttle service, except that
+    classification paths get their own probe (see ``_HEALTH_PROBES``)."""
+    if (path or "").lstrip("/").startswith("classification/"):
+        return "classification"
+    return _service_for_path(path)
 # EPO's fair-use detector ("recent behaviour implies you are a robot ... try
 # again later"): a 403 that is transient, not an auth problem.
 _ROBOT_FAULT = "CLIENT.RobotDetected"
@@ -342,7 +360,7 @@ def _probe_ops_health(service: str, context=None) -> str:
     request); "unknown" = anything else (robot detection, quota, auth). Logged
     as its own ``OpsUsageLog`` row so its quota use stays visible.
     """
-    path, params = _HEALTH_PROBES.get(service, _HEALTH_PROBES["other"])
+    path, params, accept = _HEALTH_PROBES.get(service, _HEALTH_PROBES["other"])
     token = _get_access_token()
     if not token:
         return "unknown"
@@ -354,7 +372,7 @@ def _probe_ops_health(service: str, context=None) -> str:
         _ops_rate_limiter.acquire(path)
         response = requests.get(
             f"{_base_url()}/{_REST_PREFIX}/{path}",
-            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            headers={"Authorization": f"Bearer {token}", "Accept": accept},
             params=params,
             timeout=15,
         )
@@ -418,7 +436,7 @@ def _ops_health(service: str, context=None) -> str:
 def _domain_access_error(path: str, context, can_probe: bool) -> tuple[dict, str]:
     """The model-facing error for a DomainAccess that survived its retry, plus
     the diagnosis recorded in the usage log (outage / query / unknown)."""
-    health = _ops_health(_service_for_path(path), context) if can_probe else "unknown"
+    health = _ops_health(_probe_key_for_path(path), context) if can_probe else "unknown"
     if health == "down":
         logger.warning("EPO OPS unavailable (DomainAccess, health probe down) path=%s", path)
         return {"error": (
@@ -2421,6 +2439,21 @@ class PatentEpoOpsGetTool(ContextAwareTool):
                 "biblio, abstract, claims, description, all."
             )
         part = max(1, int(part or 1))
+
+        # Full text for an authority OPS does not hold is answered here, not by
+        # OPS: the request could only come back CLIENT.InvalidCountryCode, after
+        # spending a throttle slot and a tool round (18 such calls in the
+        # 2026-10-13 prior-art run, on US, CN, KR and DE numbers).
+        authority = display[:2]
+        if parts in ("claims", "description") and authority.isalpha() and authority not in _FULLTEXT_AUTHORITIES:
+            logger.info("EPO OPS: %s requested for %s, which has no full text at OPS", parts, authority)
+            return (
+                f"No {parts} text at EPO for {display}: EPO holds claims and description only for "
+                f"{_FULLTEXT_AUTHORITIES_TEXT} publications, not {authority}. Use patent_epoops_family "
+                f"to find an EP or WO member and request its {parts}. If there is none, work from "
+                f"parts=biblio for {display} (title, abstract, CPC codes, cited references) and say "
+                "the full text was not available."
+            )
 
         # v2: compressed, size-bounded entries (see _CACHE_* above).
         cache_key = "epo_ops_get_v2:" + hashlib.sha256(

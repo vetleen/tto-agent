@@ -784,6 +784,43 @@ class DomainAccessTests(TestCase):
         self.assertIn("docdb/EP.1000000.A1/biblio", mock_get.call_args.args[0])
 
     @patch("llm.tools.epo_ops.requests.get")
+    def test_classification_path_probes_the_classification_service(self, mock_get):
+        # 2026-10-13 (WILFRED-9H): a classification overload was probed with a
+        # retrieval call, found "up", and blamed the agent's query.
+        mock_get.side_effect = [_domain_access(), _domain_access(), _mock_xml_ok("<ok/>")]
+        data = _ops_request("classification/cpc/search", {"q": "lithium sulfur battery"},
+                            tool_name="patent_epoops_classification")
+        probe = mock_get.call_args
+        self.assertTrue(probe.args[0].endswith("classification/cpc/A61B8/00"))
+        self.assertEqual(probe.kwargs["params"], {"ancestors": "false", "depth": "0"})
+        self.assertEqual(probe.kwargs["headers"]["Accept"], "application/cpc+xml")
+        self.assertIn("could be a problem with this particular query", data["error"])
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_classification_outage_is_reported_as_outage(self, mock_get):
+        from llm.models import OpsUsageLog
+
+        mock_get.side_effect = [_domain_access(), _domain_access(), _domain_access()]
+        data = _ops_request("classification/cpc/A61K9/00", {"ancestors": "true", "depth": "1"},
+                            tool_name="patent_epoops_classification", accept="application/cpc+xml")
+        self.assertIn("temporarily unavailable", data["error"])
+        row = OpsUsageLog.objects.get(tool_name="patent_epoops_classification")
+        self.assertTrue(row.error_message.startswith("diagnosis=outage;"))
+        probe = OpsUsageLog.objects.get(tool_name="ops_health_probe")
+        self.assertEqual(probe.request_path, "classification/cpc/A61B8/00")
+
+    def test_probe_key_for_path(self):
+        from llm.tools.epo_ops import _probe_key_for_path
+
+        self.assertEqual(_probe_key_for_path("classification/cpc/search"), "classification")
+        self.assertEqual(_probe_key_for_path("/classification/cpc/A61B8/00"), "classification")
+        self.assertEqual(_probe_key_for_path("published-data/search"), "search")
+        self.assertEqual(_probe_key_for_path("published-data/publication/docdb/EP.1.A1/biblio"), "retrieval")
+        self.assertEqual(_probe_key_for_path("family/publication/docdb/EP.1.A1"), "inpadoc")
+        # The throttle bucket is unchanged: OPS reports classification under "other".
+        self.assertEqual(_service_for_path("classification/cpc/search"), "other")
+
+    @patch("llm.tools.epo_ops.requests.get")
     def test_deadline_reached_skips_retry_and_probe(self, mock_get):
         mock_get.return_value = _domain_access()
         ctx = MagicMock()
@@ -1818,6 +1855,53 @@ class GetClaimsNotFoundTests(TestCase):
     def test_biblio_404_unchanged(self, mock_get):
         mock_get.return_value = _mock_http_error(404)
         out = PatentEpoOpsGetTool().invoke({"publication_number": "EP2252273A1"})
+        self.assertIn("No matching patent record was found", out)
+
+
+class GetFullTextAuthorityPreCheckTests(TestCase):
+    """Claims/description for an authority OPS has no full text for are answered
+    locally (the 2026-10-13 prior-art run spent 18 OPS calls and tool rounds
+    learning CLIENT.InvalidCountryCode for US, CN, KR and DE numbers)."""
+
+    def setUp(self):
+        p = patch("llm.tools.epo_ops._ops_rate_limiter")
+        p.start()
+        self.addCleanup(p.stop)
+        p2 = patch("llm.tools.epo_ops._get_access_token", return_value="tok")
+        p2.start()
+        self.addCleanup(p2.stop)
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_us_claims_answered_without_an_ops_call(self, mock_get):
+        from llm.models import OpsUsageLog
+
+        out = PatentEpoOpsGetTool().invoke({"publication_number": "US2014272569A1", "parts": "claims"})
+        mock_get.assert_not_called()
+        self.assertEqual(OpsUsageLog.objects.count(), 0)
+        self.assertIn("No claims text at EPO for US2014272569A1", out)
+        self.assertIn("not US", out)
+        self.assertIn("patent_epoops_family", out)
+        self.assertIn("parts=biblio", out)
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_cn_description_answered_without_an_ops_call(self, mock_get):
+        out = PatentEpoOpsGetTool().invoke({"publication_number": "CN112233445A", "parts": "description"})
+        mock_get.assert_not_called()
+        self.assertIn("No description text at EPO for CN112233445A", out)
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_full_text_authorities_still_go_to_ops(self, mock_get):
+        mock_get.return_value = _mock_http_error(404)
+        for number in ("NO20201234A1", "CA2900000A1", "WO2020123456A1", "EP2252273A1"):
+            mock_get.reset_mock()
+            PatentEpoOpsGetTool().invoke({"publication_number": number, "parts": "claims"})
+            self.assertEqual(mock_get.call_count, 1, number)
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_biblio_for_us_still_goes_to_ops(self, mock_get):
+        mock_get.return_value = _mock_http_error(404)
+        out = PatentEpoOpsGetTool().invoke({"publication_number": "US2014272569A1", "parts": "biblio"})
+        self.assertEqual(mock_get.call_count, 1)
         self.assertIn("No matching patent record was found", out)
 
 
