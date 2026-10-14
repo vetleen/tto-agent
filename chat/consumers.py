@@ -12,6 +12,7 @@ from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
 
 from chat import turn_gate
+from chat.assistant_replay import build_assistant_replay, replay_metadata_for
 from core.observability import sentry_scope
 from core.redis_errors import REDIS_BLIP as _REDIS_BLIP
 
@@ -2977,11 +2978,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     )
                     for tc in msg["tool_calls"]
                 ]
+            replay_meta = replay_metadata_for(msg, resolved_model)
             messages.append(Message(
                 role=msg["role"],
                 content=msg["content"],
                 tool_call_id=msg.get("tool_call_id"),
                 tool_calls=tool_calls,
+                **({"metadata": replay_meta} if replay_meta else {}),
             ))
 
         # Budget object must exist before attachment enrichment so attachments
@@ -3094,6 +3097,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
         stream_error = False
         degenerate_stop = False
         last_guard_len = 0
+        # Provider replay state for the final reply (Gemini thought-signed text
+        # blocks), stored on the assistant message and sent back on later turns.
+        replay_blocks = None
         heartbeat_task = (
             asyncio.create_task(self._send_heartbeats())
             if self._sink.wants_heartbeats else None
@@ -3103,6 +3109,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
         try:
             async for event in stream:
                 event_data = event.model_dump()
+                if event.event_type == "message_end":
+                    # Internal replay state: keep it server-side.
+                    replay_blocks = event_data.get("data", {}).pop("replay_blocks", None) or replay_blocks
                 if (
                     event.event_type == "message_end"
                     and event.data.get("stop_reason") == "refusal"
@@ -3343,6 +3352,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     metadata = {}
                     if accumulated_thinking:
                         metadata["thinking"] = accumulated_thinking
+                    replay = build_assistant_replay(resolved_model, replay_blocks, accumulated_content)
+                    if replay:
+                        metadata["replay"] = replay
                     # Any turn whose prompt replayed sub-agent outcomes counts
                     # as their report — not just seeded continuations. Without
                     # this, a manual user message that consumed the results
@@ -5372,6 +5384,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     )
             if m.metadata and m.metadata.get("attachment_ids"):
                 msg_dict["attachment_ids"] = m.metadata["attachment_ids"]
+            if m.role == "assistant" and m.metadata and m.metadata.get("replay"):
+                msg_dict["replay"] = m.metadata["replay"]
             if m.role == "user":
                 # Lets attachment enrichment find the files linked to this message
                 # (branched threads carry the source thread's ids in metadata).

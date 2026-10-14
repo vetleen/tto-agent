@@ -27,6 +27,22 @@ def _normalize_tool_call(tc: object) -> ToolCall:
     )
 
 
+def signed_text_blocks(blocks: list | None) -> list[dict] | None:
+    """A reply's text blocks when the provider signed one, else None.
+
+    Gemini attaches a thought signature to a text part (``extras.signature``,
+    sometimes on an empty-text part). Google recommends sending it back in that
+    same part on later turns for reasoning quality; it is not validated.
+    """
+    text_blocks = [
+        b for b in blocks or []
+        if isinstance(b, dict) and b.get("type") == "text"
+    ]
+    if any(isinstance(b.get("extras"), dict) and b["extras"].get("signature") for b in text_blocks):
+        return text_blocks
+    return None
+
+
 def parse_tool_calls_from_ai_message(ai_message: object) -> list[ToolCall] | None:
     """Extract our ToolCall list from a LangChain AIMessage (or similar)."""
     raw = getattr(ai_message, "tool_calls", None) or []
@@ -103,8 +119,8 @@ def to_langchain_messages(messages: List[Message], *, provider: str | None = Non
             # thinking blocks were dropped; langchain-anthropic re-appends the
             # tool_use blocks from tool_calls, so [thinking, text] + tool_calls
             # serializes to [thinking, text, tool_use] (thinking first, as
-            # required). Only Anthropic populates content_blocks, so other
-            # providers still send plain-string content.
+            # required). Gemini's blocks carry thought signatures on text parts.
+            # Other providers send plain-string content.
             content_blocks = (m.metadata or {}).get("content_blocks")
             ai_content = content_blocks if content_blocks else m.content
             # Restore provider replay state (e.g. Gemini function-call thought

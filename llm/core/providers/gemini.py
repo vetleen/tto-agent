@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from llm.core.langchain_utils import signed_text_blocks
 from llm.core.model_factory import create_variant_client
 from llm.core.providers.base import BaseLangChainChatModel
 from llm.model_registry import get_model_info
@@ -53,11 +54,21 @@ class GeminiChatModel(BaseLangChainChatModel):
         langchain-google-genai keeps the signatures; preserve just that map so
         the follow-up request re-attaches each signature to its function call.
         """
+        meta: dict = {}
         ak = getattr(lc_message, "additional_kwargs", None) or {}
         sig_map = ak.get(_GEMINI_FN_CALL_SIGNATURES_KEY)
         if sig_map:
-            return {"additional_kwargs": {_GEMINI_FN_CALL_SIGNATURES_KEY: sig_map}}
-        return {}
+            meta["additional_kwargs"] = {_GEMINI_FN_CALL_SIGNATURES_KEY: sig_map}
+        # A signed text part (thought signature in extras) must travel back in
+        # that same part. The base keeps content blocks only when a thinking
+        # block is present, so keep them here when a text block is signed too.
+        content = getattr(lc_message, "content", None)
+        if isinstance(content, list) and signed_text_blocks(content):
+            meta["content_blocks"] = [
+                b for b in content
+                if isinstance(b, dict) and b.get("type") in ("thinking", "text")
+            ]
+        return meta
 
     def _parse_chunk(self, chunk) -> list[tuple[str, dict]]:
         content = getattr(chunk, "content", None)

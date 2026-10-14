@@ -74,6 +74,33 @@ class ToLangchainMessagesTests(TestCase):
         self.assertEqual(result[0].content[0]["signature"], "sig123")
         self.assertEqual(len(result[0].tool_calls), 1)
 
+    def test_signed_text_blocks(self):
+        from llm.core.langchain_utils import signed_text_blocks
+
+        signed = [
+            {"type": "thinking", "thinking": "plan"},
+            {"type": "text", "text": "Answer"},
+            {"type": "text", "text": "", "extras": {"signature": "c2ln"}},
+        ]
+        self.assertEqual(signed_text_blocks(signed), signed[1:])
+        self.assertIsNone(signed_text_blocks([{"type": "text", "text": "Answer"}]))
+        self.assertIsNone(signed_text_blocks(None))
+
+    def test_gemini_signed_text_part_round_trips_to_a_signed_part(self):
+        """langchain-google-genai turns a text block's extras.signature back into
+        Part.thought_signature on the request."""
+        from langchain_google_genai.chat_models import _parse_chat_history
+
+        blocks = [
+            {"type": "text", "text": "Answer"},
+            {"type": "text", "text": "", "extras": {"signature": "c2ln"}},
+        ]
+        msg = Message(role="assistant", content="Answer", metadata={"content_blocks": blocks})
+        lc = to_langchain_messages([Message(role="user", content="hi"), msg])
+        _, contents = _parse_chat_history(lc)
+        parts = contents[-1].parts
+        self.assertTrue(any(p.thought_signature == b"sig" for p in parts))
+
     def test_assistant_without_content_blocks_stays_plain_string(self):
         msg = Message(role="assistant", content="plain", metadata={})
         self.assertEqual(to_langchain_messages([msg])[0].content, "plain")

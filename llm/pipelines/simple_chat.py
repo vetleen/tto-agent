@@ -128,6 +128,17 @@ def _usable_tool_call_dicts(tool_call_dicts) -> list[dict]:
     return [tc for tc in (tool_call_dicts or []) if tc.get("name") and tc.get("id")]
 
 
+def _keep_replay_blocks(end_data: dict) -> None:
+    """Swap the final reply's ``content_blocks`` for ``replay_blocks``: its text
+    blocks when the provider signed one (Gemini thought signatures), so the
+    caller can store them and send them back on later turns."""
+    from llm.core.langchain_utils import signed_text_blocks
+
+    blocks = signed_text_blocks(end_data.pop("content_blocks", None))
+    if blocks:
+        end_data["replay_blocks"] = blocks
+
+
 def _assistant_replay_meta(end_data: dict) -> dict:
     """Provider state the assistant message must carry back on the next call."""
     meta: dict = {}
@@ -1026,7 +1037,7 @@ class SimpleChatPipeline(BasePipeline):
                 end_data["cost_usd"] = agg_cost_usd
                 # Clean internal fields from end_data
                 end_data.pop("content", None)
-                end_data.pop("content_blocks", None)
+                _keep_replay_blocks(end_data)
                 end_data.pop("tool_calls", None)
                 yield StreamEvent(
                     event_type="message_end",
@@ -1149,7 +1160,7 @@ class SimpleChatPipeline(BasePipeline):
         end_data["reasoning_tokens"] = agg_reasoning_tokens or None
         end_data["cost_usd"] = agg_cost_usd
         end_data.pop("content", None)
-        end_data.pop("content_blocks", None)
+        _keep_replay_blocks(end_data)
         if end_data.pop("tool_calls", None):
             logger.warning("Model returned tool call(s) on the final tool-less stream; ignoring them")
         yield StreamEvent(

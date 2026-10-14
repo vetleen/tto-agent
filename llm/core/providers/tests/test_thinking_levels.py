@@ -267,6 +267,24 @@ class GeminiReasoningTests(SimpleTestCase):
         ])
         self.assertEqual(model._parse_chunk(chunk), [])
 
+    def test_signed_text_part_is_kept_for_replay_without_thinking(self):
+        # The base keeps content blocks only when a thinking block exists; a
+        # signed text part alone must still travel back.
+        model = GeminiChatModel("gemini/gemini-3.8-flash", MagicMock())
+        content = [
+            {"type": "text", "text": "Answer"},
+            {"type": "text", "text": "", "extras": {"signature": "c2ln"}},
+        ]
+        meta = model._extract_replay_metadata(SimpleNamespace(additional_kwargs={}, content=content))
+        self.assertEqual(meta, {"content_blocks": content})
+
+    def test_unsigned_reply_needs_no_replay(self):
+        model = GeminiChatModel("gemini/gemini-3.8-flash", MagicMock())
+        meta = model._extract_replay_metadata(
+            SimpleNamespace(additional_kwargs={}, content=[{"type": "text", "text": "Answer"}])
+        )
+        self.assertEqual(meta, {})
+
     def test_guard_sees_gemini_thinking(self):
         # A runaway inside Gemini's reasoning must trip the repetition guard.
         from langchain_core.messages import AIMessageChunk

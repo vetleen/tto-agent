@@ -1633,3 +1633,27 @@ class MidturnPruningTests(TestCase):
     def test_record_outbound_estimate_no_context_is_safe(self):
         req = self._req([Message(role="user", content="hi")])
         SimpleChatPipeline._record_outbound_estimate(None, req)
+
+
+class FinalReplyReplayBlocksTests(TestCase):
+    """The final message_end hands signed text blocks to the caller as
+    replay_blocks and never leaks the raw content_blocks."""
+
+    def test_signed_blocks_become_replay_blocks(self):
+        from llm.pipelines.simple_chat import _keep_replay_blocks
+
+        blocks = [
+            {"type": "thinking", "thinking": "plan"},
+            {"type": "text", "text": "Answer"},
+            {"type": "text", "text": "", "extras": {"signature": "c2ln"}},
+        ]
+        end_data = {"content_blocks": blocks}
+        _keep_replay_blocks(end_data)
+        self.assertEqual(end_data, {"replay_blocks": blocks[1:]})
+
+    def test_unsigned_blocks_are_dropped(self):
+        from llm.pipelines.simple_chat import _keep_replay_blocks
+
+        end_data = {"content_blocks": [{"type": "thinking", "thinking": "x"}, {"type": "text", "text": "y"}]}
+        _keep_replay_blocks(end_data)
+        self.assertEqual(end_data, {})

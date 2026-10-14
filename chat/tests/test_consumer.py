@@ -687,6 +687,56 @@ class ConsumerMessageTests(TransactionTestCase):
             pass
 
     @patch("llm.get_llm_service")
+    async def test_signed_reply_blocks_stored_not_sent(self, mock_get_service):
+        """Gemini's thought-signed text blocks are stored with the reply (for
+        replay on later turns) and never sent to the browser."""
+        from llm.types.streaming import StreamEvent
+
+        blocks = [
+            {"type": "text", "text": "Answer"},
+            {"type": "text", "text": "", "extras": {"signature": "c2ln"}},
+        ]
+        events = [
+            StreamEvent(event_type="message_start", data={}, sequence=0, run_id="r1"),
+            StreamEvent(event_type="token", data={"text": "Answer"}, sequence=1, run_id="r1"),
+            StreamEvent(event_type="message_end", data={"replay_blocks": blocks}, sequence=2, run_id="r1"),
+        ]
+
+        mock_service = MagicMock()
+
+        async def mock_astream(*args, **kwargs):
+            for e in events:
+                yield e
+
+        mock_service.astream = mock_astream
+        mock_get_service.return_value = mock_service
+
+        communicator = await self._connect()
+        await communicator.send_json_to({"type": "chat.message", "content": "Hello"})
+
+        received = []
+        for _ in range(10):
+            try:
+                received.append(await communicator.receive_json_from(timeout=2))
+            except Exception:
+                break
+
+        for msg in received:
+            if msg.get("event_type") == "message_end":
+                self.assertNotIn("replay_blocks", msg.get("data", {}))
+        assistant = await database_sync_to_async(
+            lambda: ChatMessage.objects.filter(role="assistant", content="Answer").first()
+        )()
+        self.assertIsNotNone(assistant)
+        self.assertEqual(assistant.metadata["replay"]["blocks"], blocks)
+        self.assertTrue(assistant.metadata["replay"]["model"])
+
+        try:
+            await communicator.disconnect()
+        except BaseException:
+            pass
+
+    @patch("llm.get_llm_service")
     async def test_no_thinking_means_no_metadata_key(self, mock_get_service):
         """When there's no thinking, metadata should not contain 'thinking' key."""
         from llm.types.streaming import StreamEvent
