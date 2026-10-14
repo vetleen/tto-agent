@@ -175,9 +175,26 @@ class _SubagentTask(Task):
 def run_subagent_task(self, run_id: str) -> None:
     """Execute a sub-agent run asynchronously via Celery."""
     from django.db.utils import OperationalError
+    from chat.models import SubAgentRun
     from chat.subagent_service import is_retryable_subagent_error, run_subagent
+    from core.observability import set_sentry_tags
 
     try:
+        # Tag the task's Sentry scope so every event it emits — deadline
+        # warnings, EPO faults, provider errors, from this thread and the
+        # tool-call pool threads it spawns — names the run, its thread and its
+        # specialization. One Sentry query (thread_id:<uuid>) then covers a whole
+        # orchestrator run together with the consumer's turns, which carry the
+        # same tag (chat/consumers.py _stream_and_finalize_tagged); without this
+        # the events only carried the Celery task id (2026-10-13 review: 18
+        # events, every run tag empty).
+        meta = SubAgentRun.objects.filter(pk=run_id).values("thread_id", "skill_slug").first()
+        set_sentry_tags(
+            agent_kind="subagent",
+            subagent_run_id=run_id,
+            thread_id=meta["thread_id"] if meta else None,
+            subagent_type=(meta["skill_slug"] or "generic") if meta else None,
+        )
         # The only time bound on a run: the tool loop stops starting new rounds
         # near it (llm/pipelines/simple_chat.py). Celery enforces no time limit
         # on our threads pool (see config/celery.py).

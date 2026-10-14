@@ -12,6 +12,7 @@ from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
 
 from chat import turn_gate
+from core.observability import sentry_scope
 from core.redis_errors import REDIS_BLIP as _REDIS_BLIP
 
 logger = logging.getLogger(__name__)
@@ -2250,7 +2251,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             # Turn-input assembly happens inside that task rather than here, so
             # the history snapshot is taken when the turn actually starts.
             self._stream_task = asyncio.create_task(
-                self._stream_and_finalize(
+                self._stream_and_finalize_tagged(
                     thread,
                     content=content,
                     requested_model=requested_model,
@@ -2269,6 +2270,18 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "event_type": "error",
                 "data": {"message": "An error occurred processing your message."},
             }))
+
+    async def _stream_and_finalize_tagged(self, thread, **kwargs):
+        """``_stream_and_finalize`` under a Sentry isolation scope tagged with the
+        thread id, so every event the turn emits — from this task, the heartbeat
+        and guardrail tasks it spawns and the tool-call threads — is found with
+        the same ``thread_id:<uuid>`` query as the thread's sub-agent runs
+        (``chat/tasks.py``). Forked rather than set on the current scope: a
+        consumer has no per-connection Sentry isolation, so a bare tag would
+        land on the process-wide scope and leak into every connection's events.
+        """
+        with sentry_scope(thread_id=str(thread.id), agent_kind="main"):
+            await self._stream_and_finalize(thread, **kwargs)
 
     async def _stream_and_finalize(
         self, thread, *,

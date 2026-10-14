@@ -1710,6 +1710,40 @@ class CeleryOnFailureTests(TestCase):
         cap.assert_called_once_with(exc)
         flush.assert_called_once()
 
+    def test_run_task_tags_sentry_with_run_thread_and_type(self):
+        """Every event a sub-agent task emits (deadline warnings, EPO faults, provider
+        errors) must carry the run, its thread and its specialization, so one Sentry
+        query covers a thread's whole run. Regression: the 2026-10-13 prior-art review
+        found 18 events from one thread, every one with an empty run tag."""
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="tagged task",
+            skill_slug="patent-searcher", status=SubAgentRun.Status.PENDING,
+        )
+
+        from chat.tasks import run_subagent_task
+        with patch("sentry_sdk.set_tag") as set_tag,                 patch("chat.subagent_service.run_subagent") as run_sub:
+            run_subagent_task(str(run.id))
+
+        run_sub.assert_called_once()
+        tags = {c.args[0]: c.args[1] for c in set_tag.call_args_list}
+        self.assertEqual(tags["subagent_run_id"], str(run.id))
+        self.assertEqual(tags["thread_id"], str(self.thread.id))
+        self.assertEqual(tags["subagent_type"], "patent-searcher")
+        self.assertEqual(tags["agent_kind"], "subagent")
+
+    def test_run_task_tags_survive_missing_sentry(self):
+        """A Sentry SDK hiccup while tagging must not stop the run."""
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="tagged task",
+            status=SubAgentRun.Status.PENDING,
+        )
+
+        from chat.tasks import run_subagent_task
+        with patch("sentry_sdk.set_tag", side_effect=RuntimeError("sentry down")),                 patch("chat.subagent_service.run_subagent") as run_sub:
+            run_subagent_task(str(run.id))
+
+        run_sub.assert_called_once()
+
     def test_on_failure_survives_sentry_error(self):
         """A Sentry hiccup must never break the failure-marking path."""
         run = SubAgentRun.objects.create(
