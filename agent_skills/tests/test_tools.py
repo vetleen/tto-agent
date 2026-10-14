@@ -1038,6 +1038,48 @@ class LoadResourceToDeckTests(TestCase):
     def _load(self, name, **kw):
         return json.loads(self.tool._run(template_name=name, target="deck", **kw))
 
+    def _later(self, name, **args):
+        from llm.types.messages import ToolCall
+
+        return ToolCall(id="later", name=name, arguments=args)
+
+    def test_result_hook_trims_deck_json_using_deduplicated_title(self):
+        """The result's (de-duplicated) title identifies the deck: a later write
+        naming the ORIGINAL title is another deck, so the JSON must stay."""
+        self._make_deck("Full Deck")
+        raw = self.tool._run(template_name="Full Deck", target="deck")
+        data = json.loads(raw)
+        self.assertEqual(data["title"], "Full Deck (2)")
+        out = json.loads(self.tool.trim_result_at_edit_point(
+            raw, {"template_name": "Full Deck", "target": "deck"}, later_calls=[],
+        ))
+        self.assertIn("loaded deck JSON", out["deck_json"])
+        self.assertEqual(out["title"], "Full Deck (2)")
+        self.assertEqual(out["slide_ids"], data["slide_ids"])
+        self.assertIsNone(self.tool.trim_result_at_edit_point(
+            raw, {}, later_calls=[self._later("slide_canvas_write", deck_name="Full Deck")],
+        ))
+        out2 = json.loads(self.tool.trim_result_at_edit_point(
+            raw, {}, later_calls=[self._later("slide_canvas_write", deck_name="Full Deck (2)")],
+        ))
+        self.assertIn("replaced", out2["deck_json"])
+
+    def test_result_hook_trims_slide_json_of_slide_load(self):
+        self._make_deck()
+        raw = self.tool._run(template_name="One Slide", target="deck")
+        data = json.loads(raw)
+        self.assertEqual(data["loaded_as"], "slide")
+        out = json.loads(self.tool.trim_result_at_edit_point(raw, {}, later_calls=[]))
+        self.assertIn("loaded slide JSON", out["slide_json"])
+        self.assertEqual(out["slide_id"], data["slide_id"])
+        self.assertEqual(out["slide_ids"], data["slide_ids"])
+
+    def test_result_hook_leaves_canvas_result_alone(self):
+        SkillTemplate.objects.create(skill=self.skill, name="Memo", content="Dear all, " * 400)
+        raw = self.tool._run(template_name="Memo")
+        self.assertEqual(json.loads(raw)["status"], "ok")
+        self.assertIsNone(self.tool.trim_result_at_edit_point(raw, {"template_name": "Memo"}, later_calls=[]))
+
     def test_slide_appended_to_active_deck(self):
         deck = self._make_deck()
         before = [s["id"] for s in deck.content["slides"]]

@@ -19,7 +19,7 @@ from io import BytesIO
 from pydantic import BaseModel, Field, field_validator
 
 from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
-from llm.tools.interfaces import is_omitted_arg, omitted_arg_marker
+from llm.tools.interfaces import is_omitted_arg, omitted_arg_marker, omitted_result_marker
 
 # The slides_add_slide layout ids, sourced from the seed catalogue so this
 # always matches what actually exists (no hand-maintained list to go stale).
@@ -93,6 +93,46 @@ def _deck_state_after(deck: str, later_calls) -> str:
             return "superseded"
         # The same deck was touched again (edit/add/theme) — still the active one.
     return "active"
+
+
+def _deck_block_unavailable(tool) -> bool:
+    """True when the tool loop could not build the current-deck block at this
+    edit point (``RunContext.deck_block_failed``), so a trimmed payload would be
+    unreachable. Mid-turn tool copies carry the context; the registry instances
+    used between turns have none — there the regenerated preamble covers."""
+    return bool(getattr(getattr(tool, "context", None), "deck_block_failed", False))
+
+
+def _where(state: str) -> str:
+    return _REPLACED if state == "superseded" else _DECK_IN_CONTEXT
+
+
+def _trim_deck_result(result: str, *, fields: dict, fallback_title: str, later_calls) -> str | None:
+    """Shrink a deck tool's RESULT: replace the big JSON field(s) in ``fields``
+    (``{key: what-it-was}``) of a ``status: ok`` result with a marker once the
+    deck is still the active one or a later rewrite replaced it. The deck is
+    identified by the result's ``title`` (the template loader de-duplicates
+    titles, so the args may say "Full Deck" for a deck stored as "Full Deck (2)").
+    Every other field is kept; ``None`` leaves the result alone."""
+    try:
+        data = json.loads(result)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("status") != "ok":
+        return None
+    big = {
+        key: what for key, what in fields.items()
+        if isinstance(data.get(key), str) and not is_omitted_arg(data[key])
+    }
+    if not big:
+        return None
+    state = _deck_state_after(str(data.get("title") or fallback_title or ""), later_calls)
+    if state == "unknown":
+        return None
+    return json.dumps({
+        **data,
+        **{key: omitted_result_marker(what, _where(state)) for key, what in big.items()},
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +339,18 @@ class CreateDeckTool(ContextAwareTool):
         "Available layouts:\n" + _LAYOUT_MENU
     )
     args_schema: type[BaseModel] = CreateDeckInput
+    # The result's deck_json is the model's working copy right after creation
+    # (the current round is always protected); from the next edit point on the
+    # current-deck block carries the same canonical text, minted ids included.
+    trim_despite_recency: bool = True
+
+    def trim_result_at_edit_point(self, result: str, args: dict, *, later_calls: list) -> str | None:
+        if _deck_block_unavailable(self):
+            return None
+        return _trim_deck_result(
+            result, fields={"deck_json": "seeded deck JSON"},
+            fallback_title=args.get("title") or "", later_calls=later_calls,
+        )
 
     def _run(self, title: str, layouts=None, **kwargs) -> str:
         from chat.slides import layouts as layouts_mod
@@ -388,16 +440,20 @@ class WriteDeckTool(ContextAwareTool):
         "JSON format is documented in the Slide Deck Collaborator skill."
     )
     args_schema: type[BaseModel] = WriteDeckInput
+    # The current-deck block / Active Slide Deck section always covers this
+    # deck JSON, so recency never protects it (the current round still does).
+    trim_despite_recency: bool = True
 
     def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> dict | None:
+        if _deck_block_unavailable(self):
+            return None
         content = args.get("content")
         if content is None or is_omitted_arg(content):
             return None
         state = _deck_state_after(args.get("deck_name") or "", later_calls)
         if state == "unknown":
             return None
-        where = _REPLACED if state == "superseded" else _DECK_IN_CONTEXT
-        return {**args, "content": omitted_arg_marker("deck JSON", where)}
+        return {**args, "content": omitted_arg_marker("deck JSON", _where(state))}
 
     def _run(self, content=None, title: str = "", deck_name: str = "", **kwargs) -> str:
         from chat.slides import schema, service
@@ -508,8 +564,11 @@ class EditDeckTool(ContextAwareTool):
         "`class` unless a run sets `font`."
     )
     args_schema: type[BaseModel] = EditDeckInput
+    trim_despite_recency: bool = True  # see WriteDeckTool
 
     def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> dict | None:
+        if _deck_block_unavailable(self):
+            return None
         edits = args.get("edits")
         if edits is None or is_omitted_arg(edits):
             return None
@@ -517,8 +576,7 @@ class EditDeckTool(ContextAwareTool):
         if state == "unknown":
             return None
         what = f"list of {len(edits)} edit(s)" if isinstance(edits, list) else "edits"
-        where = _REPLACED if state == "superseded" else _DECK_IN_CONTEXT
-        return {**args, "edits": omitted_arg_marker(what, where)}
+        return {**args, "edits": omitted_arg_marker(what, _where(state))}
 
     def _run(self, edits, deck_name: str = "", **kwargs) -> str:
         from chat.edit_utils import apply_unique_text_edits

@@ -52,6 +52,26 @@ class _TrimAll:
         return {**args, "content": "[trimmed]"}
 
 
+class _TrimAllRecent(_TrimAll):
+    """Same hook, but opts out of recency protection (like the slide tools)."""
+
+    trim_despite_recency = True
+
+
+class _TrimResult:
+    """Stand-in tool whose RESULT hook shrinks ``deck_json``; opts out of recency."""
+
+    trim_despite_recency = True
+    trim_result_min_chars = 50
+
+    def __init__(self):
+        self.seen_later = []
+
+    def trim_result_at_edit_point(self, result, args, *, later_calls):
+        self.seen_later.append([c.id for c in later_calls])
+        return '{"deck_json": "[trimmed]"}'
+
+
 class TrimOldToolCallArgsTests(SimpleTestCase):
     def test_trims_old_calls_but_not_protected_or_small(self):
         big = "x" * 200
@@ -123,6 +143,131 @@ class TrimOldToolCallArgsTests(SimpleTestCase):
         )
         self.assertEqual(n, 0)
         self.assertEqual(out, msgs)
+
+    def test_recent_calls_kept_unless_tool_opts_out(self):
+        """Recency protects a call's arguments unless its tool sets
+        trim_despite_recency; the current round (protected ids) always wins."""
+        big = "x" * 200
+        msgs = [
+            Message(role="user", content="q"),
+            _asst("c1", "writer", {"content": big}), _tool("c1", "r1"),
+            _asst("c2", "writer", {"content": big}), _tool("c2", "r2"),
+            _asst("c3", "writer", {"content": big}), _tool("c3", "r3"),
+        ]
+        plain = _TrimAll()
+        out, n = trim_old_tool_call_args(
+            msgs, protected_call_ids={"c3"}, recent_call_ids={"c2", "c3"},
+            tool_lookup=lambda name: plain,
+        )
+        self.assertEqual(n, 1)
+        self.assertEqual(out[1].tool_calls[0].arguments["content"], "[trimmed]")
+        self.assertEqual(out[3].tool_calls[0].arguments["content"], big)
+        flagged = _TrimAllRecent()
+        out, n = trim_old_tool_call_args(
+            msgs, protected_call_ids={"c3"}, recent_call_ids={"c2", "c3"},
+            tool_lookup=lambda name: flagged,
+        )
+        self.assertEqual(n, 2)
+        self.assertEqual(out[3].tool_calls[0].arguments["content"], "[trimmed]")
+        self.assertEqual(out[5].tool_calls[0].arguments["content"], big)  # current round
+        self.assertEqual(out[1].metadata[TRIMMED_ARGS_KEY], ["c1"])
+        self.assertEqual(out[3].metadata[TRIMMED_ARGS_KEY], ["c2"])
+
+    def test_history_variant_recent_ids_only_for_flagged_tools(self):
+        calls = [
+            {"id": "a", "name": "writer", "arguments": {"content": "x" * 200}},
+            {"id": "b", "name": "writer", "arguments": {"content": "y" * 200}},
+        ]
+        plain = trim_history_call_args(calls, {"a"}, tool_lookup=lambda n: _TrimAll(), recent_ids={"b"})
+        self.assertEqual(set(plain), {"a"})
+        flagged = trim_history_call_args(calls, {"a"}, tool_lookup=lambda n: _TrimAllRecent(), recent_ids={"b"})
+        self.assertEqual(set(flagged), {"a", "b"})
+
+
+class TrimOldToolResultsTests(SimpleTestCase):
+    """The result-side twin of the argument trimming."""
+
+    def _msgs(self, body='{"deck_json": "' + "d" * 200 + '", "deck_id": "7"}'):
+        return [
+            Message(role="user", content="q"),
+            _asst("c1", "deck_tool", {"title": "T"}), _tool("c1", body),
+            _asst("c2", "deck_tool", {"title": "T"}), _tool("c2", body),
+        ]
+
+    def test_shrinks_recent_flagged_result_marks_metadata_and_keeps_current_round(self):
+        from llm.pipelines.edit_points import TRIMMED_RESULT_KEY, trim_old_tool_results
+
+        msgs = self._msgs()
+        tool = _TrimResult()
+        out, n = trim_old_tool_results(
+            msgs, protected_call_ids={"c2"}, recent_call_ids={"c1", "c2"},
+            tool_lookup=lambda name: tool,
+        )
+        self.assertEqual(n, 1)
+        self.assertEqual(out[2].content, '{"deck_json": "[trimmed]"}')
+        self.assertTrue(out[2].metadata[TRIMMED_RESULT_KEY])
+        self.assertIs(out[4], msgs[4])  # current round untouched
+        self.assertEqual(tool.seen_later, [["c2"]])
+        self.assertTrue(msgs[2].content.startswith('{"deck_json": "ddd'))  # originals unmutated
+
+    def test_skips_stubbed_small_marked_unflagged_and_unchanged(self):
+        from llm.pipelines.edit_points import TRIMMED_RESULT_KEY, trim_old_tool_results
+
+        class _Unflagged(_TrimResult):
+            trim_despite_recency = False
+
+        class _Same(_TrimResult):
+            def trim_result_at_edit_point(self, result, args, *, later_calls):
+                return result
+
+        marked = self._msgs()
+        marked[2] = marked[2].model_copy(update={"metadata": {TRIMMED_RESULT_KEY: True}})
+        cases = {
+            "stubbed": (self._msgs(body="[Earlier result of deck_tool(...) was cleared]"), _TrimResult(), set()),
+            "small": (self._msgs(body='{"deck_json": "d"}'), _TrimResult(), set()),
+            "marked": (marked, _TrimResult(), set()),
+            "unflagged_recent": (self._msgs(), _Unflagged(), {"c1", "c2"}),
+            "unchanged": (self._msgs(), _Same(), set()),
+        }
+        for label, (msgs, tool, recent) in cases.items():
+            with self.subTest(label):
+                out, n = trim_old_tool_results(
+                    msgs, protected_call_ids={"c2"}, recent_call_ids=recent,
+                    tool_lookup=lambda name, t=tool: t,
+                )
+                self.assertEqual(n, 0)
+                self.assertIs(out, msgs)
+
+    def test_hook_exception_logged_and_skipped(self):
+        from llm.pipelines.edit_points import trim_old_tool_results
+
+        class _Boom(_TrimResult):
+            def trim_result_at_edit_point(self, result, args, *, later_calls):
+                raise RuntimeError("bad hook")
+
+        msgs = self._msgs()
+        with self.assertLogs("llm.pipelines.edit_points", level="ERROR"):
+            out, n = trim_old_tool_results(
+                msgs, protected_call_ids=set(), recent_call_ids=set(), tool_lookup=lambda name: _Boom(),
+            )
+        self.assertEqual(n, 0)
+        self.assertIs(out, msgs)
+
+    def test_history_variant_returns_new_content_by_id(self):
+        from llm.pipelines.edit_points import trim_history_results
+
+        body = '{"deck_json": "' + "d" * 200 + '"}'
+        calls = [
+            {"id": "a", "name": "deck_tool", "arguments": {}},
+            {"id": "b", "name": "other", "arguments": {}},
+        ]
+        tool = _TrimResult()
+        out = trim_history_results(
+            [("a", body), ("b", body)], calls,
+            tool_lookup=lambda name: tool if name == "deck_tool" else None,
+        )
+        self.assertEqual(out, {"a": '{"deck_json": "[trimmed]"}'})
+        self.assertEqual(tool.seen_later, [["b"]])
 
 
 class ToolTrimHookTests(SimpleTestCase):
@@ -229,6 +374,85 @@ class ToolTrimHookTests(SimpleTestCase):
         self.assertIn("replaced", EditDeckTool().trim_args_at_edit_point(args, later_calls=superseded)["edits"])
         switched = [ToolCall(id="a", name="slide_canvas_activate", arguments={"deck_names": ["Other"]})]
         self.assertIsNone(EditDeckTool().trim_args_at_edit_point(args, later_calls=switched))
+
+    def test_slide_tools_opt_out_of_recency(self):
+        from agent_skills.tools import LoadTemplateToCanvasTool
+        from chat.canvas_tools import WriteCanvasTool
+        from chat.slide_tools import CreateDeckTool, EditDeckTool, WriteDeckTool
+
+        for tool in (WriteDeckTool(), EditDeckTool(), CreateDeckTool(), LoadTemplateToCanvasTool()):
+            self.assertTrue(tool.trim_despite_recency, tool.name)
+        self.assertFalse(WriteCanvasTool().trim_despite_recency)
+        self.assertFalse(ContextAwareTool.model_fields["trim_despite_recency"].default)
+
+    def test_create_deck_result_hook(self):
+        from chat.slide_tools import CreateDeckTool
+
+        result = json.dumps({
+            "status": "ok", "deck_id": "7", "title": "Pitch", "slide_ids": ["s1", "s2"],
+            "changed_slide_ids": ["s1", "s2"], "slide_count": 2, "deck_json": "{" + "x" * 3000 + "}",
+        })
+        args = {"title": "Pitch", "layouts": ["title", "bullets"]}
+        tool = CreateDeckTool()
+        out = tool.trim_result_at_edit_point(result, args, later_calls=[])
+        data = json.loads(out)
+        self.assertIn("Active Slide Deck", data["deck_json"])
+        self.assertIn("Omitted from this transcript", data["deck_json"])
+        self.assertEqual(data["slide_ids"], ["s1", "s2"])
+        self.assertEqual(data["deck_id"], "7")
+        self.assertLess(len(out), len(result))
+        superseded = [ToolCall(id="w", name="slide_canvas_write", arguments={"deck_name": "Pitch"})]
+        replaced = json.loads(tool.trim_result_at_edit_point(result, args, later_calls=superseded))
+        self.assertIn("replaced", replaced["deck_json"])
+        switched = [ToolCall(id="a", name="slide_canvas_activate", arguments={"deck_names": ["Other"]})]
+        self.assertIsNone(tool.trim_result_at_edit_point(result, args, later_calls=switched))
+        error = json.dumps({"status": "error", "deck_json": "x" * 3000})
+        self.assertIsNone(tool.trim_result_at_edit_point(error, args, later_calls=[]))
+        self.assertIsNone(tool.trim_result_at_edit_point("not json", args, later_calls=[]))
+        self.assertIsNone(tool.trim_result_at_edit_point(out, args, later_calls=[]))  # idempotent
+
+    def test_skill_resource_load_result_hook_deck_slide_and_canvas(self):
+        from agent_skills.tools import LoadTemplateToCanvasTool
+
+        tool = LoadTemplateToCanvasTool()
+        args = {"template_name": "Full Deck", "target": "deck", "canvas_name": "Full Deck"}
+        deck = json.dumps({
+            "status": "ok", "loaded_as": "deck", "deck_id": "9", "title": "Full Deck (2)",
+            "slide_ids": ["s1"], "deck_json": "{" + "x" * 3000 + "}",
+        })
+        out = json.loads(tool.trim_result_at_edit_point(deck, args, later_calls=[]))
+        self.assertIn("loaded deck JSON", out["deck_json"])
+        self.assertEqual(out["title"], "Full Deck (2)")
+        # A later write naming "Full Deck" is ANOTHER deck: the stored title is the de-duplicated one.
+        other = [ToolCall(id="w", name="slide_canvas_write", arguments={"deck_name": "Full Deck"})]
+        self.assertIsNone(tool.trim_result_at_edit_point(deck, args, later_calls=other))
+        same = [ToolCall(id="w", name="slide_canvas_write", arguments={"deck_name": "Full Deck (2)"})]
+        self.assertIn("replaced", json.loads(tool.trim_result_at_edit_point(deck, args, later_calls=same))["deck_json"])
+        slide = json.dumps({
+            "status": "ok", "loaded_as": "slide", "deck_id": "9", "title": "QA Deck",
+            "slide_id": "s3", "slide_json": "{" + "x" * 3000 + "}",
+        })
+        shrunk = json.loads(tool.trim_result_at_edit_point(slide, args, later_calls=[]))
+        self.assertIn("loaded slide JSON", shrunk["slide_json"])
+        self.assertEqual(shrunk["slide_id"], "s3")
+        canvas = json.dumps({"status": "ok", "title": "Notes", "canvas_id": "c1", "note": "n" * 3000})
+        self.assertIsNone(tool.trim_result_at_edit_point(canvas, args, later_calls=[]))
+
+    def test_slide_hooks_keep_payloads_when_deck_block_failed(self):
+        from chat.slide_tools import CreateDeckTool, WriteDeckTool
+
+        ctx = RunContext.create(user_id="1")
+        ctx.deck_block_failed = True
+        write = WriteDeckTool().set_context(ctx)
+        args = {"content": {"slides": [{"id": "s1", "name": "x" * 3000}]}}
+        self.assertIsNone(write.trim_args_at_edit_point(args, later_calls=[]))
+        create = CreateDeckTool().set_context(ctx)
+        result = json.dumps({"status": "ok", "title": "P", "deck_id": "1", "deck_json": "x" * 3000})
+        self.assertIsNone(create.trim_result_at_edit_point(result, {"title": "P"}, later_calls=[]))
+        ctx.deck_block_failed = False
+        self.assertIn("Active Slide Deck", write.trim_args_at_edit_point(args, later_calls=[])["content"])
+        shrunk = json.loads(create.trim_result_at_edit_point(result, {"title": "P"}, later_calls=[]))
+        self.assertIn("Active Slide Deck", shrunk["deck_json"])
 
     def test_document_edit_points_to_document_read(self):
         from llm.tools.registry import get_tool_registry
@@ -419,20 +643,27 @@ class EditPointManagerTests(TestCase):
         def boom():
             raise RuntimeError("db down")
 
-        for provider in (lambda: "", boom, None):
-            with self.subTest(provider=getattr(provider, "__name__", "none")):
+        cases = (
+            ("empty", lambda: "", False),
+            ("raising", boom, True),
+            ("returns_none", lambda: None, True),
+            ("no_provider", None, False),
+        )
+        for label, provider, failed in cases:
+            with self.subTest(label):
                 base = [Message(role="user", content="q"), _asst("c0", "web_search", {"q": 0}), _tool("c0", "R0")]
                 req = self._deck_req(base, provider=provider)
                 mgr = EditPointManager(SimpleChatPipeline(), req, {})
                 quiet = (
-                    self.assertLogs("llm.pipelines.edit_points", level="ERROR")
-                    if provider is boom else nullcontext()
+                    self.assertLogs("llm.pipelines.edit_points", level="WARNING")
+                    if failed else nullcontext()
                 )
                 with quiet, self.settings(CONTEXT_MIDTURN_KEEP_TOOL_RESULTS=0):
                     out = self._round(mgr, req, base, "c1")
                 self.assertEqual(mgr.edit_rounds, [0])  # the edit point itself still happened
                 self.assertFalse(any((m.metadata or {}).get(DECK_BLOCK_KEY) for m in out))
                 self.assertNotIn("deck_block_refreshes", req.context.observability)
+                self.assertIs(req.context.deck_block_failed, failed)
 
     def test_deck_block_not_added_without_an_edit(self):
         from llm.pipelines.edit_points import DECK_BLOCK_KEY
@@ -480,6 +711,125 @@ class EditPointManagerTests(TestCase):
         self.assertFalse(any((m.metadata or {}).get(DECK_BLOCK_KEY) for m in out))
         self.assertNotIn("deck_block_refreshes", req.context.observability)
 
+    # -- coverage beats recency for deck payloads ---------------------------
+
+    def test_recent_slide_write_trimmed_but_recent_canvas_write_kept(self):
+        """Recency protects a recent canvas write (exact-match edits need the text)
+        but not a recent deck write — the block appended here covers it."""
+        from chat.canvas_tools import WriteCanvasTool
+        from chat.slide_tools import WriteDeckTool
+        from llm.pipelines.edit_points import DECK_BLOCK_KEY
+
+        big_deck = {"slides": [{"id": "s1", "name": "x" * 5000}]}
+        base = [
+            Message(role="user", content="q"),
+            _asst("d1", "slide_canvas_write", {"content": big_deck}), _tool("d1", "ok"),
+            _asst("w1", "canvas_write", {"title": "T", "content": "c" * 5000}), _tool("w1", "ok"),
+        ]
+        req = self._deck_req(base, provider=lambda: "# Active Slide Deck (current state)\nDECK")
+        mgr = EditPointManager(
+            SimpleChatPipeline(), req,
+            {"slide_canvas_write": WriteDeckTool(), "canvas_write": WriteCanvasTool()},
+        )
+        out = self._round(mgr, req, base, "s1")  # default keep_recent=6: both writes are "recent"
+        self.assertEqual(mgr.edit_rounds, [0])
+        self.assertIn("Active Slide Deck", out[1].tool_calls[0].arguments["content"])
+        self.assertEqual(out[3].tool_calls[0].arguments["content"], "c" * 5000)
+        self.assertTrue(out[-1].metadata.get(DECK_BLOCK_KEY))
+
+    def test_create_result_kept_in_its_round_then_trimmed_next_edit_point(self):
+        from chat.slide_tools import CreateDeckTool
+        from llm.pipelines.edit_points import TRIMMED_RESULT_KEY
+
+        create_result = json.dumps({
+            "status": "ok", "deck_id": "7", "title": "Pitch", "slide_ids": ["s1"],
+            "changed_slide_ids": ["s1"], "slide_count": 1, "deck_json": "{" + "x" * 5000 + "}",
+        })
+        base = [Message(role="user", content="q"), _asst("c0", "web_search", {"q": 0}), _tool("c0", "R0")]
+        req = self._deck_req(base, provider=lambda: "# Active Slide Deck (current state)\nDECK")
+        mgr = EditPointManager(SimpleChatPipeline(), req, {"slides_create_deck": CreateDeckTool()})
+        # Edit point 1: the create call IS the current round → its result stays whole.
+        round1 = base + [
+            _asst("k1", "slides_create_deck", {"title": "Pitch", "layouts": ["title"]}),
+            _tool("k1", create_result),
+        ]
+        with self.settings(CONTEXT_MIDTURN_KEEP_TOOL_RESULTS=0):
+            out, _ = mgr.finish_round(round1, req, [], prior_len=len(base), real_input_tokens=40_000,
+                                      round_call_ids={"k1"}, notice=None)
+        self.assertEqual(mgr.edit_rounds, [0])
+        self.assertEqual(out[4].content, create_result)
+        # Edit point 2: now merely recent (default keep 6) → shrunk by the hook, not stubbed.
+        req2 = req.model_copy(update={"messages": out})
+        out2 = self._round(mgr, req2, out, "c2")
+        self.assertEqual(mgr.edit_rounds, [0, 1])
+        shrunk = out2[4]
+        self.assertTrue(shrunk.metadata.get(TRIMMED_RESULT_KEY))
+        data = json.loads(shrunk.content)
+        self.assertIn("Active Slide Deck", data["deck_json"])
+        self.assertEqual(data["slide_ids"], ["s1"])
+
+    def test_deck_block_provider_called_once_per_edit_point(self):
+        calls = {"n": 0}
+
+        def provider():
+            calls["n"] += 1
+            return "DECK"
+
+        base = [Message(role="user", content="q"), _asst("c0", "web_search", {"q": 0}), _tool("c0", "R0")]
+        req = self._deck_req(base, provider=provider)
+        mgr = EditPointManager(SimpleChatPipeline(), req, {})
+        self._round(mgr, req, base, "c1", real_input_tokens=500)  # quiet round: no edit point
+        self.assertEqual(calls["n"], 0)
+        with self.settings(CONTEXT_MIDTURN_KEEP_TOOL_RESULTS=0):
+            self._round(mgr, req, base, "c1")
+        self.assertEqual(calls["n"], 1)
+        self.assertFalse(req.context.deck_block_failed)
+
+    def test_deck_block_failure_keeps_previous_block_and_slide_args(self):
+        """EP1 ok → EP2 the re-read fails (flag set, the last good block stays, the
+        write made since keeps its JSON) → EP3 recovers (flag cleared, block
+        replaced, everything trimmable trimmed)."""
+        from chat.slide_tools import WriteDeckTool
+        from llm.pipelines.edit_points import DECK_BLOCK_KEY
+
+        state = {"text": "DECK v1"}
+        base = [Message(role="user", content="q"), _asst("c0", "web_search", {"q": 0}), _tool("c0", "R0")]
+        req = self._deck_req(base, provider=lambda: state["text"])
+        tool = WriteDeckTool().set_context(req.context)
+        mgr = EditPointManager(SimpleChatPipeline(), req, {"slide_canvas_write": tool})
+
+        def deck(n):
+            return {"slides": [{"id": "s1", "name": n * 5000}]}
+
+        def call(msg_list, cid):
+            return next(m for m in msg_list if m.tool_calls and m.tool_calls[0].id == cid)
+
+        with self.settings(CONTEXT_MIDTURN_KEEP_TOOL_RESULTS=0):
+            r1 = base + [_asst("d1", "slide_canvas_write", {"content": deck("a")}), _tool("d1", "ok")]
+            out1, _ = mgr.finish_round(r1, req, [], prior_len=len(base), real_input_tokens=40_000,
+                                       round_call_ids={"d1"}, notice=None)
+            state["text"] = None
+            r2 = out1 + [_asst("d2", "slide_canvas_write", {"content": deck("b")}), _tool("d2", "ok")]
+            req2 = req.model_copy(update={"messages": out1})
+            with self.assertLogs("llm.pipelines.edit_points", level="WARNING"):
+                out2, _ = mgr.finish_round(r2, req2, [], prior_len=len(out1), real_input_tokens=40_000,
+                                           round_call_ids={"d2"}, notice=None)
+            self.assertTrue(req.context.deck_block_failed)
+            blocks = [m for m in out2 if (m.metadata or {}).get(DECK_BLOCK_KEY)]
+            self.assertEqual([b.content for b in blocks], ["DECK v1"])
+            self.assertEqual(call(out2, "d1").tool_calls[0].arguments["content"], deck("a"))  # kept
+            state["text"] = "DECK v3"
+            r3 = out2 + [_asst("c3", "web_search", {"q": 3}), _tool("c3", "R3")]
+            req3 = req.model_copy(update={"messages": out2})
+            out3, _ = mgr.finish_round(r3, req3, [], prior_len=len(out2), real_input_tokens=40_000,
+                                       round_call_ids={"c3"}, notice=None)
+        self.assertFalse(req.context.deck_block_failed)
+        blocks = [m for m in out3 if (m.metadata or {}).get(DECK_BLOCK_KEY)]
+        self.assertEqual([b.content for b in blocks], ["DECK v3"])
+        self.assertIn("Omitted from this transcript", call(out3, "d1").tool_calls[0].arguments["content"])
+        self.assertIn("Active Slide Deck", call(out3, "d2").tool_calls[0].arguments["content"])
+        self.assertEqual(mgr.edit_rounds, [0, 1, 2])
+
 
 # ---------------------------------------------------------------------------
 # End-to-end: each request extends the previous one except at edit points
@@ -520,6 +870,16 @@ class _NoteTool(ContextAwareTool):
         return '{"status": "ok"}'
 
 
+class _FlaggedNoteTool(_NoteTool):
+    """A note tool that opts out of recency protection and trims its note."""
+
+    trim_despite_recency: bool = True
+    trim_args_min_chars: int = 50
+
+    def trim_args_at_edit_point(self, args, *, later_calls):
+        return {**args, "note": "[trimmed]"}
+
+
 def _snapshot(req: ChatRequest):
     """What the provider would be sent: system/messages (content, calls, ids) + tool set."""
     msgs = [
@@ -533,8 +893,9 @@ def _snapshot(req: ChatRequest):
 class PrefixInvariantTests(TestCase):
     ROUNDS = 5
 
-    def _registry(self):
-        tools = {"document_search": _DupSearchTool(), "scratchpad_append": _NoteTool(),
+    def _registry(self, *, flagged_note: bool = False):
+        note_tool = _FlaggedNoteTool() if flagged_note else _NoteTool()
+        tools = {"document_search": _DupSearchTool(), "scratchpad_append": note_tool,
                  "subagent_scratchpad_append": _NoteTool(name="subagent_scratchpad_append")}
         reg = MagicMock()
         reg.return_value.get_tool.side_effect = lambda n: tools.get(n)
@@ -550,6 +911,7 @@ class PrefixInvariantTests(TestCase):
     def _run(
         self, *, stream: bool, agent_kind: str, pressure_round: int | None = None,
         truncated_round: int | None = None, deck_block: bool = False,
+        flagged_note: bool = False, keep_recent: int = 2,
     ):
         self._kind = agent_kind
         ctx = RunContext.create(user_id="1")
@@ -611,7 +973,8 @@ class PrefixInvariantTests(TestCase):
             fake_model.generate.side_effect = fake_generate
 
         with patch("llm.pipelines.simple_chat.create_chat_model", return_value=fake_model), \
-             self._registry(), self.settings(CONTEXT_MIDTURN_KEEP_TOOL_RESULTS=2):
+             self._registry(flagged_note=flagged_note), \
+             self.settings(CONTEXT_MIDTURN_KEEP_TOOL_RESULTS=keep_recent):
             pipe = SimpleChatPipeline(max_tool_iterations=self.ROUNDS + 1)
             if stream:
                 list(pipe.stream(request))
@@ -680,6 +1043,23 @@ class PrefixInvariantTests(TestCase):
                 self.assertEqual(ctx.observability["deck_block_refreshes"], 1)
                 has_block = [any("DECK" in m[1] for m in msgs) for _tools, msgs in seen]
                 self.assertEqual(has_block, [False, False, False, True, True, True])
+
+    def test_pressure_round_with_flagged_tool_is_the_only_edit(self):
+        """A tool that opts out of recency protection still only ever edits history
+        INSIDE the edit point: one edit, where its recent note args are trimmed
+        (keep_recent=4 makes round 1's note "recent" at the round-2 edit)."""
+        for stream in (True, False):
+            with self.subTest(stream=stream):
+                seen, ctx = self._run(
+                    stream=stream, agent_kind="main", pressure_round=2,
+                    flagged_note=True, keep_recent=4,
+                )
+                self._assert_extends(seen, {2})
+                self.assertEqual(ctx.observability["edit_points_total"], 1)
+                self.assertFalse(any("[trimmed]" in m[3] for m in seen[2][1]))
+                after = seen[3][1]
+                trimmed_notes = [m for m in after if "[trimmed]" in m[3]]
+                self.assertEqual(len(trimmed_notes), 2)  # n0 (old) and n1 (recent, flagged)
 
 
 # ---------------------------------------------------------------------------

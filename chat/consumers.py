@@ -5352,10 +5352,22 @@ class ChatConsumer(AsyncWebsocketConsumer):
         raw_tool_turns = getattr(settings, "CONTEXT_RAW_TOOL_TURNS", 2)
         stub_before_idx = _tool_stub_boundary(included, raw_tool_turns)
         call_meta = _tool_call_meta_map(included)
+        # -1 (or None) switches between-turn editing off entirely — including the
+        # recency opt-out below (_tool_stub_boundary returns 0 for "disabled" AND
+        # "too few turns", so test the setting, not the boundary).
+        try:
+            between_turn_trim = raw_tool_turns is not None and int(raw_tool_turns) >= 0
+        except (TypeError, ValueError):
+            between_turn_trim = True
 
         # 4. Build message list
         messages: list[dict] = []
         trim_eligible_ids: set[str] = set()
+        # Calls / results inside the raw window: recency protects them unless their
+        # tool opts out (trim_despite_recency — the slide tools, whose deck JSON
+        # the regenerated Active Slide Deck section covers).
+        recent_call_ids: set[str] = set()
+        raw_results: list[tuple[str, str]] = []
         if thread.summary and not scoped:
             messages.append({
                 "role": "system",
@@ -5368,6 +5380,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
                 name, args = call_meta.get(m.tool_call_id, ("", None))
                 content = build_tool_result_stub(name, args)
+            elif m.role == "tool" and m.tool_call_id and between_turn_trim:
+                raw_results.append((m.tool_call_id, content))
             msg_dict = {
                 "role": m.role,
                 # Coerce NULL content (e.g. an assistant message with only
@@ -5378,10 +5392,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
             }
             if m.metadata and m.metadata.get("tool_calls"):
                 msg_dict["tool_calls"] = m.metadata["tool_calls"]
+                ids = [tc.get("id") for tc in m.metadata["tool_calls"] if tc.get("id")]
                 if idx < stub_before_idx:
-                    trim_eligible_ids.update(
-                        tc.get("id") for tc in m.metadata["tool_calls"] if tc.get("id")
-                    )
+                    trim_eligible_ids.update(ids)
+                elif between_turn_trim:
+                    recent_call_ids.update(ids)
             if m.metadata and m.metadata.get("attachment_ids"):
                 msg_dict["attachment_ids"] = m.metadata["attachment_ids"]
             if m.role == "assistant" and m.metadata and m.metadata.get("replay"):
@@ -5395,13 +5410,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # 4b. Shrink big arguments of those same old calls (canvas text, deck
         #     JSON, scratchpad notes …) per each tool's trim_args_at_edit_point —
         #     the content stays reachable (canvas_read, document_read, the
-        #     scratchpad preamble). Same window as the result stubbing above.
-        if trim_eligible_ids:
+        #     scratchpad preamble). Same window as the result stubbing above,
+        #     plus the raw window for tools that opt out of recency protection.
+        #     (The call dicts are captured before any rewrite so later_calls carry
+        #     the original arguments.)
+        all_call_dicts = [tc for msg in messages for tc in msg.get("tool_calls") or []]
+        if trim_eligible_ids or recent_call_ids:
             from llm.pipelines.edit_points import trim_history_call_args
 
             new_args = trim_history_call_args(
-                [tc for msg in messages for tc in msg.get("tool_calls") or []],
-                trim_eligible_ids,
+                all_call_dicts, trim_eligible_ids, recent_ids=recent_call_ids,
             )
             if new_args:
                 for msg in messages:
@@ -5412,6 +5430,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
                             {**tc, "arguments": new_args[tc["id"]]} if tc.get("id") in new_args else tc
                             for tc in msg["tool_calls"]
                         ]
+
+        # 4c. Shrink big bodies of raw-window results whose tool opts out of
+        #     recency protection (the deck JSON in slides_create_deck /
+        #     skill_resource_load results — the Active Slide Deck section is the
+        #     copy that counts) per trim_result_at_edit_point. Dicts only; the
+        #     stored rows are never modified.
+        if raw_results:
+            from llm.pipelines.edit_points import trim_history_results
+
+            new_bodies = trim_history_results(raw_results, all_call_dicts)
+            for msg in messages:
+                if msg["role"] == "tool" and msg.get("tool_call_id") in new_bodies:
+                    msg["content"] = new_bodies[msg["tool_call_id"]]
 
         # 5. Strip orphan tool results whose tool_call_id doesn't match any
         #    assistant tool_calls entry (e.g. from history truncation or

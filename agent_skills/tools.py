@@ -1200,6 +1200,21 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
     )
     args_schema: type[BaseModel] = LoadTemplateToCanvasInput
     section: str = "skills"
+    # Deck/slide JSON in a target="deck" result is covered by the current-deck
+    # block from the next edit point on (see chat/slide_tools.py); canvas results
+    # carry neither field and are left alone.
+    trim_despite_recency: bool = True
+
+    def trim_result_at_edit_point(self, result: str, args: dict, *, later_calls: list) -> str | None:
+        from chat.slide_tools import _deck_block_unavailable, _trim_deck_result
+
+        if _deck_block_unavailable(self):
+            return None
+        return _trim_deck_result(
+            result,
+            fields={"deck_json": "loaded deck JSON", "slide_json": "loaded slide JSON"},
+            fallback_title="", later_calls=later_calls,
+        )
 
     def _run(self, template_name: str, canvas_name: str = "",
              skill_slug: str = "", target: str = "canvas", deck_name: str = "",

@@ -13,7 +13,8 @@ round is an **edit point**, and it does all deferred clean-up at once so each
 edit point costs one cache break and (on Anthropic) one reasoning drop:
 
 1. dedup normalization (restore append-only redactions, keep the newest copy),
-2. per-tool argument trimming of older tool calls (``trim_args_at_edit_point``),
+2. per-tool argument and result trimming of older tool calls
+   (``trim_args_at_edit_point`` / ``trim_result_at_edit_point``),
 3. pruning of old tool results (forced, or early past a fraction of the ceiling),
 4. native-asset eviction with hysteresis (early threshold, low watermark),
 5. refreshing the consolidated trailing blocks (old ones removed, fresh ones
@@ -44,6 +45,12 @@ SCRATCHPAD_BLOCK_KEY = "wf_scratchpad_block"
 DECK_BLOCK_KEY = "wf_deck_block"
 # Assistant-message metadata: ids of tool calls whose args were already trimmed.
 TRIMMED_ARGS_KEY = "wf_trimmed_args"
+# Tool-message metadata: set once the result body was shrunk by its tool's
+# trim_result_at_edit_point hook, so it is not offered to the hook again.
+TRIMMED_RESULT_KEY = "wf_trimmed_result"
+# Prefix of chat.tool_stub.build_tool_result_stub — a result already stubbed by
+# pruning; never offered to a result hook.
+_STUB_PREFIX = "[Earlier result of "
 
 EDIT_KIND_PRUNE = "prune"
 EDIT_KIND_TOOLS = "tools"
@@ -83,14 +90,21 @@ def default_tool_lookup(name: str):
     return get_tool_registry().get_tool(name)
 
 
-def _trimmed_args(calls: List[ToolCall], eligible: Callable[[int, ToolCall], bool], tool_lookup) -> dict:
-    """``{call_index: new_args}`` for eligible calls whose tool shrinks them."""
+def _trimmed_args(
+    calls: List[ToolCall], eligible: Callable[[int, ToolCall], bool], tool_lookup,
+    recent_ids=frozenset(),
+) -> dict:
+    """``{call_index: new_args}`` for eligible calls whose tool shrinks them. A
+    call in ``recent_ids`` is skipped unless its tool sets
+    ``trim_despite_recency`` (recency protects every other tool's arguments)."""
     out: dict[int, dict] = {}
     for idx, tc in enumerate(calls):
         if not eligible(idx, tc):
             continue
         tool = tool_lookup(tc.name)
         if tool is None:
+            continue
+        if tc.id in recent_ids and not getattr(tool, "trim_despite_recency", False):
             continue
         args = tc.arguments or {}
         try:
@@ -109,22 +123,80 @@ def _trimmed_args(calls: List[ToolCall], eligible: Callable[[int, ToolCall], boo
     return out
 
 
+def _calls_from_dicts(call_dicts: list) -> List[ToolCall]:
+    """DB-history tool calls (``{"id", "name", "arguments"}`` dicts, chronological)
+    as ToolCalls."""
+    return [
+        ToolCall(id=str(d.get("id") or ""), name=d.get("name") or "", arguments=d.get("arguments") or {})
+        for d in call_dicts if isinstance(d, dict)
+    ]
+
+
 def trim_history_call_args(
     call_dicts: list,
     eligible_ids: set,
     tool_lookup: Callable[[str], object] = default_tool_lookup,
+    recent_ids=frozenset(),
 ) -> dict:
     """Between-turn variant for DB history, whose tool calls are dicts
     (``{"id", "name", "arguments"}``) in chronological order. Returns
-    ``{call_id: new_args}`` for the eligible calls a tool chose to shrink."""
-    calls = [
-        ToolCall(id=str(d.get("id") or ""), name=d.get("name") or "", arguments=d.get("arguments") or {})
-        for d in call_dicts if isinstance(d, dict)
-    ]
+    ``{call_id: new_args}`` for the eligible calls a tool chose to shrink.
+    ``recent_ids`` (calls inside the raw window) are offered too, but only a
+    tool with ``trim_despite_recency`` shrinks one of those."""
+    calls = _calls_from_dicts(call_dicts)
     decided = _trimmed_args(
-        calls, lambda _i, tc: tc.id in eligible_ids, tool_lookup,
+        calls, lambda _i, tc: tc.id in eligible_ids or tc.id in recent_ids, tool_lookup,
+        recent_ids=recent_ids,
     )
     return {calls[i].id: args for i, args in decided.items()}
+
+
+def _trimmed_results(items, calls: List[ToolCall], tool_lookup, recent_ids) -> dict:
+    """``{call_id: new_content}`` for the results a tool chose to shrink. ``items``
+    are ``(call_id, content)`` pairs; ``calls`` every ToolCall oldest first (for
+    the tool name, the arguments and ``later_calls``). A result in ``recent_ids``
+    is skipped unless its tool sets ``trim_despite_recency``."""
+    index = {tc.id: i for i, tc in enumerate(calls)}
+    out: dict[str, str] = {}
+    for cid, content in items:
+        if not isinstance(content, str) or content.startswith(_STUB_PREFIX):
+            continue
+        idx = index.get(cid)
+        if idx is None:
+            continue
+        tc = calls[idx]
+        tool = tool_lookup(tc.name)
+        if tool is None:
+            continue
+        if cid in recent_ids and not getattr(tool, "trim_despite_recency", False):
+            continue
+        if len(content) < int(getattr(tool, "trim_result_min_chars", 2000)):
+            continue
+        hook = getattr(tool, "trim_result_at_edit_point", None)
+        if hook is None:
+            continue
+        try:
+            new = hook(content, tc.arguments or {}, later_calls=calls[idx + 1:])
+        except Exception:  # a buggy hook must never break a turn
+            logger.exception("trim_result_at_edit_point failed for tool %s", tc.name)
+            continue
+        if isinstance(new, str) and new != content:
+            out[cid] = new
+    return out
+
+
+def trim_history_results(
+    results: list,
+    call_dicts: list,
+    tool_lookup: Callable[[str], object] = default_tool_lookup,
+) -> dict:
+    """Between-turn variant for DB history: ``results`` are the raw-window
+    (unstubbed) tool rows as ``(tool_call_id, content)``, ``call_dicts`` every
+    call as dicts in chronological order. All of these results are recent by
+    definition, so only a tool with ``trim_despite_recency`` ever shrinks one.
+    Returns ``{call_id: new_content}``."""
+    calls = _calls_from_dicts(call_dicts)
+    return _trimmed_results(results, calls, tool_lookup, recent_ids={cid for cid, _ in results})
 
 
 def trim_old_tool_call_args(
@@ -132,10 +204,13 @@ def trim_old_tool_call_args(
     *,
     protected_call_ids: set,
     tool_lookup: Callable[[str], object] = default_tool_lookup,
+    recent_call_ids=frozenset(),
 ) -> tuple[List[Message], int]:
     """Shrink big arguments of older tool calls via each tool's
-    ``trim_args_at_edit_point`` hook. Calls in ``protected_call_ids`` and calls
-    already trimmed are left alone. Returns ``(messages, trimmed_count)``; the
+    ``trim_args_at_edit_point`` hook. Calls in ``protected_call_ids`` (the current
+    round) and calls already trimmed are left alone; calls in ``recent_call_ids``
+    are left alone unless their tool opts out of recency protection
+    (``trim_despite_recency``). Returns ``(messages, trimmed_count)``; the
     original list is returned unchanged when nothing was trimmed."""
     triples = _call_triples(messages)
     if not triples:
@@ -146,7 +221,9 @@ def trim_old_tool_call_args(
         already = (messages[mi].metadata or {}).get(TRIMMED_ARGS_KEY) or ()
         return tc.id not in protected_call_ids and tc.id not in already
 
-    decided = _trimmed_args([t[2] for t in triples], eligible, tool_lookup)
+    decided = _trimmed_args(
+        [t[2] for t in triples], eligible, tool_lookup, recent_ids=recent_call_ids,
+    )
     replacements: dict[int, dict[int, ToolCall]] = {}
     for idx, new_args in decided.items():
         mi, ci, tc = triples[idx]
@@ -166,6 +243,45 @@ def trim_old_tool_call_args(
         out[mi] = msg.model_copy(update={"tool_calls": calls, "metadata": meta})
         count += len(by_ci)
     return out, count
+
+
+def trim_old_tool_results(
+    messages: List[Message],
+    *,
+    protected_call_ids: set,
+    recent_call_ids,
+    tool_lookup: Callable[[str], object] = default_tool_lookup,
+) -> tuple[List[Message], int]:
+    """Shrink big bodies of older tool results via each tool's
+    ``trim_result_at_edit_point`` hook — the result-side twin of
+    :func:`trim_old_tool_call_args`. Results of the current round
+    (``protected_call_ids``), results already shrunk (``TRIMMED_RESULT_KEY``) and
+    results already stubbed by pruning are left alone; ``recent_call_ids`` protect
+    unless the tool opts out. Returns ``(messages, count)``; the original list
+    when nothing changed — never a metadata-only write, so the edit point's
+    no-change guard stays honest."""
+    calls = [t[2] for t in _call_triples(messages)]
+    items = []
+    for i, m in enumerate(messages):
+        cid = getattr(m, "tool_call_id", None)
+        if getattr(m, "role", "") != "tool" or not cid or cid in protected_call_ids:
+            continue
+        if (m.metadata or {}).get(TRIMMED_RESULT_KEY):
+            continue
+        items.append((i, cid, m.content))
+    decided = _trimmed_results(
+        [(cid, content) for _i, cid, content in items], calls, tool_lookup, recent_call_ids,
+    )
+    if not decided:
+        return messages, 0
+    out = list(messages)
+    for i, cid, _content in items:
+        if cid in decided:
+            out[i] = messages[i].model_copy(update={
+                "content": decided[cid],
+                "metadata": {**(messages[i].metadata or {}), TRIMMED_RESULT_KEY: True},
+            })
+    return out, len(decided)
 
 
 def _provider_view(messages: List[Message]) -> list:
@@ -302,19 +418,39 @@ class EditPointManager:
 
         ctx = req.context
         keep_recent = _setting("CONTEXT_MIDTURN_KEEP_TOOL_RESULTS", 6)
-        protected_ids = set(protect_call_ids) | recent_tool_call_ids(messages, keep_recent)
+        current_ids = set(protect_call_ids)
+        recent_ids = recent_tool_call_ids(messages, keep_recent)
         original = messages
         before = _provider_view(messages)
+
+        # 0. The current-deck block, read BEFORE any trimming so the slide tools
+        #    know whether the copy their markers point at will exist (a failed read
+        #    makes them keep their payloads this edit point). One provider call per
+        #    edit point — also paid by an edit point that turns out to change nothing.
+        deck_text, deck_failed = self._deck_block_text(ctx)
+        if ctx is not None:
+            ctx.deck_block_failed = deck_failed
+        if deck_failed:
+            logger.warning("Deck block unavailable at this edit point; slide payloads are kept")
 
         # 1. Dedup: re-decide append-only redactions as keep-newest.
         messages = normalize_keep_newest(messages)
 
-        # 2. Per-tool argument trimming (needs ctx: the scratchpad block below is
-        #    what makes a trimmed note recoverable).
+        # 2. Per-tool argument trimming (needs ctx: the trailing blocks below are
+        #    what make a trimmed note / deck recoverable). The current round is
+        #    always protected; recency protects unless the tool opts out.
         trimmed = 0
+        trimmed_results = 0
         if ctx is not None:
             messages, trimmed = trim_old_tool_call_args(
-                messages, protected_call_ids=protected_ids, tool_lookup=self._lookup,
+                messages, protected_call_ids=current_ids, tool_lookup=self._lookup,
+                recent_call_ids=recent_ids,
+            )
+            # 2b. ... and result trimming (same protection), before pruning stubs
+            #     whatever recency no longer protects.
+            messages, trimmed_results = trim_old_tool_results(
+                messages, protected_call_ids=current_ids, recent_call_ids=recent_ids,
+                tool_lookup=self._lookup,
             )
 
         # 3. Prune old tool results — forced, or early to push the next edit out.
@@ -354,8 +490,11 @@ class EditPointManager:
             return original
 
         # 5. Consolidated trailing blocks: the current deck (main agent, when the
-        #    deck changed this turn), then the scratchpad block, always last.
-        messages, deck_block = self._refresh_trailing_blocks(messages, req)
+        #    deck changed this turn — read in step 0), then the scratchpad block,
+        #    always last.
+        messages, deck_block = self._refresh_trailing_blocks(
+            messages, req, deck_text, deck_failed=deck_failed,
+        )
         self._seed_pending = False
 
         self.edit_rounds.append(self._round)
@@ -367,10 +506,10 @@ class EditPointManager:
                 # Not an ``edit_point:*`` key — the logger maps those to trigger kinds.
                 ctx.bump_stat("deck_block_refreshes", 1)
         logger.info(
-            "Tool-loop edit point (%s): pruned=%d trimmed_args=%d evicted_native=%d "
-            "deck_block=%s (projected ~%d / ceiling %d, model %s, agent %s)",
-            ",".join(kinds), pruned, trimmed, evicted, deck_block, projected, ceiling or 0,
-            req.model, self.agent_kind,
+            "Tool-loop edit point (%s): pruned=%d trimmed_args=%d trimmed_results=%d "
+            "evicted_native=%d deck_block=%s (projected ~%d / ceiling %d, model %s, agent %s)",
+            ",".join(kinds), pruned, trimmed, trimmed_results, evicted, deck_block,
+            projected, ceiling or 0, req.model, self.agent_kind,
         )
         return messages
 
@@ -400,18 +539,23 @@ class EditPointManager:
             f"```\n{notes}\n```"
         )
 
-    def _refresh_trailing_blocks(self, messages, req) -> tuple[List[Message], bool]:
+    def _refresh_trailing_blocks(
+        self, messages, req, deck: str, *, deck_failed: bool = False,
+    ) -> tuple[List[Message], bool]:
         """Drop the previous trailing blocks and append fresh ones: the current
-        deck block (when the provider has one), then the scratchpad block, always
-        last. Returns ``(messages, deck_block_appended)``."""
-        messages = [
-            m for m in messages
-            if not (
-                (m.metadata or {}).get(SCRATCHPAD_BLOCK_KEY)
-                or (m.metadata or {}).get(DECK_BLOCK_KEY)
-            )
-        ]
-        deck = self._deck_block_text(req.context)
+        deck block ``deck`` (when there is one), then the scratchpad block, always
+        last. A failed deck re-read (``deck_failed``) keeps the last good deck
+        block in place — payloads trimmed at earlier edit points point at it.
+        Returns ``(messages, deck_block_appended)``."""
+        def keep(m: Message) -> bool:
+            meta = m.metadata or {}
+            if meta.get(SCRATCHPAD_BLOCK_KEY):
+                return False
+            if meta.get(DECK_BLOCK_KEY):
+                return deck_failed
+            return True
+
+        messages = [m for m in messages if keep(m)]
         if deck:
             messages.append(Message(
                 role="user", content=deck, metadata={DECK_BLOCK_KEY: True},
@@ -423,20 +567,23 @@ class EditPointManager:
             ))
         return messages, bool(deck)
 
-    def _deck_block_text(self, ctx) -> str:
-        """The main agent's "current deck" block, rendered by the consumer-supplied
-        ``RunContext.deck_block_provider`` (re-reads the active deck from the DB;
-        ``""`` when there is none or it is unchanged since the preamble). Never
-        raises — the block is best-effort."""
+    def _deck_block_text(self, ctx) -> tuple[str, bool]:
+        """``(text, failed)`` — the main agent's "current deck" block, rendered by
+        the consumer-supplied ``RunContext.deck_block_provider`` (re-reads the
+        active deck from the DB; ``""`` when there is none or it is unchanged
+        since the preamble; ``None`` or a raise = the read failed). Never raises —
+        the block is best-effort."""
         provider = getattr(ctx, "deck_block_provider", None)
         if provider is None or self.agent_kind != "main":
-            return ""
+            return "", False
         try:
             text = provider()
         except Exception:  # noqa: BLE001
             logger.exception("deck_block_provider failed")
-            return ""
-        return text if isinstance(text, str) else ""
+            return "", True
+        if text is None:
+            return "", True
+        return (text if isinstance(text, str) else ""), False
 
     def _append_seed_scratchpad(self, messages, req) -> None:
         if not self._seed_pending:
@@ -496,7 +643,10 @@ __all__ = [
     "DECK_BLOCK_KEY",
     "EditPointManager",
     "SCRATCHPAD_BLOCK_HEADER",
+    "TRIMMED_RESULT_KEY",
     "record_thinking_drops",
     "trim_history_call_args",
+    "trim_history_results",
     "trim_old_tool_call_args",
+    "trim_old_tool_results",
 ]

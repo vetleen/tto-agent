@@ -106,9 +106,13 @@ class RunContext(BaseModel):
     # Main agent only: a zero-arg callable the tool loop invokes at edit points to
     # append a fresh "current deck" block (the active slide deck re-read from the
     # DB, rendered by chat.prompts.render_active_deck_block); "" = nothing to
-    # append. Set by the chat consumer (chat/slides/deck_block.py); None for
-    # sub-agents, side calls and tests.
-    deck_block_provider: Optional[Callable[[], str]] = None
+    # append, None = the read failed. Set by the chat consumer
+    # (chat/slides/deck_block.py); None for sub-agents, side calls and tests.
+    deck_block_provider: Optional[Callable[[], Optional[str]]] = None
+    # Set by the tool loop at EACH edit point (never sticky): True when the deck
+    # block could not be built this time. The slide tools' trim hooks then keep
+    # their deck JSON — the one case where a trimmed payload would be unreachable.
+    deck_block_failed: bool = False
     # Web image candidates surfaced by web_fetch(include_images=True), keyed by a
     # run-monotonic handle ("img-1", "img-2", …). web_image_view resolves a
     # handle to its source URL. Each value: {"url", "page_url", "filename", "alt"}.

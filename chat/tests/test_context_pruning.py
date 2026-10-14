@@ -3,6 +3,7 @@ summary excluding tool noise (Phase 5 of the context overhaul)."""
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 from channels.db import database_sync_to_async
@@ -223,6 +224,96 @@ class LoadHistoryStubbingTests(TransactionTestCase):
         messages = (await self.consumer._load_history(self.thread))["messages"]
         calls = {tc["id"]: tc for m in messages for tc in m.get("tool_calls") or []}
         self.assertEqual(calls["d-old"]["arguments"]["content"], deck)
+
+    # -- coverage beats recency: slide payloads inside the raw window ---------
+
+    @override_settings(CONTEXT_RAW_TOOL_TURNS=2)
+    async def test_recent_slide_write_args_trimmed_between_turns(self):
+        """A slide write inside the raw window is trimmed anyway — the next
+        preamble's Active Slide Deck section is the copy that counts (recency only
+        protects tools that don't opt out; a recent canvas write stays whole, see
+        test_old_big_call_args_trimmed_recent_kept)."""
+        deck = {"version": 1, "slides": [{"id": "s1", "name": "x" * 3000}]}
+        await self._msg("Question one", role="user")
+        await self._msg("Answer one", role="assistant")
+        await self._msg("Question two", role="user")
+        await self._msg("", role="assistant", tool_calls=[
+            {"id": "d-new", "name": "slide_canvas_write", "arguments": {"content": deck}},
+        ])
+        await self._msg('{"status": "ok"}', role="tool", tool_call_id="d-new")
+
+        messages = (await self.consumer._load_history(self.thread))["messages"]
+        calls = {tc["id"]: tc for m in messages for tc in m.get("tool_calls") or []}
+        self.assertIn("Active Slide Deck", calls["d-new"]["arguments"]["content"])
+        stored = await database_sync_to_async(
+            lambda: ChatMessage.objects.filter(thread=self.thread, role="assistant").order_by("-created_at").first()
+        )()
+        self.assertEqual(stored.metadata["tool_calls"][0]["arguments"]["content"], deck)
+
+    @override_settings(CONTEXT_RAW_TOOL_TURNS=2)
+    async def test_recent_create_result_deck_json_shrunk_between_turns(self):
+        result = {
+            "status": "ok", "deck_id": "7", "title": "Pitch", "slide_ids": ["s1"],
+            "changed_slide_ids": ["s1"], "slide_count": 1, "deck_json": "{" + "x" * 3000 + "}",
+        }
+        await self._msg("Question one", role="user")
+        await self._msg("", role="assistant", tool_calls=[
+            {"id": "k-1", "name": "slides_create_deck", "arguments": {"title": "Pitch", "layouts": ["title"]}},
+        ])
+        await self._msg(json.dumps(result), role="tool", tool_call_id="k-1")
+
+        messages = (await self.consumer._load_history(self.thread))["messages"]
+        body = json.loads(next(m["content"] for m in messages if m.get("tool_call_id") == "k-1"))
+        self.assertIn("Active Slide Deck", body["deck_json"])
+        self.assertEqual(body["slide_ids"], ["s1"])
+        stored = await database_sync_to_async(
+            lambda: ChatMessage.objects.filter(thread=self.thread, role="tool").first()
+        )()
+        self.assertEqual(json.loads(stored.content)["deck_json"], result["deck_json"])
+
+    @override_settings(CONTEXT_RAW_TOOL_TURNS=2)
+    async def test_recent_create_result_kept_when_deck_switched_in_a_later_turn(self):
+        result = {"status": "ok", "deck_id": "7", "title": "Pitch", "slide_ids": ["s1"],
+                  "deck_json": "{" + "x" * 3000 + "}"}
+        await self._msg("Question one", role="user")
+        await self._msg("", role="assistant", tool_calls=[
+            {"id": "k-1", "name": "slides_create_deck", "arguments": {"title": "Pitch", "layouts": ["title"]}},
+        ])
+        await self._msg(json.dumps(result), role="tool", tool_call_id="k-1")
+        await self._msg("Question two", role="user")
+        await self._msg("", role="assistant", tool_calls=[
+            {"id": "a-1", "name": "slide_canvas_activate", "arguments": {"deck_names": ["Other"]}},
+        ])
+        await self._msg('{"status": "ok"}', role="tool", tool_call_id="a-1")
+
+        messages = (await self.consumer._load_history(self.thread))["messages"]
+        body = next(m["content"] for m in messages if m.get("tool_call_id") == "k-1")
+        self.assertEqual(json.loads(body), result)
+
+    @override_settings(CONTEXT_RAW_TOOL_TURNS=2)
+    async def test_recent_unflagged_big_result_untouched(self):
+        big = "result " * 600
+        await self._msg("Question one", role="user")
+        await self._msg("", role="assistant", tool_calls=[
+            {"id": "w-1", "name": "web_search", "arguments": {"query": "cats"}},
+        ])
+        await self._msg(big, role="tool", tool_call_id="w-1")
+
+        messages = (await self.consumer._load_history(self.thread))["messages"]
+        self.assertEqual(next(m["content"] for m in messages if m.get("tool_call_id") == "w-1"), big)
+
+    @override_settings(CONTEXT_RAW_TOOL_TURNS=-1)
+    async def test_disabled_setting_also_disables_recency_trimming(self):
+        deck = {"version": 1, "slides": [{"id": "s1", "name": "x" * 3000}]}
+        await self._msg("Question one", role="user")
+        await self._msg("", role="assistant", tool_calls=[
+            {"id": "d-1", "name": "slide_canvas_write", "arguments": {"content": deck}},
+        ])
+        await self._msg('{"status": "ok"}', role="tool", tool_call_id="d-1")
+
+        messages = (await self.consumer._load_history(self.thread))["messages"]
+        calls = {tc["id"]: tc for m in messages for tc in m.get("tool_calls") or []}
+        self.assertEqual(calls["d-1"]["arguments"]["content"], deck)
 
 
 class SummariseExcludesToolNoiseTests(TransactionTestCase):

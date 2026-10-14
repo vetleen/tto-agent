@@ -80,6 +80,13 @@ class ContextAwareTool(BaseTool):
     # Calls whose serialized arguments are shorter than this are never trimmed
     # (not worth an edit). See trim_args_at_edit_point.
     trim_args_min_chars: int = 2000
+    # Recency alone never protects this tool's payloads (arguments AND results) at
+    # an edit point / between turns; the current round still does. Opt in only
+    # when a consolidated copy of the payload is always in the context (the slide
+    # tools: the current-deck block / Active Slide Deck section).
+    trim_despite_recency: bool = False
+    # Results shorter than this are never passed to trim_result_at_edit_point.
+    trim_result_min_chars: int = 2000
 
     def end_label_for_result(self, result: dict) -> str | None:
         """Dynamic past-tense label derived from the (best-effort parsed) result
@@ -101,6 +108,18 @@ class ContextAwareTool(BaseTool):
         """
         return None
 
+    def trim_result_at_edit_point(self, result: str, args: dict, *, later_calls: list) -> str | None:
+        """Return a shrunken copy of an OLD call's result body, or None to keep it.
+
+        The result-side twin of trim_args_at_edit_point, same contract: called
+        only at edit points and on between-turn history, for results longer than
+        ``trim_result_min_chars`` that recency no longer protects (or whose tool
+        opted out of recency protection). ``args`` are the call's — possibly
+        already trimmed — arguments. Return the full replacement body (keep the
+        small fields; replace the big ones with ``omitted_result_marker``).
+        """
+        return None
+
 
 OMITTED_ARG_PREFIX = "[Omitted from this transcript to save space"
 
@@ -114,6 +133,13 @@ def omitted_arg_marker(what: str, where: str) -> str:
     return f"{OMITTED_ARG_PREFIX} — this call ran with the full {what}. {where}]"
 
 
+def omitted_result_marker(what: str, where: str) -> str:
+    """Marker replacing a big field of a trimmed tool RESULT (see
+    trim_result_at_edit_point). Same prefix as the argument marker, so
+    ``is_omitted_arg`` doubles as the idempotence check for both."""
+    return f"{OMITTED_ARG_PREFIX} — this result carried the full {what}. {where}]"
+
+
 def is_omitted_arg(value) -> bool:
     return isinstance(value, str) and value.startswith(OMITTED_ARG_PREFIX)
 
@@ -121,4 +147,4 @@ def is_omitted_arg(value) -> bool:
 # Backward-compat alias
 Tool = ContextAwareTool
 
-__all__ = ["ContextAwareTool", "Tool", "omitted_arg_marker", "is_omitted_arg"]
+__all__ = ["ContextAwareTool", "Tool", "omitted_arg_marker", "omitted_result_marker", "is_omitted_arg"]

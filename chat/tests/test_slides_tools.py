@@ -46,6 +46,20 @@ class SlideToolTests(TestCase):
         tool.set_context(self.ctx)
         return json.loads(tool._run(**kw))
 
+    def test_create_result_hook_round_trips_real_result(self):
+        """The create tool's own result shrinks to a pointer (deck_json) while the
+        ids the model needs for later edits stay."""
+        tool = CreateDeckTool()
+        tool.set_context(self.ctx)
+        raw = tool._run(title="Deck A", layouts=["title", "bullets"])
+        data = json.loads(raw)
+        self.assertIn("Presentation title", data["deck_json"])
+        out = json.loads(tool.trim_result_at_edit_point(raw, {"title": "Deck A"}, later_calls=[]))
+        self.assertIn("Active Slide Deck", out["deck_json"])
+        self.assertEqual(out["slide_ids"], data["slide_ids"])
+        self.assertEqual(out["deck_id"], data["deck_id"])
+        self.assertLess(len(json.dumps(out)), len(raw))
+
     def test_create_empty_deck(self):
         r = self._run(CreateDeckTool(), title="Scratch")
         self.assertEqual(r["status"], "ok")
@@ -763,9 +777,11 @@ class DeckBlockProviderTests(TestCase):
         self.assertIn('"Fresh"', block)
         self.assertIn('"s2"', block)
 
-    def test_provider_never_raises(self):
+    def test_provider_returns_none_on_failure(self):
+        """A failed read is logged and reported as None (not ""), so the tool loop
+        can flag RunContext.deck_block_failed and the slide tools keep their JSON."""
         self._run(CreateDeckTool(), title="Deck A", layouts=["title"])
         with mock.patch(
             "chat.slides.service.active_deck_for_prompt", side_effect=RuntimeError("db down"),
         ), self.assertLogs("chat.slides.deck_block", level="ERROR"):
-            self.assertEqual(self._provider(None)(), "")
+            self.assertIsNone(self._provider(None)())

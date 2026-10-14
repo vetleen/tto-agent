@@ -25,10 +25,12 @@ def make_deck_block_provider(thread_id: str, *, baseline: tuple | None) -> Calla
     rendered>)`` — ``None`` when the turn started without a deck. The provider
     returns ``""`` when there is no active deck or it is unchanged since the
     preamble (the snapshot the model already has is exact, so a block would be
-    dead weight), and never raises: a failed read is logged and yields no block.
+    dead weight), and never raises: a failed read is logged and returns ``None``,
+    which the tool loop records as ``RunContext.deck_block_failed`` so the slide
+    tools keep their payloads at that edit point.
     """
 
-    def provider() -> str:
+    def provider() -> str | None:
         from django.db import close_old_connections, connection
 
         from chat.prompts import render_active_deck_block
@@ -41,7 +43,7 @@ def make_deck_block_provider(thread_id: str, *, baseline: tuple | None) -> Calla
             return render_active_deck_block(active, decks)
         except Exception:  # noqa: BLE001 — best-effort; never break the turn
             logger.exception("Deck block provider failed for thread %s", thread_id)
-            return ""
+            return None
         finally:
             # Same hygiene as the tool pool (_execute_tool_calls._run_one): this
             # runs on the pipeline's producer thread. Skipped inside an atomic
