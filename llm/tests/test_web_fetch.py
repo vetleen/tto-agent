@@ -1590,6 +1590,60 @@ class WebFetchLargePageLaneTests(TestCase):
 
 
 @override_settings(
+    CACHES={"default": {"BACKEND": "django.core.cache.backends.dummy.DummyCache"}},
+    JINA_API_KEY="",
+)
+class WebFetchParseTreeFreedTests(TestCase):
+    """The bs4 tree is decompose()d once extraction is done (success or error), so
+    its parent<->child cycles don't wait for a rare gen2 GC to be freed."""
+
+    def _spy_soup(self):
+        real_bs = web_fetch_module.BeautifulSoup
+        built = []
+
+        def _build(*args, **kwargs):
+            soup = real_bs(*args, **kwargs)
+            built.append(soup)
+            return soup
+
+        return built, patch.object(web_fetch_module, "BeautifulSoup", side_effect=_build)
+
+    @patch("llm.tools.web_fetch._pinned_get")
+    def test_tree_decomposed_after_extraction(self, mock_get):
+        from django.core.cache import cache
+        from llm.tools.web_fetch import _fetch_core
+
+        mock_get.return_value = _mock_response(
+            content_type="text/html",
+            text="<html><head><title>Freed</title></head><body><p>Body text here</p></body></html>",
+        )
+        built, spy = self._spy_soup()
+        with spy:
+            data = _fetch_core("https://example.com/freed", cache)
+
+        self.assertEqual(data["title"], "Freed")
+        self.assertIn("Body text here", data["content"])
+        self.assertEqual(len(built), 1)
+        self.assertTrue(built[0].decomposed)
+
+    @patch("llm.tools.web_fetch._pinned_get")
+    def test_tree_decomposed_when_extraction_raises(self, mock_get):
+        from django.core.cache import cache
+        from llm.tools.web_fetch import _fetch_core
+
+        mock_get.return_value = _mock_response(
+            content_type="text/html", text="<html><body><p>Boom</p></body></html>",
+        )
+        built, spy = self._spy_soup()
+        with spy, patch.object(web_fetch_module, "_extract_content", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                _fetch_core("https://example.com/boom", cache)
+
+        self.assertEqual(len(built), 1)
+        self.assertTrue(built[0].decomposed)
+
+
+@override_settings(
     CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
     JINA_API_KEY="",
 )

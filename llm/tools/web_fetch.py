@@ -1064,29 +1064,36 @@ def _fetch_uncached(url: str, cache, cache_key: str, context=None) -> dict:
         except Exception:
             return {"error": "Failed to parse HTML", "url": url}
 
-        # Image-discovery clean: non-content + visually-hidden removed, chrome
-        # and aria-hidden kept — on homepage/portal layouts the content images
-        # live in the chrome/aria-hidden regions the text path strips.
-        _strip_for_images(soup)
-
-        # Read image candidates from the tree at this state (read-only). Non-fatal:
-        # a failure here must not lose the page text.
         try:
-            images = _extract_image_candidates(soup, current_url)
-        except Exception:
-            logger.debug("web_fetch: image candidate extraction failed (non-fatal)")
-            images = []
+            # Image-discovery clean: non-content + visually-hidden removed, chrome
+            # and aria-hidden kept — on homepage/portal layouts the content images
+            # live in the chrome/aria-hidden regions the text path strips.
+            _strip_for_images(soup)
 
-        # Finish the text clean on the SAME tree: drop semantic chrome and the
-        # aria-hidden elements the image path intentionally kept. Combined with the
-        # non-content + hidden removal above, this reproduces _strip_hidden_elements.
-        for tag in soup.find_all(_CHROME_TAGS):
-            tag.decompose()
-        _remove_hidden_elements(soup, include_aria=True)
-        cleaned_html = str(soup)
+            # Read image candidates from the tree at this state (read-only). Non-fatal:
+            # a failure here must not lose the page text.
+            try:
+                images = _extract_image_candidates(soup, current_url)
+            except Exception:
+                logger.debug("web_fetch: image candidate extraction failed (non-fatal)")
+                images = []
 
-        # --- Extract content as markdown ---
-        title, text = _extract_content(cleaned_html, soup)
+            # Finish the text clean on the SAME tree: drop semantic chrome and the
+            # aria-hidden elements the image path intentionally kept. Combined with the
+            # non-content + hidden removal above, this reproduces _strip_hidden_elements.
+            for tag in soup.find_all(_CHROME_TAGS):
+                tag.decompose()
+            _remove_hidden_elements(soup, include_aria=True)
+            cleaned_html = str(soup)
+
+            # --- Extract content as markdown ---
+            title, text = _extract_content(cleaned_html, soup)
+        finally:
+            # A bs4 tree is parent<->child reference cycles: `del` alone leaves it
+            # for the gen2 GC, which rarely runs on an idle dyno (prod held one big
+            # page's tree for 1h+). decompose() breaks the cycles so refcounting
+            # frees it now — on the error path too.
+            soup.decompose()
 
         # Heavy objects no longer needed — free them before the network/cache tail
         # so the semaphore slot and the arenas are released promptly.
