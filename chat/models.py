@@ -752,8 +752,17 @@ class SubAgentRun(models.Model):
     completed_at = models.DateTimeField(null=True, blank=True)
     # When the orchestrator claimed this run's result for reporting (see
     # ChatConsumer._claim_unreported_subagents). Acts as a lease: a claim
-    # older than the lease window with no assistant response is re-claimable.
+    # older than the lease window whose run is still undelivered is
+    # re-claimable.
     reported_at = models.DateTimeField(null=True, blank=True)
+    # When the outcome actually reached the orchestrator model: its hidden
+    # outcome message was replayed into a turn that persisted a final assistant
+    # message (ChatConsumer._mark_subagents_delivered), or the blocking
+    # chat_subagent_create wait returned it inline. NULL until then — and
+    # forever for user-cancelled runs, which never get an outcome message and
+    # are never claimable. The per-run marker (not "some later assistant reply")
+    # is what keeps an outcome that lands mid-turn from being skipped.
+    delivered_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ["-created_at"]

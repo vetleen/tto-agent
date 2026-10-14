@@ -349,8 +349,11 @@ class CreateSubagentTool(ContextAwareTool):
         # notices completion. The completion event reaches every consumer on
         # the thread (another tab, or the page a dropped socket reloaded) inside
         # the 2 s poll gap, and an outcome that is still unclaimed there seeds a
-        # duplicate orchestrator turn. The claim is released on timeout so the
-        # usual event/watchdog delivery takes over.
+        # duplicate orchestrator turn. Once the outcome goes back in this tool
+        # result the run is marked delivered outright (the hidden outcome
+        # message is never replayed by a seeded turn; the lease alone expired
+        # mid-turn and re-seeded a duplicate). The claim is released on timeout
+        # so the usual event/watchdog delivery takes over.
         _claim_run(run.id)
         polls = 0
         deadline = time.monotonic() + timeout
@@ -361,7 +364,7 @@ class CreateSubagentTool(ContextAwareTool):
                 _claim_run(run.id)  # a wait longer than the report lease stays claimed
             run.refresh_from_db()
             if run.status == SubAgentRun.Status.COMPLETED:
-                _claim_run(run.id)
+                _mark_run_delivered(run.id)
                 if run.result or run.canvas:
                     from chat.subagent_service import render_canvas_block
 
@@ -377,9 +380,20 @@ class CreateSubagentTool(ContextAwareTool):
                     "Its findings may have been lost. Consider doing this research directly.",
                 })
             if run.status == SubAgentRun.Status.FAILED:
+                # The full outcome — error plus any partial working canvas the
+                # worker kept — goes back inline, so this is a delivery too.
+                _mark_run_delivered(run.id)
+                message = f"Sub-agent failed: {run.error}"
+                if run.canvas:
+                    from chat.subagent_service import render_canvas_block
+
+                    message += (
+                        " It left a partial working canvas (below)."
+                        + render_canvas_block(run)
+                    )
                 return json.dumps({
                     "status": "error",
-                    "message": f"Sub-agent failed: {run.error}",
+                    "message": message,
                 })
 
         # Timeout exceeded — still waiting for a slot, or still running. Release
@@ -416,12 +430,26 @@ _CLAIM_REFRESH_POLLS = 30
 
 
 def _claim_run(run_id) -> None:
-    """Mark the run as reported by the orchestrator turn that is waiting on it."""
+    """Mark the run as claimed by the orchestrator turn that is waiting on it."""
     from django.utils import timezone
 
     from chat.models import SubAgentRun
 
     SubAgentRun.objects.filter(pk=run_id).update(reported_at=timezone.now())
+
+
+def _mark_run_delivered(run_id) -> None:
+    """The waiting turn is returning the outcome inline: claimed AND delivered.
+
+    Nothing may replay the hidden outcome message afterwards — a seeded
+    continuation would only duplicate what this tool result already carries.
+    """
+    from django.utils import timezone
+
+    from chat.models import SubAgentRun
+
+    now = timezone.now()
+    SubAgentRun.objects.filter(pk=run_id).update(reported_at=now, delivered_at=now)
 
 
 # Register on import

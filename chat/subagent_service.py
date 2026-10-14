@@ -578,33 +578,37 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
             )
             raise
         logger.exception("Sub-agent run %s failed", run_id)
-        # Durability: a terminal (non-cancel) failure shouldn't discard a canvas
-        # the sub-agent already built. Surface it to the orchestrator before
-        # marking FAILED. A cancelled run is already FAILED, so it's skipped — and
-        # the hidden-message guard avoids a duplicate if one somehow exists.
-        try:
-            fresh = SubAgentRun.objects.get(pk=run_id)
-            if (
-                fresh.status != SubAgentRun.Status.FAILED
-                and fresh.canvas
-                and not _subagent_result_message_exists(fresh)
-            ):
-                _create_subagent_result_message(fresh)
-                from chat.tasks import _notify_consumer
-
-                _notify_consumer(str(fresh.id), str(fresh.thread_id))
-        except Exception:
-            logger.warning(
-                "Failed to surface canvas for terminally-failed sub-agent run %s",
-                run_id, exc_info=True,
-            )
         # Guarded: keep an earlier failure reason (e.g. "Cancelled by user.")
-        # instead of clobbering it with this exception's message.
-        SubAgentRun.objects.filter(pk=run_id).exclude(
+        # instead of clobbering it with this exception's message. The row count
+        # doubles as the "we ended it, not a user cancel" test below.
+        finished = SubAgentRun.objects.filter(pk=run_id).exclude(
             status=SubAgentRun.Status.FAILED,
         ).update(
             status=SubAgentRun.Status.FAILED,
             error=str(exc),
             completed_at=timezone.now(),
         )
+        if finished:
+            # Durability: a terminal (non-cancel) failure shouldn't discard a
+            # canvas the sub-agent already built — surface it as the outcome;
+            # otherwise a failure message so the orchestrator still reacts.
+            # Status flips FIRST: the notified consumer's claim only looks at
+            # terminal rows, so notifying before the update left this outcome
+            # for the watchdog. A cancelled run is already FAILED and gets
+            # nothing here; both writers are deduplicated by the hidden-message
+            # guard. (Celery's on_failure is a no-op once the row is FAILED.)
+            try:
+                fresh = SubAgentRun.objects.get(pk=run_id)
+                if fresh.canvas and not _subagent_result_message_exists(fresh):
+                    _create_subagent_result_message(fresh)
+                else:
+                    _create_subagent_failure_message(fresh)
+                from chat.tasks import _notify_consumer
+
+                _notify_consumer(str(fresh.id), str(fresh.thread_id))
+            except Exception:
+                logger.warning(
+                    "Failed to surface outcome for terminally-failed sub-agent run %s",
+                    run_id, exc_info=True,
+                )
         raise

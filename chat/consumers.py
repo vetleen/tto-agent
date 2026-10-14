@@ -41,10 +41,12 @@ class _TurnState:
     warn_verdict: object | None = None
     modified_canvas_ids: set = field(default_factory=set)
     modified_slide_set_ids: set = field(default_factory=set)
-    # Whether hidden sub-agent outcome messages were replayed into this turn's
-    # prompt; the final assistant message is then tagged subagent_response so
-    # the unreported-claim logic counts this turn as the report.
-    history_has_subagent_results: bool = False
+    # Undelivered sub-agent outcomes (run ids, str) that existed when this
+    # turn's history was loaded and so were replayed into its prompt. Persisting
+    # the final assistant message marks them delivered
+    # (_mark_subagents_delivered) — per run, so an outcome that lands mid-turn
+    # is not swept up by this turn's reply and still seeds its own continuation.
+    pending_subagent_run_ids: list = field(default_factory=list)
     # Attachments the user sent with this message (str ids). The streaming task
     # holds the turn until their worker-side processing finishes
     # (_wait_for_attachments); ids still PENDING when the hold times out land in
@@ -1382,53 +1384,87 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 )
 
     # Re-claimable after this long: covers seeded streams that died before
-    # producing the assistant response (retried on the next load/notification
-    # or watchdog tick).
+    # persisting the assistant reply that would have marked the run delivered
+    # (retried on the next load/notification or watchdog tick).
     SUBAGENT_REPORT_LEASE_MINUTES = 5
 
-    def _unreported_subagent_run_ids_sync(self, thread_id) -> list:
-        """Terminal runs whose hidden outcome message has no assistant response.
+    def _unreported_subagent_outcomes_sync(self, thread_id) -> tuple[list, list]:
+        """Terminal runs whose outcome has not reached the model, plus their messages.
 
-        A run's outcome — final text, working canvas, or terminal failure — is
-        persisted as a hidden chat message, and that message's existence is the
-        gate here: cancelled runs never get one, so FAILED-by-cancel rows are
-        naturally excluded even though FAILED is included in the status filter.
-        Sync so both the async read-only wrapper and the claim share it.
+        Returns ``(run_ids, hidden_message_ids)``, both oldest-first. A run's
+        outcome — final text, working canvas, or terminal failure — is persisted
+        as a hidden chat message, and that message's existence is the gate here:
+        cancelled runs never get one, so FAILED-by-cancel rows are naturally
+        excluded even though FAILED is included in the status filter. Delivery
+        is tracked per run (``SubAgentRun.delivered_at``), never inferred from
+        a later assistant reply: a reply persisted after an outcome landed may
+        have been generated from a prompt that predates it.
+
+        Runs → messages, matching ``metadata.subagent_run_id`` as strings in
+        Python: a branched thread carries copied hidden messages whose run ids
+        belong to the source thread (and tests use non-UUID ids), so metadata
+        values are never fed into a ``pk`` lookup. Two queries. Sync so the
+        async read-only wrapper, the claim and the history snapshot share it.
         """
         from chat.models import ChatMessage, SubAgentRun
 
-        candidate_run_ids = list(
+        candidate_ids = list(
             SubAgentRun.objects.filter(
                 thread_id=thread_id,
                 status__in=[
                     SubAgentRun.Status.COMPLETED,
                     SubAgentRun.Status.FAILED,
                 ],
-            ).values_list("id", flat=True)
+                delivered_at__isnull=True,
+            ).order_by("created_at").values_list("id", flat=True)
         )
+        if not candidate_ids:
+            return [], []
 
-        unreported_ids = []
-        for run_id in candidate_run_ids:
-            hidden_msg = ChatMessage.objects.filter(
-                thread_id=thread_id,
-                metadata__source="subagent",
-                metadata__subagent_run_id=str(run_id),
-            ).order_by("-created_at").first()
-            if hidden_msg:
-                has_response = ChatMessage.objects.filter(
-                    thread_id=thread_id,
-                    role="assistant",
-                    metadata__subagent_response=True,
-                    created_at__gt=hidden_msg.created_at,
-                ).exists()
-                if not has_response:
-                    unreported_ids.append(run_id)
-        return unreported_ids
+        wanted = {str(run_id) for run_id in candidate_ids}
+        found: set = set()
+        message_ids = []
+        for msg_id, metadata in (
+            ChatMessage.objects.filter(thread_id=thread_id, metadata__source="subagent")
+            .order_by("created_at")
+            .values_list("id", "metadata")
+        ):
+            run_id = (metadata or {}).get("subagent_run_id")
+            if run_id in wanted:
+                found.add(run_id)
+                message_ids.append(msg_id)
+        run_ids = [run_id for run_id in candidate_ids if str(run_id) in found]
+        return run_ids, message_ids
+
+    def _unreported_subagent_run_ids_sync(self, thread_id) -> list:
+        """Terminal runs whose outcome has not reached the model (see above)."""
+        return self._unreported_subagent_outcomes_sync(thread_id)[0]
 
     @database_sync_to_async
     def _get_unreported_subagent_run_ids(self, thread_id) -> list:
         """Read-only view of unreported terminal runs (used by the watchdog)."""
         return self._unreported_subagent_run_ids_sync(thread_id)
+
+    @database_sync_to_async
+    def _mark_subagents_delivered(self, thread_id, run_ids) -> int:
+        """Record that these runs' outcomes reached the model.
+
+        Called right AFTER the final assistant message of a turn whose prompt
+        replayed them is persisted — so a crash in between yields a duplicate
+        report, never a lost one. Idempotent (only NULL rows are stamped) and
+        thread-scoped. Returns the number of rows newly marked.
+        """
+        from django.utils import timezone
+
+        from chat.models import SubAgentRun
+
+        if not run_ids:
+            return 0
+        return SubAgentRun.objects.filter(
+            thread_id=thread_id,
+            pk__in=list(run_ids),
+            delivered_at__isnull=True,
+        ).update(delivered_at=timezone.now())
 
     def _should_seed_continuation(self, turn) -> bool:
         """Whether this consumer may start a seeded orchestrator turn after ``turn``.
@@ -1454,7 +1490,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
         orchestrator turn. The claim is an optimistic CAS on ``reported_at``,
         so when the same thread is open in multiple tabs only one consumer
         seeds — preventing duplicate assistant turns (and double LLM cost).
-        A stale claim (older than the lease, still no response) is re-claimable.
+        A stale claim (older than the lease, run still undelivered) is
+        re-claimable; a delivered run is never a candidate again.
         """
         from datetime import timedelta
 
@@ -2380,7 +2417,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                         history_mode=history_mode, thinking_level=thinking_level,
                     )
                 )
-                turn.history_has_subagent_results = bool(meta.get("has_subagent_results"))
+                turn.pending_subagent_run_ids = list(meta.get("subagent_run_ids") or [])
 
                 await self._stream_response(
                     thread, static_system, history,
@@ -2493,11 +2530,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     logger.exception("Failed to resync sub-agent status")
 
             # Seed a continuation for any sub-agent result that arrived while the
-            # stream ran — but ONLY if this turn is still the current, live turn
-            # of a connected session (_should_seed_continuation): a cancelled /
-            # superseded turn must not spawn a second concurrent stream, and a
-            # detached one finishes its single turn and leaves the continuation
-            # to whichever live consumer claims it.
+            # stream ran — the claim only sees runs still undelivered, so the
+            # outcomes this turn just replayed (marked on persist) are excluded
+            # while one that landed mid-stream is not. ONLY if this turn is
+            # still the current, live turn of a connected session
+            # (_should_seed_continuation): a cancelled / superseded turn must not
+            # spawn a second concurrent stream, and a detached one finishes its
+            # single turn and leaves the continuation to whichever live consumer
+            # claims it.
             if (
                 self._should_seed_continuation(turn)
                 and await self._claim_unreported_subagents(str(thread.id))
@@ -2841,7 +2881,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         turn = _TurnState(
             cancel_event=threading.Event(),
             stream_finished=asyncio.Event(),
-            history_has_subagent_results=bool(meta.get("has_subagent_results")),
+            pending_subagent_run_ids=list(meta.get("subagent_run_ids") or []),
         )
         self._turn = turn
         self._cancel_event = turn.cancel_event
@@ -3355,16 +3395,22 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     replay = build_assistant_replay(resolved_model, replay_blocks, accumulated_content)
                     if replay:
                         metadata["replay"] = replay
-                    # Any turn whose prompt replayed sub-agent outcomes counts
-                    # as their report — not just seeded continuations. Without
-                    # this, a manual user message that consumed the results
-                    # still left them "unreported" and the post-stream claim
-                    # fired a redundant duplicate seeded turn.
-                    if seed_mode or (turn and turn.history_has_subagent_results):
-                        metadata["subagent_response"] = True
+                    # Any turn whose prompt replayed sub-agent outcomes is their
+                    # report — seeded continuations and manual user turns alike
+                    # (otherwise the post-stream claim would fire a redundant
+                    # seeded turn). Exactly the runs snapshotted at history load
+                    # are marked, so an outcome that landed mid-stream stays
+                    # unreported and seeds its own continuation. Marked AFTER
+                    # the row exists: a crash in between yields a duplicate
+                    # report, never a lost one.
+                    delivered = list(turn.pending_subagent_run_ids) if turn else []
+                    if delivered:
+                        metadata["subagent_delivered_run_ids"] = delivered
                     await self._create_message(
                         thread, "assistant", accumulated_content, metadata=metadata,
                     )
+                    if delivered:
+                        await self._mark_subagents_delivered(str(thread.id), delivered)
 
         except LLMConfigurationError:
             logger.exception("LLM misconfigured for streaming response")
@@ -5265,6 +5311,27 @@ class ChatConsumer(AsyncWebsocketConsumer):
         scoped = pass_start is not None
         summary_token_count = 0 if scoped else thread.summary_token_count
 
+        # Snapshot the undelivered sub-agent outcomes BEFORE the message query:
+        # persisting this turn's final reply marks exactly these runs delivered.
+        # Snapshot semantics ("existed at load") rather than "included in the
+        # prompt" on purpose — an outcome excluded by the budget or folded into
+        # the rolling summary must still count as consumed, or its claim would
+        # re-seed a turn that excludes it again, forever. Taken first so a
+        # message inserted between the two queries is shown-but-unmarked
+        # (replayed once more later, harmless), never marked-but-unshown.
+        pending_run_ids, pending_msg_ids = self._unreported_subagent_outcomes_sync(thread.id)
+        pending_run_ids = [str(run_id) for run_id in pending_run_ids]
+        pass_scope = None
+        if pass_start is not None:
+            from django.db.models import Q
+
+            # A scoped loop pass still shows an outcome that predates it (a
+            # sub-agent dispatched in the previous pass finishing late): the
+            # alternative is marking it delivered unseen.
+            pass_scope = Q(created_at__gte=pass_start)
+            if pending_msg_ids:
+                pass_scope |= Q(pk__in=pending_msg_ids)
+
         # Load ALL messages newest-first (needed to build the overlap window).
         msgs_qs = (
             ChatMessage.objects.filter(thread=thread)
@@ -5274,8 +5341,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             # drop every message whose metadata lacks the key (NULL gotcha).
             .exclude(metadata__has_key="ui_only")
         )
-        if pass_start is not None:
-            msgs_qs = msgs_qs.filter(created_at__gte=pass_start)
+        if pass_scope is not None:
+            msgs_qs = msgs_qs.filter(pass_scope)
         all_msgs = list(msgs_qs.order_by("-created_at"))
         total_messages = len(all_msgs)
 
@@ -5291,7 +5358,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     "included_history_tokens": 0,
                     "summary_tokens": 0,
                     "history_truncated": False,
-                    "has_subagent_results": False,
+                    "subagent_run_ids": pending_run_ids,
+                    "has_subagent_results": bool(pending_run_ids),
                     "reserved_overhead_tokens": reserved_tokens,
                     "effort": effort,
                 },
@@ -5318,8 +5386,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             thread=thread,
             created_at__lt=oldest_overlap.created_at,
         ).exclude(is_redacted=True).exclude(metadata__has_key="ui_only").order_by("-created_at")
-        if pass_start is not None:
-            add_qs = add_qs.filter(created_at__gte=pass_start)
+        if pass_scope is not None:
+            add_qs = add_qs.filter(pass_scope)
         if thread.summary_up_to_message_id:
             cutoff_msg = ChatMessage.objects.filter(
                 id=thread.summary_up_to_message_id,
@@ -5505,14 +5573,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "included_history_tokens": included_history_tokens,
                 "summary_tokens": summary_token_count,
                 "history_truncated": total_messages > len(included),
-                # Whether hidden sub-agent outcome messages were replayed into
-                # this turn's prompt. The final assistant message is then tagged
-                # subagent_response so the unreported-claim logic counts this
-                # turn as the report (no duplicate seeded turn).
-                "has_subagent_results": any(
-                    m.metadata and m.metadata.get("source") == "subagent"
-                    for m in included
-                ),
+                # Undelivered sub-agent outcomes that existed when this history
+                # was loaded (snapshot above). Persisting the turn's final
+                # assistant message marks exactly these runs delivered, so the
+                # unreported-claim logic counts this turn as their report (no
+                # duplicate seeded turn) without swallowing a later arrival.
+                "subagent_run_ids": pending_run_ids,
+                "has_subagent_results": bool(pending_run_ids),
                 # Stashed so _trigger_summarization can reserve the SAME measured
                 # overhead as this turn's live window (keeps the summarise boundary
                 # aligned with the live-window boundary).

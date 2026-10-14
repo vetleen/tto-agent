@@ -8,7 +8,7 @@ from django.test import TransactionTestCase
 from django.utils import timezone
 
 from chat.consumers import MAX_HISTORY_TOKENS, OVERLAP_TOKENS, ChatConsumer
-from chat.models import ChatMessage, ChatThread, Loop
+from chat.models import ChatMessage, ChatThread, Loop, SubAgentRun
 from core.tokens import count_tokens
 
 User = get_user_model()
@@ -315,25 +315,61 @@ class LoadHistoryTests(TransactionTestCase):
         self.assertEqual(user_msgs[0]["message_id"], str(upload.id))
 
     @database_sync_to_async
-    def _make_subagent_msg(self, content):
+    def _make_subagent_run(self, **overrides):
+        fields = dict(
+            thread=self.thread, user=self.user, prompt="task",
+            status=SubAgentRun.Status.COMPLETED, result="Findings",
+        )
+        fields.update(overrides)
+        return SubAgentRun.objects.create(**fields)
+
+    @database_sync_to_async
+    def _make_subagent_msg(self, content, run_id="fake-run-id"):
         return ChatMessage.objects.create(
             thread=self.thread,
             role="user",
             content=content,
-            metadata={"source": "subagent", "subagent_run_id": "fake-run-id"},
+            metadata={"source": "subagent", "subagent_run_id": str(run_id)},
             token_count=count_tokens(content),
             is_hidden_from_user=True,
         )
 
     async def test_meta_flags_subagent_results_in_history(self):
-        await self._make_subagent_msg("[Sub-agent result: aaa11111]\nFindings")
+        run = await self._make_subagent_run()
+        await self._make_subagent_msg("[Sub-agent result: aaa11111]\nFindings", run.id)
         meta = (await self.consumer._load_history(self.thread))["meta"]
         self.assertTrue(meta["has_subagent_results"])
+        self.assertEqual(meta["subagent_run_ids"], [str(run.id)])
 
     async def test_meta_no_subagent_results_flag_false(self):
         await self._make_msg("Just a normal message")
         meta = (await self.consumer._load_history(self.thread))["meta"]
         self.assertFalse(meta["has_subagent_results"])
+        self.assertEqual(meta["subagent_run_ids"], [])
+
+    async def test_meta_excludes_delivered_runs(self):
+        """Only outcomes still owed to the model are snapshotted; a run an
+        earlier reply already reported stays in history but is not re-marked."""
+        delivered = await self._make_subagent_run(delivered_at=timezone.now())
+        await self._make_subagent_msg("[Sub-agent result: d]\nOld findings", delivered.id)
+        pending = await self._make_subagent_run()
+        await self._make_subagent_msg("[Sub-agent result: p]\nNew findings", pending.id)
+
+        result = await self.consumer._load_history(self.thread)
+        self.assertEqual(result["meta"]["subagent_run_ids"], [str(pending.id)])
+        blob = " ".join(m["content"] for m in result["messages"])
+        self.assertIn("Old findings", blob)
+        self.assertIn("New findings", blob)
+
+    async def test_meta_ignores_hidden_message_without_run(self):
+        """A branched thread carries copied hidden messages whose run ids are
+        foreign (here: not even a UUID): replayed as history, never snapshotted,
+        never an error."""
+        await self._make_subagent_msg("[Sub-agent result: aaa11111]\nFindings")
+        result = await self.consumer._load_history(self.thread)
+        self.assertEqual(result["meta"]["subagent_run_ids"], [])
+        self.assertFalse(result["meta"]["has_subagent_results"])
+        self.assertIn("Findings", result["messages"][-1]["content"])
 
 
 class LoopPassScopingTests(TransactionTestCase):
@@ -433,6 +469,34 @@ class LoopPassScopingTests(TransactionTestCase):
         # Control: unscoped, the same overflow does ask for summarization.
         unscoped = await self.consumer._load_history(self.thread)
         self.assertTrue(unscoped["meta"]["needs_summary"])
+
+    async def test_scoped_pass_shows_pre_pass_undelivered_outcome(self):
+        """A sub-agent dispatched in the previous pass that finishes after the
+        next pass started: its outcome predates the marker but is still shown
+        (and snapshotted) instead of being marked delivered unseen — or, worse,
+        re-seeding a scoped turn that excludes it again, forever."""
+        run = await database_sync_to_async(SubAgentRun.objects.create)(
+            thread=self.thread, user=self.user, prompt="scan",
+            status=SubAgentRun.Status.COMPLETED, result="LATE_FINDINGS",
+        )
+        await self._make_msg_at("old prompt", 0, metadata={"loop_run": True})
+        await self._make_msg_at("PRIOR_REPLY", 1, role="assistant")
+        await self._make_msg_at(
+            "[Sub-agent result: late]\nLATE_FINDINGS", 2,
+            metadata={"source": "subagent", "subagent_run_id": str(run.id)},
+            hidden=True,
+        )
+        await self._make_msg_at("CURRENT_PROMPT", 10, metadata={"loop_run": True})
+
+        result = await self.consumer._load_history(
+            self.thread, scope_to_current_pass=True
+        )
+        blob = " ".join(m["content"] for m in result["messages"])
+        self.assertIn("LATE_FINDINGS", blob)
+        self.assertIn("CURRENT_PROMPT", blob)
+        self.assertNotIn("PRIOR_REPLY", blob)
+        self.assertNotIn("old prompt", blob)
+        self.assertEqual(result["meta"]["subagent_run_ids"], [str(run.id)])
 
     async def test_scope_fallback_when_no_marker(self):
         """No loop_run marker → behave exactly like an unscoped load."""

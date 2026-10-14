@@ -634,9 +634,11 @@ class CreateSubagentToolTimeoutTests(TestCase):
         self.assertEqual(result, "Analysis complete: 3 claims found.")
         run = SubAgentRun.objects.first()
         self.assertEqual(run.timeout, 60)
-        # Sync inline delivery marks the run reported, so the consumer's
-        # _claim_unreported_subagents won't fire a duplicate seeded turn.
+        # Sync inline delivery marks the run claimed AND delivered, so the
+        # consumer's _claim_unreported_subagents never fires a duplicate seeded
+        # turn — not even once the lease expires mid-turn.
         self.assertIsNotNone(run.reported_at)
+        self.assertIsNotNone(run.delivered_at)
 
     @patch("chat.tasks.run_subagent_task")
     @patch("chat.subagent_tool.time")
@@ -690,6 +692,39 @@ class CreateSubagentToolTimeoutTests(TestCase):
 
         self.assertEqual(result["status"], "error")
         self.assertIn("LLM API error", result["message"])
+        # The failure went back inline: delivered, nothing left to replay.
+        self.assertIsNotNone(SubAgentRun.objects.get().delivered_at)
+
+    @patch("chat.tasks.run_subagent_task")
+    @patch("chat.subagent_tool.time")
+    def test_failed_with_canvas_during_poll_returns_canvas_inline(self, mock_time, mock_task):
+        """A partial working canvas is part of the outcome: it rides along with
+        the inline error so marking the run delivered loses nothing."""
+        mock_task.delay.return_value = MagicMock(id="celery-task-457")
+        mock_time.monotonic.side_effect = [0, 2, 4]
+        mock_time.sleep = MagicMock()
+
+        def fake_refresh(run_obj):
+            SubAgentRun.objects.filter(pk=run_obj.pk).update(
+                status=SubAgentRun.Status.FAILED,
+                error="LLM API error",
+                canvas="Partial work so far.",
+                canvas_title="Draft",
+            )
+            run_obj.__dict__.update(
+                SubAgentRun.objects.filter(pk=run_obj.pk).values()[0]
+            )
+
+        ctx = _ctx(self.user.pk, self.thread.id)
+
+        with patch.object(SubAgentRun, "refresh_from_db", autospec=True, side_effect=fake_refresh):
+            result = _invoke(CreateSubagentTool, {"prompt": "task", "timeout": 30}, ctx)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("LLM API error", result["message"])
+        self.assertIn("SUBAGENT CANVAS: Draft", result["message"])
+        self.assertIn("Partial work so far.", result["message"])
+        self.assertIsNotNone(SubAgentRun.objects.get().delivered_at)
 
     @patch("chat.tasks.run_subagent_task")
     @patch("chat.subagent_tool.time")
@@ -763,7 +798,9 @@ class CreateSubagentToolTimeoutTests(TestCase):
 
         self.assertEqual(result["status"], "started")
         self.assertIsNotNone(seen[0], "claimed while waiting")
-        self.assertIsNone(SubAgentRun.objects.get().reported_at, "released on timeout")
+        run = SubAgentRun.objects.get()
+        self.assertIsNone(run.reported_at, "released on timeout")
+        self.assertIsNone(run.delivered_at, "a seeded turn still has to replay the outcome")
 
     @patch("chat.subagent_tool._claim_run")
     @patch("chat.tasks.run_subagent_task")
@@ -791,8 +828,9 @@ class CreateSubagentToolTimeoutTests(TestCase):
         with patch.object(SubAgentRun, "refresh_from_db", autospec=True, side_effect=fake_refresh):
             tool.invoke({"prompt": "long", "timeout": 540})
 
-        # dispatch + one refresh at poll 30 + the completion claim
-        self.assertEqual(mock_claim.call_count, 3)
+        # dispatch + one refresh at poll 30; completion marks delivered instead
+        self.assertEqual(mock_claim.call_count, 2)
+        self.assertIsNotNone(SubAgentRun.objects.get().delivered_at)
 
     @patch("chat.tasks.run_subagent_task")
     def test_timeout_clamped_to_max(self, mock_task):
@@ -1540,6 +1578,98 @@ class RunSubagentServiceTests(TestCase):
         self.assertIn("Transient error", run.error)
         self.assertIsNotNone(run.completed_at)
 
+    def _outcome_messages(self, run):
+        return ChatMessage.objects.filter(
+            thread=self.thread,
+            metadata__source="subagent",
+            metadata__subagent_run_id=str(run.id),
+        )
+
+    @patch("chat.tasks._notify_consumer")
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
+    def test_terminal_exception_without_canvas_writes_failure_message(
+        self, mock_prefs, mock_svc, mock_notify,
+    ):
+        """A canvas-less terminal exception used to leave no hidden message at
+        all (on_failure is a no-op once the row is FAILED), so the orchestrator
+        never heard that the run had died."""
+        mock_prefs.return_value = _prefs()
+        mock_svc.return_value.run_via_stream.side_effect = RuntimeError("Provider exploded")
+        run = SubAgentRun.objects.create(thread=self.thread, user=self.user, prompt="task")
+
+        from chat.subagent_service import run_subagent
+        with self.assertRaises(RuntimeError):
+            run_subagent(run.id)
+
+        msgs = list(self._outcome_messages(run))
+        self.assertEqual(len(msgs), 1)
+        self.assertTrue(msgs[0].content.startswith(f"[Sub-agent failed: {str(run.id)[:8]}]"))
+        self.assertIn("Provider exploded", msgs[0].content)
+        self.assertTrue(msgs[0].is_hidden_from_user)
+        mock_notify.assert_called_once_with(str(run.id), str(self.thread.id))
+
+    @patch("chat.tasks._notify_consumer")
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
+    def test_terminal_exception_with_canvas_notifies_after_failed(
+        self, mock_prefs, mock_svc, mock_notify,
+    ):
+        """The canvas is surfaced as the outcome, and the row is FAILED *before*
+        the consumer is notified: its claim only looks at terminal rows, so the
+        old order (message + notify, then FAILED) left this outcome to the
+        watchdog's next tick."""
+        mock_prefs.return_value = _prefs()
+        mock_svc.return_value.run_via_stream.side_effect = RuntimeError("Crash after canvas")
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="task", canvas="Partial work",
+        )
+        status_at_notify = []
+        mock_notify.side_effect = lambda run_id, thread_id: status_at_notify.append(
+            SubAgentRun.objects.get(pk=run_id).status
+        )
+
+        from chat.subagent_service import run_subagent
+        with self.assertRaises(RuntimeError):
+            run_subagent(run.id)
+
+        msgs = list(self._outcome_messages(run))
+        self.assertEqual(len(msgs), 1)
+        self.assertTrue(msgs[0].content.startswith(f"[Sub-agent result: {str(run.id)[:8]}]"))
+        self.assertIn("Partial work", msgs[0].content)
+        self.assertEqual(status_at_notify, [SubAgentRun.Status.FAILED])
+
+    @patch("chat.tasks._notify_consumer")
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
+    def test_terminal_exception_after_user_cancel_writes_nothing(
+        self, mock_prefs, mock_svc, mock_notify,
+    ):
+        """A run the user cancelled mid-flight is already FAILED: the exception
+        path must neither surface a message nor notify, and must keep the
+        cancellation reason."""
+        mock_prefs.return_value = _prefs()
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="task", canvas="Partial work",
+        )
+
+        def cancel_then_raise(*args, **kwargs):
+            SubAgentRun.objects.filter(pk=run.pk).update(
+                status=SubAgentRun.Status.FAILED, error="Cancelled by user.",
+            )
+            raise RuntimeError("Crash")
+
+        mock_svc.return_value.run_via_stream.side_effect = cancel_then_raise
+
+        from chat.subagent_service import run_subagent
+        with self.assertRaises(RuntimeError):
+            run_subagent(run.id)
+
+        run.refresh_from_db()
+        self.assertEqual(run.error, "Cancelled by user.")
+        self.assertEqual(self._outcome_messages(run).count(), 0)
+        mock_notify.assert_not_called()
+
     @patch("llm.get_llm_service")
     @patch("core.preferences.get_preferences")
     def test_transient_error_leaves_run_running(self, mock_prefs, mock_svc):
@@ -1903,18 +2033,62 @@ class ClaimUnreportedSubagentsTests(TransactionTestCase):
         await self._backdate_reported_at(run, 6)
         self.assertTrue(await self._claim())
 
-    async def test_reported_run_with_response_not_reclaimed(self):
-        """Once an assistant response exists, the run is permanently reported —
+    async def test_delivered_run_not_reclaimed(self):
+        """Once the outcome reached the model (delivered_at is stamped when the
+        reply that replayed it is persisted) the run is permanently reported —
         even after the lease window."""
         run = await self._make_completed_run()
         self.assertTrue(await self._claim())
 
+        await self.consumer._mark_subagents_delivered(str(self.thread.id), [str(run.id)])
+        await self._backdate_reported_at(run, 6)
+        self.assertFalse(await self._claim())
+
+    async def test_undelivered_run_claimable_despite_newer_assistant_message(self):
+        """The regression: run A's seeded turn replied AFTER run B's outcome
+        landed, but that reply came from a prompt loaded before B existed.
+        Reporting is per run, never "a later reply exists" — B stays claimable
+        (the old timestamp heuristic counted A's reply as B's report)."""
+        run_a = await self._make_completed_run()
+        self.assertTrue(await self._claim())
+        run_b = await self._make_completed_run()  # lands mid-turn
         await database_sync_to_async(ChatMessage.objects.create)(
             thread=self.thread, role="assistant",
-            content="Here is what the sub-agent found...",
-            metadata={"subagent_response": True},
+            content="Here is what sub-agent A found...",
+            metadata={"subagent_delivered_run_ids": [str(run_a.id)]},
         )
-        await self._backdate_reported_at(run, 6)
+        await self.consumer._mark_subagents_delivered(str(self.thread.id), [str(run_a.id)])
+
+        ids = await self.consumer._get_unreported_subagent_run_ids(str(self.thread.id))
+        self.assertEqual(ids, [run_b.id])
+        self.assertTrue(await self._claim())
+
+    async def test_hidden_message_for_foreign_run_ignored(self):
+        """A branched thread copies hidden outcome messages whose run ids belong
+        to the source thread (and tests use ids that are not even UUIDs):
+        never claimable, never an error."""
+        await database_sync_to_async(ChatMessage.objects.create)(
+            thread=self.thread, role="user",
+            content="[Sub-agent result: deadbeef]\nCopied.",
+            metadata={"source": "subagent", "subagent_run_id": "not-a-uuid"},
+            is_hidden_from_user=True,
+        )
+        other_thread = await database_sync_to_async(ChatThread.objects.create)(
+            created_by=self.user,
+        )
+        foreign = await database_sync_to_async(SubAgentRun.objects.create)(
+            thread=other_thread, user=self.user, prompt="task",
+            status=SubAgentRun.Status.COMPLETED, result="Theirs.",
+        )
+        await database_sync_to_async(ChatMessage.objects.create)(
+            thread=self.thread, role="user",
+            content=f"[Sub-agent result: {str(foreign.id)[:8]}]\nTheirs.",
+            metadata={"source": "subagent", "subagent_run_id": str(foreign.id)},
+            is_hidden_from_user=True,
+        )
+
+        ids = await self.consumer._get_unreported_subagent_run_ids(str(self.thread.id))
+        self.assertEqual(ids, [])
         self.assertFalse(await self._claim())
 
     async def test_no_completed_runs_returns_false(self):
@@ -1949,6 +2123,155 @@ class ClaimUnreportedSubagentsTests(TransactionTestCase):
         self.assertEqual(ids, [run.id])
         # Read-only: the helper must not take the claim.
         self.assertTrue(await self._claim())
+
+
+class MarkSubagentsDeliveredTests(TransactionTestCase):
+    """``_mark_subagents_delivered``: the per-run report marker."""
+
+    def setUp(self):
+        from chat.consumers import ChatConsumer
+
+        self.user = User.objects.create_user(email="deliver@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+        self.consumer = ChatConsumer()
+        self.consumer.user = self.user
+
+    @database_sync_to_async
+    def _make_run(self, thread=None):
+        return SubAgentRun.objects.create(
+            thread=thread or self.thread, user=self.user,
+            prompt="task", status=SubAgentRun.Status.COMPLETED, result="Findings.",
+        )
+
+    @database_sync_to_async
+    def _delivered_at(self, run):
+        return SubAgentRun.objects.get(pk=run.pk).delivered_at
+
+    async def _mark(self, run_ids):
+        return await self.consumer._mark_subagents_delivered(str(self.thread.id), run_ids)
+
+    async def test_marks_null_rows_once(self):
+        run = await self._make_run()
+        self.assertEqual(await self._mark([str(run.id)]), 1)
+        first = await self._delivered_at(run)
+        self.assertIsNotNone(first)
+        # Idempotent: a duplicate report (two tabs) never moves the stamp.
+        self.assertEqual(await self._mark([str(run.id)]), 0)
+        self.assertEqual(await self._delivered_at(run), first)
+
+    async def test_thread_scoped_and_empty_safe(self):
+        other = await database_sync_to_async(ChatThread.objects.create)(created_by=self.user)
+        run = await self._make_run(thread=other)
+        self.assertEqual(await self._mark([str(run.id)]), 0)
+        self.assertIsNone(await self._delivered_at(run))
+        self.assertEqual(await self._mark([]), 0)
+
+
+class BackfillDeliveredAtTests(TestCase):
+    """Data migration 0052 reproduces what the old heuristic considered settled,
+    so deploying does not seed a continuation on every historical thread."""
+
+    def setUp(self):
+        import importlib
+
+        self.backfill = importlib.import_module(
+            "chat.migrations.0052_subagentrun_delivered_at"
+        ).backfill_delivered_at
+        self.user = User.objects.create_user(email="backfill@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+        self.base = timezone.now() - timedelta(hours=1)
+
+    def _run(self, **overrides):
+        fields = dict(
+            thread=self.thread, user=self.user, prompt="task",
+            status=SubAgentRun.Status.COMPLETED, result="Findings.",
+        )
+        fields.update(overrides)
+        return SubAgentRun.objects.create(**fields)
+
+    def _at(self, msg, minutes):
+        ChatMessage.objects.filter(pk=msg.pk).update(
+            created_at=self.base + timedelta(minutes=minutes),
+        )
+        return ChatMessage.objects.get(pk=msg.pk)
+
+    def _hidden(self, run, minutes):
+        return self._at(ChatMessage.objects.create(
+            thread=self.thread, role="user", content="[Sub-agent result]",
+            metadata={"source": "subagent", "subagent_run_id": str(run.id)},
+            is_hidden_from_user=True,
+        ), minutes)
+
+    def _reply(self, minutes, metadata=None):
+        return self._at(ChatMessage.objects.create(
+            thread=self.thread, role="assistant", content="reply", metadata=metadata or {},
+        ), minutes)
+
+    def _apply(self):
+        from django.apps import apps
+
+        self.backfill(apps, None)
+
+    def _delivered_at(self, run):
+        return SubAgentRun.objects.get(pk=run.pk).delivered_at
+
+    def test_tagged_reply_after_hidden_message_marks_delivered(self):
+        run = self._run()
+        self._hidden(run, 0)
+        reply = self._reply(1, {"subagent_response": True})
+        self._apply()
+        self.assertEqual(self._delivered_at(run), reply.created_at)
+
+    def test_tagged_reply_before_hidden_message_does_not_count(self):
+        run = self._run()
+        self._reply(0, {"subagent_response": True})
+        self._hidden(run, 1)
+        self._apply()
+        self.assertIsNone(self._delivered_at(run))
+
+    def test_inline_blocking_delivery_marks_delivered(self):
+        """Blocking waits returned the outcome inline and never tagged the reply."""
+        run = self._run(timeout=60)
+        SubAgentRun.objects.filter(pk=run.pk).update(reported_at=self.base)
+        self._hidden(run, 1)
+        reply = self._reply(2)
+        self._apply()
+        self.assertEqual(self._delivered_at(run), reply.created_at)
+
+    def test_failed_with_canvas_blocking_run_stays_undelivered(self):
+        """The inline error never carried the canvas, so that outcome is still owed."""
+        run = self._run(
+            timeout=60, status=SubAgentRun.Status.FAILED, error="boom", canvas="Partial",
+        )
+        SubAgentRun.objects.filter(pk=run.pk).update(reported_at=self.base)
+        self._hidden(run, 1)
+        self._reply(2)
+        self._apply()
+        self.assertIsNone(self._delivered_at(run))
+
+    def test_background_claim_in_flight_stays_undelivered(self):
+        """A seeded turn claimed the run but has not replied yet (or died): the
+        lease expiry re-seeds it after deploy, as it would have before."""
+        run = self._run(timeout=0)
+        SubAgentRun.objects.filter(pk=run.pk).update(reported_at=timezone.now())
+        self._hidden(run, 0)
+        self._reply(1)  # untagged: not a report of this run
+        self._apply()
+        self.assertIsNone(self._delivered_at(run))
+
+    def test_cancelled_run_without_message_stays_null(self):
+        run = self._run(status=SubAgentRun.Status.FAILED, error="Cancelled by user.")
+        self._reply(1, {"subagent_response": True})
+        self._apply()
+        self.assertIsNone(self._delivered_at(run))
+
+    def test_already_delivered_untouched(self):
+        run = self._run()
+        SubAgentRun.objects.filter(pk=run.pk).update(delivered_at=self.base)
+        self._hidden(run, 1)
+        self._reply(2, {"subagent_response": True})
+        self._apply()
+        self.assertEqual(self._delivered_at(run), self.base)
 
 
 # ---------------------------------------------------------------------------
@@ -2207,3 +2530,27 @@ class SubagentWatchdogTests(TransactionTestCase):
 
         self.assertTrue(await self._tick())
         self.consumer._handle_chat_message.assert_not_awaited()
+
+    async def test_tick_skips_delivered_run(self):
+        """A delivered outcome is settled for good: no seed, nothing to watch."""
+        run = await self._make_completed_unreported_run()
+        await self.consumer._mark_subagents_delivered(str(self.thread.id), [str(run.id)])
+
+        self.assertFalse(await self._tick())
+        self.consumer._handle_chat_message.assert_not_awaited()
+
+    async def test_tick_seeds_undelivered_despite_newer_assistant_message(self):
+        """A reply persisted after the outcome landed is not its report unless
+        it replayed it — the watchdog still seeds (the old heuristic stopped
+        here and the outcome was orphaned)."""
+        await self._make_completed_unreported_run()
+        await database_sync_to_async(ChatMessage.objects.create)(
+            thread=self.thread, role="assistant",
+            content="Reply generated from an earlier prompt.",
+            metadata={"subagent_delivered_run_ids": [str(uuid.uuid4())]},
+        )
+
+        self.assertTrue(await self._tick())
+        self.consumer._handle_chat_message.assert_awaited_once_with(
+            {"thread_id": str(self.thread.id), "content": ""}, seed_mode=True,
+        )
