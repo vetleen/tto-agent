@@ -1657,3 +1657,20 @@ class FinalReplyReplayBlocksTests(TestCase):
         end_data = {"content_blocks": [{"type": "thinking", "thinking": "x"}, {"type": "text", "text": "y"}]}
         _keep_replay_blocks(end_data)
         self.assertEqual(end_data, {})
+
+    @patch("llm.pipelines.simple_chat.create_chat_model")
+    def test_tool_less_stream_also_hands_over_replay_blocks(self, create_model):
+        blocks = [{"type": "text", "text": "Hi", "extras": {"signature": "c2ln"}}]
+        create_model.return_value.stream.return_value = iter([
+            StreamEvent(event_type="token", data={"text": "Hi"}, sequence=0, run_id="r"),
+            StreamEvent(
+                event_type="message_end",
+                data={"content": "Hi", "content_blocks": blocks},
+                sequence=1, run_id="r",
+            ),
+        ])
+        req = ChatRequest(messages=[Message(role="user", content="hi")], model="gemini/gemini-3.8-flash")
+        end = list(SimpleChatPipeline().stream(req))[-1]
+        self.assertEqual(end.data["replay_blocks"], blocks)
+        self.assertNotIn("content_blocks", end.data)
+        self.assertEqual(end.data["content"], "Hi")

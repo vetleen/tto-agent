@@ -254,7 +254,10 @@ class SimpleChatPipeline(BasePipeline):
             model_name = request.model
             if not model_name:
                 raise ValueError("request.model must be set by the service before calling pipeline")
-            yield from create_chat_model(model_name).stream(request)
+            for event in create_chat_model(model_name).stream(request):
+                if event.event_type == "message_end":
+                    _keep_replay_blocks(event.data)
+                yield event
             return
 
         if not request.model:
