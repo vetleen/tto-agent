@@ -784,6 +784,45 @@ class DomainAccessTests(TestCase):
         self.assertIn("docdb/EP.1000000.A1/biblio", mock_get.call_args.args[0])
 
     @patch("llm.tools.epo_ops.requests.get")
+    def test_lookup_with_probe_up_is_transient_not_query(self, mock_get):
+        # 2026-10-15 (WILFRED-9H): a valid WO biblio get 500'd twice under an
+        # overloaded OPS, the probe passed, and the agent was told to "simplify
+        # your query" — a lookup by number has no query to blame.
+        from llm.models import OpsUsageLog
+
+        mock_get.side_effect = [_domain_access(), _domain_access(), _mock_ok({"ok": 1})]
+        with self.assertLogs("llm.tools.epo_ops", level="INFO") as cm:
+            data = _ops_request("published-data/publication/docdb/WO.2023056265.A1/biblio", {},
+                                tool_name="patent_epoops_get")
+        self.assertIn("not a wrong number", data["error"])
+        self.assertIn("same patent family", data["error"])
+        self.assertNotIn("simplif", data["error"])
+        row = OpsUsageLog.objects.get(tool_name="patent_epoops_get")
+        self.assertTrue(row.error_message.startswith("diagnosis=transient;"))
+        # OPS load, not a Sentry event.
+        self.assertFalse([r for r in cm.records if r.levelname == "WARNING"])
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_query_diagnosis_is_a_warning(self, mock_get):
+        mock_get.side_effect = [_domain_access(), _domain_access(), _mock_ok({"ok": 1})]
+        with self.assertLogs("llm.tools.epo_ops", level="WARNING") as cm:
+            self._call()
+        self.assertIn("health probe up", cm.output[0])
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_unknown_diagnosis_is_not_a_warning(self, mock_get):
+        # WILFRED-9K: overload near the run deadline (no retry, no probe) is OPS
+        # weather already in the usage log, not a Sentry event.
+        mock_get.return_value = _domain_access()
+        ctx = MagicMock()
+        ctx.remaining_seconds.return_value = 0
+        ctx.user_id = None
+        with self.assertLogs("llm.tools.epo_ops", level="INFO") as cm:
+            self._call(context=ctx)
+        self.assertTrue(any("health unknown" in line for line in cm.output))
+        self.assertFalse([r for r in cm.records if r.levelname == "WARNING"])
+
+    @patch("llm.tools.epo_ops.requests.get")
     def test_classification_path_probes_the_classification_service(self, mock_get):
         # 2026-10-13 (WILFRED-9H): a classification overload was probed with a
         # retrieval call, found "up", and blamed the agent's query.

@@ -433,9 +433,19 @@ def _ops_health(service: str, context=None) -> str:
     return result
 
 
-def _domain_access_error(path: str, context, can_probe: bool) -> tuple[dict, str]:
+def _domain_access_error(path: str, context, can_probe: bool, has_query: bool = True) -> tuple[dict, str]:
     """The model-facing error for a DomainAccess that survived its retry, plus
-    the diagnosis recorded in the usage log (outage / query / unknown)."""
+    the diagnosis recorded in the usage log (outage / query / transient / unknown).
+
+    Only a request carrying a query (``q``) can be blamed on its input. A plain
+    lookup by number with a passing probe is load, not a bad request: on
+    2026-10-15 four biblio gets 500'd within six seconds under an "overloaded"
+    OPS, three passed on retry, and the fourth (a valid WO number) was answered
+    with "simplify your query" (WILFRED-9H).
+
+    Only "outage" and "query" are WARNINGs (Sentry events): "transient" and
+    "unknown" are OPS load the usage log already records (WILFRED-9K).
+    """
     health = _ops_health(_probe_key_for_path(path), context) if can_probe else "unknown"
     if health == "down":
         logger.warning("EPO OPS unavailable (DomainAccess, health probe down) path=%s", path)
@@ -444,14 +454,22 @@ def _domain_access_error(path: str, context, can_probe: bool) -> tuple[dict, str
             "also failed, so this is not caused by your query. Wait a few "
             "minutes before retrying, and tell the user EPO patent search is degraded right now."
         )}, "outage"
-    if health == "up":
+    if health == "up" and has_query:
         logger.warning("EPO OPS could not process query (DomainAccess, health probe up) path=%s", path)
         return {"error": (
             "EPO OPS could not process this request (SERVER.DomainAccess), even on a retry, while "
             "a simple test query works. This could be a problem with this particular query: try "
             "simplifying it (fewer keywords or concepts), or check for typos."
         )}, "query"
-    logger.warning("EPO OPS could not process request (DomainAccess, health unknown) path=%s", path)
+    if health == "up":
+        logger.info("EPO OPS could not serve record (DomainAccess, health probe up) path=%s", path)
+        return {"error": (
+            "EPO OPS could not return this record right now (SERVER.DomainAccess), even on a "
+            "retry, although other records load. This is most likely load on EPO's side, not a "
+            "wrong number: do not treat the document as missing. Retry it later, or fetch "
+            "another member of the same patent family instead."
+        )}, "transient"
+    logger.info("EPO OPS could not process request (DomainAccess, health unknown) path=%s", path)
     return {"error": (
         "EPO OPS could not process this request (SERVER.DomainAccess). This may be temporary "
         "on EPO's side or a problem with this query: try once more in a few minutes, or "
@@ -583,7 +601,9 @@ def _ops_request(
                 remaining_fn = getattr(context, "remaining_seconds", None)
                 remaining = remaining_fn() if callable(remaining_fn) else None
                 can_probe = remaining is None or remaining > 0
-                result, diagnosis = _domain_access_error(path, context, can_probe)
+                result, diagnosis = _domain_access_error(
+                    path, context, can_probe, has_query=bool((params or {}).get("q")),
+                )
                 return _done(
                     result,
                     "error",
