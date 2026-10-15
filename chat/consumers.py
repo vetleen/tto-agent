@@ -2051,17 +2051,26 @@ class ChatConsumer(AsyncWebsocketConsumer):
             thread, created = await self._get_or_create_thread(thread_id)
             self._active_thread_id = str(thread.id)
 
-            if created:
-                # Join the thread's broadcast group so sub-agent completion
-                # notifications reach this consumer. Without this, background
-                # sub-agents in threads created mid-session (the common "new
-                # chat" flow) never auto-trigger the orchestrator — the
-                # channel-layer group has no members until a page reload.
-                if self._current_thread_id and self._current_thread_id != str(thread.id):
+            # Join the thread's broadcast group so sub-agent completion
+            # notifications reach this consumer — for ANY thread this session
+            # has not joined yet, not only one it created just now. The
+            # attachment-upload and canvas-import flows pre-create the thread
+            # over HTTP (/chat/api/threads/create/), so the first chat.message
+            # arrives with created=False on a consumer that never loaded a
+            # thread (_current_thread_id still None): the completion group_send
+            # then has no member, subagent_completed and the watchdog tick bail
+            # on the thread-id mismatch (the watchdog dies on its first tick),
+            # and the orchestrator never wakes until the user types "continue"
+            # (prod, 2026-10-15: every sub-agent round of a new chat started
+            # with a PDF). Mirrors _handle_load_thread's switch.
+            if self._current_thread_id != str(thread.id):
+                if self._current_thread_id:
                     await self._safe_group_discard(f"thread_{self._current_thread_id}")
+                    await self._cancel_subagent_watch()
                 self._current_thread_id = str(thread.id)
                 await self._safe_group_add(f"thread_{thread.id}")
 
+            if created:
                 # Persist session data_room_ids as M2M for new threads
                 if self.data_room_ids:
                     await self._persist_data_room_links(thread.id, self.data_room_ids)

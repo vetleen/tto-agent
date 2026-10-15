@@ -403,6 +403,71 @@ class ConsumerMessageTests(TransactionTestCase):
         await communicator.disconnect()
 
     @patch("llm.get_llm_service")
+    async def test_first_message_on_precreated_thread_joins_subagent_group(
+        self, mock_get_service,
+    ):
+        """The attachment-upload and canvas-import flows create the thread over
+        HTTP (/chat/api/threads/create/) before the first message, so that
+        message reaches the consumer with created=False. It must still join
+        thread_<id>: in prod (2026-10-15) such a session never joined, the
+        completion group_send had no member, the watchdog died on its first
+        tick (thread-id mismatch) and no sub-agent round ever woke the
+        orchestrator until the user typed "continue"."""
+        from channels.layers import get_channel_layer
+
+        mock_service = MagicMock()
+
+        async def mock_astream(*args, **kwargs):
+            return
+            yield
+
+        mock_service.astream = mock_astream
+        mock_get_service.return_value = mock_service
+
+        thread = await database_sync_to_async(ChatThread.objects.create)(
+            created_by=self.user,
+        )
+        communicator = await self._connect()
+        await communicator.send_json_to({
+            "type": "chat.message",
+            "content": "Hello",
+            "thread_id": str(thread.id),
+        })
+
+        # Drain the turn up to its post-stream status resync (the lifecycle's
+        # `finally` sends one subagents.updated directly on the socket). No
+        # thread.created: the thread already existed. Anything after this can
+        # only come from the group. (No timeout-draining: asgiref's
+        # receive_output cancels the whole application on timeout.)
+        for _ in range(20):
+            response = await communicator.receive_json_from(timeout=10)
+            self.assertNotEqual(response.get("event_type"), "thread.created")
+            if response.get("event_type") == "subagents.updated":
+                break
+        else:
+            self.fail("the turn never sent its subagents.updated resync")
+
+        channel_layer = get_channel_layer()
+        # InMemoryChannelLayer bookkeeping: the consumer's channel is a member.
+        self.assertTrue(channel_layer.groups.get(f"thread_{thread.id}"))
+
+        # Broadcast a sub-agent completion to the thread group, exactly like
+        # chat.tasks._notify_consumer does from the Celery worker.
+        await channel_layer.group_send(
+            f"thread_{thread.id}",
+            {
+                "type": "subagent.completed",
+                "run_id": "00000000-0000-0000-0000-000000000000",
+                "thread_id": str(thread.id),
+            },
+        )
+
+        response = await communicator.receive_json_from(timeout=10)
+        self.assertEqual(response["event_type"], "subagents.updated")
+
+        await communicator.disconnect()
+
+    @patch("llm.get_llm_service")
     async def test_tool_loop_narration_persisted(self, mock_get_service):
         """Narration text and thinking streamed before tool calls must be
         persisted on the hidden tool-loop assistant message."""
