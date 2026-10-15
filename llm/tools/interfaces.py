@@ -144,7 +144,39 @@ def is_omitted_arg(value) -> bool:
     return isinstance(value, str) and value.startswith(OMITTED_ARG_PREFIX)
 
 
+# Keys whose value names text to FIND (canvas_edit/document_edit old_text): a
+# canvas that already holds a marker must stay repairable by a targeted edit.
+_MARKER_LOOKUP_KEYS = frozenset({"old_text"})
+
+
+def find_echoed_marker(args, _path: str = "") -> str | None:
+    """Path of the first argument that carries an omitted-content marker, else None.
+
+    A model that sees its own earlier calls trimmed to markers can imitate them
+    and send the marker back as the value (2026-10-15: Gemini 4 Argon called
+    canvas_write and scratchpad_append with marker text instead of the content,
+    wiping a search table). The tool loop refuses such a call before it runs."""
+    if isinstance(args, str):
+        return (_path or "arguments") if OMITTED_ARG_PREFIX in args else None
+    if isinstance(args, dict):
+        for key, value in args.items():
+            if key in _MARKER_LOOKUP_KEYS:
+                continue
+            hit = find_echoed_marker(value, f"{_path}.{key}" if _path else str(key))
+            if hit:
+                return hit
+    elif isinstance(args, (list, tuple)):
+        for i, value in enumerate(args):
+            hit = find_echoed_marker(value, f"{_path}[{i}]")
+            if hit:
+                return hit
+    return None
+
+
 # Backward-compat alias
 Tool = ContextAwareTool
 
-__all__ = ["ContextAwareTool", "Tool", "omitted_arg_marker", "omitted_result_marker", "is_omitted_arg"]
+__all__ = [
+    "ContextAwareTool", "Tool", "omitted_arg_marker", "omitted_result_marker",
+    "is_omitted_arg", "find_echoed_marker",
+]

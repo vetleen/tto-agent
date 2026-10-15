@@ -1,6 +1,7 @@
 """Tests for the simple_chat pipeline (tool loop and model delegation)."""
 
 from datetime import datetime, timedelta, timezone
+import json
 from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
@@ -1245,6 +1246,36 @@ class SimpleChatPipelineTests(TestCase):
         _, result_str = results[0]
         self.assertEqual(result_str, '{"result": 5}')
         self.assertNotIn("TRUNCATED", result_str)
+
+    def test_echoed_omitted_marker_refused_before_run(self):
+        """A model copying its own trimmed history back as content (2026-10-15
+        prod: canvas_write with the marker wiped a search table) gets an error
+        and the tool never runs — for a top-level string or one nested in a list."""
+        from llm.tools.interfaces import omitted_arg_marker
+
+        marker = omitted_arg_marker("26,695-char document", "Call canvas_read.")
+        for args in (
+            {"title": "T", "content": marker},
+            {"edits": [{"old_text": "a", "new_text": "rows…\n" + marker}]},
+        ):
+            with self.subTest(args=args):
+                tool = MagicMock()
+                tc = ToolCall(id="c1", name="canvas_write", arguments=args)
+                (_, result_str), = SimpleChatPipeline._execute_tool_calls([tc], {"canvas_write": tool})
+                tool.invoke.assert_not_called()
+                result = json.loads(result_str)
+                self.assertEqual(result["status"], "error")
+                self.assertIn("Not run", result["message"])
+
+    def test_marker_in_old_text_is_allowed(self):
+        """old_text names text to FIND, so a canvas already holding a marker can be
+        repaired with a targeted edit."""
+        from llm.tools.interfaces import find_echoed_marker, omitted_arg_marker
+
+        marker = omitted_arg_marker("note", "It is in your scratchpad.")
+        self.assertIsNone(find_echoed_marker({"edits": [{"old_text": marker, "new_text": "real"}]}))
+        self.assertEqual(find_echoed_marker({"note": marker}), "note")
+        self.assertEqual(find_echoed_marker({"edits": [{"new_text": marker}]}), "edits[0].new_text")
 
     def test_run_tool_loop_respects_deadline(self):
         """Tool loop should break early when the RunContext deadline is exceeded."""

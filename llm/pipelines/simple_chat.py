@@ -19,7 +19,7 @@ from llm.types.responses import ChatResponse, Usage
 from llm.types.streaming import StreamEvent
 from llm.types.context import RunContext
 from llm.tools.display import parse_tool_result, tool_end_display
-from llm.tools.interfaces import ContextAwareTool
+from llm.tools.interfaces import ContextAwareTool, find_echoed_marker
 from llm.tools.registry import get_tool_registry
 
 logger = logging.getLogger(__name__)
@@ -350,6 +350,22 @@ class SimpleChatPipeline(BasePipeline):
             tool = tool_by_name.get(tc.name)
             if not tool:
                 return (tc, json.dumps({"error": f"Unknown tool: {tc.name}"}))
+            # A model imitating its own trimmed history can send the "[Omitted
+            # from this transcript…]" marker back as content; running that would
+            # overwrite a canvas/scratchpad/deck with the placeholder.
+            echoed = find_echoed_marker(tc.arguments or {})
+            if echoed:
+                logger.warning("Refused %s: marker echoed in argument %s", tc.name, echoed)
+                return (tc, json.dumps({
+                    "status": "error",
+                    "message": (
+                        f"Not run: argument '{echoed}' contains the '[Omitted from this "
+                        "transcript to save space …]' placeholder. That text only marks "
+                        "where your earlier calls were shortened in your history — it is "
+                        "not content, and those earlier calls ran with the full text. "
+                        "Call the tool again with the real content written out in full."
+                    ),
+                }))
             try:
                 result = tool.invoke(tc.arguments)
                 result_str = result if isinstance(result, str) else json.dumps(result)
