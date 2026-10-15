@@ -686,6 +686,61 @@ class CanvasSaveToDocumentToolTests(TestCase):
         self.assertIn("error", result)
         self.assertFalse(DataRoomDocument.objects.exists())
 
+    def test_big_canvas_is_queued_instead_of_scanned_inline(self):
+        # Above CANVAS_SYNC_SCAN_MAX_CHARS the agent's save must not run the
+        # synchronous scan on the web dyno (R15 on a 196k canvas, 2026-10-15); it
+        # is queued on the worker like the UI's save and reports "queued".
+        from unittest.mock import patch
+
+        from django.test import override_settings
+
+        from chat.models import ChatCanvas
+
+        ChatCanvas.objects.filter(pk=self.canvas.pk).update(content="# Big\n\n" + "word " * 100)
+        with override_settings(CANVAS_SYNC_SCAN_MAX_CHARS=50), \
+                patch("documents.tasks.process_document_version_task.delay") as delay, \
+                patch("documents.services.sync_scan.scan_version_synchronously") as sync_scan:
+            result = self._invoke_json({"mode": "new"}, self._ctx())
+        self.assertEqual(result["status"], "queued")
+        self.assertEqual(result["verdict"], "queued")
+        self.assertEqual(result["mode"], "new")
+        self.assertIn("50-character limit", result["note"])
+        self.assertIn("queued", result["note"])
+        sync_scan.assert_not_called()
+        self.assertTrue(delay.called)
+        doc = DataRoomDocument.objects.get(data_room=self.data_room)
+        self.assertEqual(result["doc_index"], doc.doc_index)
+        self.assertEqual(result["filename"], "Memo.md")
+        self.assertEqual(result["data_room_name"], "Owner Room")
+
+    def test_big_canvas_overwrite_is_queued(self):
+        from unittest.mock import patch
+
+        from django.test import override_settings
+
+        from chat.models import ChatCanvas
+        from documents.tests._helpers import make_document
+
+        doc = make_document(self.data_room, self.user, chunks=["old body"])
+        before = doc.versions.count()
+        ChatCanvas.objects.filter(pk=self.canvas.pk).update(content="# Big\n\n" + "word " * 100)
+        with override_settings(CANVAS_SYNC_SCAN_MAX_CHARS=50), \
+                patch("documents.tasks.process_document_version_task.delay"), \
+                patch("documents.services.sync_scan.scan_version_synchronously") as sync_scan:
+            result = self._invoke_json({"mode": "overwrite", "doc_index": doc.doc_index}, self._ctx())
+        self.assertEqual(result["status"], "queued")
+        self.assertEqual(result["mode"], "overwrite")
+        sync_scan.assert_not_called()
+        self.assertEqual(doc.versions.count(), before + 1)
+
+    def test_small_canvas_still_scanned_inline(self):
+        from django.test import override_settings
+
+        with override_settings(CANVAS_SYNC_SCAN_MAX_CHARS=75_000):
+            result = self._invoke_json({"mode": "new"}, self._ctx())
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["verdict"], "clean")
+
     def test_requires_canvas_name_with_two_canvases(self):
         from chat.models import ChatCanvas
 

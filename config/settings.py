@@ -803,12 +803,17 @@ DOCUMENT_MAX_EXTRACTED_CHARS = _env_int("DOCUMENT_MAX_EXTRACTED_CHARS", "2000000
 # immediately; that has to finish inside Heroku's 30 s router timeout. The scan's
 # cost is roughly linear in size (guardrails classifies sequential batches of
 # ≤40k chars / 12 chunks, then the PII pass); 150k is the inline web-dyno ceiling
-# chosen for that 30 s timeout (the agent's canvas_save_to_document path runs the
-# same synchronous scan inside its tool call, with no router timeout, for canvases
-# up to chat.services.CANVAS_MAX_CHARS = 225k). Above it the new version is QUEUED
-# through the document dispatch gate like an upload and the modal polls for the
-# verdict. Lower this (env var, no deploy) if H12s show up on saves.
+# chosen for that 30 s timeout. Above it the new version is QUEUED through the
+# document dispatch gate like an upload and the modal polls for the verdict.
+# Lower this (env var, no deploy) if H12s show up on saves.
 DOCUMENT_INLINE_EDIT_MAX_CHARS = _env_int("DOCUMENT_INLINE_EDIT_MAX_CHARS", "150000")
+# The agent's canvas_save_to_document scans synchronously INSIDE its tool call on
+# the web dyno (same chunk → embed → guardrails → PII sink) so it can report the
+# verdict in the same turn. That path is proven to 75k chars; on 2026-10-15 a
+# 196k-char canvas drove the Standard-2X web dyno to R14/R15 and the turn died.
+# Above this size the save is queued on the worker like the UI's save-to-data-room
+# and the tool reports "queued" instead of a verdict.
+CANVAS_SYNC_SCAN_MAX_CHARS = _env_int("CANVAS_SYNC_SCAN_MAX_CHARS", "75000")
 # DOCUMENT_BROWSER_EDIT_MAX_CHARS is what the editor + a multipart POST can carry:
 # Django's DATA_UPLOAD_MAX_MEMORY_SIZE (default 2.5 MB) bounds the form body, and a
 # multi-MB CodeMirror buffer is impractical. Above it the modal opens read-only;

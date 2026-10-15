@@ -303,6 +303,49 @@ def _discard_rejected_version(doc, version, prior_current_id):
     recompute_document_sensitivity(doc.pk)
 
 
+def _sync_scan_limit() -> int:
+    from django.conf import settings
+
+    return int(getattr(settings, "CANVAS_SYNC_SCAN_MAX_CHARS", 75_000))
+
+
+def _queue_instead_of_sync_scan(canvas) -> bool:
+    """Whether this canvas is too big to scan inline on the web dyno.
+
+    The synchronous scan is proven to CANVAS_SYNC_SCAN_MAX_CHARS; a 196k-char
+    canvas drove the web dyno past its memory quota (R15) and killed the turn.
+    Above the limit the save is queued on the worker like the UI's path.
+    """
+    return len(canvas.content or "") > _sync_scan_limit()
+
+
+def _queued_save_result(canvas, doc, data_room, *, mode, original_chars, kept_chars) -> dict:
+    """Tool result for a save handed to the async pipeline (no verdict yet)."""
+    result = {
+        "status": "queued",
+        "verdict": "queued",
+        "mode": mode,
+        "doc_index": doc.doc_index,
+        "filename": doc.original_filename,
+        "data_room_name": data_room.name,
+        "canvas_title": canvas.title,
+        "note": (
+            f"The canvas is {len(canvas.content or ''):,} characters, above the "
+            f"{_sync_scan_limit():,}-character limit for an inline safety scan, so the "
+            "document was queued for processing on the worker (chunking, embedding, safety "
+            "and PII scan). It becomes searchable when the scan passes; a blocked save is "
+            "kept as a quarantined draft and shows a warning in the document list. Tell the "
+            "user the save is queued — you cannot report the scan verdict in this turn."
+        ),
+    }
+    if original_chars:
+        result["truncation_warning"] = (
+            f"The saved document is a PARTIAL copy: the canvas held only the first "
+            f"{kept_chars:,} of {original_chars:,} characters of its source. Tell the user."
+        )
+    return result
+
+
 def _apply_agent_save_policy(canvas, verdict, *, doc_index, discard_fn):
     """Apply the agent retry/discard/defer policy to a sync-scan verdict.
 
@@ -933,6 +976,12 @@ class CanvasSaveToDocumentTool(ContextAwareTool):
 
             if new_name:
                 canvas.title = new_name[:255]
+            if _queue_instead_of_sync_scan(canvas):
+                doc, _version = save_canvas_to_data_room(canvas, target, user, enqueue=True)
+                return json.dumps(_queued_save_result(
+                    canvas, doc, target, mode="new",
+                    original_chars=original_chars, kept_chars=kept_chars,
+                ))
             doc, version = save_canvas_to_data_room(canvas, target, user, enqueue=False)
             verdict = scan_version_synchronously(version.id)
 
@@ -988,6 +1037,16 @@ class CanvasSaveToDocumentTool(ContextAwareTool):
                     f"confirms, by calling again with acknowledge_truncation=true."
                 ),
             })
+        if _queue_instead_of_sync_scan(canvas):
+            create_version(
+                doc, content=canvas.content,
+                origin=DataRoomDocumentVersion.Origin.CANVAS_EXPORT, created_by=user,
+                enqueue=True,
+            )
+            return json.dumps(_queued_save_result(
+                canvas, doc, doc.data_room, mode="overwrite",
+                original_chars=original_chars, kept_chars=kept_chars,
+            ))
         prior_current_id = doc.current_version_id
         version = create_version(
             doc, content=canvas.content,
