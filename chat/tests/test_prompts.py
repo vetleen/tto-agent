@@ -464,6 +464,14 @@ class BuildStaticSystemPromptTests(TestCase):
         prompt = build_static_system_prompt(organization_name="MIT TTO")
         self.assertIn("at MIT TTO", prompt)
 
+    def test_forbids_latex_math(self):
+        """LaTeX ($\\text{Li}_2$) doesn't render anywhere; main and sub-agent prompts say so."""
+        from chat.subagent_prompts import build_subagent_system_prompt
+
+        for prompt in (build_static_system_prompt(), build_subagent_system_prompt()):
+            self.assertIn("Never use LaTeX", prompt)
+            self.assertIn("Li₂Sₓ", prompt)
+
     def test_no_date(self):
         """Date is semi-static, should not be in the static block."""
         prompt = build_static_system_prompt()

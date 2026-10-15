@@ -104,6 +104,7 @@ def build_static_system_prompt(
 - When calling any tool, always fill in the `reason` parameter with a brief, specific explanation of what you hope to learn or accomplish with this call.
 - When asked about yourself, you are {django_settings.ASSISTANT_NAME}, an AI assistant.
 - Write in Markdown so answers are easy to scan.
+- Never use LaTeX or `$…$` math notation — it does not render and shows up as raw code. Write formulas, units and simple equations in plain text with Unicode sub/superscripts and symbols (Li₂Sₓ, Li⁺, CO₂, m², ≤, ×, →). Put a genuinely complex equation in a code block.
 - Use the occasional emoji where it adds warmth or clarity.
 
 # Customization
