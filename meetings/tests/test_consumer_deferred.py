@@ -207,6 +207,36 @@ class PresenceLockTests(TransactionTestCase):
             self.assertEqual(await _rejected_code(comm, timeout=3), 4409)
             await comm.disconnect()
 
+    async def test_connect_accepts_before_waiting_on_a_closing_predecessor(self):
+        # Daphne resets a handshake the application has not accepted within
+        # websocket_handshake_timeout (5 s), and the closing-predecessor wait
+        # may run longer than that (2026-10-15: a 4 s teardown turned a
+        # reconnect into ERR_CONNECTION_RESET). The accept must come first:
+        # with a 3 s wait budget and the lock still held, websocket.accept has
+        # to arrive well inside the 0.5 s connect timeout. (No receive_nothing
+        # here — an asgiref receive timeout cancels the application.)
+        import time
+
+        from django.core.cache import cache
+
+        user = await _chunked_user("c4c-closing-accept@example.com")
+        meeting = await database_sync_to_async(Meeting.objects.create)(
+            name="M", slug="m-c4c-closing-accept", created_by=user,
+        )
+        key = f"meeting_live_session:{meeting.uuid}"
+        await database_sync_to_async(cache.set)(key, "old-conn:closing", 45)
+
+        with patch.object(consumers_module, "MEETING_LIVE_LOCK_WAIT_SECONDS", 3):
+            comm = _make_communicator(meeting.uuid, user)
+            t0 = time.monotonic()
+            connected, _ = await comm.connect(timeout=0.5)
+            self.assertTrue(connected, "accept must not wait for the predecessor")
+            self.assertLess(time.monotonic() - t0, 0.5)
+            await database_sync_to_async(cache.delete)(key)
+            msg = json.loads(await comm.receive_from(timeout=3))
+            self.assertEqual(msg["type"], "started")
+            await comm.disconnect()
+
     async def test_disconnect_marks_own_lock_closing_then_releases(self):
         from django.core.cache import cache
 

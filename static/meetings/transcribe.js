@@ -845,6 +845,11 @@
         label = 'Finalizing transcription… (' + pendingCount + ' segment' + (pendingCount === 1 ? '' : 's') + ' left)';
       } else if (pendingCount > 0) {
         label = 'Transcribing… (' + pendingCount + ' segment' + (pendingCount === 1 ? '' : 's') + ' in flight)';
+      } else if (transcribing && liveMode !== 'chunked' && upstreamSpeechOpenAt > 0) {
+        // The server VAD has an utterance open: text for it only arrives at
+        // the next pause. Derived from state so a completion for the previous
+        // utterance (which calls updateIndicator) doesn't flip it back.
+        label = 'Listening… text appears at the next pause';
       } else {
         label = transcribingBaseLabel();
       }
@@ -1111,9 +1116,14 @@
           appendOrUpdateSegmentNode(msg.segment_index, msg.text, 'ready');
           inFlightSegments.delete(msg.segment_index);
           // A real segment landed: reset auto-recover budget so a long
-          // healthy interval restores the full retry budget.
+          // healthy interval restores the full retry budget. Do NOT clear
+          // upstreamSpeechOpenAt here: a completion belongs to the utterance
+          // the VAD already committed and routinely lands a second or two
+          // AFTER the next speech_started (2026-10-15 prod: committed at
+          // :43.26, next speech_started at :43.82, text at :45 — clearing the
+          // flag shrank the window to 30 s mid-monologue and forced a
+          // reconnect). Only VAD events and (re)connects decide it.
           lastTranscriptActivityAt = Date.now();
-          upstreamSpeechOpenAt = 0;
           autoRecoverAttempts = 0;
           updateLineCount();
           updateIndicator();
@@ -1128,22 +1138,17 @@
           // Render as a single grey/italic node that we update in place, then
           // clear when the next segment.ready lands.
           renderInterimDelta(msg.text || '');
+          // Deltas, like completions, describe the previous utterance — they
+          // say nothing about whether the VAD has a new one open.
           lastTranscriptActivityAt = Date.now();
-          upstreamSpeechOpenAt = 0;
         } else if (msg.type === 'session.activity') {
           // Upstream VAD liveness (speech_started / speech_stopped /
           // committed). A long utterance yields no text until the next pause,
           // so without this a monologue looked identical to a dead pipeline.
+          // These events are the only authority on the open-utterance flag.
           lastTranscriptActivityAt = Date.now();
-          if (msg.kind === 'speech_started') {
-            upstreamSpeechOpenAt = Date.now();
-            if (transcribing && !reconnecting && transcribingIndicatorLabel) {
-              transcribingIndicatorLabel.textContent = 'Listening… text appears at the next pause';
-            }
-          } else {
-            upstreamSpeechOpenAt = 0;
-            if (transcribing && !reconnecting) updateIndicator();
-          }
+          upstreamSpeechOpenAt = msg.kind === 'speech_started' ? Date.now() : 0;
+          if (transcribing && !reconnecting) updateIndicator();
         } else if (msg.type === 'language_changed') {
           // The running live session took the new spoken language (or, for
           // auto-detect, reopened without one). Chunked mode re-reads it per

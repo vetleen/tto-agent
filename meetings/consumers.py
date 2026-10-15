@@ -69,7 +69,9 @@ MEETING_LIVE_LOCK_TTL_SECONDS = 45
 # new connect for the same meeting waits — bounded — only while the holder is
 # such a closing predecessor, so a client reconnecting right after a drop
 # isn't bounced with 4409 for retrying faster than the teardown finishes. A
-# *live* foreign holder (second tab) is still refused immediately.
+# *live* foreign holder (second tab) is still refused immediately. The wait
+# runs AFTER accept() (see connect), so it may exceed Daphne's 5 s
+# websocket_handshake_timeout without the handshake being reset.
 _LOCK_CLOSING_SUFFIX = ":closing"
 MEETING_LIVE_LOCK_WAIT_SECONDS = 8
 _LOCK_WAIT_POLL_SECONDS = 0.25
@@ -132,6 +134,9 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         self._stop_requested: bool = False
         # Per-meeting presence lock (C4c); set from _load_and_lock_meeting.
         self._presence_lock_key: str | None = None
+        # True once websocket.accept has been sent (connect() accepts before
+        # the closing-predecessor wait; _refuse must not accept twice).
+        self._accepted: bool = False
         # Guards against double-counting this session's duration if finalize
         # runs twice (stop-failure retry on disconnect) — see _finalize_meeting.
         self._duration_committed: bool = False
@@ -196,6 +201,18 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
             await self._refuse(4400)
             return
 
+        # Complete the handshake BEFORE any wait. Daphne drops a socket whose
+        # application has not sent websocket.accept within its
+        # websocket_handshake_timeout (5 s by default, prod uses the default),
+        # and the closing-predecessor wait below may legitimately run for
+        # MEETING_LIVE_LOCK_WAIT_SECONDS. With the wait after accept, a slow
+        # teardown costs the client a few seconds of "connecting" instead of
+        # a handshake reset (CloseEvent 1006, "Could not open transcription
+        # connection"). Every refusal past this point is a normal close frame
+        # carrying its 44xx code, which is what the browser needs anyway.
+        await self.accept()
+        self._accepted = True
+
         # A reconnect that races the previous connection's teardown would
         # otherwise lose to its still-held presence lock; wait (bounded) only
         # while that holder has announced it is closing.
@@ -221,7 +238,6 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         self._group_name = f"meetings.{self.meeting_uuid}"
 
         await self.channel_layer.group_add(self._group_name, self.channel_name)
-        await self.accept()
         # Hand the effective mode to the client so it can pick the right
         # MediaRecorder strategy: chunked ⇒ stop/restart every 30s producing
         # self-contained WebM files; realtime ⇒ single continuous recorder
@@ -243,8 +259,12 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         client cannot distinguish "you already have a meeting transcribing"
         from a network blip (it retried those as if they were). Accepting first
         completes the handshake, and the close frame then carries ``code``.
+        ``connect()`` accepts early (before the closing-predecessor wait), so
+        this only accepts when a pre-accept check is the one refusing.
         """
-        await self.accept()
+        if not self._accepted:
+            await self.accept()
+            self._accepted = True
         await self.close(code=code)
 
     async def disconnect(self, close_code):
