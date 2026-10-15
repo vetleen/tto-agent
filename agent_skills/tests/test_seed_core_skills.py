@@ -37,10 +37,14 @@ class SeedCoreSkillsTest(TestCase):
         self.assertIsNotNone(skill)
         self.assertEqual(skill.audience, "main")
         for tool in (
-            "canvas_write", "canvas_edit", "canvas_activate", "canvas_delete",
+            "canvas_write", "canvas_edit", "canvas_read", "canvas_delete",
             "canvas_save_to_document",
         ):
             self.assertIn(tool, skill.tool_names)
+        # Activation is gone: canvases are listed and read on demand.
+        self.assertNotIn("canvas_activate", skill.tool_names)
+        self.assertIn("# Reading canvases", skill.instructions)
+        self.assertIn("canvas_name", skill.instructions)
 
     def test_data_room_tools_seeded(self):
         skill = self._get("data_room_tools")

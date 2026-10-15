@@ -2,9 +2,12 @@
 
 A sub-agent has exactly one working canvas, stored on its ``SubAgentRun``
 (``canvas`` / ``canvas_title``). Unlike the main agent's multi-canvas
-``ChatCanvas`` system there is no titling/targeting, no checkpoint/diff review,
-and no activation — just one durable scratch document per run. These tools are
-``audience="subagent"`` so they reach every sub-agent and never the main agent.
+``ChatCanvas`` system there is no titling/targeting and no checkpoint/diff
+review — just one durable scratch document per run. ``subagent_canvas_read``
+reads it (and the orchestrator's shared snapshots, ``SubAgentRun.shared_canvases``)
+by line range, paged by the run's per-read token cap, exactly like the main
+agent's ``canvas_read``. These tools are ``audience="subagent"`` so they reach
+every sub-agent and never the main agent.
 
 Every write is persisted immediately (durability), and the canvas is returned to
 the orchestrator alongside the sub-agent's final message — see
@@ -19,9 +22,9 @@ import logging
 from django.core.exceptions import ValidationError as DjangoValidationError
 from pydantic import BaseModel, Field, field_validator
 
-from chat.canvas_tools import EditItem
+from chat.canvas_tools import EditItem, _read_canvas_result
 from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
-from llm.tools.interfaces import omitted_arg_marker
+from llm.tools.interfaces import is_omitted_arg, omitted_arg_marker
 
 logger = logging.getLogger(__name__)
 
@@ -87,11 +90,19 @@ class SubagentCanvasEditInput(ReasonBaseModel):
         return value
 
 
-def _superseded_by_later_write(later_calls: list) -> bool:
-    """A later full rewrite makes an earlier write/edit's arguments moot — the
-    canvas no longer depends on them. (No sub-agent canvas read tool exists, so
-    an un-superseded call's content is kept.)"""
-    return any(getattr(c, "name", "") == "subagent_canvas_write" for c in later_calls)
+def _canvas_read_marker(what: str) -> str:
+    """Old write/edit arguments are recoverable: the canvas is re-readable with
+    ``subagent_canvas_read``, so they are trimmed like the main agent's."""
+    return omitted_arg_marker(what, "Call subagent_canvas_read to see the canvas as it is now.")
+
+
+def _read_end_label(result: dict) -> str | None:
+    if result.get("status") != "ok":
+        return "Couldn't read canvas"
+    total = result.get("total_lines")
+    if not total:
+        return None
+    return f"Read canvas (lines {result.get('start_line')}–{result.get('end_line')} of {total})"
 
 
 class SubagentCanvasLoadTemplateInput(ReasonBaseModel):
@@ -119,11 +130,9 @@ class SubagentCanvasWriteTool(ContextAwareTool):
 
     def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> dict | None:
         content = args.get("content")
-        if not isinstance(content, str) or not _superseded_by_later_write(later_calls):
+        if not isinstance(content, str) or is_omitted_arg(content):
             return None
-        return {**args, "content": omitted_arg_marker(
-            f"{len(content):,}-char content", "A later subagent_canvas_write replaced it.",
-        )}
+        return {**args, "content": _canvas_read_marker(f"{len(content):,}-char content")}
 
     def _run(self, content: str, title: str = "", **kwargs) -> str:
         from chat.services import (
@@ -172,11 +181,9 @@ class SubagentCanvasEditTool(ContextAwareTool):
 
     def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> dict | None:
         edits = args.get("edits")
-        if not isinstance(edits, list) or not _superseded_by_later_write(later_calls):
+        if not isinstance(edits, list):
             return None
-        return {**args, "edits": omitted_arg_marker(
-            f"list of {len(edits)} edit(s)", "A later subagent_canvas_write replaced the canvas.",
-        )}
+        return {**args, "edits": _canvas_read_marker(f"list of {len(edits)} edit(s)")}
 
     def _run(self, edits: list[dict] | list[EditItem], **kwargs) -> str:
         from chat.edit_utils import apply_unique_text_edits
@@ -221,18 +228,121 @@ class SubagentCanvasEditTool(ContextAwareTool):
 
         run.canvas, original_chars = clip_to_canvas(new_content)
         run.save(update_fields=["canvas"])
-        # Echo the full updated canvas so the model re-syncs after anchored edits.
-        result = {
-            "status": "ok",
-            "applied": applied,
-            "failed": failed,
-            "content": run.canvas,
-        }
+        result = {"status": "ok", "applied": applied, "failed": failed}
+        # Echo the updated canvas so the model re-syncs after anchored edits —
+        # but only while it fits the run's per-read cap; a 225k canvas would cost
+        # ~56k tokens per edit. Over the cap: its shape, and a pointer to re-read.
+        from core.tokens import count_tokens
+        from chat.services import canvas_outline
+        from llm.context_budget import canvas_read_token_cap
+
+        cap = canvas_read_token_cap(getattr(self.context, "max_context_tokens", None) if self.context else None)
+        tokens = count_tokens(run.canvas)
+        if tokens <= cap:
+            result["content"] = run.canvas
+        else:
+            result["chars"] = len(run.canvas)
+            result["tokens"] = tokens
+            result["outline"] = canvas_outline(run.canvas, tokens=tokens)
+            result["note"] = (
+                f"The canvas is ~{tokens:,} tokens, over the {cap:,}-token echo cap, so its "
+                "text is not repeated here; the edit was applied to the full text. Re-read "
+                "any part with subagent_canvas_read (start_line/end_line)."
+            )
         if hint:
             result["hint"] = hint
         if original_chars:
             result.update(truncation_result_fields(original_chars))
         return json.dumps(result)
+
+
+class SubagentCanvasReadInput(ReasonBaseModel):
+    canvas_name: str = Field(
+        default="",
+        description=(
+            "Leave empty to read your own working canvas. Otherwise the title of a "
+            "canvas from the '# Canvases shared by the orchestrator' list in your "
+            "instructions."
+        ),
+    )
+    start_line: int = Field(
+        default=1, ge=1,
+        description="First line to return (1-based, inclusive). Default 1.",
+    )
+    end_line: int | None = Field(
+        default=None, ge=1,
+        description=(
+            "Last line to return (inclusive). Omit for 'to the end'. Lines are the "
+            "address: the result tells you total_lines and, for a large canvas, an "
+            "outline of headings with their line ranges."
+        ),
+    )
+    max_tokens: int | None = Field(
+        default=None, ge=500,
+        description=(
+            "Page size in tokens. Defaults to the per-read cap for this run (the result "
+            "states it); a larger value is clamped to that cap. When the requested lines "
+            "don't fit, you get the first page cut at a line boundary plus next_start_line."
+        ),
+    )
+
+
+class SubagentCanvasReadTool(ContextAwareTool):
+    """Read the working canvas or one of the orchestrator's shared snapshots,
+    ranged by line and paged by the run's per-read token cap."""
+
+    name: str = "subagent_canvas_read"
+    audience: str = "subagent"
+    start_label: str = "Reading canvas..."
+    end_label: str = "Read canvas"
+    description: str = (
+        "Read your working canvas (leave canvas_name empty) or a canvas the "
+        "orchestrator shared with you (by its title from the '# Canvases shared by "
+        "the orchestrator' list). The whole canvas comes back when it fits the "
+        "per-read cap; otherwise a page of lines plus an outline (headings with line "
+        "ranges, total lines, table rows) and next_start_line, so you can continue or "
+        "jump to a section with start_line/end_line. Shared snapshots are read-only and "
+        "frozen at the time you were created."
+    )
+    args_schema: type[BaseModel] = SubagentCanvasReadInput
+
+    def end_label_for_result(self, result: dict) -> str | None:
+        return _read_end_label(result)
+
+    def _run(self, canvas_name: str = "", start_line: int = 1, end_line: int | None = None,
+             max_tokens: int | None = None, **kwargs) -> str:
+        run, err = _resolve_run(
+            self.context, unavailable="Canvases are only readable inside a sub-agent run.",
+        )
+        if err:
+            return err
+        name = (canvas_name or "").strip()
+        if not name:
+            title = run.canvas_title or "Working document"
+            content = run.canvas or ""
+        else:
+            shared = run.shared_canvases or []
+            entry = next((e for e in shared if (e.get("title") or "") == name), None)
+            if entry is None:
+                return json.dumps({
+                    "status": "error",
+                    "message": f"No shared canvas titled '{name}'. Leave canvas_name empty for your own working canvas.",
+                    "shared_canvases": [e.get("title") for e in shared],
+                })
+            title = entry.get("title") or name
+            content = entry.get("content") or ""
+        view, cap = _read_canvas_result(
+            content, context=self.context,
+            start_line=start_line, end_line=end_line, max_tokens=max_tokens,
+        )
+        if view.get("status") == "error":
+            return json.dumps(view)
+        logger.info(
+            "subagent_canvas_read: run=%s canvas=%r lines=%d-%d/%d page_tokens=%d cap=%d truncated=%s",
+            run.pk, "" if not name else name, view["start_line"], view["end_line"],
+            view["total_lines"], view["max_tokens"], cap, view["truncated"],
+        )
+        return json.dumps({"status": "ok", "title": title, "own_canvas": not name, **view})
 
 
 class SubagentCanvasLoadTemplateTool(ContextAwareTool):
@@ -292,4 +402,5 @@ class SubagentCanvasLoadTemplateTool(ContextAwareTool):
 _registry = get_tool_registry()
 _registry.register_tool(SubagentCanvasWriteTool())
 _registry.register_tool(SubagentCanvasEditTool())
+_registry.register_tool(SubagentCanvasReadTool())
 _registry.register_tool(SubagentCanvasLoadTemplateTool())

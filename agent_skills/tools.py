@@ -118,7 +118,7 @@ def load_skill_field_into_canvas(thread_id, skill, field_name: str, *, canvas_na
 
     from agent_skills.models import SkillTemplate
     from chat.models import ChatCanvas
-    from chat.services import clip_to_canvas, create_canvas_checkpoint, set_active_canvas
+    from chat.services import clip_to_canvas, create_canvas_checkpoint, focus_canvas
 
     if field_name in ("instructions", "description"):
         content = getattr(skill, field_name) or ""
@@ -165,7 +165,7 @@ def load_skill_field_into_canvas(thread_id, skill, field_name: str, *, canvas_na
         canvas.accepted_checkpoint = cp
         canvas.save(update_fields=["accepted_checkpoint"])
 
-    set_active_canvas(thread_id, canvas)
+    focus_canvas(thread_id, canvas)
     return canvas
 
 
@@ -183,7 +183,10 @@ class SaveCanvasToSkillFieldInput(ReasonBaseModel):
     )
     canvas_name: str = Field(
         default="",
-        description="Title of the canvas to save from. If omitted, uses the active canvas.",
+        description=(
+            "Title of the canvas to save from. Required when the thread has more than "
+            "one canvas (the error lists the titles); may be omitted when there is exactly one."
+        ),
     )
 
 
@@ -292,7 +295,10 @@ class SkillResourceSaveInput(ReasonBaseModel):
     )
     canvas_name: str = Field(
         default="",
-        description="Title of the canvas to save from. If omitted, uses the active canvas.",
+        description=(
+            "Title of the canvas to save from. Required when the thread has more than "
+            "one canvas (the error lists the titles); may be omitted when there is exactly one."
+        ),
     )
 
 
@@ -1222,7 +1228,7 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
         from django.db import IntegrityError
 
         from chat.models import ChatCanvas
-        from chat.services import clip_to_canvas, create_canvas_checkpoint, set_active_canvas
+        from chat.services import clip_to_canvas, create_canvas_checkpoint, focus_canvas
 
         thread_id = self.context.conversation_id if self.context else None
         if not thread_id:
@@ -1288,7 +1294,7 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
             canvas.accepted_checkpoint = cp
             canvas.save(update_fields=["accepted_checkpoint"])
 
-        set_active_canvas(thread_id, canvas)
+        focus_canvas(thread_id, canvas)
 
         result = {
             "status": "ok",

@@ -33,6 +33,7 @@ User = get_user_model()
 _CANVAS_TOOLS = (
     "subagent_canvas_write",
     "subagent_canvas_edit",
+    "subagent_canvas_read",
     "subagent_canvas_load_template",
 )
 
@@ -432,3 +433,70 @@ class SubagentCanvasClaimTests(TransactionTestCase):
             status=SubAgentRun.Status.FAILED, result="", canvas="BODY", with_message=False,
         )
         self.assertFalse(await self._claim())
+
+
+# ---------------------------------------------------------------------------
+# Large working canvases: capped prompt paste, capped edit echo, trimmable args
+# ---------------------------------------------------------------------------
+
+class SubagentLargeCanvasTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="bigcanvas@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+        lines = ["# Report", "## Findings"] + [f"finding {i} with some supporting words" for i in range(900)] + ["## Gaps", "LAST LINE"]
+        self.big = "\n".join(lines)
+        self.run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="task", canvas=self.big, canvas_title="Report",
+        )
+        self.ctx = _ctx(self.user.pk, self.thread.id, run_id=self.run.id)
+
+    def test_working_canvas_prompt_clipped_over_cap(self):
+        prompt = build_subagent_system_prompt(
+            canvas_content=self.big, canvas_title="Report", canvas_token_cap=500,
+        )
+        self.assertIn('Current canvas content: "Report" (first', prompt)
+        self.assertIn("Outline (line ranges):", prompt)
+        self.assertIn("- ## Findings — lines 2–", prompt)
+        self.assertIn("subagent_canvas_read", prompt)
+        self.assertNotIn("LAST LINE", prompt)
+
+    def test_working_canvas_prompt_whole_under_cap(self):
+        prompt = build_subagent_system_prompt(
+            canvas_content="short text", canvas_title="Report", canvas_token_cap=500,
+        )
+        self.assertIn('Current canvas content: "Report"\n', prompt)
+        self.assertIn("short text", prompt)
+
+    def test_edit_echo_omitted_over_cap(self):
+        self.ctx.max_context_tokens = 50_000  # cap 15k; the canvas is ~9k tokens → fits
+        out = _invoke(
+            SubagentCanvasEditTool,
+            {"edits": [{"old_text": "LAST LINE", "new_text": "FINAL LINE"}]},
+            self.ctx,
+        )
+        self.assertEqual(out["status"], "ok")
+        self.assertIn("content", out)
+        # A canvas far over the cap (12k floor at a 30k aim): the echo gives
+        # its shape and a pointer to re-read instead of ~150k tokens of text.
+        self.ctx.max_context_tokens = 30_000
+        self.run.canvas = "\n".join([f"row {i} " + "x " * 20 for i in range(6000)])
+        self.run.save(update_fields=["canvas"])
+        out = _invoke(
+            SubagentCanvasEditTool,
+            {"edits": [{"old_text": "row 1 ", "new_text": "ROW 1 "}]},
+            self.ctx,
+        )
+        self.assertEqual(out["status"], "ok")
+        self.assertNotIn("content", out)
+        self.assertGreater(out["tokens"], 12_000)
+        self.assertIn("outline", out)
+        self.assertIn("subagent_canvas_read", out["note"])
+
+    def test_write_and_edit_args_trim_to_read_marker(self):
+        write = SubagentCanvasWriteTool()
+        trimmed = write.trim_args_at_edit_point({"content": "x" * 5000, "title": "T"}, later_calls=[])
+        self.assertIn("subagent_canvas_read", trimmed["content"])
+        self.assertEqual(trimmed["title"], "T")
+        edit = SubagentCanvasEditTool()
+        trimmed = edit.trim_args_at_edit_point({"edits": [{"old_text": "a", "new_text": "b"}]}, later_calls=[])
+        self.assertIn("subagent_canvas_read", trimmed["edits"])

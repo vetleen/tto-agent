@@ -92,7 +92,10 @@ class CanvasSaveToDocumentInput(ReasonBaseModel):
     )
     canvas_name: str = Field(
         default="",
-        description="Title of the canvas to save. Defaults to the active canvas if omitted.",
+        description=(
+            "Title of the canvas to save. Required when the thread has more than one "
+            "canvas (the error lists the titles); may be omitted when there is exactly one."
+        ),
     )
     doc_index: Optional[int] = Field(
         default=None,
@@ -1096,9 +1099,9 @@ class OpenDocumentToCanvasTool(ContextAwareTool):
         from chat.models import ChatCanvas
         from chat.services import (
             MAX_CANVASES_PER_THREAD,
-            activate_canvas,
             clip_to_canvas,
             create_canvas_checkpoint,
+            focus_canvas,
             truncation_result_fields,
         )
         from documents.services.versioning import document_status, open_working_version
@@ -1153,7 +1156,7 @@ class OpenDocumentToCanvasTool(ContextAwareTool):
         if created:
             canvas.accepted_checkpoint = cp
             canvas.save(update_fields=["accepted_checkpoint"])
-        activate_canvas(thread_id, canvas)
+        focus_canvas(thread_id, canvas)
 
         result = {
             "status": "ok",
@@ -1221,9 +1224,9 @@ class AttachmentOpenToCanvasTool(ContextAwareTool):
         from chat.models import ChatCanvas
         from chat.services import (
             MAX_CANVASES_PER_THREAD,
-            activate_canvas,
             clip_to_canvas,
             create_canvas_checkpoint,
+            focus_canvas,
             get_or_extract_attachment_text,
             list_thread_attachments,
             truncation_result_fields,
@@ -1300,7 +1303,7 @@ class AttachmentOpenToCanvasTool(ContextAwareTool):
         if created:
             canvas.accepted_checkpoint = cp
             canvas.save(update_fields=["accepted_checkpoint"])
-        activate_canvas(thread_id, canvas)
+        focus_canvas(thread_id, canvas)
 
         result = {
             "status": "ok",

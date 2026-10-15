@@ -420,8 +420,24 @@ class ChatCanvas(models.Model):
         on_delete=models.SET_NULL,
         related_name="+",
     )
+    # DEPRECATED (2026-10-15): no longer read or written. Canvas text is never
+    # injected into the prompt any more — the model reads canvases on demand with
+    # canvas_read — so "active" has no meaning for the model. The columns and
+    # their index stay until a later migration drops them.
     is_active = models.BooleanField(default=False)
     last_activated_at = models.DateTimeField(null=True, blank=True)
+    # sha256 of the content the agent last SAW: set by canvas_read (any range) and
+    # by the agent's own canvas_write / canvas_edit. "" = never read by the agent.
+    # Compared with the current content's sha when the per-turn canvas list is
+    # built ("changed since you last read it"). NOT set by document/attachment/
+    # template opens, canvas_paste_user_text, imports or user saves — the agent
+    # has not seen that text. See chat.services.record_agent_canvas_view.
+    agent_seen_sha = models.CharField(max_length=64, blank=True, default="")
+    # Token count of ``content`` as of ``content_sha``: a sha-keyed cache, so a
+    # mismatch at prompt-build time triggers a recount and no write path has to
+    # remember to invalidate it (chat.services.canvas_prompt_entry).
+    content_sha = models.CharField(max_length=64, blank=True, default="")
+    token_count = models.PositiveIntegerField(null=True, blank=True)
     # Consecutive blocked (GDPR Art 9/10) sync saves of this canvas to a data room.
     # Reset on a successful save and after the agent's retry budget is exhausted (then
     # the doc is deferred to a quarantined draft and the user is warned). See

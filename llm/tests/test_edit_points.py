@@ -287,15 +287,23 @@ class ToolTrimHookTests(SimpleTestCase):
         # Idempotent: an already-trimmed write is left alone.
         self.assertIsNone(WriteCanvasTool().trim_args_at_edit_point(w, later_calls=[]))
 
-    def test_subagent_canvas_only_when_superseded(self):
+    def test_subagent_canvas_args_trim_to_read_marker(self):
+        """Since subagent_canvas_read exists, old sub-agent canvas write/edit
+        arguments are recoverable and trim like the main agent's (no longer
+        only when a later full rewrite superseded them)."""
         from chat.subagent_canvas_tools import SubagentCanvasEditTool, SubagentCanvasWriteTool
 
         args = {"content": "z" * 3000}
-        self.assertIsNone(SubagentCanvasWriteTool().trim_args_at_edit_point(args, later_calls=[]))
-        later = [ToolCall(id="w2", name="subagent_canvas_write", arguments={})]
-        self.assertIn("replaced", SubagentCanvasWriteTool().trim_args_at_edit_point(args, later_calls=later)["content"])
+        out = SubagentCanvasWriteTool().trim_args_at_edit_point(args, later_calls=[])
+        self.assertIn("subagent_canvas_read", out["content"])
+        self.assertIn("Omitted from this transcript", out["content"])
+        # Already-trimmed arguments are left alone.
+        self.assertIsNone(SubagentCanvasWriteTool().trim_args_at_edit_point(out, later_calls=[]))
         edit_args = {"edits": [{"old_text": "a", "new_text": "b"}]}
-        self.assertIsNone(SubagentCanvasEditTool().trim_args_at_edit_point(edit_args, later_calls=[]))
+        self.assertIn(
+            "subagent_canvas_read",
+            SubagentCanvasEditTool().trim_args_at_edit_point(edit_args, later_calls=[])["edits"],
+        )
 
     def test_slide_write_trimmed_while_deck_stays_active(self):
         """A deck write is trimmed whenever its deck is still the active one (its

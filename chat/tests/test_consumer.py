@@ -200,7 +200,6 @@ class ConsumerMessageTests(TransactionTestCase):
         canvas = await database_sync_to_async(ChatCanvas.objects.get)()
         self.assertEqual(canvas.content, "The provided policy text, verbatim.")
         self.assertEqual(canvas.title, "Untitled document")
-        self.assertTrue(canvas.is_active)
         self.assertEqual(str(canvas.pk), canvas_evt["canvas_id"])
 
         thread = await database_sync_to_async(ChatThread.objects.get)()
@@ -1211,7 +1210,7 @@ class CanvasOwnershipTests(TransactionTestCase):
 
     async def test_delete_canvas_promotes_survivor_to_active(self):
         """Deleting the active canvas promotes a survivor and reports its tabs."""
-        from chat.services import set_active_canvas
+        from chat.services import focus_canvas
         thread = await database_sync_to_async(ChatThread.objects.create)(
             created_by=self.owner,
         )
@@ -1221,7 +1220,7 @@ class CanvasOwnershipTests(TransactionTestCase):
         canvas_b = await database_sync_to_async(ChatCanvas.objects.create)(
             thread=thread, title="B", content="bbb",
         )
-        await database_sync_to_async(set_active_canvas)(str(thread.id), canvas_a)
+        await database_sync_to_async(focus_canvas)(str(thread.id), canvas_a)
         consumer = self._make_consumer(self.owner)
         result = await consumer._delete_canvas(str(thread.id), str(canvas_a.pk))
         self.assertIsNotNone(result)
@@ -1238,7 +1237,7 @@ class CanvasOwnershipTests(TransactionTestCase):
 
     async def test_delete_canvas_keeps_active_when_deleting_background_tab(self):
         """Deleting a non-active tab leaves the active canvas untouched."""
-        from chat.services import set_active_canvas
+        from chat.services import focus_canvas
         thread = await database_sync_to_async(ChatThread.objects.create)(
             created_by=self.owner,
         )
@@ -1248,7 +1247,7 @@ class CanvasOwnershipTests(TransactionTestCase):
         canvas_b = await database_sync_to_async(ChatCanvas.objects.create)(
             thread=thread, title="B", content="bbb",
         )
-        await database_sync_to_async(set_active_canvas)(str(thread.id), canvas_a)
+        await database_sync_to_async(focus_canvas)(str(thread.id), canvas_a)
         consumer = self._make_consumer(self.owner)
         result = await consumer._delete_canvas(str(thread.id), str(canvas_b.pk))
         self.assertEqual(result["active_canvas"]["id"], str(canvas_a.pk))
@@ -1907,53 +1906,63 @@ class GuardrailHoldAndLimitTests(TransactionTestCase):
 @override_settings(
     CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
 )
-class CanvasInjectionGateTests(TransactionTestCase):
-    """Active canvases are injected only while their MEASURED tokens fit the
-    per-read cap (30% of the org aim); the rest are listed as not in context."""
+class CanvasWorkspaceListConsumerTests(TransactionTestCase):
+    """The prompt gets a LIST of canvases (size, tokens, open tab, staleness) and
+    never any canvas text; nothing is injected."""
 
     def setUp(self):
-        from datetime import timedelta
-
-        from django.utils import timezone
-
-        self.user = User.objects.create_user(email="canvas-gate@example.com", password="pass")
+        self.user = User.objects.create_user(email="canvas-list@example.com", password="pass")
         self.thread = ChatThread.objects.create(created_by=self.user)
-        now = timezone.now()
-        # ~8k tokens each: two fit a 60k cap (200k aim), only one fits 15k (50k aim).
-        self.older = ChatCanvas.objects.create(
-            thread=self.thread, title="Older", content="word " * 8_000,
-            is_active=True, last_activated_at=now - timedelta(minutes=5),
-        )
-        self.newer = ChatCanvas.objects.create(
-            thread=self.thread, title="Newer", content="word " * 8_000,
-            is_active=True, last_activated_at=now,
-        )
+        self.big = ChatCanvas.objects.create(thread=self.thread, title="Big", content="word " * 8_000)
+        self.small = ChatCanvas.objects.create(thread=self.thread, title="Small", content="tiny")
+        ChatThread.objects.filter(pk=self.thread.pk).update(active_canvas=self.small)
 
-    def _consumer(self, aim):
+    def _consumer(self):
         consumer = ChatConsumer()
         consumer.scope = {"user": self.user}
         consumer.user = self.user
-        consumer.resolved_prefs = MagicMock(max_context_tokens=aim)
+        consumer.resolved_prefs = MagicMock(max_context_tokens=200_000)
         return consumer
 
-    async def test_small_aim_injects_only_the_most_recently_activated(self):
-        result = await self._consumer(50_000)._get_canvases_for_prompt(str(self.thread.id))
-        self.assertEqual([c.title for c in result["active_canvases"]], ["Newer"])
+    async def test_lists_every_canvas_without_content(self):
+        result = await self._consumer()._get_canvases_for_prompt(str(self.thread.id))
+        self.assertEqual(set(result), {"canvases"})
         by_title = {c["title"]: c for c in result["canvases"]}
-        self.assertTrue(by_title["Newer"]["is_active"])
-        self.assertFalse(by_title["Older"]["is_active"])
-        self.assertGreater(by_title["Older"]["tokens"], 7_000)
+        self.assertEqual(set(by_title), {"Big", "Small"})
+        self.assertGreater(by_title["Big"]["tokens"], 7_000)
+        self.assertEqual(by_title["Small"]["chars"], 4)
+        self.assertTrue(by_title["Small"]["is_open"])
+        self.assertFalse(by_title["Big"]["is_open"])
+        self.assertEqual(by_title["Big"]["seen_state"], "never")
+        self.assertNotIn("content", by_title["Big"])
 
-    async def test_default_aim_injects_both(self):
-        result = await self._consumer(200_000)._get_canvases_for_prompt(str(self.thread.id))
-        self.assertEqual(sorted(c.title for c in result["active_canvases"]), ["Newer", "Older"])
-        self.assertTrue(all(c["is_active"] for c in result["canvases"]))
+    async def test_token_count_is_cached_on_the_row(self):
+        await self._consumer()._get_canvases_for_prompt(str(self.thread.id))
+        big = await database_sync_to_async(ChatCanvas.objects.get)(pk=self.big.pk)
+        self.assertGreater(big.token_count, 7_000)
+        self.assertTrue(big.content_sha)
 
-    async def test_inactive_canvases_stay_listed(self):
-        await database_sync_to_async(ChatCanvas.objects.create)(
-            thread=self.thread, title="Background", content="tiny",
+    async def test_seen_state_tracks_agent_reads_and_user_edits(self):
+        from chat.services import record_agent_canvas_view
+
+        await database_sync_to_async(record_agent_canvas_view)(self.small)
+        result = await self._consumer()._get_canvases_for_prompt(str(self.thread.id))
+        by_title = {c["title"]: c for c in result["canvases"]}
+        self.assertEqual(by_title["Small"]["seen_state"], "unchanged")
+        # The user edits in the browser: the row changes under the agent.
+        await database_sync_to_async(
+            lambda: ChatCanvas.objects.filter(pk=self.small.pk).update(content="tiny but edited")
+        )()
+        result = await self._consumer()._get_canvases_for_prompt(str(self.thread.id))
+        by_title = {c["title"]: c for c in result["canvases"]}
+        self.assertEqual(by_title["Small"]["seen_state"], "changed")
+        self.assertEqual(by_title["Small"]["chars"], len("tiny but edited"))
+
+    async def test_denies_other_users_thread(self):
+        other = await database_sync_to_async(User.objects.create_user)(
+            email="canvas-list-other@example.com", password="pass",
         )
-        result = await self._consumer(200_000)._get_canvases_for_prompt(str(self.thread.id))
-        by_title = {c["title"]: c for c in result["canvases"]}
-        self.assertFalse(by_title["Background"]["is_active"])
-        self.assertEqual(by_title["Background"]["chars"], 4)
+        consumer = self._consumer()
+        consumer.scope = {"user": other}
+        consumer.user = other
+        self.assertIsNone(await consumer._get_canvases_for_prompt(str(self.thread.id)))

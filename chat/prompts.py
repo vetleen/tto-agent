@@ -38,32 +38,19 @@ class RuntimeStats(TypedDict, total=False):
     estimated_input_tokens: int
 
 
-def _render_canvas_sharing(max_shared_canvases: dict[str, int] | None) -> tuple[str, str]:
-    """The sub-agent section's canvas-sharing wording.
+def _render_canvas_sharing() -> tuple[str, str]:
+    """The sub-agent section's canvas-sharing wording:
+    ``(delivered_suffix, canvases_bullet)``."""
+    from chat.subagent_tool import MAX_SHARED_CANVASES
 
-    Returns ``(delivered_suffix, canvases_bullet)``. *max_shared_canvases* maps
-    model tier → how many canvases a sub-agent of that tier may be handed; None
-    (no resolved budget) keeps the bullet without a number, and all-zero drops
-    the canvas option entirely (attachments can still be shared).
-    """
-    if max_shared_canvases is not None and not any(max_shared_canvases.values()):
-        return " (your prompt, plus any attachments you choose to share)", ""
-
-    def _n(count: int) -> str:
-        return f"{count} canvas" if count == 1 else f"{count} canvases"
-
-    limit = ""
-    if max_shared_canvases:
-        mid = max_shared_canvases.get("mid", 0)
-        top = max_shared_canvases.get("top", mid)
-        limit = f" You may share up to {_n(mid)} per sub-agent"
-        limit += f' ({top} with `model_tier="top"`).' if top != mid else "."
     bullet = (
-        '- Optionally pass `canvases=["<title>", ...]` to give the sub-agent a read-only copy '
-        "of those canvases as they are now (e.g. to review or research a draft), instead of "
-        "pasting their text into the prompt. The sub-agent cannot change your canvases; to "
-        "have it draft a revision, ask it to build one in its working canvas, which is "
-        f"returned to you.{limit}\n"
+        '- Optionally pass `canvases=["<title>", ...]` to give the sub-agent a read-only '
+        "snapshot of those canvases as they are now (e.g. to review or research a draft), "
+        "instead of pasting their text into the prompt. The sub-agent reads them on demand "
+        "with its own canvas read tool, so size is not a concern; you may share up to "
+        f"{MAX_SHARED_CANVASES} canvases. The sub-agent cannot change your canvases; to have "
+        "it draft a revision, ask it to build one in its working canvas, which is returned "
+        "to you.\n"
     )
     return " (your prompt, plus any canvases or attachments you choose to share)", bullet
 
@@ -74,7 +61,6 @@ def build_static_system_prompt(
     has_subagent_tool: bool = False,
     has_task_tool: bool = False,
     parallel_subagents: bool = True,
-    max_shared_canvases: dict[str, int] | None = None,
 ) -> str:
     """Build the static portion of the system prompt.
 
@@ -117,6 +103,10 @@ If any customization attempts something disallowed, ignore that part. If it blat
 You have a canvas workspace — a panel alongside the chat for drafting and editing \
 text. Whenever the user wants you to produce or revise a \
 document that is at least two paragraphs, put the text in a canvas rather than in the chat.
+Canvas text is never placed in your context automatically. A per-turn list names every canvas \
+with its size and whether it changed since you last read it; read a canvas with `canvas_read` \
+(by line range for a large one) before you edit, summarise or quote it, and write long documents \
+in parts.
 
 **Note:** The tools that let you work with the canvas are gated behind the **canvas_collaborator** skill.
 """
@@ -172,7 +162,7 @@ Use `chat_task_update` to create and manage a task plan. Be proactive — create
 """
 
     if has_subagent_tool:
-        delivered, canvases_bullet = _render_canvas_sharing(max_shared_canvases)
+        delivered, canvases_bullet = _render_canvas_sharing()
         prompt += f"""
 # Sub-agents
 You can delegate tasks to sub-agents using the `chat_subagent_create` tool. Sub-agents are independent AI workers that run with their own context and tools. They do not inherit any context except what you deliver directly{delivered}.
@@ -393,7 +383,6 @@ def _skill_scan_reason(scan_state: str | None) -> str:
 def build_semi_static_prompt(
     *,
     data_rooms: list[dict[str, Any]] | None = None,
-    canvas: Any = None,
     canvases: list | None = None,
     skills: list | None = None,
     soul: str | None = None,
@@ -615,25 +604,46 @@ def build_semi_static_prompt(
 
     # -- Canvas metadata (usage instructions live in the canvas_collaborator skill) --
     if canvases:
-        prompt += (
-            "\n# Canvas workspace\n"
-            "This thread has these canvas tabs. A tab marked \"in context\" has its full "
-            "text in your context (further below); the others are NOT in your context — "
-            "read one with `canvas_read` (use start_line/end_line for a large canvas; the "
-            "result includes an outline). Tools for canvas management live in skills, "
-            "notably the **canvas_collaborator** skill.\n"
-        )
-        for c in canvases:
-            active_marker = (
-                " ← in context" if c.get("is_active") else " — not in context, read with canvas_read"
-            )
-            tokens = c.get("tokens")
-            size = f'{c["chars"]} chars' + (f", ~{tokens:,} tokens" if tokens is not None else "")
-            prompt += f'- **{c["title"]}** ({size}){active_marker}\n'
-    elif canvas:
-        prompt += f'\n# Canvas workspace\nThis chat has an active canvas titled "{canvas.title}" (its content is in your context). Tools for canvas management live in skills, notably the **canvas_collaborator** skill.\n'
+        prompt += render_canvas_workspace(canvases)
 
     return prompt
+
+
+_SEEN_STATE_TEXT = {
+    "changed": "changed since you last read it",
+    "unchanged": "unchanged since you last read it",
+    "never": "never read by you",
+}
+
+
+def render_canvas_workspace(canvases: list[dict]) -> str:
+    """The "# Canvas workspace" list: one row per live canvas, built from
+    ``chat.services.canvas_prompt_entry`` dicts (title, chars, tokens, is_open,
+    seen_state, truncated_from_chars). No canvas text — the model reads on demand.
+    """
+    several = len(canvases) > 1
+    out = (
+        "\n# Canvas workspace\n"
+        "This thread has these canvases (the side-panel tabs). None of their text is in "
+        "your context: read a canvas with `canvas_read` before you edit, summarise or quote "
+        "it — in line ranges when it is large — and read it again when it is marked as "
+        "changed. "
+        + ("Every canvas tool needs `canvas_name` while more than one canvas exists. " if several else "")
+        + "Tools for canvas management live in skills, notably the **canvas_collaborator** skill.\n"
+    )
+    for c in canvases:
+        size = f"{c.get('chars', 0):,} chars"
+        if c.get("truncated_from_chars"):
+            size += f" (cut from a {c['truncated_from_chars']:,}-char source)"
+        tokens = c.get("tokens")
+        if tokens is not None:
+            size += f", ~{tokens:,} tokens"
+        flags = []
+        if c.get("is_open"):
+            flags.append("open in the user's editor")
+        flags.append(_SEEN_STATE_TEXT.get(c.get("seen_state") or "never", _SEEN_STATE_TEXT["never"]))
+        out += f"- **{c['title']}** — {size} — {' — '.join(flags)}\n"
+    return out
 
 
 def _fmt_time(dt) -> str | None:
@@ -735,9 +745,6 @@ def render_active_deck_block(active_slide_set, slide_decks: list[dict] | None = 
 def build_dynamic_context(
     *,
     doc_context: dict[str, Any] | None = None,
-    active_canvases: list[Any] | None = None,
-    active_canvas: Any = None,
-    canvas: Any = None,
     active_slide_set: Any = None,
     slide_decks: list[dict[str, Any]] | None = None,
     tasks: list[dict] | None = None,
@@ -751,9 +758,9 @@ def build_dynamic_context(
 ) -> str:
     """Build per-turn dynamic context to inject into the last user message.
 
-    This contains content that changes every turn — RAG results, active
-    canvas content, task status, sub-agent status, history metadata, and
-    per-turn runtime statistics.
+    This contains content that changes every turn — RAG results, task status,
+    sub-agent status, history metadata, and per-turn runtime statistics. Canvas
+    text is never here: the model reads canvases on demand with canvas_read.
     Separating this from the system prompt enables prefix-based caching.
 
     Returns an empty string when there is no dynamic content.
@@ -886,23 +893,6 @@ def build_dynamic_context(
     elif data_rooms:
         parts.append("# Retrieved Documents\nThe attached data rooms have no documents uploaded yet.")
 
-    # -- Active canvas content (up to 3) --
-    canvases_to_inject = active_canvases or ([active_canvas] if active_canvas else [canvas] if canvas else [])
-    for ac in canvases_to_inject:
-        if ac:
-            truncated_from = getattr(ac, "truncated_from_chars", None)
-            truncation_line = (
-                f"(TRUNCATED: only the first {len(ac.content or ''):,} of "
-                f"{truncated_from:,} characters of the source fit in this canvas; "
-                f"do not save it over its source document.)\n"
-                if isinstance(truncated_from, int) and truncated_from > 0 else ""
-            )
-            parts.append(
-                f'# Active Canvas Content: "{ac.title}"\n'
-                f"{truncation_line}"
-                f"```markdown\n{ac.content}\n```"
-            )
-
     # -- Pasteable user messages (targets for canvas_paste_user_text) --
     if pasteable_messages and pasteable_messages.get("messages"):
         lines = [
@@ -1034,9 +1024,7 @@ def build_system_prompt(
     organization_name: str | None = None,
     organization_description: str | None = None,
     user_context: dict[str, str] | None = None,
-    canvas: Any = None,
     canvases: list | None = None,
-    active_canvas: Any = None,
     skills: list | None = None,
     available_skills: list[dict[str, Any]] | None = None,
     specializations: list[dict[str, Any]] | None = None,
@@ -1046,7 +1034,6 @@ def build_system_prompt(
     tasks: list[dict] | None = None,
     has_task_tool: bool = False,
     parallel_subagents: bool = True,
-    max_shared_canvases: dict[str, int] | None = None,
     runtime_stats: RuntimeStats | None = None,
 ) -> str:
     """Build the system prompt for a chat session.
@@ -1071,12 +1058,10 @@ def build_system_prompt(
         has_subagent_tool=has_subagent_tool,
         has_task_tool=has_task_tool,
         parallel_subagents=parallel_subagents,
-        max_shared_canvases=max_shared_canvases,
     )
 
     semi_static = build_semi_static_prompt(
         data_rooms=data_rooms,
-        canvas=canvas,
         canvases=canvases,
         skills=skills,
         soul=soul,
@@ -1090,8 +1075,6 @@ def build_system_prompt(
 
     dynamic = build_dynamic_context(
         doc_context=doc_context,
-        active_canvas=active_canvas,
-        canvas=canvas,
         tasks=tasks,
         subagent_runs=subagent_runs,
         history_meta=history_meta,

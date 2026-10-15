@@ -22,29 +22,30 @@ def _is_waiting(run_id) -> bool:
     ).exists()
 
 
-def _snapshot_canvases(
-    thread_id, titles: list[str], max_canvases: int, token_cap: int | None = None,
-) -> tuple[list[dict], str]:
+# How many canvases one sub-agent may be handed. Size is no longer a concern:
+# the snapshot is not pasted into the sub-agent's prompt, it is listed there and
+# read on demand with subagent_canvas_read (ranged, token-paged), so this is
+# only a sanity bound on the listing.
+MAX_SHARED_CANVASES = 5
+
+
+def _snapshot_canvases(thread_id, titles: list[str]) -> tuple[list[dict], str]:
     """Copy the named canvases' current text for a sub-agent.
 
     Returns ``(snapshot, "")`` or ``([], error_message)``. The error is
-    actionable: too many titles states the limit, an unknown title lists the
-    canvases that do exist, and a snapshot whose measured tokens exceed
-    *token_cap* (the sub-agent's per-read cap) names the total — a 225k-char
-    canvas pasted into the sub-agent prompt would otherwise eat its budget.
+    actionable: too many titles states the limit, and an unknown title lists
+    the canvases that do exist. Each entry carries ``chars``/``tokens`` so the
+    sub-agent prompt can list the snapshot without re-counting it.
     """
     from core.tokens import count_tokens
     from chat.models import ChatCanvas
     from chat.services import resolve_canvas
 
     wanted = list(dict.fromkeys(t.strip() for t in titles if t and t.strip()))
-    if len(wanted) > max_canvases:
-        if max_canvases == 0:
-            return [], "Sharing canvases with sub-agents isn't available."
-        noun = "canvas" if max_canvases == 1 else "canvases"
+    if len(wanted) > MAX_SHARED_CANVASES:
         return [], (
-            f"You may share up to {max_canvases} {noun} with a sub-agent at this "
-            f"model tier; you asked for {len(wanted)}."
+            f"You may share up to {MAX_SHARED_CANVASES} canvases with a sub-agent; "
+            f"you asked for {len(wanted)}."
         )
 
     snapshot: list[dict] = []
@@ -58,15 +59,11 @@ def _snapshot_canvases(
             )
             listing = ", ".join(f'"{t}"' for t in available) if available else "(none)"
             return [], f"{err} Canvases in this conversation: {listing}."
-        snapshot.append({"title": canvas.title, "content": canvas.content or ""})
-    if token_cap and snapshot:
-        total = sum(count_tokens(c["content"]) for c in snapshot)
-        if total > token_cap:
-            return [], (
-                f"Those canvases total ~{total:,} tokens, over the {token_cap:,}-token "
-                "sharing limit for this sub-agent; share fewer or smaller canvases, or "
-                "ask the sub-agent to read a data room document instead."
-            )
+        content = canvas.content or ""
+        snapshot.append({
+            "title": canvas.title, "content": content,
+            "chars": len(content), "tokens": count_tokens(content),
+        })
     return snapshot, ""
 
 
@@ -145,11 +142,11 @@ class CreateSubagentInput(ReasonBaseModel):
         default_factory=list,
         description=(
             "Optional titles of canvases in this conversation to share with the "
-            "sub-agent as a read-only copy of their current text. Use when the task "
-            "concerns a draft (review it, fact-check it, research gaps in it). The "
-            "sub-agent sees the text as it is now: it cannot edit your canvas or "
-            "see later changes. Omit when the task doesn't need it; the number "
-            "you may share is stated in your instructions."
+            "sub-agent as a read-only snapshot of their current text (up to 5). Use "
+            "when the task concerns a draft (review it, fact-check it, research gaps "
+            "in it). The sub-agent reads them on demand with its own canvas read "
+            "tool, so large canvases are fine. It cannot edit your canvases or see "
+            "later changes. Omit when the task doesn't need it."
         ),
     )
     attachments: list[int] = Field(
@@ -277,16 +274,7 @@ class CreateSubagentTool(ContextAwareTool):
 
         # Snapshot shared canvases now, not when the run executes: a queued or
         # retried run must see the text the orchestrator delegated against.
-        from chat.subagent_service import max_shared_canvases, subagent_context_budget
-        from llm.context_budget import canvas_read_token_cap
-
-        budget = subagent_context_budget(prefs, model_tier)
-        shared_canvases, err_msg = _snapshot_canvases(
-            thread_id,
-            kwargs.get("canvases") or [],
-            max_shared_canvases(budget),
-            token_cap=canvas_read_token_cap(budget),
-        )
+        shared_canvases, err_msg = _snapshot_canvases(thread_id, kwargs.get("canvases") or [])
         if err_msg:
             return json.dumps({"status": "error", "message": err_msg})
 

@@ -2700,20 +2700,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
         tasks = await self._get_thread_tasks(str(thread.id))
         subagent_runs = await self._get_subagent_runs(str(thread.id)) if self._has_tool("chat_subagent_create") else None
         parallel_subagents = prefs.parallel_subagents if prefs else True
-        shared_canvas_limits = None
-        if prefs and self._has_tool("chat_subagent_create"):
-            from chat.subagent_service import max_shared_canvases, subagent_context_budget
-
-            shared_canvas_limits = {
-                tier: max_shared_canvases(subagent_context_budget(prefs, tier))
-                for tier in ("mid", "top")
-            }
         static_system = build_static_system_prompt(
             organization_name=org_name,
             has_subagent_tool=self._has_tool("chat_subagent_create"),
             has_task_tool=self._has_tool("chat_task_update"),
             parallel_subagents=parallel_subagents,
-            max_shared_canvases=shared_canvas_limits,
         )
         available_skills_for_prompt = (
             prefs.allowed_skills
@@ -2786,7 +2777,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
         }
         provisional_dynamic_data = {
             "doc_context": doc_context,
-            "active_canvases": canvases_info["active_canvases"] if canvases_info else None,
             "active_slide_set": active_deck,
             "slide_decks": slide_decks,
             "tasks": tasks,
@@ -2863,9 +2853,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
         }
         dynamic_context_data = {
             "doc_context": doc_context,
-            "active_canvases": (
-                canvases_info["active_canvases"] if canvases_info else None
-            ),
             "active_slide_set": active_deck,
             "slide_decks": slide_decks,
             "tasks": tasks,
@@ -3275,16 +3262,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
                                         "pending_ai_review": pending_ai_review,
                                     }
                                     await self._sink.send_event(canvas_event)
-                        except (json.JSONDecodeError, AttributeError):
-                            pass
-                    if tool_name == "canvas_activate":
-                        try:
-                            result = json.loads(event.data.get("result", "{}"))
-                            if result.get("status") == "ok":
-                                await self._sink.send_event({
-                                    "event_type": "canvases.active_changed",
-                                    "activated": result.get("activated", []),
-                                })
                         except (json.JSONDecodeError, AttributeError):
                             pass
                     # The tool already soft-deleted the canvas; recompute the
@@ -4007,60 +3984,25 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _get_canvases_for_prompt(self, thread_id):
-        """Canvas list for the prompt + the active canvases whose MEASURED tokens fit.
-
-        Active canvases are injected in last-activated order while their token sum
-        stays under the per-read cap (``canvas_read_token_cap``); the rest are listed
-        as "not in context" and the model reads them with ``canvas_read``.
+        """The "# Canvas workspace" list for the prompt: one entry per live canvas
+        (title, size, tokens, which tab is open, whether it changed since the agent
+        last read it). No canvas text — the model reads canvases with canvas_read.
         """
-        from core.tokens import count_tokens
-        from llm.context_budget import canvas_read_token_cap
-        from chat.models import ChatCanvas, ChatThread
-
-        from chat.services import MAX_ACTIVE_CANVASES
+        from chat.models import ChatThread
+        from chat.services import canvas_prompt_entry, live_canvases
 
         try:
             thread = ChatThread.objects.get(pk=thread_id, created_by=self.user)
         except ChatThread.DoesNotExist:
             return None
-        canvases = list(
-            ChatCanvas.objects.filter(thread=thread, deleted_at__isnull=True)
-            .select_related("accepted_checkpoint")
-            .order_by("created_at")
-        )
+        canvases = list(live_canvases(thread.id))
         if not canvases:
             return None
-
-        active_canvases = [c for c in canvases if c.is_active]
-        if not active_canvases:
-            active_canvases = sorted(canvases, key=lambda c: c.updated_at, reverse=True)[:MAX_ACTIVE_CANVASES]
-        active_canvases.sort(key=lambda c: (c.last_activated_at or c.updated_at), reverse=True)
-
-        prefs = getattr(self, "resolved_prefs", None)
-        cap = canvas_read_token_cap(prefs.max_context_tokens if prefs else None)
-        tokens = {c.pk: count_tokens(c.content or "") for c in canvases}
-        injected = []
-        used = 0
-        for c in active_canvases:
-            if used + tokens[c.pk] <= cap:
-                injected.append(c)
-                used += tokens[c.pk]
-        if len(injected) < len(active_canvases):
-            logger.info(
-                "canvas injection: %d of %d active canvases in context (%d/%d tokens) thread=%s",
-                len(injected), len(active_canvases), used, cap, thread_id,
-            )
-
-        injected_pks = {c.pk for c in injected}
-        canvases_info = []
-        for c in canvases:
-            canvases_info.append({
-                "title": c.title,
-                "chars": len(c.content),
-                "tokens": tokens[c.pk],
-                "is_active": c.pk in injected_pks,
-            })
-        return {"canvases": canvases_info, "active_canvases": injected}
+        return {
+            "canvases": [
+                canvas_prompt_entry(c, open_id=thread.active_canvas_id) for c in canvases
+            ],
+        }
 
     @database_sync_to_async
     def _get_active_deck_for_prompt(self, thread_id):
@@ -4118,7 +4060,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         from django.db import IntegrityError, transaction
 
         from chat.models import ChatCanvas, ChatThread
-        from chat.services import set_active_canvas
+        from chat.services import focus_canvas
         title = (title or "")[:255]  # column limit; longer is a DB error
         canvas = self._resolve_canvas_id(thread_id, canvas_id)
         if canvas is None and not ChatThread.objects.filter(
@@ -4145,7 +4087,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                         canvas = ChatCanvas.objects.create(
                             thread_id=thread_id, title=candidate, content=content,
                         )
-                        set_active_canvas(thread_id, canvas)
+                        focus_canvas(thread_id, canvas)
                 return
             except IntegrityError:
                 if attempt == 2:
@@ -4166,7 +4108,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         from chat.services import (
             canvas_diff_baseline,
             clip_to_canvas,
-            set_active_canvas,
+            focus_canvas,
         )
 
         content, original_chars = clip_to_canvas(content)
@@ -4176,7 +4118,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             thread_id=thread_id, title=candidate, content=content,
             truncated_from_chars=original_chars,
         )
-        set_active_canvas(thread_id, canvas)
+        focus_canvas(thread_id, canvas)
         accepted_content, pending_ai_review = canvas_diff_baseline(canvas)
         return {
             "id": str(canvas.pk),
@@ -4190,7 +4132,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def _get_or_create_canvas(self, thread_id):
         from chat.models import ChatCanvas, ChatThread
-        from chat.services import set_active_canvas
+        from chat.services import focus_canvas
         # Verify thread ownership
         if not ChatThread.objects.filter(pk=thread_id, created_by=self.user).exists():
             return None
@@ -4204,7 +4146,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             canvas = ChatCanvas.objects.create(
                 thread_id=thread_id, title="Untitled document", content="",
             )
-            set_active_canvas(thread_id, canvas)
+            focus_canvas(thread_id, canvas)
         from chat.services import canvas_diff_baseline
         accepted_content, pending_ai_review = canvas_diff_baseline(canvas)
         return {
@@ -4314,7 +4256,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def _switch_canvas(self, thread_id, canvas_id):
         from chat.models import ChatCanvas
-        from chat.services import set_active_canvas
+        from chat.services import focus_canvas
         try:
             canvas = ChatCanvas.objects.select_related("accepted_checkpoint").get(
                 pk=canvas_id, thread_id=thread_id, thread__created_by=self.user,
@@ -4322,7 +4264,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             )
         except ChatCanvas.DoesNotExist:
             return None
-        set_active_canvas(thread_id, canvas)
+        focus_canvas(thread_id, canvas)
         from chat.services import canvas_diff_baseline
         accepted_content, pending_ai_review = canvas_diff_baseline(canvas)
         return {

@@ -232,8 +232,12 @@ class ChatEndToEndTests(TransactionTestCase):
             len(fake.stream_requests), 1, f"no stream request; events={events}"
         )
         last = fake.stream_requests[0].messages[-1].content
-        self.assertIn("Active Canvas Content", last)
-        self.assertIn("PLACEHOLDER_POLICY_TEXT", last)
+        # Listed, never pasted: the model reads the canvas with canvas_read.
+        self.assertNotIn("Active Canvas Content", last)
+        self.assertNotIn("PLACEHOLDER_POLICY_TEXT", last)
+        self.assertIn("# Canvas workspace", last)
+        self.assertIn("Untitled document", last)
+        self.assertIn("never read by you", last)
 
     @patch.dict(
         os.environ,

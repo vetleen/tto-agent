@@ -181,7 +181,7 @@ class ResolveSubagentToolsTests(TestCase):
         prefs = _prefs()
         tools = resolve_subagent_tools(prefs, data_room_ids=[1])
         for name in [
-            "canvas_activate", "canvas_write", "canvas_edit",
+            "canvas_write", "canvas_edit", "canvas_read",
             "canvas_save_to_document", "chat_subagent_create",
             "chat_skill_attach", "chat_skill_detach", "skill_create",
             "skill_resource_load",

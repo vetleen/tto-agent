@@ -1028,7 +1028,7 @@ def skills_edit_in_chat(request, skill_id):
     ChatThreadSkill.objects.create(thread=thread, skill=skill_creator)
 
     load_skill_field_into_canvas(thread.id, target, "description")
-    # Load instructions LAST so it ends up as the active canvas (set_active_canvas
+    # Load instructions LAST so its tab is the one the browser opens (focus_canvas
     # is called inside the helper and the latest call wins).
     load_skill_field_into_canvas(thread.id, target, "instructions")
 

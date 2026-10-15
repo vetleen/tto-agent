@@ -102,20 +102,23 @@ def _build_seed_message(
     if n_chars <= CANVAS_MAX_CHARS:
         parts.append(
             f"The user opened this thread to create meeting minutes (or a summary) "
-            f"for **{meeting.name}**. A transcript of the meeting "
-            f"({n_chars} characters, {duration} of audio, transcribed via "
-            f'`{model_label}`) is preloaded in the canvas titled "{canvas_title}".'
+            f"for **{meeting.name}**. The full transcript of the meeting "
+            f"({n_chars:,} characters, {duration} of audio, transcribed via "
+            f'`{model_label}`) is in the canvas titled "{canvas_title}". It is not in '
+            "your context: read it with canvas_read before drafting — in line ranges "
+            "(start_line/end_line) when it is long."
         )
     else:
         # The canvas only holds the first CANVAS_MAX_CHARS characters; tell the
-        # model explicitly rather than claiming the full transcript is preloaded.
+        # model explicitly rather than claiming the full transcript is there.
         parts.append(
             f"The user opened this thread to create meeting minutes (or a summary) "
-            f"for **{meeting.name}**. The meeting transcript is {n_chars} characters "
+            f"for **{meeting.name}**. The meeting transcript is {n_chars:,} characters "
             f"({duration} of audio, transcribed via `{model_label}`); only the first "
-            f"{CANVAS_MAX_CHARS:,} characters are preloaded in the canvas titled "
-            f'"{canvas_title}" — the remainder was truncated to fit, so the end of '
-            f"the meeting is not shown in the canvas."
+            f"{CANVAS_MAX_CHARS:,} characters are in the canvas titled "
+            f'"{canvas_title}" — the end of the meeting was cut to fit. Read the canvas '
+            "with canvas_read (in line ranges) before drafting, and tell the user the "
+            "minutes cover only the part that fit."
         )
     if meeting.agenda and meeting.agenda.strip():
         parts.append(f"Agenda: {meeting.agenda.strip()}")
@@ -263,7 +266,7 @@ def create_minutes_thread(user, meeting, summarizer_skill=_UNSET):
     from chat.services import (
         clip_to_canvas,
         create_canvas_checkpoint,
-        set_active_canvas,
+        focus_canvas,
     )
 
     if summarizer_skill is _UNSET:
@@ -286,9 +289,10 @@ def create_minutes_thread(user, meeting, summarizer_skill=_UNSET):
     if summarizer_skill is not None:
         ChatThreadSkill.objects.create(thread=thread, skill=summarizer_skill)
 
-    # Preload the transcript into a canvas so Wilfred sees it as the active
-    # canvas (its content is injected into the per-turn prompt). Truncate to
-    # the canvas character cap if the transcript is unusually long.
+    # Preload the transcript into a canvas and open that tab. Nothing is injected
+    # into the prompt: the seed message tells Wilfred to read it with canvas_read
+    # (in line ranges when long). Truncate to the canvas character cap if the
+    # transcript is unusually long.
     canvas_title = f"Meeting transcript — {meeting.name}"[:255]
     canvas_content, original_chars = clip_to_canvas(meeting.transcript)
     canvas = ChatCanvas.objects.create(
@@ -302,7 +306,7 @@ def create_minutes_thread(user, meeting, summarizer_skill=_UNSET):
     )
     canvas.accepted_checkpoint = checkpoint
     canvas.save(update_fields=["accepted_checkpoint"])
-    set_active_canvas(thread.id, canvas)
+    focus_canvas(thread.id, canvas)
 
     # Copy meeting attachments into fresh ChatAttachment rows before we build
     # the seed, so the hidden seed can tell the LLM how many supporting files

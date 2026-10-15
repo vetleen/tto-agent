@@ -45,25 +45,15 @@ def _canvas_read_marker(what: str) -> str:
     return omitted_arg_marker(what, "Call canvas_read to see the canvas as it is now.")
 
 
-class ActiveCanvasInput(ReasonBaseModel):
-    canvas_names: list[str] = Field(
-        description=(
-            "List of canvas titles (1-3) to make active. All other canvases "
-            "will be deactivated. Active canvases have their full content "
-            "included in your context."
-        ),
-    )
-
-
 class WriteCanvasInput(ReasonBaseModel):
     title: str = Field(description="Title for the document.")
     content: str = Field(description="Full markdown content of the document.")
     canvas_name: str = Field(
         default="",
         description=(
-            "Target an existing canvas by its title. Leave empty to create a "
-            "new canvas with the given title, or overwrite the active canvas "
-            "if titles match."
+            "Title of an existing canvas to overwrite. Leave empty to create a new "
+            "canvas titled `title`, or to overwrite the existing canvas whose title "
+            "equals `title`."
         ),
     )
 
@@ -80,7 +70,10 @@ class EditCanvasInput(ReasonBaseModel):
     )
     canvas_name: str = Field(
         default="",
-        description="Title of the canvas to edit. If omitted, edits the active canvas.",
+        description=(
+            "Title of the canvas to edit. Required when the thread has more than one "
+            "canvas (the error lists the titles); may be omitted when there is exactly one."
+        ),
     )
 
     @field_validator("edits", mode="before")
@@ -112,48 +105,6 @@ class EditCanvasInput(ReasonBaseModel):
         return value
 
 
-class ActiveCanvasTool(ContextAwareTool):
-    """Set which canvases are active (visible in your context)."""
-
-    name: str = "canvas_activate"
-    audience: str = "main"
-    section: str = "skills"
-    start_label: str = "Switching active canvases..."
-    end_label: str = "Updated active canvases"
-    description: str = (
-        "Set which canvases are active. Active canvases have their full "
-        "content included in your prompt context (up to 3). When called, "
-        "ALL existing active canvases are deactivated, then ONLY the listed "
-        "ones are activated. Use this when you need to bring specific "
-        "canvases into your working context — for example, to compare two "
-        "documents or to reference a source while editing another."
-    )
-    args_schema: type[BaseModel] = ActiveCanvasInput
-
-    def _run(self, canvas_names: list[str], **kwargs) -> str:
-        from chat.services import MAX_ACTIVE_CANVASES, set_active_canvases
-
-        thread_id = self.context.conversation_id if self.context else None
-        if not thread_id:
-            return json.dumps({"status": "error", "message": "No thread context available."})
-
-        if len(canvas_names) > MAX_ACTIVE_CANVASES:
-            return json.dumps({
-                "status": "error",
-                "message": f"You can activate at most {MAX_ACTIVE_CANVASES} canvases at a time.",
-            })
-
-        activated, errors = set_active_canvases(thread_id, canvas_names)
-
-        result = {
-            "status": "ok",
-            "activated": [{"title": c.title, "canvas_id": str(c.pk)} for c in activated],
-        }
-        if errors:
-            result["errors"] = errors
-        return json.dumps(result)
-
-
 class WriteCanvasTool(ContextAwareTool):
     """Create or completely rewrite the canvas document."""
 
@@ -167,8 +118,9 @@ class WriteCanvasTool(ContextAwareTool):
         "Use this when starting a document from scratch or doing a full rewrite. "
         "For targeted changes to an existing document, prefer the canvas_edit tool instead. "
         f"Content over {CANVAS_MAX_CHARS:,} characters is rejected. A long document cannot be "
-        "written in one call: write the first part with canvas_write, then append the next "
-        "parts with canvas_edit calls, each well under your output limit."
+        "written in one call: write the first part with canvas_write (end it with a marker "
+        "line such as `<!-- continued -->`), then canvas_edit calls that replace the marker "
+        "with the next part and a new marker, each call well under your output limit."
     )
     args_schema: type[BaseModel] = WriteCanvasInput
 
@@ -184,10 +136,11 @@ class WriteCanvasTool(ContextAwareTool):
         from chat.models import ChatCanvas
         from chat.services import (
             MAX_CANVASES_PER_THREAD,
-            activate_canvas,
             clip_to_canvas,
             create_canvas_checkpoint,
+            focus_canvas,
             oversized_content_rejection,
+            record_agent_canvas_view,
             snapshot_user_edits,
             truncation_result_fields,
         )
@@ -271,7 +224,8 @@ class WriteCanvasTool(ContextAwareTool):
             canvas.accepted_checkpoint = pre_ai_cp
             canvas.save(update_fields=["accepted_checkpoint"])
 
-        activate_canvas(thread_id, canvas)
+        record_agent_canvas_view(canvas)  # the agent authored this text
+        focus_canvas(thread_id, canvas)
 
         result = {
             "status": "ok", "title": canvas.title, "canvas_id": str(canvas.pk),
@@ -298,6 +252,7 @@ class EditCanvasTool(ContextAwareTool):
         "and new_text to replace it with. The old_text must match exactly once in "
         "the document — if it appears multiple times, include more surrounding "
         "context to make it unique. If no canvas exists yet, use canvas_write first. "
+        "Read the canvas first (canvas_read) so old_text matches the text as it is now. "
         f"A replacement text over {CANVAS_MAX_CHARS:,} characters is rejected."
     )
     args_schema: type[BaseModel] = EditCanvasInput
@@ -334,10 +289,9 @@ class EditCanvasTool(ContextAwareTool):
 
         canvas, err = resolve_canvas(thread_id, canvas_name or None)
         if err:
-            return json.dumps({
-                "status": "error",
-                "message": err if canvas_name else "No canvas exists for this thread. Use canvas_write to create one first.",
-            })
+            if not canvas_name and err.startswith("No canvas exists"):
+                err = "No canvas exists for this thread. Use canvas_write to create one first."
+            return json.dumps({"status": "error", "message": err})
 
         # Resolve every edit against the original snapshot (not the mutated
         # buffer) so one edit can't match text another edit just inserted.
@@ -373,9 +327,10 @@ class EditCanvasTool(ContextAwareTool):
             pre_ai_cp = canvas.checkpoints.order_by("-order").first()
 
         from chat.services import (
-            activate_canvas,
             clip_to_canvas,
             create_canvas_checkpoint,
+            focus_canvas,
+            record_agent_canvas_view,
             truncation_result_fields,
         )
 
@@ -395,7 +350,8 @@ class EditCanvasTool(ContextAwareTool):
             update_fields.append("truncated_from_chars")
         canvas.save(update_fields=update_fields)
 
-        activate_canvas(thread_id, canvas)
+        record_agent_canvas_view(canvas)  # the agent authored the edited text
+        focus_canvas(thread_id, canvas)
         create_canvas_checkpoint(
             canvas, source="ai_edit",
             description="Edited %d section(s)" % applied,
@@ -423,7 +379,10 @@ class EditCanvasTool(ContextAwareTool):
 class ReadCanvasInput(ReasonBaseModel):
     canvas_name: str = Field(
         default="",
-        description="Title of the canvas to read. If omitted, reads the active canvas.",
+        description=(
+            "Title of the canvas to read. Required when the thread has more than one "
+            "canvas; may be omitted when there is exactly one."
+        ),
     )
     start_line: int = Field(
         default=1, ge=1,
@@ -493,13 +452,12 @@ class ReadCanvasTool(ContextAwareTool):
     start_label: str = "Reading canvas..."
     end_label: str = "Read canvas"
     description: str = (
-        "Read a canvas's text — the whole canvas when it fits, otherwise a page of "
-        "lines plus an outline (headings with line ranges, total lines, table rows) "
-        "and next_start_line, so you can continue or jump to the part you need with "
-        "start_line/end_line. Use it when you need canvas text that is not in your "
-        "context — e.g. after earlier canvas_write or canvas_edit calls were shortened "
-        "to save space — and before you edit or quote a canvas. Leave canvas_name "
-        "empty to read the active canvas."
+        "Read a canvas's text — the whole canvas when it fits the per-read cap, "
+        "otherwise a page of lines plus an outline (headings with line ranges, total "
+        "lines, table rows) and next_start_line, so you can continue or jump to the "
+        "part you need with start_line/end_line. No canvas text is ever in your "
+        "context on its own: read a canvas before you edit, summarise or quote it, "
+        "and read it again when the canvas list says it changed since you last read it."
     )
     args_schema: type[BaseModel] = ReadCanvasInput
 
@@ -516,16 +474,16 @@ class ReadCanvasTool(ContextAwareTool):
 
         canvas, err = resolve_canvas(thread_id, canvas_name or None)
         if err:
-            return json.dumps({
-                "status": "error",
-                "message": err if canvas_name else "No canvas exists for this thread.",
-            })
+            return json.dumps({"status": "error", "message": err})
         view, cap = _read_canvas_result(
             canvas.content or "", context=self.context,
             start_line=start_line, end_line=end_line, max_tokens=max_tokens,
         )
         if view.get("status") == "error":
             return json.dumps(view)
+        from chat.services import record_agent_canvas_view
+
+        record_agent_canvas_view(canvas)
         result = {"status": "ok", "title": canvas.title, "canvas_id": str(canvas.pk), **view}
         if canvas.truncated_from_chars:
             from chat.services import truncation_result_fields
@@ -608,8 +566,8 @@ class PasteUserTextInput(ReasonBaseModel):
     canvas_name: str = Field(
         default="",
         description=(
-            "Target canvas by title. Leave empty to use the active canvas; if no "
-            "canvas exists (or the named one doesn't), a new canvas is created."
+            "Target canvas by title. Required when the thread has more than one canvas. "
+            "If no canvas exists (or the named one doesn't), a new canvas is created."
         ),
     )
     anchor: str = Field(
@@ -646,12 +604,13 @@ class PasteUserTextTool(ContextAwareTool):
         from chat.models import ChatCanvas
         from chat.services import (
             MAX_CANVASES_PER_THREAD,
-            activate_canvas,
+            canvas_targeting_error,
             clip_to_canvas,
             create_canvas_checkpoint,
             dedupe_canvas_title,
+            focus_canvas,
             list_pasteable_user_messages,
-            resolve_canvas,
+            live_canvases,
             snapshot_user_edits,
             truncation_result_fields,
         )
@@ -688,7 +647,13 @@ class PasteUserTextTool(ContextAwareTool):
             except ChatCanvas.DoesNotExist:
                 canvas = None
         else:
-            canvas, _err = resolve_canvas(thread_id, None)  # active canvas, or None
+            existing = list(live_canvases(thread_id)[: MAX_CANVASES_PER_THREAD + 1])
+            if len(existing) > 1:
+                return json.dumps({
+                    "status": "error",
+                    "message": canvas_targeting_error([c.title for c in existing]),
+                })
+            canvas = existing[0] if existing else None
 
         if canvas is None:
             if ChatCanvas.objects.filter(
@@ -734,7 +699,7 @@ class PasteUserTextTool(ContextAwareTool):
                 canvas.accepted_checkpoint = pre_ai_cp
                 canvas.save(update_fields=["accepted_checkpoint"])
 
-        activate_canvas(thread_id, canvas)
+        focus_canvas(thread_id, canvas)
 
         result = {
             "status": "ok",
@@ -752,7 +717,6 @@ class PasteUserTextTool(ContextAwareTool):
 
 # Register on import
 _registry = get_tool_registry()
-_registry.register_tool(ActiveCanvasTool())
 _registry.register_tool(WriteCanvasTool())
 _registry.register_tool(EditCanvasTool())
 _registry.register_tool(ReadCanvasTool())

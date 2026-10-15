@@ -1,7 +1,7 @@
 """Canvas Collaborator (seed skill).
 
-A main-agent skill that unlocks the canvas workspace tools (``canvas_activate``,
-``canvas_write``, ``canvas_edit``, ``canvas_read``, ``canvas_delete``, ``canvas_save_to_document``,
+A main-agent skill that unlocks the canvas workspace tools (``canvas_write``,
+``canvas_edit``, ``canvas_read``, ``canvas_delete``, ``canvas_save_to_document``,
 ``canvas_paste_user_text`` and ``chat_attachment_open_to_canvas``; all
 ``section="skills"``, ``audience="main"``). Activating it lets the assistant draft
 and edit documents in the side-panel canvas. Sub-agents have their own canvas
@@ -26,6 +26,20 @@ After working in the canvas, don't reproduce the content in
 chat — just refer to it (e.g. "I've drafted it in the canvas").
 
 Prefer copying text into the canvas over retyping it, using the appropriate tools.
+
+# Reading canvases
+No canvas text is in your context on its own. The "Canvas workspace" list in each turn shows every \
+canvas with its size and whether it changed since you last read it.
+- Read before you edit: call `canvas_read` on a canvas before `canvas_edit`, and again whenever the \
+list says it changed since you last read it — the user edits in the side panel between turns, and an \
+old_text that no longer matches fails.
+- Big canvases come back as a page plus an outline (headings with line ranges). Read the section you \
+need with `start_line`/`end_line` instead of paging through the whole document; pass a smaller \
+`max_tokens` when you only need a glance.
+- Write long documents in parts: `canvas_write` for the first part (end it with a marker line such as \
+`<!-- continued -->`), then `canvas_edit` calls that replace the marker with the next part and a new \
+marker, each call well under your output limit. Remove the marker with the last part.
+- When the thread has more than one canvas, every canvas tool needs `canvas_name`.
 
 # Markdown
 Use markdown in the canvas.
@@ -53,7 +67,6 @@ Supported diagram types: `graph`/`flowchart`, `sequenceDiagram`, `classDiagram`,
 
 """,
     "tool_names": [
-        "canvas_activate",
         "canvas_write",
         "canvas_edit",
         "canvas_read",

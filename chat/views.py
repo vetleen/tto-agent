@@ -1503,7 +1503,7 @@ def canvas_import(request, thread_id, canvas_id=None):
         kind_for_extension,
         kind_for_mime,
     )
-    from chat.services import MAX_ATTACHMENT_SIZE, import_file_to_canvas, set_active_canvas
+    from chat.services import MAX_ATTACHMENT_SIZE, focus_canvas, import_file_to_canvas
 
     # Validate file type against the canvas-import allow-list (Word/PDF/text).
     ct = uploaded.content_type or ""
@@ -1563,7 +1563,7 @@ def canvas_import(request, thread_id, canvas_id=None):
     cp = create_canvas_checkpoint(canvas, source="import", description="Imported from file")
     canvas.accepted_checkpoint = cp
     canvas.save(update_fields=["accepted_checkpoint"])
-    set_active_canvas(thread.pk, canvas)
+    focus_canvas(thread.pk, canvas)
 
     generated_title = None
     if not thread.title:

@@ -182,8 +182,9 @@ dropped (the model can always call the tool again):
   elsewhere overrides `ContextAwareTool.trim_args_at_edit_point(args, *, later_calls)`
   (returns shrunken args or None; gated by `trim_args_min_chars`). Applied at edit points
   and between turns (`_load_history`, same window as result stubbing). The marker must say
-  where the content lives (`canvas_read`, `document_read`, the scratchpad) — never trim
-  content that has no read path (e.g. sub-agent canvas/deck writes only when superseded).
+  where the content lives (`canvas_read`, `subagent_canvas_read`, `document_read`, the
+  scratchpad) — never trim content that has no read path (e.g. deck writes only when
+  superseded).
 - **Preserved thinking**: `ModelInfo.binds_thinking_to_prefix` (False for all current
   models; set it for Claude models released after 2026-10-01) makes the Anthropic adapter
   send beta `thinking-binding-controls-2026-08-01` + `block_binding.prefix_mismatch_behavior:
@@ -300,6 +301,17 @@ a failed edit reports `new_text_chars` plus a `hint` when the replacement is abs
 `canvas_read` is ranged (`start_line`/`end_line`, 1-based) and token-paged (`max_tokens`,
 default `llm.context_budget.canvas_read_token_cap(aim)` = 30% of the aim, 12k–100k); a page
 that doesn't fit returns an outline (`chat/services.py:canvas_outline`) plus `next_start_line`.
+**No canvas text is ever injected into the prompt.** The "# Canvas workspace" list
+(`chat/services.py:canvas_prompt_entry` → `chat/prompts.py:render_canvas_workspace`) names each
+live canvas with chars, tokens (sha-keyed cache `ChatCanvas.content_sha`/`token_count`), which
+tab is open (`ChatThread.active_canvas`, the only "active" that still exists; `focus_canvas`
+sets it after agent writes/opens) and whether it changed since the agent last read it
+(`ChatCanvas.agent_seen_sha`, stamped only by `canvas_read`/`canvas_write`/`canvas_edit` via
+`record_agent_canvas_view`). With more than one live canvas every canvas tool requires
+`canvas_name` (`resolve_canvas` → `canvas_targeting_error`). Sub-agents get shared canvases as a
+frozen snapshot listed in their prompt and read them — and their own working canvas — with
+`subagent_canvas_read` (same paging, cap from `RunContext.max_context_tokens` = the run's budget).
+`ChatCanvas.is_active`/`last_activated_at` are deprecated columns, unused since 2026-10-15.
 
 ## Logging
 

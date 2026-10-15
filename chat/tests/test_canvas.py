@@ -9,8 +9,8 @@ from unittest.mock import MagicMock, patch
 from django.contrib.auth import get_user_model
 from django.test import TestCase, TransactionTestCase, override_settings
 
-from chat.canvas_tools import ActiveCanvasTool, DeleteCanvasTool, EditCanvasTool, WriteCanvasTool
-from chat.models import CanvasCheckpoint, ChatCanvas, ChatThread
+from chat.canvas_tools import DeleteCanvasTool, EditCanvasTool, PasteUserTextTool, ReadCanvasTool, WriteCanvasTool
+from chat.models import CanvasCheckpoint, ChatCanvas, ChatMessage, ChatThread
 from llm.types.context import RunContext
 
 User = get_user_model()
@@ -100,90 +100,6 @@ class WriteCanvasToolTests(TestCase):
         self.assertEqual(snapshots.first().content, "user edited content")
         canvas.refresh_from_db()
         self.assertEqual(canvas.content, "ai v2")
-
-
-# ---------------------------------------------------------------------------
-# ActiveCanvasTool tests
-# ---------------------------------------------------------------------------
-
-class ActiveCanvasToolTests(TestCase):
-    def setUp(self):
-        self.user = User.objects.create_user(email="active@test.com", password="pass")
-        self.thread = ChatThread.objects.create(created_by=self.user)
-
-    def test_activates_single_canvas(self):
-        ChatCanvas.objects.create(thread=self.thread, title="Notes", content="n")
-        result = _invoke(
-            ActiveCanvasTool, {"canvas_names": ["Notes"]},
-            _ctx(self.user.pk, self.thread.id),
-        )
-        self.assertEqual(result["status"], "ok")
-        self.assertEqual(len(result["activated"]), 1)
-        self.assertEqual(result["activated"][0]["title"], "Notes")
-        canvas = ChatCanvas.objects.get(thread=self.thread, title="Notes")
-        self.assertTrue(canvas.is_active)
-
-    def test_activates_multiple_canvases(self):
-        ChatCanvas.objects.create(thread=self.thread, title="A", content="a")
-        ChatCanvas.objects.create(thread=self.thread, title="B", content="b")
-        ChatCanvas.objects.create(thread=self.thread, title="C", content="c")
-        result = _invoke(
-            ActiveCanvasTool, {"canvas_names": ["A", "C"]},
-            _ctx(self.user.pk, self.thread.id),
-        )
-        self.assertEqual(result["status"], "ok")
-        self.assertEqual(len(result["activated"]), 2)
-        a = ChatCanvas.objects.get(thread=self.thread, title="A")
-        b = ChatCanvas.objects.get(thread=self.thread, title="B")
-        c = ChatCanvas.objects.get(thread=self.thread, title="C")
-        self.assertTrue(a.is_active)
-        self.assertFalse(b.is_active)
-        self.assertTrue(c.is_active)
-
-    def test_deactivates_previously_active(self):
-        from django.utils import timezone
-
-        now = timezone.now()
-        old = ChatCanvas.objects.create(thread=self.thread, title="Old", content="o")
-        old.is_active = True
-        old.last_activated_at = now
-        old.save(update_fields=["is_active", "last_activated_at"])
-        ChatCanvas.objects.create(thread=self.thread, title="New", content="n")
-
-        result = _invoke(
-            ActiveCanvasTool, {"canvas_names": ["New"]},
-            _ctx(self.user.pk, self.thread.id),
-        )
-        self.assertEqual(result["status"], "ok")
-        old.refresh_from_db()
-        self.assertFalse(old.is_active)
-        new = ChatCanvas.objects.get(thread=self.thread, title="New")
-        self.assertTrue(new.is_active)
-
-    def test_partial_success_with_invalid_name(self):
-        ChatCanvas.objects.create(thread=self.thread, title="Real", content="r")
-        result = _invoke(
-            ActiveCanvasTool, {"canvas_names": ["Real", "Fake"]},
-            _ctx(self.user.pk, self.thread.id),
-        )
-        self.assertEqual(result["status"], "ok")
-        self.assertEqual(len(result["activated"]), 1)
-        self.assertEqual(len(result["errors"]), 1)
-        self.assertIn("Fake", result["errors"][0])
-
-    def test_rejects_more_than_three(self):
-        for name in ["A", "B", "C", "D"]:
-            ChatCanvas.objects.create(thread=self.thread, title=name, content=name)
-        result = _invoke(
-            ActiveCanvasTool, {"canvas_names": ["A", "B", "C", "D"]},
-            _ctx(self.user.pk, self.thread.id),
-        )
-        self.assertEqual(result["status"], "error")
-
-    def test_no_context_returns_error(self):
-        tool = ActiveCanvasTool()
-        result = json.loads(tool.invoke({"canvas_names": ["X"]}))
-        self.assertEqual(result["status"], "error")
 
 
 # ---------------------------------------------------------------------------
@@ -1595,7 +1511,7 @@ class MultiCanvasToolTests(TestCase):
         self.assertEqual(ChatCanvas.objects.filter(thread=self.thread).count(), 1)
         self.assertEqual(ChatCanvas.objects.get(thread=self.thread, title="Draft").content, "v2")
 
-    def test_write_sets_active_canvas(self):
+    def test_write_focuses_canvas(self):
         _invoke(WriteCanvasTool, {"title": "First", "content": "f"}, _ctx(self.user.pk, self.thread.id))
         self.thread.refresh_from_db()
         first = ChatCanvas.objects.get(thread=self.thread, title="First")
@@ -1622,15 +1538,55 @@ class MultiCanvasToolTests(TestCase):
         beta = ChatCanvas.objects.get(thread=self.thread, title="Beta")
         self.assertEqual(beta.content, "Foo bar")
 
-    def test_edit_defaults_to_active_canvas(self):
-        _invoke(WriteCanvasTool, {"title": "Active", "content": "Hello world"}, _ctx(self.user.pk, self.thread.id))
+    def test_edit_without_name_uses_the_only_canvas(self):
+        _invoke(WriteCanvasTool, {"title": "Only", "content": "Hello world"}, _ctx(self.user.pk, self.thread.id))
         result = _invoke(EditCanvasTool, {
             "edits": [{"old_text": "Hello", "new_text": "Hi", "reason": ""}],
         }, _ctx(self.user.pk, self.thread.id))
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["applied"], 1)
-        canvas = ChatCanvas.objects.get(thread=self.thread, title="Active")
+        canvas = ChatCanvas.objects.get(thread=self.thread, title="Only")
         self.assertIn("Hi", canvas.content)
+
+    def test_edit_without_name_requires_name_with_two_canvases(self):
+        ctx = _ctx(self.user.pk, self.thread.id)
+        _invoke(WriteCanvasTool, {"title": "Alpha", "content": "Hello world"}, ctx)
+        _invoke(WriteCanvasTool, {"title": "Beta", "content": "Hello again"}, ctx)
+        result = _invoke(EditCanvasTool, {
+            "edits": [{"old_text": "Hello", "new_text": "Hi", "reason": ""}],
+        }, ctx)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("canvas_name is required", result["message"])
+        self.assertIn('"Alpha"', result["message"])
+        self.assertIn('"Beta"', result["message"])
+        self.assertEqual(ChatCanvas.objects.get(thread=self.thread, title="Alpha").content, "Hello world")
+        self.assertEqual(ChatCanvas.objects.get(thread=self.thread, title="Beta").content, "Hello again")
+
+    def test_read_without_name_requires_name_with_two_canvases(self):
+        ctx = _ctx(self.user.pk, self.thread.id)
+        _invoke(WriteCanvasTool, {"title": "Alpha", "content": "a"}, ctx)
+        _invoke(WriteCanvasTool, {"title": "Beta", "content": "b"}, ctx)
+        result = _invoke(ReadCanvasTool, {}, ctx)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("canvas_name is required", result["message"])
+        self.assertEqual(_invoke(ReadCanvasTool, {"canvas_name": "Beta"}, ctx)["content"], "b")
+
+    def test_paste_without_name_errors_with_two_canvases(self):
+        ctx = _ctx(self.user.pk, self.thread.id)
+        ChatMessage.objects.create(thread=self.thread, role="user", content="Paste me")
+        _invoke(WriteCanvasTool, {"title": "Alpha", "content": "a"}, ctx)
+        _invoke(WriteCanvasTool, {"title": "Beta", "content": "b"}, ctx)
+        result = _invoke(PasteUserTextTool, {"message_number": 1}, ctx)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("canvas_name is required", result["message"])
+        self.assertEqual(ChatCanvas.objects.filter(thread=self.thread, deleted_at__isnull=True).count(), 2)
+
+    def test_paste_without_name_creates_canvas_when_none(self):
+        ctx = _ctx(self.user.pk, self.thread.id)
+        ChatMessage.objects.create(thread=self.thread, role="user", content="Paste me")
+        result = _invoke(PasteUserTextTool, {"message_number": 1}, ctx)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(ChatCanvas.objects.get(thread=self.thread).content, "Paste me")
 
     def test_edit_errors_with_unknown_canvas_name(self):
         _invoke(WriteCanvasTool, {"title": "Doc", "content": "x"}, _ctx(self.user.pk, self.thread.id))
@@ -1793,52 +1749,53 @@ class ConsumerMultiCanvasTests(TransactionTestCase):
 # Multi-canvas prompt tests
 # ---------------------------------------------------------------------------
 
-class MultiCanvasPromptTests(TestCase):
-    """Tests for build_system_prompt with multi-canvas parameters."""
+class CanvasWorkspaceListTests(TestCase):
+    """The prompt lists canvases (size, tokens, open tab, staleness); it never
+    carries their text."""
 
-    def test_all_canvas_titles_listed(self):
-        from chat.prompts import build_system_prompt
-
-        canvases = [
-            {"title": "Doc A", "chars": 100, "is_active": False},
-            {"title": "Doc B", "chars": 200, "is_active": True},
+    def _entries(self):
+        return [
+            {"title": "Prior-art table", "chars": 184_230, "tokens": 46_100, "is_open": True,
+             "seen_state": "changed", "truncated_from_chars": None},
+            {"title": "Cover letter", "chars": 2_310, "tokens": 580, "is_open": False,
+             "seen_state": "unchanged", "truncated_from_chars": None},
+            {"title": "Imported handbook", "chars": 225_000, "tokens": 58_000, "is_open": False,
+             "seen_state": "never", "truncated_from_chars": 310_442},
         ]
 
-        class FakeCanvas:
-            title = "Doc B"
-            content = "B content here"
-
-        prompt = build_system_prompt(canvases=canvases, active_canvas=FakeCanvas())
-        self.assertIn("Doc A", prompt)
-        self.assertIn("Doc B", prompt)
-        self.assertIn("100 chars", prompt)
-        self.assertIn("200 chars", prompt)
-        self.assertIn("in context", prompt)
-        self.assertIn("**Doc A** (100 chars) — not in context, read with canvas_read", prompt)
-        self.assertIn("B content here", prompt)
-
-    def test_token_counts_listed_when_known(self):
+    def test_lists_every_canvas_with_flags(self):
         from chat.prompts import build_semi_static_prompt
 
-        prompt = build_semi_static_prompt(canvases=[
-            {"title": "Doc A", "chars": 100, "tokens": 25, "is_active": False},
-            {"title": "Doc B", "chars": 123456, "tokens": 31000, "is_active": True},
-        ])
-        self.assertIn("**Doc A** (100 chars, ~25 tokens) — not in context", prompt)
-        self.assertIn("**Doc B** (123456 chars, ~31,000 tokens) ← in context", prompt)
+        prompt = build_semi_static_prompt(canvases=self._entries())
+        self.assertIn("# Canvas workspace", prompt)
+        self.assertIn(
+            "**Prior-art table** — 184,230 chars, ~46,100 tokens — open in the user's editor "
+            "— changed since you last read it",
+            prompt,
+        )
+        self.assertIn("**Cover letter** — 2,310 chars, ~580 tokens — unchanged since you last read it", prompt)
+        self.assertIn(
+            "**Imported handbook** — 225,000 chars (cut from a 310,442-char source), ~58,000 tokens "
+            "— never read by you",
+            prompt,
+        )
+        self.assertIn("Every canvas tool needs `canvas_name` while more than one canvas exists", prompt)
+        self.assertIn("read a canvas with `canvas_read` before you edit", prompt)
+        self.assertNotIn("Active Canvas Content", prompt)
 
-    def test_active_canvas_content_shown(self):
+    def test_single_canvas_does_not_demand_canvas_name(self):
+        from chat.prompts import build_semi_static_prompt
+
+        prompt = build_semi_static_prompt(canvases=self._entries()[:1])
+        self.assertIn("**Prior-art table**", prompt)
+        self.assertNotIn("Every canvas tool needs `canvas_name`", prompt)
+
+    def test_system_prompt_wrapper_lists_canvases(self):
         from chat.prompts import build_system_prompt
 
-        canvases = [{"title": "Only", "chars": 42, "is_active": True}]
-
-        class FakeCanvas:
-            title = "Only"
-            content = "The actual content"
-
-        prompt = build_system_prompt(canvases=canvases, active_canvas=FakeCanvas())
-        self.assertIn("The actual content", prompt)
-        self.assertIn('Active Canvas Content: "Only"', prompt)
+        prompt = build_system_prompt(canvases=self._entries())
+        self.assertIn("**Cover letter**", prompt)
+        self.assertNotIn("Active Canvas Content", prompt)
 
     def test_no_canvases_prompt(self):
         from chat.prompts import build_system_prompt
@@ -1846,121 +1803,158 @@ class MultiCanvasPromptTests(TestCase):
         prompt = build_system_prompt()
         # Base canvas guidance is always present...
         self.assertIn("canvas workspace", prompt)
-        # ...but the per-thread canvas-tab listing only appears when canvases exist.
-        self.assertNotIn("This thread has these canvas tabs", prompt)
-
-    def test_backward_compat_single_canvas(self):
-        from chat.prompts import build_system_prompt
-
-        class FakeCanvas:
-            title = "Old Style"
-            content = "old content"
-
-        prompt = build_system_prompt(canvas=FakeCanvas())
-        self.assertIn("Old Style", prompt)
-        self.assertIn("old content", prompt)
+        self.assertIn("Canvas text is never placed in your context automatically", prompt)
+        # ...but the per-thread listing only appears when canvases exist.
+        self.assertNotIn("# Canvas workspace", prompt)
 
 
 # ---------------------------------------------------------------------------
-# Service-level tests for activate_canvas / set_active_canvases / resolve_canvas
+# Service-level tests for focus_canvas / resolve_canvas / the staleness stamp
 # ---------------------------------------------------------------------------
 
-class ActivateCanvasTests(TestCase):
+class FocusCanvasTests(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user(email="activate@test.com", password="pass")
+        self.user = User.objects.create_user(email="focus@test.com", password="pass")
         self.thread = ChatThread.objects.create(created_by=self.user)
 
-    def test_activate_single_canvas(self):
-        from chat.services import activate_canvas
-
-        canvas = ChatCanvas.objects.create(thread=self.thread, title="A", content="a")
-        activate_canvas(self.thread.pk, canvas)
-        canvas.refresh_from_db()
-        self.assertTrue(canvas.is_active)
-        self.assertIsNotNone(canvas.last_activated_at)
-
-    def test_activate_bumps_timestamp_if_already_active(self):
-        import time
-        from chat.services import activate_canvas
-
-        canvas = ChatCanvas.objects.create(thread=self.thread, title="A", content="a")
-        activate_canvas(self.thread.pk, canvas)
-        canvas.refresh_from_db()
-        first_ts = canvas.last_activated_at
-
-        time.sleep(0.01)
-        activate_canvas(self.thread.pk, canvas)
-        canvas.refresh_from_db()
-        self.assertGreater(canvas.last_activated_at, first_ts)
-
-    def test_cap_enforcement_deactivates_oldest(self):
-        import time
-        from chat.services import activate_canvas
-
-        canvases = []
-        for name in ["A", "B", "C"]:
-            c = ChatCanvas.objects.create(thread=self.thread, title=name, content=name)
-            activate_canvas(self.thread.pk, c)
-            c.refresh_from_db()
-            canvases.append(c)
-            time.sleep(0.01)
-
-        # All 3 active
-        for c in canvases:
-            c.refresh_from_db()
-            self.assertTrue(c.is_active)
-
-        # Activate 4th — oldest (A) should be deactivated
-        d = ChatCanvas.objects.create(thread=self.thread, title="D", content="d")
-        activate_canvas(self.thread.pk, d)
-
-        canvases[0].refresh_from_db()
-        self.assertFalse(canvases[0].is_active)
-        d.refresh_from_db()
-        self.assertTrue(d.is_active)
-
-    def test_resolve_canvas_falls_back_to_most_recent(self):
-        import time
-        from chat.services import activate_canvas, resolve_canvas
+    def test_focus_sets_the_open_tab_only(self):
+        from chat.services import focus_canvas
 
         a = ChatCanvas.objects.create(thread=self.thread, title="A", content="a")
         b = ChatCanvas.objects.create(thread=self.thread, title="B", content="b")
-        activate_canvas(self.thread.pk, a)
-        time.sleep(0.01)
-        activate_canvas(self.thread.pk, b)
+        focus_canvas(self.thread.pk, a)
+        self.thread.refresh_from_db()
+        self.assertEqual(self.thread.active_canvas_id, a.pk)
+        focus_canvas(self.thread.pk, b)
+        self.thread.refresh_from_db()
+        self.assertEqual(self.thread.active_canvas_id, b.pk)
+        # The deprecated model flag is never written any more.
+        for c in (a, b):
+            c.refresh_from_db()
+            self.assertFalse(c.is_active)
+            self.assertIsNone(c.last_activated_at)
+
+    def test_resolve_canvas_none(self):
+        from chat.services import resolve_canvas
 
         canvas, err = resolve_canvas(self.thread.pk)
+        self.assertIsNone(canvas)
+        self.assertEqual(err, "No canvas exists in this thread.")
+
+    def test_resolve_canvas_single_without_name(self):
+        from chat.services import resolve_canvas
+
+        a = ChatCanvas.objects.create(thread=self.thread, title="A", content="a")
+        canvas, err = resolve_canvas(self.thread.pk)
+        self.assertIsNone(err)
+        self.assertEqual(canvas.pk, a.pk)
+
+    def test_resolve_canvas_requires_name_when_several(self):
+        from chat.services import resolve_canvas
+
+        ChatCanvas.objects.create(thread=self.thread, title="A", content="a")
+        b = ChatCanvas.objects.create(thread=self.thread, title="B", content="b")
+        ChatCanvas.objects.create(thread=self.thread, title="Gone", content="x", deleted_at=timezone_now())
+        canvas, err = resolve_canvas(self.thread.pk)
+        self.assertIsNone(canvas)
+        self.assertEqual(err, 'This thread has 2 canvases, so canvas_name is required. Available canvases: "A", "B".')
+        canvas, err = resolve_canvas(self.thread.pk, "B")
         self.assertIsNone(err)
         self.assertEqual(canvas.pk, b.pk)
 
-    def test_write_canvas_auto_activates(self):
+    def test_write_focuses_new_canvas(self):
         result = _invoke(
             WriteCanvasTool, {"title": "New", "content": "content"},
             _ctx(self.user.pk, self.thread.id),
         )
         self.assertEqual(result["status"], "ok")
-        canvas = ChatCanvas.objects.get(thread=self.thread, title="New")
-        self.assertTrue(canvas.is_active)
-        self.assertIsNotNone(canvas.last_activated_at)
+        self.thread.refresh_from_db()
+        self.assertEqual(self.thread.active_canvas.title, "New")
 
-    def test_edit_canvas_bumps_activation(self):
-        import time
-        from django.utils import timezone
-
-        canvas = ChatCanvas.objects.create(
-            thread=self.thread, title="Doc", content="Hello world",
-            is_active=True, last_activated_at=timezone.now(),
-        )
-        first_ts = canvas.last_activated_at
-        time.sleep(0.01)
-
+    def test_edit_focuses_edited_canvas(self):
+        ctx = _ctx(self.user.pk, self.thread.id)
+        _invoke(WriteCanvasTool, {"title": "Background", "content": "Hello world"}, ctx)
+        _invoke(WriteCanvasTool, {"title": "Front", "content": "f"}, ctx)
+        self.thread.refresh_from_db()
+        self.assertEqual(self.thread.active_canvas.title, "Front")
         _invoke(
             EditCanvasTool,
-            {"edits": [{"old_text": "Hello", "new_text": "Hi", "reason": ""}]},
-            _ctx(self.user.pk, self.thread.id),
+            {"canvas_name": "Background", "edits": [{"old_text": "Hello", "new_text": "Hi", "reason": ""}]},
+            ctx,
         )
+        self.thread.refresh_from_db()
+        self.assertEqual(self.thread.active_canvas.title, "Background")
+
+
+def timezone_now():
+    from django.utils import timezone
+
+    return timezone.now()
+
+
+class AgentSeenShaTests(TestCase):
+    """``agent_seen_sha`` records what the agent saw; the prompt list derives
+    "changed since you last read it" from it."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="seen@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+        self.ctx = _ctx(self.user.pk, self.thread.id)
+
+    def _entry(self, title):
+        from chat.services import canvas_prompt_entry
+
+        canvas = ChatCanvas.objects.get(thread=self.thread, title=title)
+        return canvas, canvas_prompt_entry(canvas, open_id=None)
+
+    def test_write_marks_seen_and_caches_tokens(self):
+        from chat.services import canvas_content_sha
+
+        _invoke(WriteCanvasTool, {"title": "Doc", "content": "Hello world"}, self.ctx)
+        canvas, entry = self._entry("Doc")
+        self.assertEqual(canvas.agent_seen_sha, canvas_content_sha("Hello world"))
+        self.assertEqual(canvas.content_sha, canvas.agent_seen_sha)
+        self.assertGreater(canvas.token_count, 0)
+        self.assertEqual(entry["seen_state"], "unchanged")
+        self.assertEqual(entry["tokens"], canvas.token_count)
+
+    def test_user_edit_flags_changed_and_recounts(self):
+        _invoke(WriteCanvasTool, {"title": "Doc", "content": "Hello world"}, self.ctx)
+        before, _ = self._entry("Doc")
+        ChatCanvas.objects.filter(pk=before.pk).update(content="Hello world, and a lot more text " * 20)
+        canvas, entry = self._entry("Doc")
+        self.assertEqual(entry["seen_state"], "changed")
+        self.assertGreater(entry["tokens"], before.token_count)
         canvas.refresh_from_db()
-        self.assertGreater(canvas.last_activated_at, first_ts)
+        self.assertEqual(canvas.token_count, entry["tokens"])  # cache refreshed on the row
+
+    def test_read_marks_seen_again(self):
+        _invoke(WriteCanvasTool, {"title": "Doc", "content": "line one\nline two\nline three"}, self.ctx)
+        canvas, _ = self._entry("Doc")
+        ChatCanvas.objects.filter(pk=canvas.pk).update(content="line one\nline TWO\nline three")
+        self.assertEqual(self._entry("Doc")[1]["seen_state"], "changed")
+        _invoke(ReadCanvasTool, {"canvas_name": "Doc", "start_line": 2, "end_line": 2}, self.ctx)
+        self.assertEqual(self._entry("Doc")[1]["seen_state"], "unchanged")
+
+    def test_edit_marks_seen(self):
+        _invoke(WriteCanvasTool, {"title": "Doc", "content": "Hello world"}, self.ctx)
+        canvas, _ = self._entry("Doc")
+        ChatCanvas.objects.filter(pk=canvas.pk).update(content="Hello there world")
+        _invoke(EditCanvasTool, {"edits": [{"old_text": "there", "new_text": "dear", "reason": ""}]}, self.ctx)
+        self.assertEqual(self._entry("Doc")[1]["seen_state"], "unchanged")
+
+    def test_paste_does_not_mark_seen(self):
+        ChatMessage.objects.create(thread=self.thread, role="user", content="Paste me")
+        _invoke(PasteUserTextTool, {"message_number": 1, "canvas_name": "Pasted"}, self.ctx)
+        canvas, entry = self._entry("Pasted")
+        self.assertEqual(canvas.agent_seen_sha, "")
+        self.assertEqual(entry["seen_state"], "never")
+
+    def test_truncation_reported_in_entry(self):
+        ChatCanvas.objects.create(thread=self.thread, title="Cut", content="abc", truncated_from_chars=200_000)
+        _, entry = self._entry("Cut")
+        self.assertEqual(entry["truncated_from_chars"], 200_000)
+        self.assertEqual(entry["chars"], 3)
 
 
 class CanvasMarkdownImageGuardrailTests(TestCase):
@@ -2473,7 +2467,7 @@ class ReadCanvasToolTests(TestCase):
 
         return _invoke(ReadCanvasTool, args, _ctx(self.user.pk, self.thread.id))
 
-    def test_reads_active_canvas(self):
+    def test_reads_the_only_canvas_without_a_name(self):
         _invoke(WriteCanvasTool, {"title": "Draft", "content": "Hello there"}, _ctx(self.user.pk, self.thread.id))
         result = self._read({})
         self.assertEqual(result["status"], "ok")
@@ -2782,12 +2776,3 @@ class CanvasTruncationReportingTests(TestCase):
         self.assertEqual(result["source_truncation"]["original_chars"], self.cap + 10)
         self.assertEqual(result["source_truncation"]["kept_chars"], self.cap)
         self.assertIn("TRUNCATED", result["source_truncation"]["note"])
-
-    def test_active_canvas_context_flags_truncation(self):
-        from chat.prompts import build_dynamic_context
-
-        truncated = ChatCanvas(title="Big", content="abc", truncated_from_chars=200_000)
-        complete = ChatCanvas(title="Small", content="abc")
-        ctx = build_dynamic_context(active_canvases=[truncated, complete])
-        self.assertIn("TRUNCATED: only the first 3 of 200,000 characters", ctx)
-        self.assertEqual(ctx.count("TRUNCATED"), 1)

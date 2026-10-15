@@ -88,6 +88,9 @@ class CreateMinutesThreadTests(TestCase):
         self.assertIn("Quarterly check-in with Acme.", content)
         self.assertIn("Meeting Summarizer skill", content)
         self.assertNotIn("playbook", content.lower())
+        # The transcript is never injected: the seed tells the model to read it.
+        self.assertIn("read it with canvas_read", content)
+        self.assertNotIn("preloaded", content)
 
     def test_thread_title_truncated_for_long_meeting_name(self):
         self.meeting.name = "N" * 250
@@ -108,9 +111,12 @@ class CreateMinutesThreadTests(TestCase):
         self.assertEqual(canvas.truncated_from_chars, len(self.meeting.transcript))
 
         seed = ChatMessage.objects.get(thread=thread, is_hidden_from_user=True)
-        # The seed must state truncation, not claim the full transcript is preloaded.
-        self.assertIn("truncated", seed.content.lower())
+        # The seed must state the cut, not claim the full transcript is there, and
+        # must still send the model to the canvas.
+        self.assertIn("cut to fit", seed.content)
         self.assertIn(f"{CANVAS_MAX_CHARS:,}", seed.content)
+        self.assertIn("canvas_read", seed.content)
+        self.assertIn("only the part that fit", seed.content)
 
     def test_refuses_meeting_without_transcript(self):
         m = Meeting.objects.create(name="Empty", slug="empty-m", created_by=self.user)

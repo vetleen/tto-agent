@@ -180,13 +180,6 @@ class SharedAttachmentPromptTests(TestCase):
         self.assertIn("`attachments=[N, ...]`", prompt)
         self.assertIn("canvases or attachments you choose to share", prompt)
 
-    def test_orchestrator_prompt_attachments_without_canvas_sharing(self):
-        prompt = build_system_prompt(
-            has_subagent_tool=True, max_shared_canvases={"mid": 0, "top": 0},
-        )
-        self.assertIn("`attachments=[N, ...]`", prompt)
-        self.assertIn("plus any attachments you choose to share", prompt)
-
 
 class SubagentToolGatingTests(TestCase):
     def test_view_tool_only_with_shared_files(self):

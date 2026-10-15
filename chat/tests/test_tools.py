@@ -686,6 +686,16 @@ class CanvasSaveToDocumentToolTests(TestCase):
         self.assertIn("error", result)
         self.assertFalse(DataRoomDocument.objects.exists())
 
+    def test_requires_canvas_name_with_two_canvases(self):
+        from chat.models import ChatCanvas
+
+        ChatCanvas.objects.create(thread=self.thread, title="Other", content="x")
+        result = self._invoke_json({"mode": "new"}, self._ctx())
+        self.assertIn("canvas_name is required", result["error"])
+        self.assertIn('"Memo"', result["error"])
+        self.assertIn('"Other"', result["error"])
+        self.assertFalse(DataRoomDocument.objects.exists())
+
     def test_saves_active_canvas_as_md_document(self):
         result = self._invoke_json({"mode": "new"}, self._ctx())
 

@@ -404,35 +404,9 @@ class BuildSystemPromptTests(TestCase):
     def test_subagent_section_explains_sharing_canvases(self):
         prompt = build_system_prompt(has_subagent_tool=True)
         self.assertIn('`canvases=["<title>", ...]`', prompt)
-        self.assertIn("read-only copy", prompt)
-        self.assertNotIn("You may share up to", prompt)
-
-    def test_subagent_section_states_resolved_canvas_limit(self):
-        prompt = build_system_prompt(
-            has_subagent_tool=True, max_shared_canvases={"mid": 3, "top": 3},
-        )
-        self.assertIn("You may share up to 3 canvases per sub-agent.", prompt)
-
-    def test_subagent_section_canvas_limit_singular(self):
-        prompt = build_system_prompt(
-            has_subagent_tool=True, max_shared_canvases={"mid": 1, "top": 1},
-        )
-        self.assertIn("You may share up to 1 canvas per sub-agent.", prompt)
-
-    def test_subagent_section_canvas_limit_differs_by_tier(self):
-        prompt = build_system_prompt(
-            has_subagent_tool=True, max_shared_canvases={"mid": 1, "top": 3},
-        )
-        self.assertIn(
-            'You may share up to 1 canvas per sub-agent (3 with `model_tier="top"`).', prompt,
-        )
-
-    def test_subagent_section_omits_canvases_when_none_allowed(self):
-        prompt = build_system_prompt(
-            has_subagent_tool=True, max_shared_canvases={"mid": 0, "top": 0},
-        )
-        self.assertNotIn("canvases=", prompt)
-        self.assertNotIn("canvases you choose to share", prompt)
+        self.assertIn("read-only snapshot", prompt)
+        self.assertIn("up to 5 canvases", prompt)
+        self.assertIn("size is not a concern", prompt)
 
     def test_parallel_subagents_disabled_includes_sequential_instruction(self):
         prompt = build_system_prompt(
@@ -650,21 +624,22 @@ class BuildSemiStaticPromptTests(TestCase):
 
     def test_canvas_metadata_listed(self):
         canvases = [
-            {"title": "Doc A", "chars": 100, "is_active": False},
-            {"title": "Doc B", "chars": 200, "is_active": True},
+            {"title": "Doc A", "chars": 100, "tokens": 25, "is_open": False, "seen_state": "never"},
+            {"title": "Doc B", "chars": 200, "tokens": 50, "is_open": True, "seen_state": "changed"},
         ]
         prompt = build_semi_static_prompt(canvases=canvases)
-        self.assertIn("Doc A", prompt)
-        self.assertIn("Doc B", prompt)
-        self.assertIn("in context", prompt)
+        self.assertIn("**Doc A** — 100 chars, ~25 tokens — never read by you", prompt)
+        self.assertIn("**Doc B** — 200 chars, ~50 tokens — open in the user's editor — changed since you last read it", prompt)
+        self.assertIn("Every canvas tool needs `canvas_name`", prompt)
 
-    def test_no_active_canvas_content(self):
-        """Semi-static prompt must not contain active canvas content."""
-        canvases = [{"title": "Draft", "chars": 500, "is_active": True}]
+    def test_no_canvas_content_in_prompt(self):
+        """The semi-static prompt lists canvases; it never carries their text."""
+        canvases = [{"title": "Draft", "chars": 500, "tokens": 120, "is_open": True, "seen_state": "unchanged"}]
         prompt = build_semi_static_prompt(canvases=canvases)
         self.assertIn("Draft", prompt)
         self.assertIn("500 chars", prompt)
         self.assertNotIn("Active Canvas Content", prompt)
+        self.assertNotIn("Every canvas tool needs `canvas_name`", prompt)  # only one canvas
 
     def test_no_rag_results(self):
         """Semi-static prompt must not contain RAG results."""
@@ -712,7 +687,7 @@ class BuildDynamicContextTests(TestCase):
 
     def test_current_time_with_all_none(self):
         result = build_dynamic_context(
-            doc_context=None, active_canvas=None, tasks=None,
+            doc_context=None, tasks=None,
             subagent_runs=None, history_meta=None,
         )
         self.assertIn("# Current time", result)
@@ -838,31 +813,6 @@ class BuildDynamicContextTests(TestCase):
         )
         self.assertIn("no documents uploaded yet", result)
 
-    def test_active_canvas_content(self):
-        class FakeCanvas:
-            title = "My Draft"
-            content = "Hello world"
-
-        result = build_dynamic_context(active_canvases=[FakeCanvas()])
-        self.assertIn("Active Canvas Content", result)
-        self.assertIn("My Draft", result)
-        self.assertIn("Hello world", result)
-
-    def test_multiple_active_canvases(self):
-        class FakeCanvas:
-            def __init__(self, title, content):
-                self.title = title
-                self.content = content
-
-        result = build_dynamic_context(active_canvases=[
-            FakeCanvas("Draft A", "Content A"),
-            FakeCanvas("Draft B", "Content B"),
-        ])
-        self.assertIn("Draft A", result)
-        self.assertIn("Content A", result)
-        self.assertIn("Draft B", result)
-        self.assertIn("Content B", result)
-
     def test_active_slide_deck_names_its_theme(self):
         """The deck section says which named theme the deck carries (so the model
         doesn't go looking for one) — Forest when there is no override at all."""
@@ -918,16 +868,6 @@ class BuildDynamicContextTests(TestCase):
         section = render_active_deck_section(FakeDeck())
         self.assertEqual(block.split("Theme:", 1)[1], section.split("Theme:", 1)[1])
         self.assertEqual(render_active_deck_block(None), "")
-
-    def test_single_canvas_content(self):
-        """Old single-canvas API via 'canvas' param."""
-        class FakeCanvas:
-            title = "Old"
-            content = "old stuff"
-
-        result = build_dynamic_context(canvas=FakeCanvas())
-        self.assertIn("Active Canvas Content", result)
-        self.assertIn("old stuff", result)
 
     def test_tasks_rendered(self):
         tasks = [

@@ -134,7 +134,6 @@ def large_replacement_hint(
 
 
 MAX_CANVASES_PER_THREAD = 10
-MAX_ACTIVE_CANVASES = 3
 EMAIL_BLOCK_RE = re.compile(r"```email\s*\n(.*?)```", re.DOTALL)
 
 # ATX heading (up to 3 leading spaces, 1-6 hashes, then a space or end-of-line).
@@ -501,9 +500,33 @@ def render_citations(markdown: str) -> str:
     return "\n".join(out)
 
 
-def resolve_canvas(thread_id, canvas_name=None):
-    """Resolve a canvas by name or fall back to the most recently activated canvas.
+def live_canvases(thread_id):
+    """The thread's non-deleted canvases, oldest first."""
+    from chat.models import ChatCanvas
 
+    return (
+        ChatCanvas.objects.filter(thread_id=thread_id, deleted_at__isnull=True)
+        .select_related("accepted_checkpoint")
+        .order_by("created_at")
+    )
+
+
+def canvas_targeting_error(titles: list[str]) -> str:
+    """The error a canvas tool returns when the thread has several canvases and
+    the call named none of them."""
+    listing = ", ".join(f'"{t}"' for t in titles)
+    return (
+        f"This thread has {len(titles)} canvases, so canvas_name is required. "
+        f"Available canvases: {listing}."
+    )
+
+
+def resolve_canvas(thread_id, canvas_name=None):
+    """Resolve a canvas by title.
+
+    Without a title: the thread's only live canvas; an error listing the titles
+    when there are several (the model must say which one — the user may have
+    switched tabs since); "No canvas exists" when there are none.
     Returns (canvas, error_msg). One of the two is always None.
     """
     from chat.models import ChatCanvas
@@ -517,83 +540,75 @@ def resolve_canvas(thread_id, canvas_name=None):
         except ChatCanvas.DoesNotExist:
             return None, f"No canvas named '{canvas_name}' in this thread."
 
-    canvas = (
-        ChatCanvas.objects.filter(thread_id=thread_id, is_active=True, deleted_at__isnull=True)
-        .select_related("accepted_checkpoint")
-        .order_by("-last_activated_at")
-        .first()
-    )
-    if canvas:
-        return canvas, None
-    return None, "No active canvas in this thread."
+    canvases = list(live_canvases(thread_id)[: MAX_CANVASES_PER_THREAD + 1])
+    if not canvases:
+        return None, "No canvas exists in this thread."
+    if len(canvases) == 1:
+        return canvases[0], None
+    return None, canvas_targeting_error([c.title for c in canvases])
 
 
-def activate_canvas(thread_id, canvas):
-    """Mark a canvas as active (LLM-visible) and update the UI tab pointer.
+def focus_canvas(thread_id, canvas):
+    """Point the thread's editor at *canvas* — the tab the browser opens.
 
-    If already active, bumps last_activated_at. Enforces the 3-canvas cap
-    by deactivating the oldest-activated canvas when needed.
+    This is all "activating" a canvas ever meant to the user. It says nothing
+    about the model's context: no canvas text is injected into the prompt; the
+    agent reads canvases with canvas_read.
     """
-    from django.utils import timezone
-
-    from chat.models import ChatCanvas, ChatThread
-
-    now = timezone.now()
-
-    if canvas.is_active:
-        canvas.last_activated_at = now
-        canvas.save(update_fields=["last_activated_at"])
-    else:
-        active_count = ChatCanvas.objects.filter(
-            thread_id=thread_id, is_active=True, deleted_at__isnull=True,
-        ).count()
-
-        if active_count >= MAX_ACTIVE_CANVASES:
-            excess = active_count - MAX_ACTIVE_CANVASES + 1
-            oldest_pks = list(
-                ChatCanvas.objects.filter(thread_id=thread_id, is_active=True, deleted_at__isnull=True)
-                .order_by("last_activated_at")
-                .values_list("pk", flat=True)[:excess]
-            )
-            ChatCanvas.objects.filter(pk__in=oldest_pks).update(is_active=False)
-
-        canvas.is_active = True
-        canvas.last_activated_at = now
-        canvas.save(update_fields=["is_active", "last_activated_at"])
+    from chat.models import ChatThread
 
     ChatThread.objects.filter(pk=thread_id).update(active_canvas=canvas)
 
 
-def set_active_canvases(thread_id, canvas_names):
-    """Deactivate ALL canvases for the thread, then activate the named ones.
+def record_agent_canvas_view(canvas) -> None:
+    """The agent has seen (or authored) the canvas as it is now.
 
-    Returns (activated_list, errors).
+    Stamps ``agent_seen_sha`` and refreshes the sha-keyed token cache while the
+    content is in hand. Call sites: canvas_read (any range), canvas_write,
+    canvas_edit — nothing else (opens/pastes/imports show the agent no text).
     """
-    from django.utils import timezone
-
+    from core.tokens import count_tokens
     from chat.models import ChatCanvas
 
-    now = timezone.now()
-    ChatCanvas.objects.filter(thread_id=thread_id, deleted_at__isnull=True).update(is_active=False)
-
-    activated = []
-    errors = []
-    for name in canvas_names[:MAX_ACTIVE_CANVASES]:
-        try:
-            canvas = ChatCanvas.objects.get(thread_id=thread_id, title=name, deleted_at__isnull=True)
-            canvas.is_active = True
-            canvas.last_activated_at = now
-            canvas.save(update_fields=["is_active", "last_activated_at"])
-            activated.append(canvas)
-        except ChatCanvas.DoesNotExist:
-            errors.append(f"No canvas named '{name}' in this thread.")
-
-    return activated, errors
+    sha = canvas_content_sha(canvas.content)
+    tokens = count_tokens(canvas.content or "")
+    ChatCanvas.objects.filter(pk=canvas.pk).update(
+        agent_seen_sha=sha, content_sha=sha, token_count=tokens,
+    )
+    canvas.agent_seen_sha = sha
+    canvas.content_sha = sha
+    canvas.token_count = tokens
 
 
-def set_active_canvas(thread_id, canvas):
-    """Activate a single canvas and update the UI tab pointer."""
-    activate_canvas(thread_id, canvas)
+def canvas_prompt_entry(canvas, *, open_id=None) -> dict:
+    """One row of the prompt's "# Canvas workspace" list.
+
+    Recounts tokens only when the content changed since the cached count
+    (``content_sha``), so a turn with unchanged canvases costs one sha256 each.
+    """
+    from core.tokens import count_tokens
+    from chat.models import ChatCanvas
+
+    sha = canvas_content_sha(canvas.content)
+    if canvas.token_count is None or canvas.content_sha != sha:
+        logger.debug("canvas %s: recounting tokens (content changed)", canvas.pk)
+        canvas.token_count = count_tokens(canvas.content or "")
+        canvas.content_sha = sha
+        ChatCanvas.objects.filter(pk=canvas.pk).update(content_sha=sha, token_count=canvas.token_count)
+    if not canvas.agent_seen_sha:
+        seen_state = "never"
+    elif canvas.agent_seen_sha == sha:
+        seen_state = "unchanged"
+    else:
+        seen_state = "changed"
+    return {
+        "title": canvas.title,
+        "chars": len(canvas.content or ""),
+        "tokens": canvas.token_count,
+        "is_open": open_id is not None and canvas.pk == open_id,
+        "seen_state": seen_state,
+        "truncated_from_chars": canvas.truncated_from_chars,
+    }
 
 
 def dedupe_canvas_title(thread_id, title, exclude_pk=None):
@@ -641,7 +656,7 @@ def live_canvas_state(thread_id):
     active = next((c for c in survivors if c.pk == thread.active_canvas_id), None)
     if active is None:
         active = survivors[0]
-        set_active_canvas(thread_id, active)
+        focus_canvas(thread_id, active)
     tabs = [
         {"id": str(c.pk), "title": c.title, "is_active": c.pk == active.pk}
         for c in survivors
@@ -673,8 +688,7 @@ def soft_delete_canvas(thread_id, canvas):
 
     deleted_title = canvas.title
     canvas.deleted_at = timezone.now()
-    canvas.is_active = False
-    canvas.save(update_fields=["deleted_at", "is_active", "updated_at"])
+    canvas.save(update_fields=["deleted_at", "updated_at"])
     # active_canvas is SET_NULL, but the row survives a soft-delete so the DB
     # won't null it — clear it explicitly before re-promoting a survivor.
     ChatThread.objects.filter(pk=thread_id, active_canvas=canvas).update(active_canvas=None)
@@ -697,7 +711,7 @@ def restore_canvas(thread_id, canvas):
     canvas.title = dedupe_canvas_title(thread_id, canvas.title, exclude_pk=canvas.pk)
     canvas.deleted_at = None
     canvas.save(update_fields=["title", "deleted_at", "updated_at"])
-    set_active_canvas(thread_id, canvas)
+    focus_canvas(thread_id, canvas)
     state = live_canvas_state(thread_id)
     return {
         "restored_id": str(canvas.pk),

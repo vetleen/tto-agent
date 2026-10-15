@@ -17,15 +17,6 @@ logger = logging.getLogger(__name__)
 # the model pacing itself instead of hitting the cliff.
 SUBAGENT_MAX_TOOL_ITERATIONS = 35
 
-# How many of the orchestrator's canvases one sub-agent may be handed, by its
-# context budget (first threshold met wins); below the floor nothing may be
-# shared. The count alone no longer bounds the pasted text now that a canvas
-# holds up to CANVAS_MAX_CHARS = 225k chars (~56k tokens of prose, ~90k of
-# tables), so chat_subagent_create also measures the snapshot against
-# canvas_read_token_cap(budget) before accepting it.
-_SHARED_CANVAS_STEPS = ((200_000, 3), (150_000, 2), (MIN_CONTEXT_TOKENS, 1))
-
-
 def subagent_context_budget(prefs: ResolvedPreferences, tier: str) -> int:
     """Context aim (tokens) for a sub-agent of *tier*.
 
@@ -35,14 +26,6 @@ def subagent_context_budget(prefs: ResolvedPreferences, tier: str) -> int:
     """
     budget = prefs.subagent_context_budgets.get(tier, 0) or prefs.max_context_tokens
     return max(budget, MIN_CONTEXT_TOKENS)
-
-
-def max_shared_canvases(budget: int) -> int:
-    """How many canvases may be shared with a sub-agent whose budget is *budget*."""
-    for threshold, count in _SHARED_CANVAS_STEPS:
-        if budget >= threshold:
-            return count
-    return 0
 
 
 def is_retryable_subagent_error(exc: BaseException) -> bool:
@@ -431,6 +414,12 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
         )
 
         has_task_tool = "chat_task_update" in (tool_list or [])
+        # Context aim for this run: the org's per-tier budget, else its context
+        # limit. It sizes the mid-turn pruner AND the per-read cap of
+        # subagent_canvas_read (via context.max_context_tokens).
+        from llm.context_budget import canvas_read_token_cap
+
+        budget = subagent_context_budget(prefs, run.model_tier)
         system_prompt = build_subagent_system_prompt(
             data_rooms=data_rooms_info,
             organization_name=org_name,
@@ -439,6 +428,7 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
             specialization_skill=specialization_skill,
             canvas_content=run.canvas,
             canvas_title=run.canvas_title,
+            canvas_token_cap=canvas_read_token_cap(budget),
             shared_canvases=run.shared_canvases,
             shared_attachments=[
                 {
@@ -461,6 +451,8 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
         context.agent_kind = "subagent"
         # Lets subagent_attachment_view check the model takes images/PDFs natively.
         context.model_id = model
+        # subagent_canvas_read derives its per-read page cap from the run's aim.
+        context.max_context_tokens = budget
         # Seed the in-memory scratchpad so a resumed run re-reads its prior notes;
         # the tool loop shows context.scratchpad once up front and again at every
         # edit point (llm/pipelines/edit_points.py).
@@ -478,7 +470,7 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
         params = {
             "_cancel_check": _is_cancelled,
             "max_tool_iterations": SUBAGENT_MAX_TOOL_ITERATIONS,
-            "max_context_tokens": subagent_context_budget(prefs, run.model_tier),
+            "max_context_tokens": budget,
         }
         # Org-chosen reasoning level for this tier; absent = registry default
         # (LLMService._apply_default_reasoning).
