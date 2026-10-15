@@ -496,10 +496,9 @@ class ReadCanvasTool(ContextAwareTool):
                 "note": fields["truncation_note"],
             }
         logger.info(
-            "canvas_read: canvas=%s lines=%d-%d/%d page_tokens=%d canvas_tokens=%d cap=%d truncated=%s",
+            "canvas_read: canvas=%s lines=%d-%d/%d page_tokens=%d returned_tokens=%d cap=%d truncated=%s",
             canvas.pk, result["start_line"], result["end_line"], result["total_lines"],
-            result["max_tokens"], result.get("outline", {}).get("tokens", result["tokens"]),
-            cap, result["truncated"],
+            result["max_tokens"], result["tokens"], cap, result["truncated"],
         )
         return json.dumps(result)
 

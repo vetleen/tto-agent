@@ -628,7 +628,12 @@ def render_canvas_workspace(canvases: list[dict]) -> str:
         "your context: read a canvas with `canvas_read` before you edit, summarise or quote "
         "it — in line ranges when it is large — and read it again when it is marked as "
         "changed. "
-        + ("Every canvas tool needs `canvas_name` while more than one canvas exists. " if several else "")
+        + (
+            "Every canvas tool needs `canvas_name` while more than one canvas exists. When the "
+            "user says \"this one\", \"this canvas\" or \"the canvas\" without naming it, they mean "
+            "the one open in their editor (marked below), not the one you last worked on. "
+            if several else ""
+        )
         + "Tools for canvas management live in skills, notably the **canvas_collaborator** skill.\n"
     )
     for c in canvases:

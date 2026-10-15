@@ -39,7 +39,9 @@ need with `start_line`/`end_line` instead of paging through the whole document; 
 - Write long documents in parts: `canvas_write` for the first part (end it with a marker line such as \
 `<!-- continued -->`), then `canvas_edit` calls that replace the marker with the next part and a new \
 marker, each call well under your output limit. Remove the marker with the last part.
-- When the thread has more than one canvas, every canvas tool needs `canvas_name`.
+- When the thread has more than one canvas, every canvas tool needs `canvas_name`. "This one" / "this \
+canvas" / "the canvas" means the canvas open in the user's editor (the list marks it), not the one you \
+last edited — the user switches tabs between turns.
 
 # Markdown
 Use markdown in the canvas.
