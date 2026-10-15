@@ -157,6 +157,22 @@ def _get_provider_kwargs(provider: str, api_model: str) -> dict[str, Any]:
     return kwargs
 
 
+# Request timeouts (seconds). For OpenAI/Anthropic this is a client-side
+# per-operation limit, so a long stream that keeps producing tokens is fine. The
+# google-genai SDK also sends it as ``X-Server-Timeout``, making it Google's
+# deadline for the WHOLE generation: Gemini 4 Argon's long thinking on big tool
+# loops hit 120 s (504 "Deadline expired", WILFRED-9M). Runaway generations are
+# bounded by the output cap and repetition guard, not by this.
+_DEFAULT_REQUEST_TIMEOUT_SECONDS = 120
+GEMINI_REQUEST_TIMEOUT_SECONDS = int(os.environ.get("GEMINI_REQUEST_TIMEOUT_SECONDS", "600"))
+
+
+def _request_timeout(provider: str) -> int:
+    if provider == "google_genai":
+        return GEMINI_REQUEST_TIMEOUT_SECONDS
+    return _DEFAULT_REQUEST_TIMEOUT_SECONDS
+
+
 # Shared per-provider rate limiters (thread-safe singletons)
 _rate_limiters: dict[str, object] = {}
 _rate_limiter_lock = threading.Lock()
@@ -223,7 +239,7 @@ def _build_client(provider: str, api_model: str, provider_kwargs: dict[str, Any]
             client = WilfredChatAnthropic(
                 model=api_model,
                 max_retries=3,
-                timeout=120,
+                timeout=_request_timeout(provider),
                 **({"rate_limiter": rate_limiter} if rate_limiter else {}),
                 **provider_kwargs,
             )
@@ -233,7 +249,7 @@ def _build_client(provider: str, api_model: str, provider_kwargs: dict[str, Any]
                 api_model,
                 model_provider=provider,
                 max_retries=3,
-                timeout=120,
+                timeout=_request_timeout(provider),
                 **({"rate_limiter": rate_limiter} if rate_limiter else {}),
                 **provider_kwargs,
             )

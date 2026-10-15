@@ -187,6 +187,46 @@ class CreateChatModelTests(SimpleTestCase):
             create_chat_model("unknown-model-xyz")
 
 
+class RequestTimeoutTests(SimpleTestCase):
+    """google-genai sends the client timeout as X-Server-Timeout (Google's
+    deadline for the whole generation), so Gemini gets a long one (WILFRED-9M)."""
+
+    def setUp(self):
+        clear_client_cache()
+
+    def tearDown(self):
+        clear_client_cache()
+
+    @patch("llm.core.model_factory.init_chat_model")
+    def test_gemini_client_gets_long_timeout(self, mock_init):
+        from llm.core.model_factory import create_chat_model
+
+        mock_init.return_value = MagicMock()
+        create_chat_model("gemini-3.1-pro-preview")
+        self.assertEqual(mock_init.call_args[1]["timeout"], 600)
+
+    @patch("llm.core.model_factory.init_chat_model")
+    def test_gemini_thinking_variant_gets_long_timeout(self, mock_init):
+        from llm.core.model_factory import create_variant_client
+
+        mock_init.return_value = MagicMock()
+        create_variant_client(
+            "gemini-3.1-pro-preview", "google_genai",
+            thinking_level="high", include_thoughts=True,
+        )
+        self.assertEqual(mock_init.call_args[1]["timeout"], 600)
+
+    @patch("llm.core.model_factory.init_chat_model")
+    def test_other_providers_keep_default_timeout(self, mock_init):
+        from llm.core.model_factory import create_chat_model
+
+        mock_init.side_effect = lambda *a, **kw: MagicMock()
+        create_chat_model("gpt-5-mini")
+        self.assertEqual(mock_init.call_args[1]["timeout"], 120)
+        create_chat_model("claude-sonnet-4-6")
+        self.assertEqual(mock_init.call_args[1]["timeout"], 120)
+
+
 class ClientCacheTests(SimpleTestCase):
     """LangChain clients are cached per (provider, api_model, kwargs)."""
 
