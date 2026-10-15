@@ -4,12 +4,16 @@ from __future__ import annotations
 
 from unittest import TestCase
 
+from django.conf import settings
+
 from llm.core.providers.base import (
     classify_api_error,
+    exception_for_error_code,
     _is_overloaded_error,
     _is_rate_limit_error,
     _is_retryable_transient_error,
 )
+from llm.service.errors import LLMProviderError
 
 
 def _exc_with_status(status_code: int, message: str = "error") -> Exception:
@@ -113,6 +117,28 @@ class TestClassifyApiError(TestCase):
             "OpenAI",
         )
         self.assertEqual(result.error_code, "unknown")
+
+    def test_gemini_missing_thought_signature_maps_to_model_history_rejected(self):
+        # Verbatim shape of the 2026-10-15 prod failure (google.genai ClientError).
+        message = (
+            "400 INVALID_ARGUMENT. {'error': {'code': 400, 'message': 'Function call is "
+            "missing a thought_signature in functionCall parts. This is required for "
+            "tools to work correctly, and missing thought_signature may lead to degraded "
+            "model performance. Additional data, function call `default_api:canvas_edit` "
+            ", position 55.', 'status': 'INVALID_ARGUMENT'}}"
+        )
+        result = classify_api_error(
+            _gemini_exc(code=400, status="INVALID_ARGUMENT", message=message), "Gemini",
+        )
+        self.assertEqual(result.error_code, "model_history_rejected")
+        self.assertIn(settings.ASSISTANT_NAME, result.user_message)
+        self.assertIn("send a new message to continue", result.user_message)
+        self.assertEqual(result.log_level, "error")
+        self.assertIs(exception_for_error_code("model_history_rejected"), LLMProviderError)
+
+    def test_thought_signature_without_400_is_not_history_rejected(self):
+        result = classify_api_error(_exc_with_status(500, "thought_signature"), "Gemini")
+        self.assertEqual(result.error_code, "server_error")
 
     def test_500_maps_to_server_error(self):
         result = classify_api_error(_exc_with_status(500), "Anthropic")

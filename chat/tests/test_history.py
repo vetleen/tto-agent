@@ -4,11 +4,17 @@ from datetime import timedelta
 
 from channels.db import database_sync_to_async
 from django.contrib.auth import get_user_model
-from django.test import TransactionTestCase
+from django.test import SimpleTestCase, TransactionTestCase
 from django.utils import timezone
 
-from chat.consumers import MAX_HISTORY_TOKENS, OVERLAP_TOKENS, ChatConsumer
+from chat.consumers import (
+    MAX_HISTORY_TOKENS,
+    OVERLAP_TOKENS,
+    ChatConsumer,
+    _ensure_turn_starts_on_user,
+)
 from chat.models import ChatMessage, ChatThread, Loop, SubAgentRun
+from chat.prompts import SUBAGENT_WAKE_NOTE, TURN_CONTINUATION_NOTE
 from core.tokens import count_tokens
 
 User = get_user_model()
@@ -370,6 +376,110 @@ class LoadHistoryTests(TransactionTestCase):
         self.assertEqual(result["meta"]["subagent_run_ids"], [])
         self.assertFalse(result["meta"]["has_subagent_results"])
         self.assertIn("Findings", result["messages"][-1]["content"])
+
+    async def _previous_turn_with_midstream_result(self, run_id):
+        """The 2026-10-15 prod shape: a sub-agent outcome persisted while the
+        previous turn was still streaming sorts before that turn's last tool
+        round and final reply."""
+        await self._make_msg("Read the documents")
+        await self._make_subagent_msg("[Sub-agent result: aaa11111]\nFindings", run_id)
+        await self._make_tool_call_msg([{"id": "call_1", "name": "canvas_edit", "arguments": {}}])
+        await self._make_msg('{"status": "ok"}', role="tool", tool_call_id="call_1")
+        await self._make_msg("Updated the table.", role="assistant")
+
+    async def test_pending_outcome_that_landed_midstream_is_loaded_last(self):
+        run = await self._make_subagent_run()
+        await self._previous_turn_with_midstream_result(run.id)
+
+        messages = (await self.consumer._load_history(self.thread))["messages"]
+
+        self.assertEqual(
+            [m["role"] for m in messages], ["user", "assistant", "tool", "assistant", "user"],
+        )
+        self.assertIn("Findings", messages[-1]["content"])
+        # The moved message doesn't break the tool call / result pairing.
+        self.assertEqual(messages[1]["tool_calls"][0]["id"], "call_1")
+        self.assertEqual(messages[2]["tool_call_id"], "call_1")
+
+    async def test_delivered_outcome_keeps_timestamp_order(self):
+        run = await self._make_subagent_run(delivered_at=timezone.now())
+        await self._previous_turn_with_midstream_result(run.id)
+
+        messages = (await self.consumer._load_history(self.thread))["messages"]
+
+        self.assertEqual(
+            [m["role"] for m in messages], ["user", "assistant", "tool", "assistant"],
+        )
+        self.assertEqual(messages[-1]["content"], "Updated the table.")
+
+    async def test_several_pending_outcomes_merge_into_one_trailing_user_turn(self):
+        first = await self._make_subagent_run()
+        second = await self._make_subagent_run()
+        await self._previous_turn_with_midstream_result(first.id)
+        await self._make_subagent_msg("[Sub-agent result: bbb22222]\nMore findings", second.id)
+
+        messages = (await self.consumer._load_history(self.thread))["messages"]
+
+        self.assertEqual(
+            [m["role"] for m in messages], ["user", "assistant", "tool", "assistant", "user"],
+        )
+        self.assertIn("Findings", messages[-1]["content"])
+        self.assertIn("More findings", messages[-1]["content"])
+
+    async def test_moved_outcome_keeps_previous_turn_tool_results_raw(self):
+        # An older turn so the default raw window (2 user turns) actually stubs.
+        await self._make_msg("Earlier request")
+        await self._make_tool_call_msg([{"id": "call_0", "name": "canvas_read", "arguments": {}}])
+        await self._make_msg('{"old": "result"}', role="tool", tool_call_id="call_0")
+        run = await self._make_subagent_run()
+        await self._previous_turn_with_midstream_result(run.id)
+
+        with self.settings(CONTEXT_RAW_TOOL_TURNS=2):
+            messages = (await self.consumer._load_history(self.thread))["messages"]
+
+        tools = {m["tool_call_id"]: m["content"] for m in messages if m["role"] == "tool"}
+        self.assertEqual(tools["call_1"], '{"status": "ok"}')
+        self.assertNotEqual(tools["call_0"], '{"old": "result"}')
+
+
+class EnsureTurnStartsOnUserTests(SimpleTestCase):
+    """_ensure_turn_starts_on_user: a turn never starts on the agent's own messages."""
+
+    def _msgs(self, *roles):
+        from llm.types import Message
+
+        return [Message(role="system", content="sys")] + [
+            Message(role=r, content=f"{r} text", tool_call_id="c1" if r == "tool" else None)
+            for r in roles
+        ]
+
+    def test_seeded_turn_ending_on_assistant_gets_wake_note(self):
+        messages = self._msgs("user", "assistant")
+        _ensure_turn_starts_on_user(messages, seed_mode=True)
+        self.assertEqual(messages[-1].role, "user")
+        self.assertEqual(messages[-1].content, SUBAGENT_WAKE_NOTE)
+        self.assertEqual(len(messages), 4)
+
+    def test_seeded_turn_ending_on_tool_result_gets_wake_note(self):
+        messages = self._msgs("user", "assistant", "tool")
+        _ensure_turn_starts_on_user(messages, seed_mode=True)
+        self.assertEqual(messages[-1].content, SUBAGENT_WAKE_NOTE)
+
+    def test_turn_ending_on_user_is_unchanged(self):
+        messages = self._msgs("user", "assistant", "user")
+        _ensure_turn_starts_on_user(messages, seed_mode=True)
+        self.assertEqual(len(messages), 4)
+        self.assertEqual(messages[-1].content, "user text")
+
+    def test_unseeded_turn_gets_generic_continuation(self):
+        messages = self._msgs("user", "assistant")
+        _ensure_turn_starts_on_user(messages, seed_mode=False)
+        self.assertEqual(messages[-1].content, TURN_CONTINUATION_NOTE)
+
+    def test_system_only_is_unchanged(self):
+        messages = self._msgs()
+        _ensure_turn_starts_on_user(messages, seed_mode=True)
+        self.assertEqual(len(messages), 1)
 
 
 class LoopPassScopingTests(TransactionTestCase):

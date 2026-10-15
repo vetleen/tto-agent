@@ -77,6 +77,7 @@ _ERROR_CODE_TO_EXCEPTION: dict[str, type[LLMProviderError]] = {
     "timeout": LLMTimeoutError,
     "connection_error": LLMConnectionError,
     "server_error": LLMProviderError,
+    "model_history_rejected": LLMProviderError,
     "unknown": LLMProviderError,
 }
 
@@ -280,6 +281,21 @@ def classify_api_error(exc: Exception, provider_label: str) -> ClassifiedError:
             error_code="connection_error",
             user_message=f"Unable to reach {provider_label}. Please check your connection and try again.",
             log_level="warning",
+        )
+    if status == 400 and "thought_signature" in msg_lower:
+        # Gemini 3+ rejects a request whose function calls after the last user
+        # message lack their thought signatures (we only keep those within a
+        # turn). Resending the same history fails identically; a new user
+        # message moves the boundary. Stays "error" so a recurrence is loud.
+        from django.conf import settings
+
+        return ClassifiedError(
+            error_code="model_history_rejected",
+            user_message=(
+                f"{settings.ASSISTANT_NAME} was stopped by a model error — send a new "
+                "message to continue from where it left off."
+            ),
+            log_level="error",
         )
     return ClassifiedError(
         error_code="unknown",

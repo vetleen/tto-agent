@@ -267,6 +267,16 @@ def build_loop_turn_delimiter() -> str:
     )
 
 
+# Synthetic last user message for a turn whose history ends on the agent's own
+# messages (see chat.consumers._ensure_turn_starts_on_user). Never persisted.
+SUBAGENT_WAKE_NOTE = (
+    "[Automatic wake-up — there is no new message from the user. You were "
+    "re-awakened because a sub-agent you started has returned. Continue working "
+    "on the task from where you left off.]"
+)
+TURN_CONTINUATION_NOTE = "[Continue from where you left off.]"
+
+
 def build_last_message_preamble(
     *,
     semi_static_system: str = "",

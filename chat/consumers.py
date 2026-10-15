@@ -216,6 +216,34 @@ def _prepend_preamble_to_last_user_message(messages, preamble: str) -> None:
             break
 
 
+def _ensure_turn_starts_on_user(messages, *, seed_mode: bool, thread_id=None) -> None:
+    """Append a synthetic user message when the turn's history ends on the
+    agent's own messages (in place; never persisted).
+
+    A server-seeded wake-up turn adds no user message, so its history can end on
+    an assistant reply or a tool result. Gemini requires thought signatures on
+    every function call after the last user message, and we only keep those
+    within a turn — without a user message at the tail, the first tool round of
+    the woken turn 400s. Appended once at turn start (before the preamble is
+    spliced onto it), so every round extends the same prefix.
+    """
+    from chat.prompts import SUBAGENT_WAKE_NOTE, TURN_CONTINUATION_NOTE
+    from llm.types import Message
+
+    if len(messages) < 2 or messages[-1].role == "user":
+        return
+    logger.info(
+        "Turn history ends without a user message; appending a %s note. "
+        "thread=%s trailing_roles=%s",
+        "wake-up" if seed_mode else "continuation",
+        thread_id, [m.role for m in messages[-3:]],
+    )
+    messages.append(Message(
+        role="user",
+        content=SUBAGENT_WAKE_NOTE if seed_mode else TURN_CONTINUATION_NOTE,
+    ))
+
+
 def _messages_with_turn_context(
     messages,
     *,
@@ -3035,6 +3063,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 tool_calls=tool_calls,
                 **({"metadata": replay_meta} if replay_meta else {}),
             ))
+        _ensure_turn_starts_on_user(messages, seed_mode=seed_mode, thread_id=thread.id)
 
         # Budget object must exist before attachment enrichment so attachments
         # are metered against the same native-asset budget as the tools.
@@ -5417,6 +5446,23 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         # 3. Combine into chronological order: additional + overlap (both reversed)
         included = list(reversed(additional)) + list(reversed(overlap))
+
+        # 3a. Undelivered sub-agent outcomes go last. One that landed while the
+        #     previous turn was still streaming is timestamped before that turn's
+        #     later tool rounds and final reply; left there, the turn it wakes
+        #     would end on the agent's own messages (Gemini then demands thought
+        #     signatures for calls we don't keep across turns → 400) and the
+        #     preamble would land on a buried message. Rows are never modified,
+        #     so once delivered an outcome reverts to timestamp order (one prompt
+        #     cache miss from that point). Done before 3b: everything below is
+        #     index-based.
+        if pending_msg_ids:
+            pending_set = set(pending_msg_ids)
+            included = (
+                [m for m in included if m.pk not in pending_set]
+                + [m for m in included if m.pk in pending_set]
+            )
+
         included_history_tokens = summary_token_count + sum(
             msg.token_count for msg in included
         )
