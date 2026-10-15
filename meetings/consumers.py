@@ -3,10 +3,13 @@
 Protocol (see plan in C:\\ClaudeCodeData\\plans\\wobbly-sauteeing-wombat.md
 section "Phase 3"):
 
-  C->S text json:    start | chunk_meta | extend_auto_stop | stop
+  C->S text json:    start | chunk_meta | extend_auto_stop | set_model |
+                     set_language | interruption_marker | stop
   C->S binary frame: raw audio bytes for the most-recent unfulfilled chunk_meta
-  S->C text json:    started | segment.queued | segment.ready |
-                     segment.failed | stopped | error
+  S->C text json:    started | ping | segment.queued | segment.ready |
+                     segment.failed | transcript.delta | session.status |
+                     session.activity | live_mode_changed | language_changed |
+                     stopped | error
 
 The consumer accepts complete, independently-decodable audio container files
 (produced by stopping/restarting MediaRecorder every ~30 s on the client) and
@@ -60,6 +63,21 @@ _PENDING_META_MAX = 16
 # fresh; a hard-crashed session's lock expires within this window so a genuine
 # reconnect isn't blocked for long.
 MEETING_LIVE_LOCK_TTL_SECONDS = 45
+
+# A predecessor connection that is tearing down (disconnect → realtime
+# finalize/drain, up to ~5 s) re-marks its presence lock with this suffix. A
+# new connect for the same meeting waits — bounded — only while the holder is
+# such a closing predecessor, so a client reconnecting right after a drop
+# isn't bounced with 4409 for retrying faster than the teardown finishes. A
+# *live* foreign holder (second tab) is still refused immediately.
+_LOCK_CLOSING_SUFFIX = ":closing"
+MEETING_LIVE_LOCK_WAIT_SECONDS = 8
+_LOCK_WAIT_POLL_SECONDS = 0.25
+
+
+def _presence_lock_key_for(meeting_uuid) -> str:
+    return f"meeting_live_session:{meeting_uuid}"
+
 
 # Marker text format inserted into the transcript when transcription was
 # interrupted. The leading/trailing em-dashes give it visual separation from
@@ -164,26 +182,31 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         self._post_fallback_drop_armed: bool = False
 
         if not self.user or self.user.is_anonymous:
-            await self.close(code=4401)
+            await self._refuse(4401)
             return
 
         if await self._is_suspended():
-            await self.close(code=4403)
+            await self._refuse(4403)
             return
 
         url_uuid = self.scope["url_route"]["kwargs"].get("meeting_uuid")
         try:
             uuid_lib.UUID(str(url_uuid))
         except (ValueError, TypeError):
-            await self.close(code=4400)
+            await self._refuse(4400)
             return
+
+        # A reconnect that races the previous connection's teardown would
+        # otherwise lose to its still-held presence lock; wait (bounded) only
+        # while that holder has announced it is closing.
+        await self._wait_for_closing_predecessor(url_uuid)
 
         # _load_and_lock_meeting performs ALL read-side validation (ownership,
         # upload-in-progress, one-transcription-per-user, transcription enabled)
         # BEFORE transitioning the meeting row, and returns a typed result.
         result = await self._load_and_lock_meeting(url_uuid)
         if not result.get("ok"):
-            await self.close(code=result.get("code", 4404))
+            await self._refuse(result.get("code", 4404))
             return
         meeting = result
 
@@ -212,6 +235,18 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         }))
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
+    async def _refuse(self, code: int) -> None:
+        """Reject the connection with an application close code the browser can see.
+
+        A ``close()`` before ``accept()`` makes Daphne reject the handshake with
+        a bare HTTP 403, so the browser's CloseEvent carries 1006 and the
+        client cannot distinguish "you already have a meeting transcribing"
+        from a network blip (it retried those as if they were). Accepting first
+        completes the handshake, and the close frame then carries ``code``.
+        """
+        await self.accept()
+        await self.close(code=code)
+
     async def disconnect(self, close_code):
         task = getattr(self, "_heartbeat_task", None)
         if task is not None:
@@ -221,6 +256,10 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
             except (asyncio.CancelledError, Exception):
                 pass
             self._heartbeat_task = None
+        # Announce the teardown so a reconnect arriving during it waits
+        # instead of being refused (see _wait_for_closing_predecessor).
+        if self._presence_lock_key:
+            await self._mark_presence_lock_closing()
         # Teardown realtime first so pending utterances get a chance to persist
         # before we flip the meeting row to INTERRUPTED.
         if self._realtime_started:
@@ -303,10 +342,19 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
             await self._handle_chunk_meta(payload)
             return
         if msg_type == "extend_auto_stop":
-            # Auto-stop is enforced client-side. Server just acknowledges.
+            # Auto-stop is enforced client-side (the server only has the hard
+            # ceiling in _heartbeat_loop). Logged so a session that stopped
+            # "by itself" can be matched to the limit the user had set.
+            logger.info(
+                "meetings: client auto-stop set to %s min (meeting=%s)",
+                payload.get("minutes"), self.meeting_uuid,
+            )
             return
         if msg_type == "set_model":
             await self._handle_set_model(payload)
+            return
+        if msg_type == "set_language":
+            await self._handle_set_language(payload)
             return
         if msg_type == "interruption_marker":
             await self._handle_interruption_marker(payload)
@@ -521,6 +569,7 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
     async def _consume_realtime_events(self) -> None:
         """Translate structured provider events into client-facing WS messages."""
         from meetings.services.realtime_session import (
+            SessionActivity,
             SessionError,
             SessionStatus,
             TranscriptCompleted,
@@ -537,6 +586,14 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
                     }))
                 elif isinstance(evt, TranscriptCompleted):
                     await self._persist_realtime_utterance(evt)
+                elif isinstance(evt, SessionActivity):
+                    # Liveness for the client's stall watchdog: a long
+                    # utterance produces no text until the VAD pause, and
+                    # without this it looked identical to a dead pipeline.
+                    await self.send(text_data=json.dumps({
+                        "type": "session.activity",
+                        "kind": evt.kind,
+                    }))
                 elif isinstance(evt, SessionStatus):
                     await self.send(text_data=json.dumps({
                         "type": "session.status",
@@ -936,6 +993,45 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         except Exception:
             logger.exception("set_model: failed to persist meeting.transcription_model")
 
+    async def _handle_set_language(self, payload: dict) -> None:
+        """Switch the spoken language for the rest of this session.
+
+        Unlike ``set_model`` this works while a realtime session is active: the
+        OpenAI session takes a new ``session.update`` (or reopens for
+        auto-detect, see ``OpenAIRealtimeSession.update_language``). The value
+        is persisted on the meeting so chunked tasks (which re-read it per
+        chunk) and later resumes agree with what the user sees selected.
+        """
+        from core.languages import VALID_TRANSCRIPTION_LANGUAGE_VALUES
+
+        raw_value = payload.get("language")
+        raw = str(raw_value if raw_value is not None else "").strip().lower()
+        if raw not in VALID_TRANSCRIPTION_LANGUAGE_VALUES:
+            await self._send_error(f"set_language: unsupported language code {raw!r}")
+            return
+        try:
+            effective = await self._persist_meeting_language(raw)
+        except Exception:
+            # Mirror set_model: the live session still gets the new value even
+            # if the row write failed — the dropdown change is what the user
+            # asked for, persistence is the bookkeeping.
+            logger.exception("set_language: failed to persist meeting.forced_language")
+            effective = effective_meeting_language(raw, "auto")
+        self._realtime_language = effective or ""
+        session = self._realtime_session
+        if session is not None:
+            try:
+                await session.update_language(effective)
+            except Exception:
+                logger.exception("set_language: live session update failed")
+                await self._send_error("set_language: could not update the live session")
+                return
+        await self.send(text_data=json.dumps({
+            "type": "language_changed",
+            "language": raw,
+            "effective": effective or "",
+        }))
+
     async def _handle_stop(self) -> None:
         self._stop_requested = True
         if self._realtime_started:
@@ -1003,11 +1099,60 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
             cache.add(self._presence_lock_key, self._lock_owner, MEETING_LIVE_LOCK_TTL_SECONDS)
 
     @sync_to_async
+    def _mark_presence_lock_closing(self) -> None:
+        # Re-mark our own lock as "closing" for the teardown window so a
+        # reconnect for this meeting waits for it instead of being refused.
+        # Never touches a foreign holder. The TTL is kept: if we crash between
+        # here and release, the marker expires like any other stale lock.
+        if not self._presence_lock_key:
+            return
+        if cache.get(self._presence_lock_key) == self._lock_owner:
+            cache.set(
+                self._presence_lock_key,
+                self._lock_owner + _LOCK_CLOSING_SUFFIX,
+                MEETING_LIVE_LOCK_TTL_SECONDS,
+            )
+
+    @sync_to_async
     def _release_presence_lock(self) -> None:
-        # Only delete a lock we still own, so we never drop a successor's lock.
-        if self._presence_lock_key and cache.get(self._presence_lock_key) == self._lock_owner:
+        # Only delete a lock we still own (live or marked closing by us), so we
+        # never drop a successor's lock.
+        if not self._presence_lock_key:
+            return
+        holder = cache.get(self._presence_lock_key)
+        if holder in (self._lock_owner, self._lock_owner + _LOCK_CLOSING_SUFFIX):
             cache.delete(self._presence_lock_key)
             self._presence_lock_key = None
+
+    async def _wait_for_closing_predecessor(self, meeting_uuid) -> None:
+        """Wait (bounded) while this meeting's presence lock is held by a closing session.
+
+        The common reconnect-after-drop case: the browser reopens the socket
+        within a couple of seconds, while the server is still finalizing the
+        previous connection (realtime commit + drain, up to ~5 s), which holds
+        the lock until the end so the two sessions never persist utterances
+        concurrently. Without this wait every such reconnect lost its first
+        attempt to a 4409. A live holder (second tab) or an absent lock returns
+        immediately; the atomic ``cache.add`` in ``_load_and_lock_meeting``
+        still makes the final decision.
+        """
+        key = _presence_lock_key_for(meeting_uuid)
+        deadline = time.monotonic() + MEETING_LIVE_LOCK_WAIT_SECONDS
+        waited = False
+        while True:
+            holder = await sync_to_async(cache.get)(key)
+            if not (isinstance(holder, str) and holder.endswith(_LOCK_CLOSING_SUFFIX)):
+                break
+            if time.monotonic() >= deadline:
+                logger.info(
+                    "meetings: closing predecessor still holds the lock after %ss "
+                    "(meeting=%s)", MEETING_LIVE_LOCK_WAIT_SECONDS, meeting_uuid,
+                )
+                break
+            waited = True
+            await asyncio.sleep(_LOCK_WAIT_POLL_SECONDS)
+        if waited:
+            logger.info("meetings: waited for closing predecessor (meeting=%s)", meeting_uuid)
 
     # -------------------------------------------------- channel-layer handlers
 
@@ -1236,7 +1381,7 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         # works once the lock TTL expires (the heartbeat refreshes it). Acquired
         # here (sync context) rather than in connect() so a rejected 2nd tab
         # only ever re-writes an already-LIVE row.
-        presence_lock_key = f"meeting_live_session:{meeting.uuid}"
+        presence_lock_key = _presence_lock_key_for(meeting.uuid)
         if not cache.add(presence_lock_key, self._lock_owner, MEETING_LIVE_LOCK_TTL_SECONDS):
             return {"ok": False, "code": 4409}
 
@@ -1278,6 +1423,28 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         from .models import Meeting
         Meeting.objects.filter(pk=self.meeting_id).update(
             transcription_model=model_id,
+        )
+
+    @database_sync_to_async
+    def _persist_meeting_language(self, raw: str) -> str | None:
+        """Store the dropdown value and return the effective API language.
+
+        ``raw`` is the dropdown's own scheme (``""`` inherit, ``"auto"``, or a
+        code); the return value is what the provider should be told —
+        ``None`` for auto-detect — resolved through the same cascade as a
+        fresh connect (meeting → user → org → system).
+        """
+        from accounts.models import invalidate_user_preferences_cache
+        from core.preferences import get_preferences
+        from .models import Meeting
+
+        Meeting.objects.filter(pk=self.meeting_id).update(
+            forced_language=raw, updated_at=timezone.now(),
+        )
+        invalidate_user_preferences_cache(self.user)
+        prefs = get_preferences(self.user)
+        return effective_meeting_language(
+            raw, getattr(prefs, "transcription_language", "auto"),
         )
 
     @database_sync_to_async

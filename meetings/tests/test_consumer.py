@@ -36,6 +36,22 @@ def _make_communicator(meeting_uuid, user):
     return communicator
 
 
+async def _rejected_code(comm, timeout=1):
+    """Connect and return the application close code of a refused handshake.
+
+    Refusals accept first and then close: a close *before* accept reaches a
+    real browser as a bare HTTP 403 handshake failure (CloseEvent 1006), so
+    the client could never show its per-code message. The communicator
+    therefore reports a successful connect followed by a ``websocket.close``
+    frame carrying the code.
+    """
+    connected, _ = await comm.connect(timeout=timeout)
+    assert connected, "refusal must accept before closing (pre-accept close = HTTP 403)"
+    close = await comm.receive_output(timeout)
+    assert close["type"] == "websocket.close", close
+    return close.get("code")
+
+
 def _patch_chunked_mode(test_case):
     """Pin the resolved live mode to ``chunked`` for the duration of a test.
 
@@ -99,8 +115,7 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
         from django.contrib.auth.models import AnonymousUser
 
         comm = _make_communicator(self.meeting.uuid, AnonymousUser())
-        connected, code_or_subproto = await comm.connect()
-        self.assertFalse(connected)
+        self.assertEqual(await _rejected_code(comm), 4401)
         await comm.disconnect()
 
     async def test_owner_connects_and_receives_started(self):
@@ -123,8 +138,25 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
             email="not-owner@example.com", password="pw",
         )
         comm = _make_communicator(self.meeting.uuid, other)
-        connected, _ = await comm.connect()
-        self.assertFalse(connected)
+        self.assertEqual(await _rejected_code(comm), 4403)
+        await comm.disconnect()
+
+    async def test_refusal_accepts_then_closes_with_app_code(self):
+        # Regression guard for the browser-visible close code: Daphne turns a
+        # close() issued before accept() into an HTTP 403 handshake rejection,
+        # so the browser's CloseEvent carried 1006 and TERMINAL_CLOSE_MESSAGES
+        # never showed. The handshake must complete and the close frame must
+        # carry the application code.
+        other = await database_sync_to_async(User.objects.create_user)(
+            email="not-owner-2@example.com", password="pw",
+        )
+        comm = _make_communicator(self.meeting.uuid, other)
+        connected, subprotocol = await comm.connect()
+        self.assertTrue(connected)
+        self.assertIsNone(subprotocol)
+        close = await comm.receive_output(1)
+        self.assertEqual(close["type"], "websocket.close")
+        self.assertEqual(close["code"], 4403)
         await comm.disconnect()
 
     async def test_suspended_user_is_rejected(self):
@@ -137,9 +169,7 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
             user=self.user, org=org, is_suspended=True,
         )
         comm = _make_communicator(self.meeting.uuid, self.user)
-        connected, code = await comm.connect()
-        self.assertFalse(connected)
-        self.assertEqual(code, 4403)
+        self.assertEqual(await _rejected_code(comm), 4403)
         await comm.disconnect()
 
     async def test_non_owner_connect_does_not_mutate_meeting(self):
@@ -149,9 +179,7 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
             email="thief@example.com", password="pw",
         )
         comm = _make_communicator(self.meeting.uuid, thief)
-        connected, code = await comm.connect()
-        self.assertFalse(connected)
-        self.assertEqual(code, 4403)
+        self.assertEqual(await _rejected_code(comm), 4403)
         meeting = await database_sync_to_async(Meeting.objects.get)(pk=self.meeting.pk)
         self.assertEqual(meeting.status, Meeting.Status.DRAFT)
         self.assertIsNone(meeting.started_at)
@@ -164,9 +192,7 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
             status=Meeting.Status.LIVE_TRANSCRIBING,
         )
         comm = _make_communicator(self.meeting.uuid, self.user)
-        connected, code = await comm.connect()
-        self.assertFalse(connected)
-        self.assertEqual(code, 4409)
+        self.assertEqual(await _rejected_code(comm), 4409)
         # The meeting we tried to start stays untouched.
         meeting = await database_sync_to_async(Meeting.objects.get)(pk=self.meeting.pk)
         self.assertEqual(meeting.status, Meeting.Status.DRAFT)
@@ -179,9 +205,7 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
         mock_prefs.return_value.transcription_model_live = ""
         mock_prefs.return_value.live_transcription_mode = "chunked"
         comm = _make_communicator(self.meeting.uuid, self.user)
-        connected, code = await comm.connect()
-        self.assertFalse(connected)
-        self.assertEqual(code, 4402)
+        self.assertEqual(await _rejected_code(comm), 4402)
         await comm.disconnect()
 
     @patch("meetings.services.chunks.cleanup_temp")
@@ -317,6 +341,73 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
 
         meeting = await database_sync_to_async(Meeting.objects.get)(pk=self.meeting.pk)
         self.assertEqual(meeting.transcription_model, "")
+        await comm.disconnect()
+
+    async def test_set_language_persists_and_acks(self):
+        comm = _make_communicator(self.meeting.uuid, self.user)
+        await comm.connect()
+        await comm.receive_from()  # consume "started"
+
+        await comm.send_to(text_data=json.dumps({
+            "type": "set_language",
+            "language": "no",
+        }))
+        msg = json.loads(await comm.receive_from(timeout=2))
+        self.assertEqual(msg["type"], "language_changed")
+        self.assertEqual(msg["language"], "no")
+        self.assertEqual(msg["effective"], "no")
+
+        meeting = await database_sync_to_async(Meeting.objects.get)(pk=self.meeting.pk)
+        self.assertEqual(meeting.forced_language, "no")
+        await comm.disconnect()
+
+    async def test_set_language_auto_acks_with_empty_effective(self):
+        comm = _make_communicator(self.meeting.uuid, self.user)
+        await comm.connect()
+        await comm.receive_from()  # consume "started"
+
+        await comm.send_to(text_data=json.dumps({
+            "type": "set_language",
+            "language": "auto",
+        }))
+        msg = json.loads(await comm.receive_from(timeout=2))
+        self.assertEqual(msg["type"], "language_changed")
+        self.assertEqual(msg["language"], "auto")
+        self.assertEqual(msg["effective"], "")
+
+        meeting = await database_sync_to_async(Meeting.objects.get)(pk=self.meeting.pk)
+        self.assertEqual(meeting.forced_language, "auto")
+        await comm.disconnect()
+
+    async def test_set_language_rejects_unknown_code(self):
+        comm = _make_communicator(self.meeting.uuid, self.user)
+        await comm.connect()
+        await comm.receive_from()  # consume "started"
+
+        await comm.send_to(text_data=json.dumps({
+            "type": "set_language",
+            "language": "xx",
+        }))
+        msg = json.loads(await comm.receive_from(timeout=2))
+        self.assertEqual(msg["type"], "error")
+        self.assertIn("unsupported", msg["message"])
+
+        meeting = await database_sync_to_async(Meeting.objects.get)(pk=self.meeting.pk)
+        self.assertEqual(meeting.forced_language, "")
+        await comm.disconnect()
+
+    async def test_extend_auto_stop_is_acknowledged_silently(self):
+        # Auto-stop is client-enforced; the server only logs the new limit.
+        comm = _make_communicator(self.meeting.uuid, self.user)
+        await comm.connect()
+        await comm.receive_from()  # consume "started"
+
+        await comm.send_to(text_data=json.dumps({
+            "type": "extend_auto_stop",
+            "minutes": 30,
+        }))
+        await asyncio.sleep(0.2)
+        self.assertTrue(await comm.receive_nothing())
         await comm.disconnect()
 
     async def test_heartbeat_ping_on_idle_socket(self):
@@ -797,6 +888,56 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
         # Client was told to fall back to chunked.
         self.assertTrue(any(m["type"] == "live_mode_changed" for m in sent))
 
+    async def test_session_activity_is_forwarded_to_client(self):
+        """Upstream VAD lifecycle reaches the client as ``session.activity`` so
+        its stall watchdog can tell a long open utterance (no text yet, by
+        design) from a dead pipeline."""
+        from meetings.services.realtime_session import SessionActivity, SessionStatus
+
+        consumer = MeetingTranscribeConsumer()
+        consumer.meeting_id = self.meeting.id
+        consumer.meeting_uuid = str(self.meeting.uuid)
+        consumer._realtime_mode = "realtime"
+        consumer._realtime_started = True
+        consumer._total_pcm_bytes = 0
+        consumer._realtime_tasks = []
+        consumer._realtime_consume_task = None
+
+        sent = []
+
+        async def _fake_send(text_data=None, **kwargs):
+            sent.append(json.loads(text_data))
+        consumer.send = _fake_send
+
+        class _FakeSession:
+            async def events(self):
+                yield SessionActivity(kind="speech_started")
+                yield SessionActivity(kind="committed")
+                yield SessionStatus(state="disconnected")
+
+            async def finalize(self, timeout=2.0):
+                pass
+
+            def pending_event_count(self):
+                return 0
+
+            async def aclose(self):
+                pass
+
+        class _FakePipe:
+            stats = None
+
+            async def aclose(self):
+                pass
+
+        consumer._realtime_session = _FakeSession()
+        consumer._pcm_pipe = _FakePipe()
+
+        await asyncio.wait_for(consumer._consume_realtime_events(), timeout=2.0)
+
+        kinds = [m["kind"] for m in sent if m["type"] == "session.activity"]
+        self.assertEqual(kinds, ["speech_started", "committed"])
+
 
 class RealtimePromptSeedingTests(TransactionTestCase):
     """The realtime session must be seeded with NO prompt.
@@ -964,6 +1105,29 @@ class RealtimeLanguageResolutionTests(TransactionTestCase):
     async def test_auto_default_is_none(self):
         result = await self._resolve(meeting_forced="", pref_language="auto")
         self.assertIsNone(result["forced_language"])
+
+    async def test_persist_meeting_language_resolves_effective(self):
+        """The live-switch helper stores the dropdown value and returns the
+        API language through the same cascade as a fresh connect."""
+        import types
+
+        meeting = await database_sync_to_async(Meeting.objects.create)(
+            name="RT Lang",
+            slug="rt-lang-persist",
+            created_by=self.user,
+            forced_language="en",
+        )
+        consumer = MeetingTranscribeConsumer()
+        consumer.user = self.user
+        consumer.meeting_id = meeting.id
+        prefs = types.SimpleNamespace(transcription_language="no")
+        with patch("core.preferences.get_preferences", return_value=prefs):
+            self.assertIsNone(await consumer._persist_meeting_language("auto"))
+            self.assertEqual(await consumer._persist_meeting_language(""), "no")
+            self.assertEqual(await consumer._persist_meeting_language("en"), "en")
+
+        meeting = await database_sync_to_async(Meeting.objects.get)(pk=meeting.pk)
+        self.assertEqual(meeting.forced_language, "en")
 
 
 class RecomputeIncludesMarkerTests(TransactionTestCase):

@@ -170,6 +170,7 @@
         <label for="auto-stop-input" class="block text-xs font-medium text-body mb-1">Auto-stop after (minutes)</label>
         <input type="number" id="auto-stop-input" min="1" max="240" value="60"
         class="wf-input text-heading text-sm rounded-base block w-full px-3 py-2">
+        <p id="auto-stop-hint" class="mt-1 text-xs text-body"></p>
       </div>
     </div>
 
@@ -600,6 +601,6 @@
 {# marked + DOMPurify power the transcript editor's markdown preview toggle. #}
 <script src="{% static 'js/vendor/marked.min.js' %}"></script>
 <script src="{% static 'js/vendor/purify.min.js' %}"></script>
-<script src="{% static 'meetings/transcribe.js' %}?v=rt14" defer></script>
+<script src="{% static 'meetings/transcribe.js' %}?v=rt15" defer></script>
 <script src="{% static 'js/wilfred-ai-button.js' %}?v=20260611" defer></script>
 {% endblock %}

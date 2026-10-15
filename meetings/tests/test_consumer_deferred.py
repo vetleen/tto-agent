@@ -14,9 +14,14 @@ from channels.db import database_sync_to_async
 from django.contrib.auth import get_user_model
 from django.test import TransactionTestCase, override_settings
 
+from meetings import consumers as consumers_module
 from meetings.consumers import MeetingTranscribeConsumer
 from meetings.models import Meeting, MeetingTranscriptSegment
-from meetings.tests.test_consumer import _make_communicator, _patch_chunked_mode
+from meetings.tests.test_consumer import (
+    _make_communicator,
+    _patch_chunked_mode,
+    _rejected_code,
+)
 
 User = get_user_model()
 
@@ -118,9 +123,9 @@ class PresenceLockTests(TransactionTestCase):
         await comm1.receive_from()  # started
 
         comm2 = _make_communicator(meeting.uuid, user)
-        connected2, code = await comm2.connect()
-        self.assertFalse(connected2)
-        self.assertEqual(code, 4409)
+        # A *live* holder refuses immediately (the 1 s default timeout proves
+        # no closing-predecessor wait kicked in).
+        self.assertEqual(await _rejected_code(comm2), 4409)
         await comm2.disconnect()
         await comm1.disconnect()
 
@@ -150,9 +155,7 @@ class PresenceLockTests(TransactionTestCase):
         await database_sync_to_async(cache.set)(key, "another-connection", 45)
 
         comm = _make_communicator(meeting.uuid, user)
-        connected, code = await comm.connect()
-        self.assertFalse(connected)
-        self.assertEqual(code, 4409)
+        self.assertEqual(await _rejected_code(comm), 4409)
         await comm.disconnect()
 
         await database_sync_to_async(cache.delete)(key)
@@ -160,6 +163,78 @@ class PresenceLockTests(TransactionTestCase):
         connected2, _ = await comm2.connect()
         self.assertTrue(connected2)
         await comm2.disconnect()
+
+    async def test_connect_waits_while_predecessor_is_closing(self):
+        # The reconnect-after-drop race: the previous connection is still in
+        # disconnect() (realtime finalize + drain) and holds the lock, marked
+        # ":closing". The new connect must wait for it instead of 4409-ing.
+        import asyncio
+
+        from django.core.cache import cache
+
+        user = await _chunked_user("c4c-closing@example.com")
+        meeting = await database_sync_to_async(Meeting.objects.create)(
+            name="M", slug="m-c4c-closing", created_by=user,
+        )
+        key = f"meeting_live_session:{meeting.uuid}"
+        await database_sync_to_async(cache.set)(key, "old-conn:closing", 45)
+
+        async def _release_later():
+            await asyncio.sleep(0.4)
+            await database_sync_to_async(cache.delete)(key)
+
+        releaser = asyncio.create_task(_release_later())
+        comm = _make_communicator(meeting.uuid, user)
+        connected, _ = await comm.connect(timeout=3)
+        self.assertTrue(connected)
+        msg = json.loads(await comm.receive_from())
+        self.assertEqual(msg["type"], "started")
+        await releaser
+        await comm.disconnect()
+
+    async def test_connect_gives_up_when_closing_lock_never_clears(self):
+        from django.core.cache import cache
+
+        user = await _chunked_user("c4c-closing-stuck@example.com")
+        meeting = await database_sync_to_async(Meeting.objects.create)(
+            name="M", slug="m-c4c-closing-stuck", created_by=user,
+        )
+        key = f"meeting_live_session:{meeting.uuid}"
+        await database_sync_to_async(cache.set)(key, "old-conn:closing", 45)
+
+        with patch.object(consumers_module, "MEETING_LIVE_LOCK_WAIT_SECONDS", 0.3):
+            comm = _make_communicator(meeting.uuid, user)
+            self.assertEqual(await _rejected_code(comm, timeout=3), 4409)
+            await comm.disconnect()
+
+    async def test_disconnect_marks_own_lock_closing_then_releases(self):
+        from django.core.cache import cache
+
+        key = "meeting_live_session:closing"
+        consumer = self._lock_holder_consumer(key)
+        await database_sync_to_async(cache.set)(key, consumer._lock_owner, 45)
+
+        await consumer._mark_presence_lock_closing()
+        self.assertEqual(
+            await database_sync_to_async(cache.get)(key),
+            consumer._lock_owner + ":closing",
+        )
+        # The closing marker is still ours to release.
+        await consumer._release_presence_lock()
+        self.assertIsNone(await database_sync_to_async(cache.get)(key))
+        self.assertIsNone(consumer._presence_lock_key)
+
+    async def test_closing_mark_and_release_leave_a_foreign_lock_alone(self):
+        from django.core.cache import cache
+
+        key = "meeting_live_session:foreign-closing"
+        await database_sync_to_async(cache.set)(key, "another-connection", 45)
+        consumer = self._lock_holder_consumer(key)
+
+        await consumer._mark_presence_lock_closing()
+        self.assertEqual(await database_sync_to_async(cache.get)(key), "another-connection")
+        await consumer._release_presence_lock()
+        self.assertEqual(await database_sync_to_async(cache.get)(key), "another-connection")
 
     def _lock_holder_consumer(self, key):
         consumer = MeetingTranscribeConsumer()

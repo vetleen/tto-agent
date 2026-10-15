@@ -19,6 +19,9 @@ backends can conform):
 * ``TranscriptCompleted(item_id, text, usage)`` — finalized utterance.
 * ``SessionError(code, message, fatal)`` — recoverable or terminal.
 * ``SessionStatus(state)`` — e.g. ``"connected"``, ``"reconnecting"``.
+* ``SessionActivity(kind)`` — upstream VAD liveness (``"speech_started"``,
+  ``"speech_stopped"``, ``"committed"``); proves the provider hears audio
+  even while a long utterance is still open and no text has streamed yet.
 
 The OpenAI implementation handles reconnect with exponential backoff
 and replays the last few seconds of PCM from a bounded ring buffer so
@@ -75,7 +78,21 @@ class SessionStatus:
     state: str  # "connected" | "reconnecting" | "disconnected"
 
 
-SessionEvent = TranscriptDelta | TranscriptCompleted | SessionError | SessionStatus
+@dataclass
+class SessionActivity:
+    """Provider-side VAD lifecycle, forwarded as a liveness signal.
+
+    Server VAD holds a monologue open and emits nothing until a ~600 ms pause,
+    so a client watching only for transcript text sees a silent pipeline for
+    the whole utterance. These low-frequency events (three per utterance) let
+    it tell "still listening" apart from "stalled".
+    """
+    kind: str  # "speech_started" | "speech_stopped" | "committed"
+
+
+SessionEvent = (
+    TranscriptDelta | TranscriptCompleted | SessionError | SessionStatus | SessionActivity
+)
 
 
 # Server "error" events that are expected and harmless under server-VAD. The
@@ -112,6 +129,21 @@ _RECONNECT_COUNTER_RESET_SECONDS = 60
 
 
 _REALTIME_WS_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
+
+
+def _echoed_transcription_language(session: dict) -> str | None:
+    """Pull ``session.audio.input.transcription.language`` out of a server echo."""
+    audio = session.get("audio")
+    if not isinstance(audio, dict):
+        return None
+    audio_input = audio.get("input")
+    if not isinstance(audio_input, dict):
+        return None
+    transcription = audio_input.get("transcription")
+    if not isinstance(transcription, dict):
+        return None
+    language = transcription.get("language")
+    return language if isinstance(language, str) and language else None
 
 
 async def _default_ws_connect(api_key: str, url: str):
@@ -204,6 +236,10 @@ class OpenAIRealtimeSession:
         self._completed_count = 0
         self._reconnect_attempt = 0
         self._last_reconnect_success: float = 0.0
+        # Set by update_language() when the only way to apply a config change
+        # is a fresh session (clearing a pinned language). The receive loop
+        # then treats the self-inflicted close as routine, not a server drop.
+        self._reopen_requested = False
         self._ws_connect_factory = _ws_connect_factory or _default_ws_connect
         self._api_key = _api_key or os.environ.get("OPENAI_API_KEY", "")
 
@@ -249,9 +285,12 @@ class OpenAIRealtimeSession:
         # after a reconnect.
         self._committed_count = 0
         self._completed_count = 0
-        self._ws = await self._ws_connect_factory(self._api_key, _REALTIME_WS_URL)
+        ws = await self._ws_connect_factory(self._api_key, _REALTIME_WS_URL)
+        self._ws = ws
         await self._send_session_update()
-        self._recv_task = asyncio.create_task(self._receive_loop())
+        # Bind the loop to THIS socket: it must never pick up (or clear) a
+        # socket that a later reopen/reconnect installed in self._ws.
+        self._recv_task = asyncio.create_task(self._receive_loop(ws))
 
     async def _send_session_update(self) -> None:
         """Configure the session for transcription-only (GA Realtime shape).
@@ -298,14 +337,13 @@ class OpenAIRealtimeSession:
         })
         await self._ws.send(payload)
 
-    async def _receive_loop(self) -> None:
-        """Drain server events and translate into provider-neutral events.
+    async def _receive_loop(self, ws) -> None:
+        """Drain server events from ``ws`` and translate into provider-neutral events.
 
         Survives benign disconnects by scheduling a reconnect.
         """
-        assert self._ws is not None
         try:
-            async for message in self._ws:
+            async for message in ws:
                 # websockets lib delivers strings for text frames; be defensive.
                 if isinstance(message, bytes):
                     message = message.decode("utf-8", errors="replace")
@@ -320,22 +358,52 @@ class OpenAIRealtimeSession:
             # drop — otherwise this is a silent stall: audio keeps flowing into
             # a dead session and no error ever surfaces.
             if not self._closed:
-                logger.warning("OpenAIRealtimeSession: server closed the socket; reconnecting")
+                if self._reopen_requested:
+                    self._reopen_requested = False
+                    logger.info("OpenAIRealtimeSession: reopening to apply config")
+                else:
+                    logger.warning("OpenAIRealtimeSession: server closed the socket; reconnecting")
+                await self._drop_dead_socket(ws)
                 self._reconnect_task = asyncio.create_task(self._try_reconnect())
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             logger.warning("OpenAIRealtimeSession: recv loop ended (%s)", exc)
             if not self._closed:
+                await self._drop_dead_socket(ws)
                 self._reconnect_task = asyncio.create_task(self._try_reconnect())
+
+    async def _drop_dead_socket(self, ws) -> None:
+        """Forget a socket whose receive loop has ended, before the reconnect backoff.
+
+        While ``_ws`` still points at the dead socket, every 250 ms PCM frame
+        the pump forwards during the backoff fails with its own WARNING (a
+        storm of "append failed" lines, each a Sentry event). With it cleared,
+        ``send_pcm`` buffers silently and the ring buffer replays on reconnect.
+        Only clears ``_ws`` if it still is this socket, so a loop ending late
+        can never discard a successor that a reopen already installed.
+        """
+        if self._ws is ws:
+            self._ws = None
+        try:
+            await ws.close()
+        except Exception:
+            pass
 
     async def _dispatch_server_event(self, evt_type: str, event: dict) -> None:
         self._server_event_count += 1
         if evt_type in ("session.created", "session.updated"):
             session = event.get("session") or {}
+            echoed_language = None
             if isinstance(session, dict):
                 self._session_id = session.get("id")
-            logger.info("OpenAIRealtimeSession: %s (id=%s)", evt_type, self._session_id)
+                echoed_language = _echoed_transcription_language(session)
+            # The echoed language is what the server will actually transcribe
+            # in — the one place a live language switch can be verified.
+            logger.info(
+                "OpenAIRealtimeSession: %s (id=%s language=%s)",
+                evt_type, self._session_id, echoed_language or "auto",
+            )
             return
         # VAD lifecycle — low frequency (per utterance) and the clearest signal
         # of whether the server is actually hearing speech. If these never fire
@@ -355,6 +423,9 @@ class OpenAIRealtimeSession:
                 # One committed buffer ⇒ one transcription owed. finalize() waits
                 # for completed to catch up so Stop doesn't drop it.
                 self._committed_count += 1
+            # Forward as liveness so the consumer/client can tell a long open
+            # utterance (no text yet, by design) from a stalled pipeline.
+            await self._events.put(SessionActivity(kind=evt_type.rsplit(".", 1)[-1]))
             return
         if evt_type == "conversation.item.input_audio_transcription.delta":
             item_id = event.get("item_id", "") or ""
@@ -523,6 +594,46 @@ class OpenAIRealtimeSession:
             old = self._replay_buffer.popleft()
             self._replay_bytes -= len(old)
 
+    async def update_language(self, language: str | None) -> None:
+        """Apply a new transcription language to the running session.
+
+        ``language`` is an ISO code or ``None`` for auto-detect. A concrete
+        code is pushed with a fresh ``session.update`` (the GA API accepts
+        config updates at any time; the model is unchanged). Auto-detect
+        instead reopens the socket: ``session.update`` merges, so re-sending
+        the config *without* a ``language`` key would not reliably clear a
+        pinned one, and sending an empty value risks an
+        ``invalid_request_error`` (classified fatal). The reconnect path
+        replays the last few seconds of PCM, so nothing is lost.
+
+        Mid-reconnect (``_ws is None``) the new value is simply stored:
+        ``_open()`` sends it with the next ``session.update``.
+        """
+        self.language = language or None
+        if self._closed or self._ws is None:
+            return
+        if self.language:
+            await self._send_session_update()
+            return
+        await self._reopen_for_config()
+
+    async def _reopen_for_config(self) -> None:
+        """Close the socket so the receive loop reconnects with the current config.
+
+        ``_ws`` is cleared first so PCM arriving during the close + backoff is
+        buffered for replay instead of failing frame by frame on a dead socket.
+        """
+        ws = self._ws
+        if ws is None:
+            return
+        self._reopen_requested = True
+        self._ws = None
+        try:
+            await ws.close()
+        except Exception as exc:
+            self._reopen_requested = False
+            logger.warning("OpenAIRealtimeSession: reopen close failed (%s)", exc)
+
     async def finalize(self, timeout: float = 3.0) -> None:
         """Commit any pending audio and wait for the server's final transcription.
 
@@ -637,6 +748,7 @@ __all__ = [
     "TranscriptCompleted",
     "SessionError",
     "SessionStatus",
+    "SessionActivity",
     "SessionEvent",
     "RealtimeSessionError",
     "UnsupportedModelError",

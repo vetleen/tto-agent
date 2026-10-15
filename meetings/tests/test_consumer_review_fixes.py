@@ -109,6 +109,99 @@ class SetModelGuardTests(TransactionTestCase):
         self.assertTrue(any("does not support live streaming" in m.get("message", "") for m in sent))
 
 
+class SetLanguageTests(TransactionTestCase):
+    """``set_language`` works while a realtime session is active (unlike
+    ``set_model``): it pushes the new language into the running session and
+    acknowledges with ``language_changed``."""
+
+    def _consumer(self):
+        consumer, sent, _closed = _consumer_with_send()
+        consumer._realtime_started = True
+        consumer._realtime_mode = "realtime"
+        consumer._realtime_language = "en"
+        return consumer, sent
+
+    async def test_updates_live_session_and_acks(self):
+        consumer, sent = self._consumer()
+        calls: list = []
+
+        class _FakeSession:
+            async def update_language(self, language):
+                calls.append(language)
+
+        consumer._realtime_session = _FakeSession()
+
+        async def _persist(raw):
+            return "no"
+
+        consumer._persist_meeting_language = _persist
+        await consumer._handle_set_language({"language": "no"})
+
+        self.assertEqual(calls, ["no"])
+        self.assertEqual(consumer._realtime_language, "no")
+        self.assertEqual(
+            [m for m in sent if m["type"] == "language_changed"],
+            [{"type": "language_changed", "language": "no", "effective": "no"}],
+        )
+
+    async def test_auto_sends_none_to_session(self):
+        consumer, sent = self._consumer()
+        calls: list = []
+
+        class _FakeSession:
+            async def update_language(self, language):
+                calls.append(language)
+
+        consumer._realtime_session = _FakeSession()
+
+        async def _persist(raw):
+            return None
+
+        consumer._persist_meeting_language = _persist
+        await consumer._handle_set_language({"language": "auto"})
+
+        self.assertEqual(calls, [None])
+        self.assertEqual(consumer._realtime_language, "")
+        ack = [m for m in sent if m["type"] == "language_changed"][0]
+        self.assertEqual(ack["effective"], "")
+
+    async def test_rejects_unknown_code_without_touching_session(self):
+        consumer, sent = self._consumer()
+        calls: list = []
+
+        class _FakeSession:
+            async def update_language(self, language):
+                calls.append(language)
+
+        consumer._realtime_session = _FakeSession()
+        await consumer._handle_set_language({"language": "xx"})
+
+        self.assertEqual(calls, [])
+        self.assertEqual(consumer._realtime_language, "en")
+        self.assertTrue(any(m["type"] == "error" for m in sent))
+        self.assertFalse(any(m["type"] == "language_changed" for m in sent))
+
+    async def test_session_failure_reports_error_not_ack(self):
+        consumer, sent = self._consumer()
+
+        class _FakeSession:
+            async def update_language(self, language):
+                raise RuntimeError("socket gone")
+
+        consumer._realtime_session = _FakeSession()
+
+        async def _persist(raw):
+            return "no"
+
+        consumer._persist_meeting_language = _persist
+        await consumer._handle_set_language({"language": "no"})
+
+        self.assertTrue(any(
+            m["type"] == "error" and "live session" in m["message"] for m in sent
+        ))
+        self.assertFalse(any(m["type"] == "language_changed" for m in sent))
+
+
 class ConnectRefusedDuringUploadTests(TransactionTestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="c16@example.com", password="pw")

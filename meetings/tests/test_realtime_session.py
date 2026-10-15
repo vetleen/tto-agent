@@ -184,7 +184,11 @@ class OpenAIRealtimeSessionTests(TestCase):
                 "item_id": "item_1",
                 "transcript": "hello",
             })
+            # speech_started also queues a SessionActivity ahead of the
+            # completion; skip past anything that isn't the transcript.
             evt = await session._events.get()
+            while not isinstance(evt, TranscriptCompleted):
+                evt = await session._events.get()
             await session.aclose()
             return evt
 
@@ -554,6 +558,227 @@ class OpenAIRealtimeSessionTests(TestCase):
             isinstance(e, SessionStatus) and e.state == "disconnected"
             for e in seen
         ))
+
+    def test_vad_lifecycle_surfaces_as_session_activity(self):
+        # Server VAD holds a monologue open and emits no text until the pause;
+        # these three events are the only proof the provider is hearing us, so
+        # they must reach the consumer (and the client's stall watchdog).
+        from meetings.services.realtime_session import SessionActivity
+
+        ws = _FakeWebSocket(script=[
+            {"type": "session.created", "session": {"id": "sess_1"}},
+            {"type": "input_audio_buffer.speech_started"},
+            {"type": "input_audio_buffer.speech_stopped"},
+            {"type": "input_audio_buffer.committed"},
+        ])
+        session = OpenAIRealtimeSession(
+            model_id="openai/gpt-4o-mini-transcribe",
+            _ws_connect_factory=_factory_for(ws),
+            _api_key="sk-fake",
+        )
+
+        async def run():
+            await session.connect()
+            kinds: list[str] = []
+            async for evt in session.events():
+                if isinstance(evt, SessionActivity):
+                    kinds.append(evt.kind)
+                    if len(kinds) == 3:
+                        break
+            # Snapshot before aclose(), which clears the pending offsets.
+            pending_offsets = len(session._speech_start_offsets)
+            await session.aclose()
+            return kinds, pending_offsets
+
+        kinds, pending_offsets = _run(run())
+        self.assertEqual(kinds, ["speech_started", "speech_stopped", "committed"])
+        # Existing bookkeeping on the same branch is intact.
+        self.assertEqual(session._committed_count, 1)
+        self.assertEqual(pending_offsets, 1)
+
+    def test_update_language_resends_session_update_when_open(self):
+        ws = _FakeWebSocket(script=[
+            {"type": "session.created", "session": {"id": "sess_1"}},
+        ])
+        session = OpenAIRealtimeSession(
+            model_id="openai/gpt-4o-mini-transcribe",
+            language="en",
+            _ws_connect_factory=_factory_for(ws),
+            _api_key="sk-fake",
+        )
+
+        async def run():
+            await session.connect()
+            await session.update_language("no")
+            await session.aclose()
+
+        _run(run())
+
+        updates = [
+            json.loads(m) for m in ws.sent if json.loads(m).get("type") == "session.update"
+        ]
+        self.assertEqual(len(updates), 2)
+        self.assertEqual(
+            updates[0]["session"]["audio"]["input"]["transcription"]["language"], "en",
+        )
+        self.assertEqual(
+            updates[1]["session"]["audio"]["input"]["transcription"]["language"], "no",
+        )
+        self.assertEqual(session.language, "no")
+
+    def test_update_language_to_auto_reopens_without_language(self):
+        # session.update merges, so re-sending the config without a language
+        # key would not reliably clear a pinned one. Auto-detect reopens the
+        # socket instead; the reconnect path sends a fresh config with no
+        # language, and the self-inflicted close is logged as routine.
+        ws1 = _FakeWebSocket(script=[
+            {"type": "session.created", "session": {"id": "sess_1"}},
+        ])
+        ws2 = _FakeWebSocket(script=[
+            {"type": "session.created", "session": {"id": "sess_2"}},
+        ])
+        sockets = iter([ws1, ws2])
+
+        async def factory(api_key: str, url: str):
+            return next(sockets)
+
+        session = OpenAIRealtimeSession(
+            model_id="openai/gpt-4o-mini-transcribe",
+            language="no",
+            _ws_connect_factory=factory,
+            _api_key="sk-fake",
+        )
+
+        async def run():
+            with patch(
+                "meetings.services.realtime_session._RECONNECT_BACKOFFS",
+                (0.0,) * 8,
+            ):
+                await session.connect()
+                await session.update_language(None)
+                states: list[str] = []
+                async for evt in session.events():
+                    if isinstance(evt, SessionStatus):
+                        states.append(evt.state)
+                        if states.count("connected") == 2:
+                            break
+                await session.aclose()
+                return states
+
+        with self.assertLogs("meetings.services.realtime_session", level="INFO") as logs:
+            states = _run(run())
+
+        self.assertTrue(ws1.closed)
+        self.assertIn("reconnecting", states)
+        self.assertIsNone(session.language)
+        cfg = json.loads(ws2.sent[0])
+        self.assertEqual(cfg["type"], "session.update")
+        self.assertNotIn("language", cfg["session"]["audio"]["input"]["transcription"])
+        self.assertTrue(any("reopening to apply config" in line for line in logs.output))
+        self.assertFalse(any("server closed the socket" in line for line in logs.output))
+
+    def test_pcm_during_reopen_backoff_is_buffered_not_warned(self):
+        # Seen on the local run: during the reopen's backoff the pump kept
+        # writing to the dead socket — one WARNING per 250 ms frame. The
+        # socket must be forgotten before the backoff so frames buffer
+        # silently and replay once the new socket is up.
+        ws1 = _FakeWebSocket(script=[
+            {"type": "session.created", "session": {"id": "sess_1"}},
+        ])
+        ws2 = _FakeWebSocket(script=[
+            {"type": "session.created", "session": {"id": "sess_2"}},
+        ])
+        sockets = iter([ws1, ws2])
+
+        async def factory(api_key: str, url: str):
+            return next(sockets)
+
+        session = OpenAIRealtimeSession(
+            model_id="openai/gpt-4o-mini-transcribe",
+            language="no",
+            _ws_connect_factory=factory,
+            _api_key="sk-fake",
+        )
+
+        async def run():
+            with patch(
+                "meetings.services.realtime_session._RECONNECT_BACKOFFS",
+                (0.3,) * 8,
+            ):
+                await session.connect()
+                await session.update_language(None)
+                await asyncio.sleep(0.05)  # inside the backoff: no socket yet
+                await session.send_pcm(b"\x01\x02\x03\x04")
+                states: list[str] = []
+                async for evt in session.events():
+                    if isinstance(evt, SessionStatus):
+                        states.append(evt.state)
+                        if states.count("connected") == 2:
+                            break
+                await session.aclose()
+
+        with self.assertLogs("meetings.services.realtime_session", level="INFO") as logs:
+            _run(run())
+
+        self.assertFalse(any("append failed" in line for line in logs.output), logs.output)
+        # The frame sent during the backoff was replayed on the new socket.
+        replayed = [
+            json.loads(m) for m in ws2.sent if '"input_audio_buffer.append"' in m
+        ]
+        self.assertEqual(len(replayed), 1)
+        self.assertEqual(base64.b64decode(replayed[0]["audio"]), b"\x01\x02\x03\x04")
+
+    def test_update_language_while_disconnected_defers_to_reconnect(self):
+        ws = _FakeWebSocket(script=[
+            {"type": "session.created", "session": {"id": "sess_1"}},
+        ])
+        session = OpenAIRealtimeSession(
+            model_id="openai/gpt-4o-mini-transcribe",
+            language="en",
+            _ws_connect_factory=_factory_for(ws),
+            _api_key="sk-fake",
+        )
+
+        async def run():
+            await session.connect()
+            sent_before = len(ws.sent)
+            session._ws = None  # mid-reconnect: nothing to send on
+            await session.update_language("no")
+            frames_sent = len(ws.sent) - sent_before
+            session._ws = ws
+            await session.aclose()
+            return frames_sent
+
+        self.assertEqual(_run(run()), 0)
+        # Stored for the next _open(), which re-sends the config.
+        self.assertEqual(session.language, "no")
+
+    def test_session_echo_logs_effective_language(self):
+        ws = _FakeWebSocket(script=[
+            {"type": "session.created", "session": {"id": "sess_1"}},
+            {
+                "type": "session.updated",
+                "session": {
+                    "id": "sess_1",
+                    "audio": {"input": {"transcription": {"language": "no"}}},
+                },
+            },
+        ])
+        session = OpenAIRealtimeSession(
+            model_id="openai/gpt-4o-mini-transcribe",
+            _ws_connect_factory=_factory_for(ws),
+            _api_key="sk-fake",
+        )
+
+        async def run():
+            await session.connect()
+            await asyncio.sleep(0.05)
+            await session.aclose()
+
+        with self.assertLogs("meetings.services.realtime_session", level="INFO") as logs:
+            _run(run())
+        self.assertTrue(any("session.updated (id=sess_1 language=no)" in line for line in logs.output))
+        self.assertTrue(any("session.created (id=sess_1 language=auto)" in line for line in logs.output))
 
 
 class FinalizeTests(TestCase):

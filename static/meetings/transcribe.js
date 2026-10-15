@@ -49,6 +49,13 @@
   // latency), so we give it a 3× multiplier.
   const TRANSCRIPT_STALL_MS = 30000;
   const TRANSCRIPT_STALL_CHUNKED_MS = SEGMENT_DURATION_MS * 3; // 90s
+  // While the server-side VAD has an utterance OPEN (it told us speech started
+  // and hasn't committed yet) no text can arrive by design: OpenAI transcribes
+  // per utterance, after a ~600ms pause. A monologue of 30-60s therefore looks
+  // exactly like a stall to the baseline window above. The server relays the
+  // VAD lifecycle as `session.activity`; between speech_started and the next
+  // commit we allow this much longer window before declaring a stall.
+  const TRANSCRIPT_STALL_UTTERANCE_OPEN_MS = 120000;
   const AUTO_RECOVER_MAX = 3;
   // RMS threshold for "someone is talking". The level meter maps rms*200 to a
   // percentage bar; 0.02 RMS ≈ 4% bar, well above idle noise floor.
@@ -62,6 +69,9 @@
   const autoStopDefault = parseInt(root.dataset.autoStopDefault || '3600', 10);
   const autoStopMax = parseInt(root.dataset.autoStopMax || '14400', 10);
   const autoStartTranscription = root.dataset.autoStartTranscription === '1';
+  // Per-meeting memory for the "Auto-stop after (minutes)" input so a reload
+  // (or the next session on this meeting) keeps what the user chose.
+  const AUTO_STOP_STORAGE_KEY = 'wf.meeting.' + meetingUuid + '.autoStopMinutes';
 
   const transcribeBtn = document.getElementById('transcribe-btn');
   const transcribeBtnLabel = document.getElementById('transcribe-btn-label');
@@ -73,6 +83,7 @@
   const elapsedEl = document.getElementById('elapsed-counter');
   const micSelect = document.getElementById('mic-select');
   const autoStopInput = document.getElementById('auto-stop-input');
+  const autoStopHint = document.getElementById('auto-stop-hint');
   const levelBar = document.getElementById('mic-level-bar');
   let transcriptPane = document.getElementById('transcript-pane');
   const transcribingIndicator = document.getElementById('transcribing-indicator');
@@ -147,6 +158,19 @@
     });
   }
 
+  // "Saved." flash next to the metadata form. Shared by the auto-save fields
+  // and by the live-session acks that arrive over the WebSocket.
+  let metadataSavedHideTimer = null;
+  function flashSaved(text, ms) {
+    if (!metadataSavedEl) return;
+    metadataSavedEl.textContent = text || 'Saved.';
+    metadataSavedEl.classList.remove('hidden');
+    if (metadataSavedHideTimer) clearTimeout(metadataSavedHideTimer);
+    metadataSavedHideTimer = setTimeout(function () {
+      metadataSavedEl.classList.add('hidden');
+    }, ms || 2000);
+  }
+
   if (metadataForm) {
     // Block accidental form submission (e.g. Enter key in a field) — we
     // auto-save on input changes instead.
@@ -157,17 +181,6 @@
     const autoSaveFields = ['agenda', 'participants', 'description'];
     const lastSaved = {};
     const debounceTimers = {};
-    let savedHideTimer = null;
-
-    function flashSaved() {
-      if (!metadataSavedEl) return;
-      metadataSavedEl.textContent = 'Saved.';
-      metadataSavedEl.classList.remove('hidden');
-      if (savedHideTimer) clearTimeout(savedHideTimer);
-      savedHideTimer = setTimeout(function () {
-        metadataSavedEl.classList.add('hidden');
-      }, 2000);
-    }
 
     autoSaveFields.forEach(function (field) {
       const el = metadataForm.querySelector('[name="' + field + '"]');
@@ -215,6 +228,11 @@
           lastSavedLang = value;
           flashSaved();
         });
+        // Hot-update a running live session (mirrors set_model). The server
+        // acks with `language_changed`; the POST above is what persists it.
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          try { ws.send(JSON.stringify({ type: 'set_language', language: value })); } catch (e) {}
+        }
       });
     }
   }
@@ -368,6 +386,13 @@
   let autoRecoverAttempts = 0;
   let autoRecoverInFlight = false;
   let autoRecoverStartedAt = 0;
+  // Non-zero while the server-side VAD has an utterance open (speech_started
+  // seen, no commit/text yet) — widens the stall window, see checkForStall.
+  let upstreamSpeechOpenAt = 0;
+  // Auto-stop bookkeeping: when the session started (for the "Stops at" hint)
+  // and whether the limit, not the user, triggered the current stop.
+  let elapsedStartedAt = 0;
+  let autoStopFired = false;
   // Active live-transcription mode — server announces this in the "started"
   // event. "chunked" (legacy) stops and restarts MediaRecorder every 30s to
   // get self-contained WebM files. "realtime" / "realtime_with_fallback"
@@ -375,6 +400,64 @@
   // server-side ffmpeg pipe sees one unbroken Matroska stream.
   let liveMode = 'chunked';
   const STREAMING_TIMESLICE_MS = 250;
+
+  // ---------------- auto-stop (client-enforced) ----------------
+  // The limit lives in the number input; the elapsed timer re-reads it every
+  // second, so edits apply immediately. These helpers add what was missing:
+  // the value survives a reload (localStorage, per meeting), the user sees
+  // when the stop will happen, and the server is told for its logs.
+  function autoStopMaxMinutes() {
+    return Math.max(1, Math.floor(autoStopMax / 60));
+  }
+
+  function currentAutoStopMinutes() {
+    const raw = autoStopInput ? parseInt(autoStopInput.value, 10) : NaN;
+    if (!isFinite(raw) || raw < 1) return Math.max(1, Math.round(autoStopDefault / 60));
+    return Math.min(autoStopMaxMinutes(), raw);
+  }
+
+  function readStoredAutoStopMinutes() {
+    try {
+      const raw = parseInt(window.localStorage.getItem(AUTO_STOP_STORAGE_KEY), 10);
+      if (isFinite(raw) && raw >= 1 && raw <= autoStopMaxMinutes()) return raw;
+    } catch (e) {
+      // Private mode / blocked storage: fall back to the server default.
+    }
+    return null;
+  }
+
+  function storeAutoStopMinutes(minutes) {
+    try { window.localStorage.setItem(AUTO_STOP_STORAGE_KEY, String(minutes)); } catch (e) {}
+  }
+
+  function updateAutoStopHint() {
+    if (!autoStopHint) return;
+    const minutes = currentAutoStopMinutes();
+    if (transcribing && elapsedStartedAt) {
+      const at = new Date(elapsedStartedAt + minutes * 60000);
+      autoStopHint.textContent = 'Stops at ' + at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } else {
+      autoStopHint.textContent = 'Stops ' + minutes + ' minute' + (minutes === 1 ? '' : 's') + ' after start';
+    }
+  }
+
+  if (autoStopInput) {
+    const storedMinutes = readStoredAutoStopMinutes();
+    if (storedMinutes !== null) autoStopInput.value = String(storedMinutes);
+    autoStopInput.addEventListener('input', function () {
+      storeAutoStopMinutes(currentAutoStopMinutes());
+      updateAutoStopHint();
+    });
+    autoStopInput.addEventListener('change', function () {
+      const minutes = currentAutoStopMinutes();
+      storeAutoStopMinutes(minutes);
+      updateAutoStopHint();
+      if (transcribing && ws && ws.readyState === WebSocket.OPEN) {
+        try { ws.send(JSON.stringify({ type: 'extend_auto_stop', minutes: minutes })); } catch (e) {}
+      }
+    });
+  }
+  updateAutoStopHint();
 
   // Choose the best supported audio mime type for MediaRecorder.
   function pickMime() {
@@ -486,13 +569,18 @@
 
   function startElapsedTimer() {
     elapsedSec = 0;
+    elapsedStartedAt = Date.now();
     if (elapsedEl) elapsedEl.textContent = fmtElapsed(0);
+    updateAutoStopHint();
     elapsedTimer = setInterval(function () {
       elapsedSec += 1;
       if (elapsedEl) elapsedEl.textContent = fmtElapsed(elapsedSec);
-      // Auto-stop check.
-      const limit = Math.max(60, Math.min(autoStopMax, (parseInt(autoStopInput.value, 10) || 60) * 60));
+      updateAutoStopHint();
+      // Auto-stop check — re-reads the input every tick so edits apply live.
+      const limit = currentAutoStopMinutes() * 60;
       if (elapsedSec >= limit) {
+        autoStopFired = true;
+        updateIndicator();
         stopTranscription();
       }
     }, 1000);
@@ -549,8 +637,18 @@
     // where the user never spoke at all (e.g. opened page and left it).
     //
     // Threshold is mode-aware: chunked legitimately takes >30s (30s chunk +
-    // batch transcription latency) so we use a 3× multiplier.
-    const stallThreshold = (liveMode === 'chunked') ? TRANSCRIPT_STALL_CHUNKED_MS : TRANSCRIPT_STALL_MS;
+    // batch transcription latency) so we use a 3× multiplier. In realtime
+    // mode an OPEN upstream utterance (server VAD heard speech start, hasn't
+    // committed) legitimately produces no text for as long as the speaker
+    // goes without a pause, so the window widens until the next VAD event.
+    let stallThreshold;
+    if (liveMode === 'chunked') {
+      stallThreshold = TRANSCRIPT_STALL_CHUNKED_MS;
+    } else if (upstreamSpeechOpenAt > 0) {
+      stallThreshold = TRANSCRIPT_STALL_UTTERANCE_OPEN_MS;
+    } else {
+      stallThreshold = TRANSCRIPT_STALL_MS;
+    }
     const transcriptSilenceMs = Date.now() - lastTranscriptActivityAt;
     if (
       transcriptSilenceMs >= stallThreshold
@@ -593,6 +691,7 @@
     // Reset the activity timestamp so we don't immediately re-fire while the
     // reconnect is in progress.
     lastTranscriptActivityAt = Date.now();
+    upstreamSpeechOpenAt = 0;
   }
 
   function startWatchdog() {
@@ -600,6 +699,7 @@
     lastChunkSentAt = Date.now();
     lastTranscriptActivityAt = Date.now();
     lastMicActivityAt = 0; // 0 = "never heard speech yet" — stall won't fire until mic speaks
+    upstreamSpeechOpenAt = 0;
     autoRecoverAttempts = 0;
     autoRecoverInFlight = false;
     watchdogRestartAttempted = false;
@@ -735,7 +835,11 @@
     if (shouldShow) {
       transcribingIndicator.classList.remove('hidden');
       let label;
-      if (reconnecting) {
+      if (autoStopFired && (stoppingPendingDrain || transcribing)) {
+        // Say why the session is ending — a stop the user didn't click
+        // otherwise looks like the generic "Stopping…" from the button.
+        label = 'Auto-stop reached — finalizing transcription…';
+      } else if (reconnecting) {
         label = 'Reconnecting… (attempt ' + reconnectAttempts + ' of ' + RECONNECT_MAX_ATTEMPTS + ')';
       } else if (stoppingPendingDrain && pendingCount > 0) {
         label = 'Finalizing transcription… (' + pendingCount + ' segment' + (pendingCount === 1 ? '' : 's') + ' left)';
@@ -968,6 +1072,7 @@
           // Activity timestamp resets on a healthy started event so the
           // stall watchdog gives the new session a fresh window.
           lastTranscriptActivityAt = Date.now();
+          upstreamSpeechOpenAt = 0;
           // If the page was loaded while the meeting was not live (e.g.
           // status=ready), #transcript-pane is a <textarea>. Appending <p>
           // children to a textarea is silently inert — segments arrive but
@@ -1008,6 +1113,7 @@
           // A real segment landed: reset auto-recover budget so a long
           // healthy interval restores the full retry budget.
           lastTranscriptActivityAt = Date.now();
+          upstreamSpeechOpenAt = 0;
           autoRecoverAttempts = 0;
           updateLineCount();
           updateIndicator();
@@ -1023,10 +1129,36 @@
           // clear when the next segment.ready lands.
           renderInterimDelta(msg.text || '');
           lastTranscriptActivityAt = Date.now();
+          upstreamSpeechOpenAt = 0;
+        } else if (msg.type === 'session.activity') {
+          // Upstream VAD liveness (speech_started / speech_stopped /
+          // committed). A long utterance yields no text until the next pause,
+          // so without this a monologue looked identical to a dead pipeline.
+          lastTranscriptActivityAt = Date.now();
+          if (msg.kind === 'speech_started') {
+            upstreamSpeechOpenAt = Date.now();
+            if (transcribing && !reconnecting && transcribingIndicatorLabel) {
+              transcribingIndicatorLabel.textContent = 'Listening… text appears at the next pause';
+            }
+          } else {
+            upstreamSpeechOpenAt = 0;
+            if (transcribing && !reconnecting) updateIndicator();
+          }
+        } else if (msg.type === 'language_changed') {
+          // The running live session took the new spoken language (or, for
+          // auto-detect, reopened without one). Chunked mode re-reads it per
+          // chunk, so the ack means "applied" either way.
+          flashSaved('Saved. Live transcription updated.', 3500);
         } else if (msg.type === 'session.status') {
           // Realtime only — reflects connection state with the upstream provider.
           // "reconnecting" shows a warning; "connected" / "disconnected" clear it.
           updateSessionStatus(msg.state);
+          if (msg.state === 'connected' || msg.state === 'reconnecting') {
+            // The server is actively managing the upstream socket; that is
+            // pipeline activity, not a stall, and any open utterance is gone.
+            lastTranscriptActivityAt = Date.now();
+            upstreamSpeechOpenAt = 0;
+          }
           if (msg.state === 'disconnected') {
             // Upstream is gone for good — replace the misleading
             // "Transcribing…" indicator with the actionable error banner.
@@ -1050,7 +1182,12 @@
       };
       ws.onclose = function (event) {
         const terminalMsg = event && TERMINAL_CLOSE_MESSAGES[event.code];
-        if (terminalMsg) {
+        // A 4409 while reconnecting usually means the previous connection's
+        // presence lock is still being torn down (or is stale for up to 45s
+        // after a hard crash) — keep retrying with backoff. On a fresh Start
+        // it stays terminal: the user really does have another meeting live.
+        const retryableConflict = !!(event && event.code === 4409 && reconnecting);
+        if (terminalMsg && !retryableConflict) {
           // Deterministic server rejection (auth, concurrency cap, transcription
           // disabled, …). Don't reconnect — record the reason so the start /
           // reconnect paths can show it and stop.
@@ -1399,7 +1536,12 @@
       return;
     }
 
-    autoStopInput.value = String(Math.round(autoStopDefault / 60));
+    // Keep the user's remembered limit; only fall back to the server default
+    // when nothing was stored for this meeting.
+    if (autoStopInput && readStoredAutoStopMinutes() === null) {
+      autoStopInput.value = String(Math.round(autoStopDefault / 60));
+    }
+    autoStopFired = false;
     controlsEl.classList.remove('hidden');
     // Use inline style instead of the `hidden` class: the button has
     // `inline-flex`, and Tailwind v4 emits `.inline-flex` *after* `.hidden`,
@@ -1441,6 +1583,7 @@
       mediaStream = null;
     }
     if (!opts.keepBeforeUnload) removeBeforeUnloadGuard();
+    updateAutoStopHint();
   }
 
   function stopTranscription() {
