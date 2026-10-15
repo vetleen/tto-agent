@@ -77,6 +77,66 @@ class AttachmentImageDescriberTests(TestCase):
         text = d.substitute("\n".join(tokens), described)
         self.assertNotIn("PNG image", text)
 
+    @override_settings(DOCUMENT_IMAGE_DESCRIBE_CONCURRENCY=2)
+    def test_workers_keep_their_db_connection_for_the_run(self):
+        """A vision call logs an LLMCallLog row on its worker thread. Closing
+        that connection after every picture reconnected once per image
+        (WILFRED-9N: a 24-picture deck = 24 ``connect`` spans); a worker keeps
+        it for its next picture and the pool releases the workers' connections
+        once they have exited."""
+        from django.db import connections
+
+        seen = {}  # worker thread ident -> its DatabaseWrapper
+
+        def fake_describe(image_bytes, content_type, user, alt_text=None, model=None, conversation_id=None):
+            seen[threading.get_ident()] = connections["default"]
+            return "desc"
+
+        d = self._describer()
+        for i in range(8):
+            d.sink(_FakeImg(_png(20 + i)), i + 1)
+        with patch("chat.services.describe_image", side_effect=fake_describe), \
+             patch("django.db.close_old_connections") as per_call_close, \
+             patch("documents.services.image_assets._close_worker_connections") as release:
+            self.assertEqual(len(d.run_descriptions()), 8)
+        per_call_close.assert_not_called()
+        release.assert_called_once()
+        self.assertEqual(release.call_args.args[0], set(seen.values()))
+        self.assertTrue(seen)
+
+    def test_release_may_close_a_connection_another_thread_opened(self):
+        """Django refuses to close a connection from a thread other than its
+        owner; the owner (a pool worker) has exited by the time the describer
+        releases it, so the release claims thread sharing around the close."""
+        from django.db import connections
+
+        from documents.services.image_assets import _close_worker_connections
+
+        opened = {}
+
+        def open_connection():
+            connections["default"].ensure_connection()
+            opened["conn"] = connections["default"]
+
+        t = threading.Thread(target=open_connection)
+        t.start()
+        t.join()
+        _close_worker_connections([opened["conn"]])  # DatabaseError without thread sharing
+        self.assertFalse(opened["conn"].allow_thread_sharing)  # claim released again
+
+    def test_release_is_best_effort_and_keeps_the_claim_scoped(self):
+        from unittest.mock import MagicMock, call
+
+        from documents.services.image_assets import _close_worker_connections
+
+        bad, ok = MagicMock(), MagicMock()
+        bad.close.side_effect = RuntimeError("socket gone")
+        _close_worker_connections([bad, ok])
+        for conn in (bad, ok):
+            self.assertEqual(
+                conn.mock_calls, [call.inc_thread_sharing(), call.close(), call.dec_thread_sharing()],
+            )
+
     def test_vision_calls_are_billed_to_the_attachment_thread(self):
         """Picture descriptions carry the thread id so /cost counts them."""
         d = self._describer()

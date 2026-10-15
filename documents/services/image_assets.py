@@ -78,6 +78,27 @@ def _fallback_label(content_type: str) -> str:
     return f"{fmt} image" if fmt else "image"
 
 
+def _close_worker_connections(wrappers) -> None:
+    """Close DB connections opened by describer pool threads that have exited.
+
+    A worker keeps its thread-local connection across jobs (see
+    ``run_descriptions``). Django only lets the thread that opened a connection
+    close it and the executor has no per-thread teardown hook, so once
+    ``shutdown(wait=True)`` has joined the workers the main thread claims
+    thread sharing for the duration of the close — the escape hatch Django's
+    own ``LiveServerThread`` uses. Best-effort: one failing close never stops
+    the others.
+    """
+    for conn in wrappers:
+        conn.inc_thread_sharing()
+        try:
+            conn.close()
+        except Exception:
+            logger.warning("Could not close a describer worker's DB connection", exc_info=True)
+        finally:
+            conn.dec_thread_sharing()
+
+
 class EmbeddedImageDescriberBase:
     """Owner-agnostic two-phase describer (see module docstring).
 
@@ -204,20 +225,30 @@ class EmbeddedImageDescriberBase:
         if not self.pending:
             return results
 
+        import threading
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        from django.db import close_old_connections
+        from django.db import close_old_connections, connections
 
         from chat.services import describe_image
 
         total = len(self.pending)
         max_workers = max(1, min(getattr(settings, "DOCUMENT_IMAGE_DESCRIBE_CONCURRENCY", 5), total))
         current = 0
+        # The vision call logs an LLMCallLog row on its worker thread. A worker
+        # keeps that thread-local connection for its next picture — closing it
+        # after every call reconnected once per image (WILFRED-9N: a 24-picture
+        # deck was 24 ``connect`` spans) — and the pool releases the workers'
+        # connections once they have exited, so a run never leaves idle
+        # connections behind (conn_max_age=0).
+        leased: set = set()
+        # Set when the run is torn down without waiting for the workers (only
+        # KeyboardInterrupt/SystemExit — Celery's thread pool enforces no time
+        # limits): in-flight jobs then release their own connection; an idle
+        # worker's is reclaimed with its thread's state.
+        abandoned = threading.Event()
 
         def _job(rec):
-            # The vision call logs an LLMCallLog row on this thread; release the
-            # thread-local DB connection afterwards (conn_max_age=0) so a pool
-            # never leaves idle connections behind.
             try:
                 return describe_image(
                     rec["bytes"], rec["content_type"], self.uploaded_by,
@@ -225,12 +256,15 @@ class EmbeddedImageDescriberBase:
                     conversation_id=self.conversation_id,
                 )
             finally:
-                close_old_connections()
+                if abandoned.is_set():
+                    close_old_connections()
+                else:
+                    leased.update(connections.all(initialized_only=True))
 
         # Workers do ONLY the vision call; all shared state (results, cache,
         # progress) is mutated on this main thread as futures complete, so no
-        # locking is needed. An exception on the main thread (e.g. Celery's soft
-        # time limit) cancels what hasn't started instead of waiting it out.
+        # locking is needed. An exception on the main thread cancels what
+        # hasn't started instead of waiting it out.
         pool = ThreadPoolExecutor(max_workers=max_workers)
         try:
             futures = {pool.submit(_job, rec): rec for rec in self.pending}
@@ -253,9 +287,11 @@ class EmbeddedImageDescriberBase:
                     except Exception:  # progress is best-effort; never fail ingest
                         logger.debug("progress_cb failed for %s", self.label, exc_info=True)
         except BaseException:
+            abandoned.set()
             pool.shutdown(wait=False, cancel_futures=True)
             raise
         pool.shutdown(wait=True)
+        _close_worker_connections(leased)
 
         described = [rec["asset"] for rec in self.pending if rec["asset"].id in results]
         if described:
