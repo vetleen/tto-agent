@@ -104,13 +104,13 @@ Live LLM API tests: set `TEST_APIS=True` and add API keys to `.env`.
 
 - **URLs:** `/chat/` (home, thread list and chat UI), `/chat/threads/<uuid>/delete/`, `/chat/threads/<uuid>/canvas/export/`, `/chat/threads/<uuid>/canvas/import/`.
 - **Threads:** Each `ChatThread` can attach multiple data rooms (many-to-many via `ChatThreadDataRoom`) and any number of `AgentSkill`s.
-- **Canvas:** Per-thread document editor (`ChatCanvas`) with multi-canvas support, checkpoint history, DOCX export/import, and save-to-data-room. Up to 3 canvases can be active at once; only active canvases are included in the LLM's context.
+- **Canvas:** Per-thread document editor (`ChatCanvas`) with multi-canvas support, checkpoint history, DOCX export/import, and save-to-data-room. Canvases hold up to 225,000 characters; the model reads them with a ranged, token-paged `canvas_read` (large canvases come back as a page plus an outline).
 - **Sub-agents:** Delegate tasks to background or timeout-bounded sub-agent runs (`SubAgentRun`) with tiered model selection (cheap/mid/top).
 - **Tools available in chat:**
   - `search_documents` — Hybrid (semantic + full-text) search on attached data rooms
   - `read_document` — Read full document content
-  - `active_canvas` — Choose which canvases are active in context (max 3)
-  - `write_canvas` / `edit_canvas` — Create/overwrite or find-replace on a canvas
+  - `canvas_read` — Ranged, token-paged read of a canvas, with an outline for large ones
+  - `canvas_write` / `canvas_edit` — Create/overwrite or find-replace on a canvas
   - `update_tasks` — Manage the thread's task list (`ThreadTask`)
   - `web_fetch` — Fetch and extract web page text
   - `brave_search` — Web search via Brave Search API

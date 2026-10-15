@@ -296,6 +296,10 @@ user notice, two in a row fall through to the final tool-less call; a main-agent
 visible answer was cut ends the turn as usual. `canvas_write`/`canvas_edit` (and the
 sub-agent twins) reject a payload over `CANVAS_MAX_CHARS` up front instead of clipping it, and
 a failed edit reports `new_text_chars` plus a `hint` when the replacement is absurdly large.
+`CANVAS_MAX_CHARS` (225k) is the SIZE rule in chars; the CONTEXT rule is in tokens:
+`canvas_read` is ranged (`start_line`/`end_line`, 1-based) and token-paged (`max_tokens`,
+default `llm.context_budget.canvas_read_token_cap(aim)` = 30% of the aim, 12k–100k); a page
+that doesn't fit returns an outline (`chat/services.py:canvas_outline`) plus `next_start_line`.
 
 ## Logging
 

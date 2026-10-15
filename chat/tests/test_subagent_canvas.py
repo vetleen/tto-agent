@@ -141,7 +141,7 @@ class SubagentCanvasWriteEditTests(TestCase):
         )
         self.assertEqual(out["status"], "error")
         self.assertIn("Nothing was written", out["message"])
-        self.assertIn("75,050 characters", out["message"])
+        self.assertIn(f"{CANVAS_MAX_CHARS + 50:,} characters", out["message"])
         self.run.refresh_from_db()
         self.assertEqual(self.run.canvas, "")
 

@@ -29,7 +29,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-CANVAS_MAX_CHARS = 75_000
+# The SIZE rule, in characters: enforced at the editor (chat.html mirrors it),
+# every write path and the DB clip. The CONTEXT rule is separate and in tokens:
+# canvas_read pages a canvas by llm.context_budget.canvas_read_token_cap(aim).
+CANVAS_MAX_CHARS = 225_000
 
 
 def clip_to_canvas(content: str | None) -> tuple[str, int | None]:
@@ -173,6 +176,135 @@ def _iter_markdown_lines_skipping_code(lines):
             yield line, True
             continue
         yield line, fence_char is not None
+
+
+def canvas_content_sha(content: str | None) -> str:
+    """sha256 hex of the canvas text — the identity of one canvas state."""
+    import hashlib
+
+    return hashlib.sha256((content or "").encode("utf-8")).hexdigest()
+
+
+# Headings listed in a canvas outline; a 225k canvas of one-line sections could
+# otherwise return an outline bigger than the page it accompanies.
+CANVAS_OUTLINE_MAX_HEADINGS = 200
+
+
+def canvas_outline(content: str | None, *, tokens: int | None = None) -> dict:
+    """Structure of a canvas for a model that cannot see all of it at once.
+
+    ``headings`` are ATX headings outside fenced code (``_ATX_HEADING_RE``), each
+    with the 1-based line range it governs (to the line before the next heading;
+    the last runs to the end). ``table_rows`` counts ``|``-prefixed lines outside
+    code so a heading-less table canvas still reports its shape.
+    ``headings_omitted`` is set when more than CANVAS_OUTLINE_MAX_HEADINGS exist.
+    """
+    from core.tokens import count_tokens
+
+    content = content or ""
+    lines = content.split("\n") if content else []
+    headings: list[dict] = []
+    table_rows = 0
+    omitted = 0
+    for number, (line, in_code) in enumerate(_iter_markdown_lines_skipping_code(lines), start=1):
+        if in_code:
+            continue
+        if line.lstrip().startswith("|"):
+            table_rows += 1
+            continue
+        m = _ATX_HEADING_RE.match(line)
+        if not m:
+            continue
+        if len(headings) >= CANVAS_OUTLINE_MAX_HEADINGS:
+            omitted += 1
+            continue
+        text = m.group(3).strip().rstrip("#").strip()
+        headings.append({"level": len(m.group(2)), "text": text[:120], "start_line": number})
+    for i, h in enumerate(headings):
+        h["end_line"] = headings[i + 1]["start_line"] - 1 if i + 1 < len(headings) else len(lines)
+    outline = {
+        "total_lines": len(lines),
+        "chars": len(content),
+        "tokens": tokens if tokens is not None else count_tokens(content),
+        "headings": headings,
+        "table_rows": table_rows,
+    }
+    if omitted:
+        outline["headings_omitted"] = omitted
+    return outline
+
+
+def read_canvas_range(
+    content: str | None, *, start_line: int = 1, end_line: int | None = None, max_tokens: int,
+) -> dict:
+    """A line-addressed, token-paged view of a canvas (``canvas_read`` and
+    ``subagent_canvas_read`` share it).
+
+    Lines are 1-based and inclusive. The requested range comes back whole when it
+    fits in *max_tokens*; otherwise the first page, cut at a line boundary, plus
+    the canvas outline and ``next_start_line``. Returns
+    ``{"status": "error", "message": ...}`` for a range past the end or inverted.
+    """
+    from core.tokens import count_tokens_per_line
+
+    content = content or ""
+    if not content:
+        return {
+            "start_line": 1, "end_line": 0, "lines_returned": 0, "total_lines": 0,
+            "chars": 0, "tokens": 0, "truncated": False, "content": "",
+        }
+    lines = content.split("\n")
+    total = len(lines)
+    if start_line > total:
+        return {"status": "error", "message": f"start_line {start_line} is past the end (total_lines={total})."}
+    if end_line is not None and end_line < start_line:
+        return {"status": "error", "message": "end_line must be >= start_line."}
+    end = min(end_line or total, total)
+
+    # One batch count for the whole canvas: it gives the page cut AND the
+    # canvas total the outline reports, in a single tokenizer call.
+    per_line = count_tokens_per_line(lines)
+    canvas_tokens = sum(per_line)
+    region_counts = per_line[start_line - 1:end]
+    region_tokens = sum(region_counts)
+
+    if region_tokens <= max_tokens:
+        text = "\n".join(lines[start_line - 1:end])
+        return {
+            "start_line": start_line, "end_line": end, "lines_returned": end - start_line + 1,
+            "total_lines": total, "chars": len(text), "tokens": region_tokens,
+            "truncated": False, "content": text,
+        }
+
+    used = 0
+    kept = 0
+    for n in region_counts:
+        if used + n > max_tokens:
+            break
+        used += n
+        kept += 1
+    result: dict = {"start_line": start_line, "total_lines": total, "truncated": True}
+    if kept == 0:
+        # A single line over the page cap (minified text, a giant table row).
+        text = lines[start_line - 1][: max_tokens * 4]
+        used = max_tokens
+        kept = 1
+        result["partial_line"] = True
+    else:
+        text = "\n".join(lines[start_line - 1:start_line - 1 + kept])
+    last = start_line + kept - 1
+    result.update({
+        "end_line": last, "lines_returned": kept, "chars": len(text), "tokens": used,
+        "next_start_line": last + 1,
+        "outline": canvas_outline(content, tokens=canvas_tokens),
+        "note": (
+            f"Returned lines {start_line:,}–{last:,} of {total:,} (~{used:,} tokens; the "
+            f"whole canvas is ~{canvas_tokens:,} tokens). Continue with "
+            f"start_line={last + 1}, or read one section by the line range shown in outline."
+        ),
+        "content": text,
+    })
+    return result
 
 
 def _split_blockquote_prefix(line):

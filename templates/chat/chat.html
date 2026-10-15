@@ -3439,7 +3439,7 @@
     if (et === "canvas.updated") {
       var cid = data.canvas_id;
       if (data.truncated && data.original_chars) {
-        showToast("Only the first 75,000 of " + data.original_chars.toLocaleString() + " characters fit in the canvas; the rest was cut.");
+        showToast("Only the first " + CANVAS_MAX_CHARS.toLocaleString() + " of " + data.original_chars.toLocaleString() + " characters fit in the canvas; the rest was cut.");
       }
       if (cid && !canvasStates[cid]) {
         // New canvas created by LLM — add tab
@@ -4847,7 +4847,10 @@
     }
   }
 
-  var CANVAS_MAX_CHARS = 75000;
+  // Mirrors chat.services.CANVAS_MAX_CHARS (the server clips every save and
+  // import to it); the red zone is the last ~15k, as it was at 70k/75k.
+  var CANVAS_MAX_CHARS = 225000;
+  var CANVAS_WARN_CHARS = 210000;
 
   function updateWordCount() {
     var text = canvasTextarea.value.trim();
@@ -4855,7 +4858,7 @@
     var charCount = canvasTextarea.value.length;
     if (canvasWordCount) {
       canvasWordCount.textContent = wordCount + " word" + (wordCount !== 1 ? "s" : "") + " \u00b7 " + charCount.toLocaleString() + " / " + CANVAS_MAX_CHARS.toLocaleString() + " chars";
-      if (charCount > 70000) {
+      if (charCount > CANVAS_WARN_CHARS) {
         canvasWordCount.classList.add("text-fg-danger");
         canvasWordCount.classList.remove("text-body");
       } else {
@@ -6017,8 +6020,8 @@
           }
           if (data.truncated) {
             showToast(data.original_chars
-              ? "Only the first 75,000 of " + data.original_chars.toLocaleString() + " characters fit in the canvas; the rest was cut."
-              : "Document was truncated to 75,000 characters.");
+              ? "Only the first " + CANVAS_MAX_CHARS.toLocaleString() + " of " + data.original_chars.toLocaleString() + " characters fit in the canvas; the rest was cut."
+              : "Document was truncated to " + CANVAS_MAX_CHARS.toLocaleString() + " characters.");
           }
           flashCanvasBtnSuccess(importLabel);
           if (importLabel) importLabel.title = "Import a file (Word, PDF, or text)";

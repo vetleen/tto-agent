@@ -18,9 +18,11 @@ logger = logging.getLogger(__name__)
 SUBAGENT_MAX_TOOL_ITERATIONS = 35
 
 # How many of the orchestrator's canvases one sub-agent may be handed, by its
-# context budget (first threshold met wins). A canvas is at most
-# CANVAS_MAX_CHARS (~19k tokens), so these keep the worst case under ~40% of
-# the budget; below the floor nothing may be shared.
+# context budget (first threshold met wins); below the floor nothing may be
+# shared. The count alone no longer bounds the pasted text now that a canvas
+# holds up to CANVAS_MAX_CHARS = 225k chars (~56k tokens of prose, ~90k of
+# tables), so chat_subagent_create also measures the snapshot against
+# canvas_read_token_cap(budget) before accepting it.
 _SHARED_CANVAS_STEPS = ((200_000, 3), (150_000, 2), (MIN_CONTEXT_TOKENS, 1))
 
 

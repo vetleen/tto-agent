@@ -4007,7 +4007,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _get_canvases_for_prompt(self, thread_id):
-        """Load canvases info for the system prompt."""
+        """Canvas list for the prompt + the active canvases whose MEASURED tokens fit.
+
+        Active canvases are injected in last-activated order while their token sum
+        stays under the per-read cap (``canvas_read_token_cap``); the rest are listed
+        as "not in context" and the model reads them with ``canvas_read``.
+        """
+        from core.tokens import count_tokens
+        from llm.context_budget import canvas_read_token_cap
         from chat.models import ChatCanvas, ChatThread
 
         from chat.services import MAX_ACTIVE_CANVASES
@@ -4027,16 +4034,33 @@ class ChatConsumer(AsyncWebsocketConsumer):
         active_canvases = [c for c in canvases if c.is_active]
         if not active_canvases:
             active_canvases = sorted(canvases, key=lambda c: c.updated_at, reverse=True)[:MAX_ACTIVE_CANVASES]
+        active_canvases.sort(key=lambda c: (c.last_activated_at or c.updated_at), reverse=True)
 
-        active_pks = {c.pk for c in active_canvases}
+        prefs = getattr(self, "resolved_prefs", None)
+        cap = canvas_read_token_cap(prefs.max_context_tokens if prefs else None)
+        tokens = {c.pk: count_tokens(c.content or "") for c in canvases}
+        injected = []
+        used = 0
+        for c in active_canvases:
+            if used + tokens[c.pk] <= cap:
+                injected.append(c)
+                used += tokens[c.pk]
+        if len(injected) < len(active_canvases):
+            logger.info(
+                "canvas injection: %d of %d active canvases in context (%d/%d tokens) thread=%s",
+                len(injected), len(active_canvases), used, cap, thread_id,
+            )
+
+        injected_pks = {c.pk for c in injected}
         canvases_info = []
         for c in canvases:
             canvases_info.append({
                 "title": c.title,
                 "chars": len(c.content),
-                "is_active": c.pk in active_pks,
+                "tokens": tokens[c.pk],
+                "is_active": c.pk in injected_pks,
             })
-        return {"canvases": canvases_info, "active_canvases": active_canvases}
+        return {"canvases": canvases_info, "active_canvases": injected}
 
     @database_sync_to_async
     def _get_active_deck_for_prompt(self, thread_id):

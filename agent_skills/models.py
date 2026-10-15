@@ -8,8 +8,9 @@ from django.db import models
 # Upper bound on a skill's instructions length. Enforced at the model
 # (max_length, so ModelForms and the Django admin validate it), in the UI
 # (the textarea's maxlength), and as a server-side truncation backstop on
-# every write path. Equal to chat.services.CANVAS_MAX_CHARS so the
-# canvas->instructions path can never exceed it.
+# every write path. Smaller than chat.services.CANVAS_MAX_CHARS (225k):
+# skill_field_save slices canvas content to this and reports the cut, so the
+# canvas->instructions path can never exceed it (no migration needed).
 MAX_INSTRUCTIONS_CHARS = 75_000
 
 # Upper bound on a resource's (formerly "template") content length.

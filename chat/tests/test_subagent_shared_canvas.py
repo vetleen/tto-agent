@@ -118,6 +118,18 @@ class CreateSubagentSharedCanvasTests(TestCase):
         self.assertIn("you asked for 2", result["message"])
         self.assertFalse(SubAgentRun.objects.exists())
 
+    def test_over_token_cap_rejected(self, mock_task):
+        # The count rule assumed ~19k tokens per canvas; a 225k-char canvas is
+        # ~56k, so the measured snapshot is also checked against the sub-agent's
+        # per-read cap (30% of a 50k budget = 15k tokens).
+        ChatCanvas.objects.create(thread=self.thread, title="Huge", content="word " * 20_000)
+        with patch("core.preferences.get_preferences", return_value=_prefs(max_context_tokens=50_000)):
+            result = _invoke({"prompt": "review", "canvases": ["Huge"]}, self.ctx)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("tokens", result["message"])
+        self.assertIn("15,000-token sharing limit", result["message"])
+        self.assertFalse(SubAgentRun.objects.exists())
+
     def test_at_count_limit_accepted(self, mock_task):
         mock_task.delay.return_value = MagicMock(id="t")
         with patch("core.preferences.get_preferences", return_value=_prefs(max_context_tokens=50_000)):

@@ -615,10 +615,21 @@ def build_semi_static_prompt(
 
     # -- Canvas metadata (usage instructions live in the canvas_collaborator skill) --
     if canvases:
-        prompt += "\n# Canvas workspace\nThis thread has these canvas tabs; tabs marked below have their full content in your context. Tools for canvas management live in skills, notably the **canvas_collaborator** skill.\n"
+        prompt += (
+            "\n# Canvas workspace\n"
+            "This thread has these canvas tabs. A tab marked \"in context\" has its full "
+            "text in your context (further below); the others are NOT in your context — "
+            "read one with `canvas_read` (use start_line/end_line for a large canvas; the "
+            "result includes an outline). Tools for canvas management live in skills, "
+            "notably the **canvas_collaborator** skill.\n"
+        )
         for c in canvases:
-            active_marker = " ← in context" if c.get("is_active") else ""
-            prompt += f'- **{c["title"]}** ({c["chars"]} chars){active_marker}\n'
+            active_marker = (
+                " ← in context" if c.get("is_active") else " — not in context, read with canvas_read"
+            )
+            tokens = c.get("tokens")
+            size = f'{c["chars"]} chars' + (f", ~{tokens:,} tokens" if tokens is not None else "")
+            prompt += f'- **{c["title"]}** ({size}){active_marker}\n'
     elif canvas:
         prompt += f'\n# Canvas workspace\nThis chat has an active canvas titled "{canvas.title}" (its content is in your context). Tools for canvas management live in skills, notably the **canvas_collaborator** skill.\n'
 

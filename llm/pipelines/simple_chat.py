@@ -114,8 +114,9 @@ def _truncated_round_notice(stop_reason: str, progress: Message | None) -> Messa
     tool results, never edited into earlier history)."""
     text = (
         f"[Your previous output was cut off ({stop_reason}) and discarded. Nothing "
-        "ran. Continue with a shorter output; write long documents in parts, "
-        "each well under 75,000 characters.]"
+        "ran. Continue with a shorter output. Write a long document in parts: one "
+        "canvas_write for the first part, then canvas_edit calls that append the "
+        "next parts — each call well under your output limit.]"
     )
     if progress is not None and progress.content:
         text = f"{text} {progress.content}"

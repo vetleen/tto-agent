@@ -22,13 +22,18 @@ def _is_waiting(run_id) -> bool:
     ).exists()
 
 
-def _snapshot_canvases(thread_id, titles: list[str], max_canvases: int) -> tuple[list[dict], str]:
+def _snapshot_canvases(
+    thread_id, titles: list[str], max_canvases: int, token_cap: int | None = None,
+) -> tuple[list[dict], str]:
     """Copy the named canvases' current text for a sub-agent.
 
     Returns ``(snapshot, "")`` or ``([], error_message)``. The error is
-    actionable: too many titles states the limit, and an unknown title lists
-    the canvases that do exist.
+    actionable: too many titles states the limit, an unknown title lists the
+    canvases that do exist, and a snapshot whose measured tokens exceed
+    *token_cap* (the sub-agent's per-read cap) names the total — a 225k-char
+    canvas pasted into the sub-agent prompt would otherwise eat its budget.
     """
+    from core.tokens import count_tokens
     from chat.models import ChatCanvas
     from chat.services import resolve_canvas
 
@@ -54,6 +59,14 @@ def _snapshot_canvases(thread_id, titles: list[str], max_canvases: int) -> tuple
             listing = ", ".join(f'"{t}"' for t in available) if available else "(none)"
             return [], f"{err} Canvases in this conversation: {listing}."
         snapshot.append({"title": canvas.title, "content": canvas.content or ""})
+    if token_cap and snapshot:
+        total = sum(count_tokens(c["content"]) for c in snapshot)
+        if total > token_cap:
+            return [], (
+                f"Those canvases total ~{total:,} tokens, over the {token_cap:,}-token "
+                "sharing limit for this sub-agent; share fewer or smaller canvases, or "
+                "ask the sub-agent to read a data room document instead."
+            )
     return snapshot, ""
 
 
@@ -265,11 +278,14 @@ class CreateSubagentTool(ContextAwareTool):
         # Snapshot shared canvases now, not when the run executes: a queued or
         # retried run must see the text the orchestrator delegated against.
         from chat.subagent_service import max_shared_canvases, subagent_context_budget
+        from llm.context_budget import canvas_read_token_cap
 
+        budget = subagent_context_budget(prefs, model_tier)
         shared_canvases, err_msg = _snapshot_canvases(
             thread_id,
             kwargs.get("canvases") or [],
-            max_shared_canvases(subagent_context_budget(prefs, model_tier)),
+            max_shared_canvases(budget),
+            token_cap=canvas_read_token_cap(budget),
         )
         if err_msg:
             return json.dumps({"status": "error", "message": err_msg})

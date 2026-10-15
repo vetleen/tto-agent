@@ -153,6 +153,27 @@ def measure_request_overhead(
     )
 
 
+def count_tokens_per_line(lines: list[str], encoding_name: str = "cl100k_base") -> list[int]:
+    """Token count of each line, each counted WITH its trailing newline.
+
+    One encoder lookup and one batch encode for the whole list, so a 5,000-line
+    canvas costs one call rather than 5,000. Counting the newline on every line
+    slightly over-counts (cl100k often merges ``\\n`` with the next token), which
+    is the safe direction for a page cap. Falls back to the per-string heuristic
+    when tiktoken is unavailable.
+    """
+    if not lines:
+        return []
+    try:
+        import tiktoken
+
+        enc = tiktoken.get_encoding(encoding_name)
+        return [len(t) for t in enc.encode_ordinary_batch([line + "\n" for line in lines])]
+    except Exception as e:
+        logger.debug("tiktoken batch count failed: %s", e)
+        return [_count_text_tokens(line + "\n", encoding_name) for line in lines]
+
+
 def _count_text_tokens(text: str, encoding_name: str = "cl100k_base") -> int:
     """Count tokens in a plain text string."""
     text = text or ""

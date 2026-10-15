@@ -49,10 +49,12 @@ _MAX_RESERVATION_FRACTION_OF_AIM = 0.25
 # reservation is the *typical* output we budget the input around, the cap is
 # the *worst case* we let the provider bill before a runaway (a repetition loop,
 # a document pasted whole) is cut off. On OpenAI and Gemini the cap includes
-# reasoning tokens, and a full 75k-char canvas write is ~20k tokens, so even low
-# effort needs headroom above the 16k reservation. Capped by the model's
-# registry max_output_tokens, never by the context aim (every registered
-# model's window is far above aim + cap).
+# reasoning tokens. A full 225k-char canvas (CANVAS_MAX_CHARS) is ~56k tokens,
+# above every cap here, so a single canvas_write can never fill a canvas: long
+# documents are written in parts (canvas_write, then canvas_edit appends), and
+# even low effort needs headroom above the 16k reservation for a ~20k-token
+# part. Capped by the model's registry max_output_tokens, never by the context
+# aim (every registered model's window is far above aim + cap).
 _EFFORT_OUTPUT_CAP = {
     "low": 24_000,
     "medium": 32_000,
@@ -132,9 +134,32 @@ def history_budget(
     return max(ceiling - overhead, floor)
 
 
+# Page size for canvas_read / subagent_canvas_read: at most this share of the
+# context aim, floored so a 50k aim still gets a useful page and capped so a
+# 1M aim does not paste a whole 225k canvas (~56k tokens of prose, ~90k of
+# tables) in one result.
+_CANVAS_READ_FRACTION_OF_AIM = 0.30
+_CANVAS_READ_MIN_TOKENS = 12_000
+_CANVAS_READ_MAX_TOKENS = 100_000
+
+
+def canvas_read_token_cap(aim: int | None) -> int:
+    """Max tokens one canvas read may return for a run whose context aim is *aim*.
+
+    ``None`` (aim unknown) uses the org default, ``DEFAULT_MAX_CONTEXT_TOKENS``.
+    50k → 15k, 60k → 18k, 100k → 30k, 200k → 60k, ≥334k → 100k.
+    """
+    from core.preferences import DEFAULT_MAX_CONTEXT_TOKENS  # function-level: import cycle
+
+    base = int(aim) if aim else DEFAULT_MAX_CONTEXT_TOKENS
+    share = int(base * _CANVAS_READ_FRACTION_OF_AIM)
+    return max(_CANVAS_READ_MIN_TOKENS, min(_CANVAS_READ_MAX_TOKENS, share))
+
+
 __all__ = [
     "output_reservation",
     "output_token_cap",
     "request_input_ceiling",
     "history_budget",
+    "canvas_read_token_cap",
 ]

@@ -1902,3 +1902,58 @@ class GuardrailHoldAndLimitTests(TransactionTestCase):
         )()
         self.assertEqual(assistant_count, 0)
         await comm.disconnect()
+
+
+@override_settings(
+    CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
+)
+class CanvasInjectionGateTests(TransactionTestCase):
+    """Active canvases are injected only while their MEASURED tokens fit the
+    per-read cap (30% of the org aim); the rest are listed as not in context."""
+
+    def setUp(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        self.user = User.objects.create_user(email="canvas-gate@example.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+        now = timezone.now()
+        # ~8k tokens each: two fit a 60k cap (200k aim), only one fits 15k (50k aim).
+        self.older = ChatCanvas.objects.create(
+            thread=self.thread, title="Older", content="word " * 8_000,
+            is_active=True, last_activated_at=now - timedelta(minutes=5),
+        )
+        self.newer = ChatCanvas.objects.create(
+            thread=self.thread, title="Newer", content="word " * 8_000,
+            is_active=True, last_activated_at=now,
+        )
+
+    def _consumer(self, aim):
+        consumer = ChatConsumer()
+        consumer.scope = {"user": self.user}
+        consumer.user = self.user
+        consumer.resolved_prefs = MagicMock(max_context_tokens=aim)
+        return consumer
+
+    async def test_small_aim_injects_only_the_most_recently_activated(self):
+        result = await self._consumer(50_000)._get_canvases_for_prompt(str(self.thread.id))
+        self.assertEqual([c.title for c in result["active_canvases"]], ["Newer"])
+        by_title = {c["title"]: c for c in result["canvases"]}
+        self.assertTrue(by_title["Newer"]["is_active"])
+        self.assertFalse(by_title["Older"]["is_active"])
+        self.assertGreater(by_title["Older"]["tokens"], 7_000)
+
+    async def test_default_aim_injects_both(self):
+        result = await self._consumer(200_000)._get_canvases_for_prompt(str(self.thread.id))
+        self.assertEqual(sorted(c.title for c in result["active_canvases"]), ["Newer", "Older"])
+        self.assertTrue(all(c["is_active"] for c in result["canvases"]))
+
+    async def test_inactive_canvases_stay_listed(self):
+        await database_sync_to_async(ChatCanvas.objects.create)(
+            thread=self.thread, title="Background", content="tiny",
+        )
+        result = await self._consumer(200_000)._get_canvases_for_prompt(str(self.thread.id))
+        by_title = {c["title"]: c for c in result["canvases"]}
+        self.assertFalse(by_title["Background"]["is_active"])
+        self.assertEqual(by_title["Background"]["chars"], 4)

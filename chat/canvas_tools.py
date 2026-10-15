@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 
 from pydantic import BaseModel, Field, field_validator
 
+from chat.services import CANVAS_MAX_CHARS
 from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
 from llm.tools.interfaces import omitted_arg_marker, is_omitted_arg
+
+logger = logging.getLogger(__name__)
 
 # Markdown image syntax the model sometimes emits. It never renders in the
 # canvas (DOMPurify drops <img>) and a bare URL/filename has no asset behind it,
@@ -162,7 +166,9 @@ class WriteCanvasTool(ContextAwareTool):
         "Create or completely rewrite the canvas document for this conversation. "
         "Use this when starting a document from scratch or doing a full rewrite. "
         "For targeted changes to an existing document, prefer the canvas_edit tool instead. "
-        "Content over 75,000 characters is rejected; split long documents across canvases."
+        f"Content over {CANVAS_MAX_CHARS:,} characters is rejected. A long document cannot be "
+        "written in one call: write the first part with canvas_write, then append the next "
+        "parts with canvas_edit calls, each well under your output limit."
     )
     args_schema: type[BaseModel] = WriteCanvasInput
 
@@ -292,7 +298,7 @@ class EditCanvasTool(ContextAwareTool):
         "and new_text to replace it with. The old_text must match exactly once in "
         "the document — if it appears multiple times, include more surrounding "
         "context to make it unique. If no canvas exists yet, use canvas_write first. "
-        "A replacement text over 75,000 characters is rejected."
+        f"A replacement text over {CANVAS_MAX_CHARS:,} characters is rejected."
     )
     args_schema: type[BaseModel] = EditCanvasInput
 
@@ -419,15 +425,67 @@ class ReadCanvasInput(ReasonBaseModel):
         default="",
         description="Title of the canvas to read. If omitted, reads the active canvas.",
     )
+    start_line: int = Field(
+        default=1, ge=1,
+        description="First line to return (1-based, inclusive). Default 1.",
+    )
+    end_line: int | None = Field(
+        default=None, ge=1,
+        description=(
+            "Last line to return (inclusive). Omit for 'to the end'. Lines are the "
+            "address: the result tells you total_lines and, for a large canvas, an "
+            "outline of headings with their line ranges."
+        ),
+    )
+    max_tokens: int | None = Field(
+        default=None, ge=500,
+        description=(
+            "Page size in tokens. Defaults to the per-read cap for this conversation "
+            "(the result states it); a larger value is clamped to that cap. When the "
+            "requested lines don't fit, you get the first page cut at a line boundary "
+            "plus next_start_line."
+        ),
+    )
+
+
+def _read_canvas_result(canvas_content: str, *, context, start_line: int, end_line: int | None,
+                        max_tokens: int | None) -> tuple[dict, int]:
+    """Shared body of canvas_read / subagent_canvas_read: clamp the page size to the
+    run's per-read cap and page the content. Returns ``(view_or_error, cap)``."""
+    from chat.services import read_canvas_range
+    from llm.context_budget import canvas_read_token_cap
+
+    cap = canvas_read_token_cap(getattr(context, "max_context_tokens", None) if context else None)
+    page_tokens = min(max_tokens or cap, cap)
+    view = read_canvas_range(canvas_content, start_line=start_line, end_line=end_line, max_tokens=page_tokens)
+    if view.get("status") == "error":
+        return view, cap
+    view["max_tokens"] = page_tokens
+    if max_tokens and max_tokens > cap:
+        note = view.get("note", "")
+        view["note"] = (
+            f"{note} max_tokens was capped at {page_tokens:,} for this conversation's context budget."
+        ).strip()
+    return view, cap
+
+
+def _read_end_label(result: dict) -> str | None:
+    if result.get("status") != "ok":
+        return "Couldn't read canvas"
+    total = result.get("total_lines")
+    if not total:
+        return None
+    return f"Read canvas (lines {result.get('start_line')}–{result.get('end_line')} of {total})"
 
 
 class ReadCanvasTool(ContextAwareTool):
-    """Return a canvas's current content.
+    """Return a canvas's text, ranged by line and paged by tokens.
 
-    Active canvases are shown in the per-turn context, but within a turn the model
-    only sees what it wrote in its own tool calls — and those arguments are trimmed
-    when the tool loop compacts older context. This tool is how the current text
-    stays reachable."""
+    Within a turn the model only sees what it wrote in its own tool calls — and
+    those arguments are trimmed when the tool loop compacts older context. This
+    tool is how the current text stays reachable. A canvas that doesn't fit the
+    per-read cap (``llm.context_budget.canvas_read_token_cap``) comes back as a
+    page plus an outline so the model can read the section it needs."""
 
     name: str = "canvas_read"
     audience: str = "main"
@@ -435,14 +493,21 @@ class ReadCanvasTool(ContextAwareTool):
     start_label: str = "Reading canvas..."
     end_label: str = "Read canvas"
     description: str = (
-        "Read the current full content of a canvas. Use this when you need the "
-        "canvas text but it is not in your context — e.g. after earlier canvas_write "
-        "or canvas_edit calls were shortened to save space. Leave canvas_name empty "
-        "to read the active canvas."
+        "Read a canvas's text — the whole canvas when it fits, otherwise a page of "
+        "lines plus an outline (headings with line ranges, total lines, table rows) "
+        "and next_start_line, so you can continue or jump to the part you need with "
+        "start_line/end_line. Use it when you need canvas text that is not in your "
+        "context — e.g. after earlier canvas_write or canvas_edit calls were shortened "
+        "to save space — and before you edit or quote a canvas. Leave canvas_name "
+        "empty to read the active canvas."
     )
     args_schema: type[BaseModel] = ReadCanvasInput
 
-    def _run(self, canvas_name: str = "", **kwargs) -> str:
+    def end_label_for_result(self, result: dict) -> str | None:
+        return _read_end_label(result)
+
+    def _run(self, canvas_name: str = "", start_line: int = 1, end_line: int | None = None,
+             max_tokens: int | None = None, **kwargs) -> str:
         from chat.services import resolve_canvas
 
         thread_id = self.context.conversation_id if self.context else None
@@ -455,16 +520,29 @@ class ReadCanvasTool(ContextAwareTool):
                 "status": "error",
                 "message": err if canvas_name else "No canvas exists for this thread.",
             })
-        result = {
-            "status": "ok",
-            "title": canvas.title,
-            "canvas_id": str(canvas.pk),
-            "content": canvas.content,
-        }
+        view, cap = _read_canvas_result(
+            canvas.content or "", context=self.context,
+            start_line=start_line, end_line=end_line, max_tokens=max_tokens,
+        )
+        if view.get("status") == "error":
+            return json.dumps(view)
+        result = {"status": "ok", "title": canvas.title, "canvas_id": str(canvas.pk), **view}
         if canvas.truncated_from_chars:
             from chat.services import truncation_result_fields
 
-            result.update(truncation_result_fields(canvas.truncated_from_chars))
+            # Nested: the top-level ``truncated`` now means "this page was cut".
+            fields = truncation_result_fields(canvas.truncated_from_chars)
+            result["source_truncation"] = {
+                "original_chars": fields["original_chars"],
+                "kept_chars": fields["kept_chars"],
+                "note": fields["truncation_note"],
+            }
+        logger.info(
+            "canvas_read: canvas=%s lines=%d-%d/%d page_tokens=%d canvas_tokens=%d cap=%d truncated=%s",
+            canvas.pk, result["start_line"], result["end_line"], result["total_lines"],
+            result["max_tokens"], result.get("outline", {}).get("tokens", result["tokens"]),
+            cap, result["truncated"],
+        )
         return json.dumps(result)
 
 

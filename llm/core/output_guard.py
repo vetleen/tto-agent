@@ -20,8 +20,12 @@ tool-call argument deltas) and flags two conditions:
   cleaner uses the same gate: ``meetings.services.transcript_cleanup``.)
 * ``output_ceiling`` — visible text plus tool arguments exceed
   ``HARD_CEILING_CHARS``, a backstop for a non-repetitive runaway when a
-  provider ignores the output cap. Two full 75k-char canvas writes in one round
-  plus JSON escaping stay under it; thinking is not counted (bounded by the cap).
+  provider ignores the output cap. One full-cap canvas write
+  (``chat.services.CANVAS_MAX_CHARS`` = 225,000 chars) plus JSON escaping stays
+  under it; a second one in the same round does not, which is intended. The
+  provider output cap (``llm.context_budget._EFFORT_OUTPUT_CAP``, 24k–64k
+  tokens) normally cuts a runaway first — this is defence in depth; thinking is
+  not counted (bounded by the cap).
 
 Pure Python, no Django; one zlib call per ``STEP_CHARS`` of output.
 """
@@ -36,7 +40,7 @@ class OutputGuard:
     STEP_CHARS = 4_000
     WINDOW_CHARS = 12_000
     MAX_COMPRESSION_RATIO = 0.04
-    HARD_CEILING_CHARS = 200_000
+    HARD_CEILING_CHARS = 250_000
 
     REPETITION = "repetition"
     OUTPUT_CEILING = "output_ceiling"

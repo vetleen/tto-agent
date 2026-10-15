@@ -1814,7 +1814,18 @@ class MultiCanvasPromptTests(TestCase):
         self.assertIn("100 chars", prompt)
         self.assertIn("200 chars", prompt)
         self.assertIn("in context", prompt)
+        self.assertIn("**Doc A** (100 chars) — not in context, read with canvas_read", prompt)
         self.assertIn("B content here", prompt)
+
+    def test_token_counts_listed_when_known(self):
+        from chat.prompts import build_semi_static_prompt
+
+        prompt = build_semi_static_prompt(canvases=[
+            {"title": "Doc A", "chars": 100, "tokens": 25, "is_active": False},
+            {"title": "Doc B", "chars": 123456, "tokens": 31000, "is_active": True},
+        ])
+        self.assertIn("**Doc A** (100 chars, ~25 tokens) — not in context", prompt)
+        self.assertIn("**Doc B** (123456 chars, ~31,000 tokens) ← in context", prompt)
 
     def test_active_canvas_content_shown(self):
         from chat.prompts import build_system_prompt
@@ -2479,6 +2490,124 @@ class ReadCanvasToolTests(TestCase):
         self.assertEqual(self._read({})["status"], "error")
         self.assertEqual(self._read({"canvas_name": "Nope"})["status"], "error")
 
+    # -- ranged, token-paged reads --------------------------------------------
+
+    def _big_canvas(self, body_lines=400):
+        lines = ["# Intro", "Opening paragraph.", "", "```", "# not a heading (code)", "```", "## Results"]
+        lines += [f"line {i} of the body text here" for i in range(body_lines)]
+        lines += ["## Gaps", "Closing line."]
+        content = "\n".join(lines)
+        ChatCanvas.objects.create(thread=self.thread, title="Big", content=content)
+        return content, lines
+
+    def test_whole_canvas_when_it_fits(self):
+        content = "one\ntwo\nthree"
+        ChatCanvas.objects.create(thread=self.thread, title="Small", content=content)
+        result = self._read({"canvas_name": "Small"})
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["content"], content)
+        self.assertFalse(result["truncated"])
+        self.assertEqual((result["start_line"], result["end_line"], result["total_lines"]), (1, 3, 3))
+        self.assertEqual(result["lines_returned"], 3)
+        self.assertEqual(result["chars"], len(content))
+        self.assertGreater(result["tokens"], 0)
+        self.assertNotIn("outline", result)
+        self.assertNotIn("next_start_line", result)
+
+    def test_range_by_lines(self):
+        ChatCanvas.objects.create(thread=self.thread, title="Six", content="\n".join(f"l{i}" for i in range(1, 7)))
+        result = self._read({"canvas_name": "Six", "start_line": 3, "end_line": 4})
+        self.assertEqual(result["content"], "l3\nl4")
+        self.assertEqual(result["lines_returned"], 2)
+        self.assertEqual((result["start_line"], result["end_line"], result["total_lines"]), (3, 4, 6))
+        self.assertFalse(result["truncated"])
+
+    def test_page_and_outline_when_over_cap(self):
+        content, lines = self._big_canvas()
+        result = self._read({"canvas_name": "Big", "max_tokens": 500})
+        self.assertTrue(result["truncated"])
+        self.assertEqual(result["max_tokens"], 500)
+        self.assertLessEqual(result["tokens"], 500)
+        self.assertEqual(result["start_line"], 1)
+        self.assertEqual(result["next_start_line"], result["end_line"] + 1)
+        self.assertEqual(result["content"], "\n".join(lines[: result["lines_returned"]]))
+        outline = result["outline"]
+        self.assertEqual(outline["total_lines"], len(lines))
+        self.assertEqual(outline["chars"], len(content))
+        self.assertEqual(
+            [(h["level"], h["text"], h["start_line"]) for h in outline["headings"]],
+            [(1, "Intro", 1), (2, "Results", 7), (2, "Gaps", len(lines) - 1)],
+        )
+        self.assertEqual(outline["headings"][1]["end_line"], len(lines) - 2)
+        self.assertEqual(outline["headings"][2]["end_line"], len(lines))
+        self.assertNotIn("not a heading", json.dumps(outline))
+        self.assertIn(f"start_line={result['next_start_line']}", result["note"])
+
+    def test_continuation_reaches_the_end(self):
+        content, _lines = self._big_canvas()
+        pages = []
+        start = 1
+        for _ in range(100):
+            result = self._read({"canvas_name": "Big", "start_line": start, "max_tokens": 500})
+            self.assertEqual(result["status"], "ok")
+            pages.append(result["content"])
+            if not result["truncated"]:
+                break
+            start = result["next_start_line"]
+        else:
+            self.fail("never reached the end")
+        self.assertEqual("\n".join(pages), content)
+        self.assertGreater(len(pages), 3)
+
+    def test_max_tokens_clamped_to_cap(self):
+        ChatCanvas.objects.create(thread=self.thread, title="Small", content="hello")
+        ctx = _ctx(self.user.pk, self.thread.id)
+        ctx.max_context_tokens = 50_000  # per-read cap = 15k
+        from chat.canvas_tools import ReadCanvasTool
+
+        result = _invoke(ReadCanvasTool, {"canvas_name": "Small", "max_tokens": 40_000}, ctx)
+        self.assertEqual(result["max_tokens"], 15_000)
+        self.assertIn("capped at 15,000", result["note"])
+
+    def test_cap_follows_context_aim(self):
+        ChatCanvas.objects.create(thread=self.thread, title="Small", content="hello")
+        self.assertEqual(self._read({"canvas_name": "Small"})["max_tokens"], 60_000)  # aim unknown → 200k default
+
+    def test_past_end_errors(self):
+        ChatCanvas.objects.create(thread=self.thread, title="Small", content="a\nb\nc")
+        result = self._read({"canvas_name": "Small", "start_line": 900})
+        self.assertEqual(result["status"], "error")
+        self.assertIn("past the end", result["message"])
+        self.assertIn("total_lines=3", result["message"])
+        inverted = self._read({"canvas_name": "Small", "start_line": 3, "end_line": 2})
+        self.assertEqual(inverted["status"], "error")
+
+    def test_table_rows_in_outline(self):
+        rows = ["| col a | col b | col c |", "|---|---|---|"] + [f"| r{i} | value {i} | more text {i} |" for i in range(200)]
+        ChatCanvas.objects.create(thread=self.thread, title="Table", content="\n".join(rows))
+        result = self._read({"canvas_name": "Table", "max_tokens": 500})
+        self.assertTrue(result["truncated"])
+        self.assertEqual(result["outline"]["headings"], [])
+        self.assertEqual(result["outline"]["table_rows"], len(rows))
+
+    def test_empty_canvas(self):
+        ChatCanvas.objects.create(thread=self.thread, title="Empty", content="")
+        result = self._read({"canvas_name": "Empty"})
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["content"], "")
+        self.assertEqual(result["total_lines"], 0)
+        self.assertFalse(result["truncated"])
+
+    def test_end_label_reports_lines(self):
+        from chat.canvas_tools import ReadCanvasTool
+
+        tool = ReadCanvasTool()
+        self.assertEqual(
+            tool.end_label_for_result({"status": "ok", "start_line": 1, "end_line": 40, "total_lines": 640}),
+            "Read canvas (lines 1–40 of 640)",
+        )
+        self.assertEqual(tool.end_label_for_result({"status": "error"}), "Couldn't read canvas")
+
     def test_is_main_audience_skill_tool_with_labels(self):
         from agent_skills.seed_skills.canvas_collaborator import CANVAS_COLLABORATOR
         from chat.canvas_tools import ReadCanvasTool
@@ -2529,8 +2658,8 @@ class CanvasTruncationReportingTests(TestCase):
         # refused up front instead of clipped (clipping stays for imports etc.).
         result = _invoke(WriteCanvasTool, {"title": "Big", "content": "x" * (self.cap + 10)}, self.ctx)
         self.assertEqual(result["status"], "error")
-        self.assertIn("75,010 characters", result["message"])
-        self.assertIn("75,000", result["message"])
+        self.assertIn(f"{self.cap + 10:,} characters", result["message"])
+        self.assertIn(f"{self.cap:,}", result["message"])
         self.assertIn("Nothing was written", result["message"])
         self.assertNotIn("truncated", result)
         self.assertFalse(ChatCanvas.objects.filter(thread=self.thread, title="Big").exists())
@@ -2560,7 +2689,7 @@ class CanvasTruncationReportingTests(TestCase):
         self.assertEqual(result["status"], "error")
         self.assertEqual(result["applied"], 0)
         self.assertIn("edit 1", result["message"])
-        self.assertIn("75,001 characters", result["message"])
+        self.assertIn(f"{self.cap + 1:,} characters", result["message"])
         self.assertIn("Nothing was changed", result["message"])
         self.assertEqual(result["rejected_edits"], [{"index": 0, "new_text_chars": self.cap + 1}])
         canvas.refresh_from_db()
@@ -2624,30 +2753,35 @@ class CanvasTruncationReportingTests(TestCase):
         self.assertEqual(ChatCanvas.objects.get(thread=self.thread, title="Big").truncated_from_chars, self.cap + 48)
 
     def test_overflowing_edit_does_not_shrink_existing_marker(self):
-        # Staging repro: canvas opened from an 84,248-char doc; a heading edit pushed
-        # 32 chars past the cap and replaced the marker with 75,032, so the save
-        # warning claimed ~100% was kept.
+        # Staging repro (at the old 75k cap): canvas opened from a doc 9,248 chars
+        # over the cap; a heading edit pushed 32 chars past the cap and replaced
+        # the marker with cap+32, so the save warning claimed ~100% was kept.
+        marker = self.cap + 9_248
         ChatCanvas.objects.create(
             thread=self.thread, title="Big", content="x" * (self.cap - 5) + "END",
-            truncated_from_chars=84_248,
+            truncated_from_chars=marker,
         )
         result = _invoke(
             EditCanvasTool,
             {"canvas_name": "Big", "edits": [{"old_text": "END", "new_text": "END" + "y" * 30}]},
             self.ctx,
         )
-        self.assertEqual(result["original_chars"], 84_248)
-        self.assertEqual(ChatCanvas.objects.get(thread=self.thread, title="Big").truncated_from_chars, 84_248)
+        self.assertEqual(result["original_chars"], marker)
+        self.assertEqual(ChatCanvas.objects.get(thread=self.thread, title="Big").truncated_from_chars, marker)
 
-    def test_canvas_read_reports_truncated_canvas(self):
+    def test_canvas_read_reports_truncated_canvas_nested(self):
+        # Top-level ``truncated`` now means "this page was cut"; the import-time
+        # cut is reported under ``source_truncation``.
         from chat.canvas_tools import ReadCanvasTool
 
         ChatCanvas.objects.create(
             thread=self.thread, title="Big", content="partial", truncated_from_chars=self.cap + 10,
         )
         result = _invoke(ReadCanvasTool, {"canvas_name": "Big"}, self.ctx)
-        self.assertTrue(result["truncated"])
-        self.assertEqual(result["original_chars"], self.cap + 10)
+        self.assertFalse(result["truncated"])
+        self.assertEqual(result["source_truncation"]["original_chars"], self.cap + 10)
+        self.assertEqual(result["source_truncation"]["kept_chars"], self.cap)
+        self.assertIn("TRUNCATED", result["source_truncation"]["note"])
 
     def test_active_canvas_context_flags_truncation(self):
         from chat.prompts import build_dynamic_context
