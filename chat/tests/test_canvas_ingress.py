@@ -22,6 +22,7 @@ from chat.services import (
 )
 from chat.tools import AttachmentOpenToCanvasTool
 from llm.types.context import RunContext
+from chat.tests._canvas_import import post_import
 
 User = get_user_model()
 
@@ -100,7 +101,7 @@ class CanvasImportViewWidenedTests(TestCase):
 
     def test_text_import_creates_canvas(self):
         f = SimpleUploadedFile("brief.txt", b"# Brief\n\nBody.", content_type="text/plain")
-        resp = self.client.post(self._url(), {"file": f}, format="multipart")
+        resp = post_import(self.client, self._url(), {"file": f})
         self.assertEqual(resp.status_code, 200)
         canvas = ChatCanvas.objects.get(thread=self.thread, title="brief")
         self.assertIn("Body.", canvas.content)
@@ -108,7 +109,7 @@ class CanvasImportViewWidenedTests(TestCase):
     @patch("chat.services.import_file_to_canvas", return_value=("report", "PDF TEXT", False))
     def test_pdf_import_accepted(self, _mock):
         f = SimpleUploadedFile("report.pdf", b"%PDF fake", content_type="application/pdf")
-        resp = self.client.post(self._url(), {"file": f}, format="multipart")
+        resp = post_import(self.client, self._url(), {"file": f})
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(ChatCanvas.objects.filter(thread=self.thread, title="report").exists())
 
@@ -117,13 +118,13 @@ class CanvasImportViewWidenedTests(TestCase):
             "deck.pptx", b"PK fake",
             content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
         )
-        resp = self.client.post(self._url(), {"file": f}, format="multipart")
+        resp = post_import(self.client, self._url(), {"file": f})
         self.assertEqual(resp.status_code, 400)
         self.assertFalse(ChatCanvas.objects.filter(thread=self.thread).exists())
 
     def test_oversized_text_import_reports_and_records_truncation(self):
         f = SimpleUploadedFile("long.txt", b"w" * (CANVAS_MAX_CHARS + 3), content_type="text/plain")
-        resp = self.client.post(self._url(), {"file": f}, format="multipart")
+        resp = post_import(self.client, self._url(), {"file": f})
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertTrue(data["truncated"])
@@ -133,13 +134,13 @@ class CanvasImportViewWidenedTests(TestCase):
 
     def test_small_import_leaves_marker_empty(self):
         f = SimpleUploadedFile("brief.txt", b"Body.", content_type="text/plain")
-        self.client.post(self._url(), {"file": f}, format="multipart")
+        post_import(self.client, self._url(), {"file": f})
         self.assertIsNone(ChatCanvas.objects.get(thread=self.thread, title="brief").truncated_from_chars)
 
     @patch("chat.services.import_file_to_canvas", return_value=("scan", "   ", False))
     def test_blank_extraction_returns_400_and_no_canvas(self, _mock):
         f = SimpleUploadedFile("scan.pdf", b"%PDF fake", content_type="application/pdf")
-        resp = self.client.post(self._url(), {"file": f}, format="multipart")
+        resp = post_import(self.client, self._url(), {"file": f})
         self.assertEqual(resp.status_code, 400)
         self.assertIn("no extractable text", resp.json()["error"])
         self.assertFalse(ChatCanvas.objects.filter(thread=self.thread).exists())

@@ -1561,7 +1561,11 @@ async def canvas_export(request, thread_id, canvas_id=None):
 @login_required
 @require_POST
 def canvas_import(request, thread_id, canvas_id=None):
-    """Import a Word/PDF/text file and convert it to markdown canvas content."""
+    """Accept a Word/PDF/text file for import into a canvas and queue the work.
+
+    Returns 202 with ``job_id`` / ``status_url``; the worker fills the canvas
+    (chat/canvas_import.py) and the page polls ``status_url``.
+    """
     thread = get_object_or_404(ChatThread, id=thread_id, created_by=request.user)
 
     uploaded = request.FILES.get("file")
@@ -1574,7 +1578,7 @@ def canvas_import(request, thread_id, canvas_id=None):
         kind_for_extension,
         kind_for_mime,
     )
-    from chat.services import MAX_ATTACHMENT_SIZE, focus_canvas, import_file_to_canvas
+    from chat.services import MAX_ATTACHMENT_SIZE, focus_canvas
 
     # Validate file type against the canvas-import allow-list (Word/PDF/text).
     ct = uploaded.content_type or ""
@@ -1607,52 +1611,56 @@ def canvas_import(request, thread_id, canvas_id=None):
         try:
             canvas = ChatCanvas.objects.get(thread=thread, title=title, deleted_at__isnull=True)
         except ChatCanvas.DoesNotExist:
+            from chat.services import MAX_CANVASES_PER_THREAD
+
+            if ChatCanvas.objects.filter(thread=thread, deleted_at__isnull=True).count() >= MAX_CANVASES_PER_THREAD:
+                return JsonResponse(
+                    {"error": f"This chat already has the maximum of {MAX_CANVASES_PER_THREAD} canvases. Delete one first."},
+                    status=400,
+                )
             try:
                 canvas = ChatCanvas.objects.create(thread=thread, title=title, content="")
                 created_canvas = True
             except IntegrityError:
                 canvas = ChatCanvas.objects.get(thread=thread, title=title, deleted_at__isnull=True)
 
-    _title, content, original_chars = import_file_to_canvas(uploaded, request.user, canvas=canvas)
+    from chat.canvas_import import dispatch_import
+    from chat.models import CanvasImportJob
 
-    # No extractable text (e.g. a scanned/image-only PDF or an empty document).
-    # Don't create an empty canvas or a checkpoint — tell the user why.
-    if not content.strip():
-        if not canvas_id and created_canvas:
-            canvas.delete()
-        return JsonResponse(
-            {"error": "That file has no extractable text (it may be a scanned PDF or an empty document)."},
-            status=400,
-        )
+    # One import per canvas at a time: a second would race the first's overwrite.
+    if not created_canvas and CanvasImportJob.objects.filter(
+        canvas=canvas, state__in=[CanvasImportJob.State.PENDING, CanvasImportJob.State.RUNNING],
+    ).exists():
+        return JsonResponse({"error": "An import into this canvas is already running."}, status=409)
 
-    canvas.content = content
-    canvas.truncated_from_chars = original_chars or None
-    canvas.source_document = None
-    canvas.save(update_fields=["title", "content", "truncated_from_chars", "source_document", "updated_at"])
-
-    from chat.services import create_canvas_checkpoint
-    cp = create_canvas_checkpoint(canvas, source="import", description="Imported from file")
-    canvas.accepted_checkpoint = cp
-    canvas.save(update_fields=["accepted_checkpoint"])
+    # Extraction (PDF parse, docx conversion, a vision call per picture) and the
+    # thread-title call run on the worker: inline they hit the 30 s router
+    # timeout on big files and blocked the web dyno (chat/canvas_import.py).
+    job = CanvasImportJob.objects.create(
+        thread=thread,
+        canvas=canvas,
+        created_by=request.user,
+        file=uploaded,
+        original_filename=original_name[:255],
+        content_type=(uploaded.content_type or "")[:255],
+        size_bytes=uploaded.size or 0,
+        created_canvas=created_canvas,
+    )
     focus_canvas(thread.pk, canvas)
+    if not dispatch_import(job.pk):
+        return JsonResponse({"error": "Couldn't start the import. Try again."}, status=503)
 
-    generated_title = None
-    if not thread.title:
-        from chat.services import generate_canvas_title
+    from django.urls import reverse
 
-        generated_title = generate_canvas_title(
-            title, content, request.user, conversation_id=str(thread.pk),
-        )
-        if generated_title:
-            ChatThread.objects.filter(pk=thread.pk).update(title=generated_title)
-
-    resp = {"title": title, "content": content}
-    if generated_title:
-        resp["thread_title"] = generated_title
-    if original_chars:
-        resp["truncated"] = True
-        resp["original_chars"] = original_chars
-    return JsonResponse(resp)
+    return JsonResponse(
+        {
+            "job_id": str(job.pk),
+            "status_url": reverse("chat_canvas_import_status", kwargs={"job_id": job.pk}),
+            "canvas_id": str(canvas.pk),
+            "title": title,
+        },
+        status=202,
+    )
 
 
 @login_required
@@ -2013,6 +2021,31 @@ def upload_attachments(request, thread_id):
         dispatch_after_commit(att)
 
     return JsonResponse({"attachments": results, "warnings": warnings})
+
+
+@login_required
+@require_http_methods(["GET"])
+def canvas_import_status(request, job_id):
+    """State of one canvas import (polled by the canvas panel).
+
+    ``progress`` is the worker's ``{stage, current, total}`` while it runs; once
+    ready the full ``canvas.updated`` payload is included as ``canvas`` so the
+    page can apply it even if the pushed event never arrived.
+    """
+    from chat.canvas_import import canvas_updated_payload
+    from chat.models import CanvasImportJob
+    from documents.services.progress import canvas_imports as import_progress
+
+    job = get_object_or_404(
+        CanvasImportJob.objects.select_related("canvas"), id=job_id, created_by=request.user,
+    )
+    resp = {"id": str(job.id), "thread_id": str(job.thread_id), "state": job.state, "error": job.error or ""}
+    if job.state in (CanvasImportJob.State.PENDING, CanvasImportJob.State.RUNNING):
+        resp["progress"] = import_progress.read(str(job.id))
+    elif job.state == CanvasImportJob.State.READY and job.canvas is not None:
+        resp["canvas"] = canvas_updated_payload(job.canvas, job=job)
+        resp["thread_title"] = job.thread_title or ""
+    return JsonResponse(resp)
 
 
 @login_required

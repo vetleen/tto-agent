@@ -381,6 +381,50 @@ def process_chat_attachment(self, attachment_id: str) -> str:
     return process_attachment(str(attachment_id), first_delivery=self.request.retries == 0)
 
 
+class _CanvasImportTask(Task):
+    """Settle a CanvasImportJob as FAILED once retries are exhausted (or on an
+    unexpected error), so the browser's poll ends and no orphan canvas stays."""
+
+    def on_failure(self, exc, task_id, args, kwargs, einfo):
+        job_id = args[0] if args else kwargs.get("job_id")
+        if not job_id:
+            return
+        try:
+            from chat.canvas_import import fail_job
+
+            fail_job(job_id, "The import failed. Try again, or try a different file.")
+        except Exception:
+            logger.exception("Failed to settle canvas import %s after failure", job_id)
+
+
+@shared_task(
+    base=_CanvasImportTask,
+    bind=True,
+    autoretry_for=(OperationalError,),
+    retry_backoff=True,
+    retry_kwargs={"max_retries": 2},
+)
+def process_canvas_import(self, job_id: str) -> str:
+    """Import a stored file into a canvas (chat/canvas_import.py)."""
+    from chat.canvas_import import run_canvas_import
+
+    return run_canvas_import(str(job_id))
+
+
+@shared_task
+def expire_stale_canvas_imports() -> int:
+    """Fail canvas imports stuck pending/running for > 15 min."""
+    from django.db.utils import InterfaceError
+
+    try:
+        from chat.canvas_import import expire_stale_imports
+
+        return expire_stale_imports()
+    except (OperationalError, InterfaceError):
+        logger.warning("expire_stale_canvas_imports: database unavailable; will retry next beat")
+        return 0
+
+
 @shared_task
 def expire_stale_slide_renders() -> int:
     """Fail runs stuck RUNNING>15min / PENDING>30min; prune old runs (>7d).

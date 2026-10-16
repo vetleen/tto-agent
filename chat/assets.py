@@ -455,7 +455,7 @@ class AttachmentImageDescriber(EmbeddedImageDescriberBase):
         )
 
 
-def _describe_and_store_sink(store, user, *, max_described, model=None, conversation_id=None):
+def _describe_and_store_sink(store, user, *, max_described, model=None, conversation_id=None, progress=None):
     """Body of the canvas import sink (``canvas_asset_sink``): describe each
     picture inline (capped, one blocking vision call per occurrence) then persist
     via *store*, a ``(img_bytes, content_type, description, alt_text)`` -> asset
@@ -467,6 +467,11 @@ def _describe_and_store_sink(store, user, *, max_described, model=None, conversa
         ct = image.content_type or "application/octet-stream"
         with image.open() as f:
             img_bytes = f.read()
+        if progress is not None:
+            try:
+                progress("describing_images", idx, 0)
+            except Exception:
+                logger.debug("canvas import progress callback failed", exc_info=True)
 
         description = ""
         if idx <= max_described:
@@ -487,7 +492,7 @@ def _describe_and_store_sink(store, user, *, max_described, model=None, conversa
     return sink
 
 
-def canvas_asset_sink(canvas, user, *, max_described: int = 25):
+def canvas_asset_sink(canvas, user, *, max_described: int = 25, progress=None):
     """Return a docx/pdf image_sink that stores each embedded image as an
     Asset scoped to *canvas* and emits a ``[[image:uuid|Image N: desc]]``
     token.
@@ -510,4 +515,5 @@ def canvas_asset_sink(canvas, user, *, max_described: int = 25):
 
     return _describe_and_store_sink(
         store, user, max_described=max_described, conversation_id=str(canvas.thread_id),
+        progress=progress,
     )

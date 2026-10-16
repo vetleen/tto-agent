@@ -107,6 +107,7 @@ class ProgressStore:
 
 versions = ProgressStore("docprogress:v1:{id}")
 attachments = ProgressStore("attprogress:v1:{id}")
+canvas_imports = ProgressStore("canvasimport:v1:{id}")  # keyed by CanvasImportJob.id
 
 
 # ── Data-room aliases (the original module API) ───────────────────────────

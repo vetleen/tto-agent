@@ -1468,7 +1468,9 @@ def generate_canvas_title(
         return None
 
 
-def import_docx_to_canvas(uploaded_file: UploadedFile, user, *, canvas=None) -> tuple[str, str, int | None]:
+def import_docx_to_canvas(
+    uploaded_file: UploadedFile, user, *, canvas=None, progress=None,
+) -> tuple[str, str, int | None]:
     """Convert a .docx upload to markdown for a canvas.
 
     When *canvas* is given, embedded images are stored as canvas-scoped
@@ -1482,7 +1484,9 @@ def import_docx_to_canvas(uploaded_file: UploadedFile, user, *, canvas=None) -> 
     if canvas is not None:
         from chat.assets import canvas_asset_sink
 
-        sink = canvas_asset_sink(canvas, user, max_described=CANVAS_MAX_IMAGES)
+        sink = canvas_asset_sink(
+            canvas, user, max_described=CANVAS_MAX_IMAGES, progress=progress,
+        )
     else:
         sink = describe_image_sink(
             user,
@@ -1505,7 +1509,9 @@ def _canvas_title_from_filename(uploaded_file) -> str:
     return original_name.rsplit(".", 1)[0][:255] or "Untitled document"
 
 
-def import_file_to_canvas(uploaded_file: UploadedFile, user, *, canvas=None) -> tuple[str, str, int | None]:
+def import_file_to_canvas(
+    uploaded_file: UploadedFile, user, *, canvas=None, progress=None,
+) -> tuple[str, str, int | None]:
     """Convert a supported upload (docx / pdf / text) to markdown for a canvas.
 
     Dispatches by file kind, reusing the same extractors as chat attachments and
@@ -1535,6 +1541,8 @@ def import_file_to_canvas(uploaded_file: UploadedFile, user, *, canvas=None) -> 
     if kind == KIND_DOCX:
         # Reuse the docx path (and stay patchable in tests that mock
         # import_docx_to_canvas at the module level).
+        if progress is not None:
+            return import_docx_to_canvas(uploaded_file, user, canvas=canvas, progress=progress)
         return import_docx_to_canvas(uploaded_file, user, canvas=canvas)
 
     if kind == KIND_PDF:
@@ -1543,7 +1551,9 @@ def import_file_to_canvas(uploaded_file: UploadedFile, user, *, canvas=None) -> 
         if canvas is not None:
             from chat.assets import canvas_asset_sink
 
-            sink = canvas_asset_sink(canvas, user, max_described=CANVAS_MAX_IMAGES)
+            sink = canvas_asset_sink(
+                canvas, user, max_described=CANVAS_MAX_IMAGES, progress=progress,
+            )
         else:
             sink = describe_image_sink(
                 user,

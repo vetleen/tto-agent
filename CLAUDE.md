@@ -313,6 +313,17 @@ frozen snapshot listed in their prompt and read them — and their own working c
 `subagent_canvas_read` (same paging, cap from `RunContext.max_context_tokens` = the run's budget).
 `ChatCanvas.is_active`/`last_activated_at` are deprecated columns, unused since 2026-10-15.
 
+**Canvas import/export never block the web dyno.** Import (`chat/views.py:canvas_import`)
+only validates, picks/creates the canvas and stores the file on a `CanvasImportJob`, then
+returns 202; `chat.tasks.process_canvas_import` → `chat/canvas_import.py:run_canvas_import`
+extracts, describes pictures, checkpoints and titles the thread on the worker. The page polls
+`chat_canvas_import_status` (authoritative) and also gets a best-effort `canvas.updated` push
+(`loop.event` passthrough, deduped by `import_job_id`). Export resolves org styles/fonts/logo on
+the request thread, then renders with `sync_to_async(thread_sensitive=False)` inside
+`_export_render_slot` (`EXPORT_RENDER_SLOTS`, default 2; 503 "busy" after
+`EXPORT_RENDER_SLOT_WAIT_SECONDS`). Never call html2docx's stock `init_tdth`: it is O(cells²);
+`chat/markdown_export.py:_HighlightHTML2Docx` overrides it.
+
 ## Logging
 
 - Use `logger = logging.getLogger(__name__)` in every module.

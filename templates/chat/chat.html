@@ -3357,6 +3357,46 @@
     scrollContainer.scrollTop = scrollContainer.scrollHeight;
   }
 
+  // canvas.updated from the server: an AI write, or a finished file import
+  // (pushed over the socket and/or picked up by the import poll — applied once).
+  var canvasImportsApplied = {};
+  function applyCanvasUpdated(data) {
+    if (data.import_job_id) {
+      if (canvasImportsApplied[data.import_job_id]) return;
+      canvasImportsApplied[data.import_job_id] = true;
+    }
+    var cid = data.canvas_id;
+    if (data.truncated && data.original_chars) {
+      showToast("Only the first " + CANVAS_MAX_CHARS.toLocaleString() + " of " + data.original_chars.toLocaleString() + " characters fit in the canvas; the rest was cut.");
+    }
+    if (cid && !canvasStates[cid]) {
+      // New canvas created by LLM — add tab
+      canvasStates[cid] = { title: data.title, content: data.content, acceptedContent: data.accepted_content, pendingUpdate: null, aiUpdatePending: !!data.pending_ai_review };
+      activeCanvasId = cid;
+      canvasAcceptedContent = data.accepted_content !== undefined ? data.accepted_content : null;
+      canvasAiUpdatePending = !!data.pending_ai_review;
+      openCanvas(data.title, data.content);
+      canvasShowBannerIfNeeded();
+      canvasEnableMergeIfNeeded();
+      renderCanvasTabs();
+    } else if (!cid || cid === activeCanvasId) {
+      canvasHandleUpdated(data.title || "", data.content || "", data.accepted_content);
+      // Sync the dirty flag from the server, but not while the user's recent
+      // typing has queued the AI update (the 2000ms race in updateCanvas) — that
+      // gets applied later via Accept.
+      if (!canvasPendingUpdate && data.pending_ai_review !== undefined) {
+        canvasAiUpdatePending = data.pending_ai_review;
+        if (!canvasAiUpdatePending) canvasDisableMerge();
+        canvasShowBannerIfNeeded();
+      }
+      if (cid && canvasStates[cid]) { canvasStates[cid].title = data.title; canvasStates[cid].content = data.content; if (data.accepted_content !== undefined) canvasStates[cid].acceptedContent = data.accepted_content; canvasStates[cid].aiUpdatePending = canvasAiUpdatePending; }
+    } else {
+      // Update non-active canvas state in memory
+      if (canvasStates[cid]) { canvasStates[cid].title = data.title; canvasStates[cid].content = data.content; if (data.accepted_content !== undefined) canvasStates[cid].acceptedContent = data.accepted_content; canvasStates[cid].aiUpdatePending = !!data.pending_ai_review; }
+      renderCanvasTabs();
+    }
+  }
+
   function handleEvent(data) {
     const et = data.event_type;
     // Reset streaming timeout on any event from the server
@@ -3436,39 +3476,7 @@
       renderCanvasTabs();
       return;
     }
-    if (et === "canvas.updated") {
-      var cid = data.canvas_id;
-      if (data.truncated && data.original_chars) {
-        showToast("Only the first " + CANVAS_MAX_CHARS.toLocaleString() + " of " + data.original_chars.toLocaleString() + " characters fit in the canvas; the rest was cut.");
-      }
-      if (cid && !canvasStates[cid]) {
-        // New canvas created by LLM — add tab
-        canvasStates[cid] = { title: data.title, content: data.content, acceptedContent: data.accepted_content, pendingUpdate: null, aiUpdatePending: !!data.pending_ai_review };
-        activeCanvasId = cid;
-        canvasAcceptedContent = data.accepted_content !== undefined ? data.accepted_content : null;
-        canvasAiUpdatePending = !!data.pending_ai_review;
-        openCanvas(data.title, data.content);
-        canvasShowBannerIfNeeded();
-        canvasEnableMergeIfNeeded();
-        renderCanvasTabs();
-      } else if (!cid || cid === activeCanvasId) {
-        canvasHandleUpdated(data.title || "", data.content || "", data.accepted_content);
-        // Sync the dirty flag from the server, but not while the user's recent
-        // typing has queued the AI update (the 2000ms race in updateCanvas) — that
-        // gets applied later via Accept.
-        if (!canvasPendingUpdate && data.pending_ai_review !== undefined) {
-          canvasAiUpdatePending = data.pending_ai_review;
-          if (!canvasAiUpdatePending) canvasDisableMerge();
-          canvasShowBannerIfNeeded();
-        }
-        if (cid && canvasStates[cid]) { canvasStates[cid].title = data.title; canvasStates[cid].content = data.content; if (data.accepted_content !== undefined) canvasStates[cid].acceptedContent = data.accepted_content; canvasStates[cid].aiUpdatePending = canvasAiUpdatePending; }
-      } else {
-        // Update non-active canvas state in memory
-        if (canvasStates[cid]) { canvasStates[cid].title = data.title; canvasStates[cid].content = data.content; if (data.accepted_content !== undefined) canvasStates[cid].acceptedContent = data.accepted_content; canvasStates[cid].aiUpdatePending = !!data.pending_ai_review; }
-        renderCanvasTabs();
-      }
-      return;
-    }
+    if (et === "canvas.updated") { applyCanvasUpdated(data); return; }
     if (et === "canvas.loaded") {
       if (data.canvas_id) {
         activeCanvasId = data.canvas_id;
@@ -6008,28 +6016,51 @@
           }
           return r.json();
         }).then(function(data) {
-          if (data.title !== undefined) openCanvas(data.title, data.content);
-          if (data.thread_title && activeThreadId) {
-            var link = threadGroups.querySelector('a[data-thread-id="' + activeThreadId + '"]');
-            if (link) {
-              link.title = data.thread_title;
-              var span = link.querySelector(".row__t");
-              if (span) span.textContent = data.thread_title.length > 34
-                ? data.thread_title.substring(0, 31) + "..." : data.thread_title;
+          if (!data.status_url) throw new Error("Couldn't import the document.");
+          pollImport(data, threadId);
+        }).catch(importFailed);
+      }
+
+      function resetImportLabel() {
+        if (importLabel) importLabel.title = "Import a file (Word, PDF, or text)";
+        if (canvasSaveStatus) canvasSaveStatus.textContent = "";
+      }
+      function importFailed(err) {
+        flashCanvasBtnError(importLabel);
+        resetImportLabel();
+        alert((err && err.message) || "Couldn't import the document.");
+      }
+      function importProgressLabel(p) {
+        if (p && p.stage === "describing_images") return "Importing · viewing image " + (p.current || 1) + "…";
+        if (p && p.stage === "extracting") return "Importing · reading the file…";
+        return "Importing…";
+      }
+      // The worker fills the canvas; poll until it's done (the socket may also
+      // push the same canvas.updated; applyCanvasUpdated applies it once).
+      function pollImport(job, threadId) {
+        var tries = 0;
+        if (canvasSaveStatus) canvasSaveStatus.textContent = importProgressLabel(null);
+        function tick() {
+          tries += 1;
+          fetch(job.status_url, { headers: { "Accept": "application/json" } }).then(function(r) {
+            if (!r.ok) throw new Error("Couldn't check the import.");
+            return r.json();
+          }).then(function(st) {
+            if (st.state === "ready") {
+              // Only touch the canvas UI if the user is still on that chat.
+              if (activeThreadId === threadId && st.canvas) applyCanvasUpdated(st.canvas);
+              if (st.thread_title) handleEvent({ event_type: "thread.title_updated", thread_id: threadId, title: st.thread_title });
+              flashCanvasBtnSuccess(importLabel);
+              resetImportLabel();
+              return;
             }
-          }
-          if (data.truncated) {
-            showToast(data.original_chars
-              ? "Only the first " + CANVAS_MAX_CHARS.toLocaleString() + " of " + data.original_chars.toLocaleString() + " characters fit in the canvas; the rest was cut."
-              : "Document was truncated to " + CANVAS_MAX_CHARS.toLocaleString() + " characters.");
-          }
-          flashCanvasBtnSuccess(importLabel);
-          if (importLabel) importLabel.title = "Import a file (Word, PDF, or text)";
-        }).catch(function(err) {
-          flashCanvasBtnError(importLabel);
-          if (importLabel) importLabel.title = "Import a file (Word, PDF, or text)";
-          alert(err.message || "Couldn't import the document.");
-        });
+            if (st.state === "failed") throw new Error(st.error || "Couldn't import the document.");
+            if (tries >= 300) throw new Error("The import is taking too long. Check back in a minute.");
+            if (canvasSaveStatus && activeThreadId === threadId) canvasSaveStatus.textContent = importProgressLabel(st.progress);
+            setTimeout(tick, 2000);
+          }).catch(importFailed);
+        }
+        setTimeout(tick, 1000);
       }
 
       if (activeThreadId) {
@@ -6046,6 +6077,8 @@
           activeThreadId = data.thread_id;
           addThreadToSidebar(data.thread_id, "New chat");
           canvasUpdateExportLink();
+          // Join the thread's socket group so the import result is pushed here too.
+          if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "chat.load_thread", thread_id: data.thread_id }));
           doImport(data.thread_id);
         }).catch(function(err) {
           alert("Couldn't start a new chat. " + err.message);

@@ -1014,3 +1014,49 @@ class Asset(models.Model):
 
     def __str__(self) -> str:
         return f"Asset {self.id} ({self.content_type})"
+
+
+class CanvasImportJob(models.Model):
+    """One file import into a canvas, run on the worker (chat/canvas_import.py).
+
+    The import view validates the upload, picks/creates the target canvas,
+    stores the file here and queues ``process_canvas_import``; the browser polls
+    ``canvas_import_status`` (and also gets a best-effort ``canvas.updated``
+    push). Deliberately not a ``ChatAttachment``: an import is not something the
+    agent should see in the attachment list, and it must not count toward the
+    thread's attachment byte budget. The stored file is deleted once the job
+    reaches a terminal state.
+    """
+
+    class State(models.TextChoices):
+        PENDING = "pending", "Pending"
+        RUNNING = "running", "Running"
+        READY = "ready", "Ready"
+        FAILED = "failed", "Failed"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    thread = models.ForeignKey(ChatThread, on_delete=models.CASCADE, related_name="canvas_imports")
+    canvas = models.ForeignKey(
+        ChatCanvas, on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="canvas_imports",
+    )
+    file = models.FileField(upload_to="canvas_imports/%Y/%m/", max_length=500, blank=True)
+    original_filename = models.CharField(max_length=255)
+    content_type = models.CharField(max_length=255, blank=True, default="")
+    size_bytes = models.PositiveIntegerField(default=0)
+    # The view created the target canvas for this import (delete it on failure).
+    created_canvas = models.BooleanField(default=False)
+    state = models.CharField(max_length=10, choices=State.choices, default=State.PENDING, db_index=True)
+    error = models.TextField(blank=True, default="")
+    original_chars = models.PositiveIntegerField(null=True, blank=True)
+    thread_title = models.CharField(max_length=255, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["canvas", "state"])]
+
+    def __str__(self) -> str:
+        return f"CanvasImportJob {self.id} ({self.state})"

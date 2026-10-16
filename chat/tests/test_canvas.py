@@ -12,6 +12,7 @@ from django.test import TestCase, TransactionTestCase, override_settings
 from chat.canvas_tools import DeleteCanvasTool, EditCanvasTool, PasteUserTextTool, ReadCanvasTool, WriteCanvasTool
 from chat.models import CanvasCheckpoint, ChatCanvas, ChatMessage, ChatThread
 from llm.types.context import RunContext
+from chat.tests._canvas_import import post_import
 
 User = get_user_model()
 
@@ -638,7 +639,7 @@ class CanvasImportViewTests(TestCase):
         url = f"/chat/threads/{self.thread.id}/canvas/import/"
         fake_file = io.BytesIO(b"PK fake docx")
         fake_file.name = "contract.docx"
-        response = self.client.post(url, {"file": fake_file}, format="multipart")
+        response = post_import(self.client, url, {"file": fake_file})
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertEqual(data["title"], "contract")
@@ -859,7 +860,7 @@ class CanvasImportTitleIntegrationTests(TestCase):
         url = f"/chat/threads/{thread.id}/canvas/import/"
         fake_file = io.BytesIO(b"PK fake docx")
         fake_file.name = "contract.docx"
-        response = self.client.post(url, {"file": fake_file}, format="multipart")
+        response = post_import(self.client, url, {"file": fake_file})
 
         self.assertEqual(response.status_code, 200)
         data = response.json()
@@ -877,7 +878,7 @@ class CanvasImportTitleIntegrationTests(TestCase):
         url = f"/chat/threads/{thread.id}/canvas/import/"
         fake_file = io.BytesIO(b"PK fake docx")
         fake_file.name = "contract.docx"
-        response = self.client.post(url, {"file": fake_file}, format="multipart")
+        response = post_import(self.client, url, {"file": fake_file})
 
         self.assertEqual(response.status_code, 200)
         data = response.json()
@@ -895,7 +896,7 @@ class CanvasImportTitleIntegrationTests(TestCase):
         url = f"/chat/threads/{thread.id}/canvas/import/"
         fake_file = io.BytesIO(b"PK fake docx")
         fake_file.name = "contract.docx"
-        response = self.client.post(url, {"file": fake_file}, format="multipart")
+        response = post_import(self.client, url, {"file": fake_file})
 
         self.assertEqual(response.status_code, 200)
         data = response.json()
@@ -913,7 +914,7 @@ class CanvasImportTitleIntegrationTests(TestCase):
         url = f"/chat/threads/{thread.id}/canvas/import/"
         fake_file = io.BytesIO(b"PK fake dotx")
         fake_file.name = "boilerplate.dotx"
-        response = self.client.post(url, {"file": fake_file}, format="multipart")
+        response = post_import(self.client, url, {"file": fake_file})
 
         # 200 (not a 400 "Only .docx files are supported") proves the template is
         # accepted; the title derives from the filename.
