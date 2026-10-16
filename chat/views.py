@@ -1337,10 +1337,11 @@ _EXPORT_RENDER_SLOTS = None
 
 
 @contextmanager
-def _export_render_slot():
-    """Bound concurrent canvas renders per process. A 225k-char canvas renders
-    in seconds but holds tens of MB; a burst of them drove the staging web dyno
-    to R14/R15 on 2026-10-15. Raises ExportBusy instead of queueing forever."""
+def _export_render_slot(kind="canvas"):
+    """Bound concurrent export renders (canvas and deck) per process. A 225k-char
+    canvas renders in seconds but holds tens of MB; a burst of them drove the
+    staging web dyno to R14/R15 on 2026-10-15. Raises ExportBusy instead of
+    queueing forever. ``kind`` only labels the log lines."""
     global _EXPORT_RENDER_SLOTS
     if _EXPORT_RENDER_SLOTS is None:
         _EXPORT_RENDER_SLOTS = threading.BoundedSemaphore(
@@ -1351,7 +1352,7 @@ def _export_render_slot():
     wait = float(getattr(settings, "EXPORT_RENDER_SLOT_WAIT_SECONDS", 20))
     t0 = time.monotonic()
     if not _EXPORT_RENDER_SLOTS.acquire(timeout=wait):
-        logger.warning("canvas export: no render slot after %.1fs", time.monotonic() - t0)
+        logger.warning("%s export: no render slot after %.1fs", kind, time.monotonic() - t0)
         raise ExportBusy()
     t1 = time.monotonic()
     try:
@@ -1359,8 +1360,8 @@ def _export_render_slot():
     finally:
         _EXPORT_RENDER_SLOTS.release()
         logger.info(
-            "canvas export render took=%.2fs waited=%.2fs thread=%s",
-            time.monotonic() - t1, t1 - t0, threading.current_thread().name,
+            "%s export render took=%.2fs waited=%.2fs thread=%s",
+            kind, time.monotonic() - t1, t1 - t0, threading.current_thread().name,
         )
 
 
@@ -1401,6 +1402,15 @@ def _render_pdf_in_slot(html_content, title, css):
 
     with _export_render_slot():
         return render_canvas_pdf(html_content, title=title, css=css)
+
+
+def _build_pptx_in_slot(build_kwargs):
+    """python-pptx build from ``prepare_pptx_build`` output: no DB, no storage,
+    so it runs off the request thread."""
+    from chat.slides.pptx_build import build_deck_pptx
+
+    with _export_render_slot("deck"):
+        return build_deck_pptx(**build_kwargs)
 
 
 def _render_canvas_pdf_bytes(html_content, title, org):
@@ -2361,24 +2371,30 @@ def loop_restart(request, loop_id):
 async def slides_export_pptx(request, thread_id, deck_id):
     """Export a slide deck as a .pptx file.
 
-    Pure python-pptx generation (no LibreOffice), so this runs inline on the web
-    dyno like ``canvas_export``. Only *rendering* to PDF/PNG needs the worker.
+    Pure python-pptx generation (no LibreOffice). Like ``canvas_export``, the
+    DB/storage reads (image bytes, theme logo, fonts) run on the request thread,
+    then the build runs off it inside an export render slot. Only *rendering*
+    to PDF/PNG needs the worker.
     """
     from asgiref.sync import sync_to_async
     from django.conf import settings
 
     from chat.models import ChatThread, SlideSet
-    from chat.slides.pptx_build import build_pptx
+    from chat.slides.pptx_build import prepare_pptx_build
 
     if not getattr(settings, "SLIDES_ENABLED", True):
         raise Http404("Slide decks are not enabled.")
 
     thread = await sync_to_async(get_object_or_404)(ChatThread, id=thread_id, created_by=request.user)
     deck = await sync_to_async(get_object_or_404)(
-        SlideSet, pk=deck_id, thread=thread, deleted_at__isnull=True
+        SlideSet.objects.select_related("thread__created_by"),
+        pk=deck_id, thread=thread, deleted_at__isnull=True,
     )
     try:
-        pptx_bytes, _warnings = await sync_to_async(build_pptx)(deck)
+        build_kwargs = await sync_to_async(prepare_pptx_build)(deck)
+        pptx_bytes, _warnings = await sync_to_async(_build_pptx_in_slot, thread_sensitive=False)(build_kwargs)
+    except ExportBusy:
+        return _export_busy_response()
     except Exception:
         logger.exception("PPTX export failed for deck %s", deck_id)
         return JsonResponse({"error": "Couldn't build the presentation."}, status=500)

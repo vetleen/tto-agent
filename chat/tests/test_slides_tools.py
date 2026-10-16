@@ -523,6 +523,139 @@ class BuildResolverTests(TestCase):
         self.assertTrue(any("unavailable" in w for w in warnings))
 
 
+def _pptx_parts(data):
+    """Slide XML + media parts of a .pptx (core props carry a timestamp)."""
+    import io
+    import zipfile
+
+    z = zipfile.ZipFile(io.BytesIO(data))
+    return {n: z.read(n) for n in z.namelist() if n.startswith(("ppt/slides/", "ppt/media/"))}
+
+
+class PrefetchedResolverTests(TestCase):
+    """prepare_pptx_build does every DB/storage read, so build_deck_pptx is pure."""
+
+    def setUp(self):
+        User = get_user_model()
+        self.user = User.objects.create_user(email=f"pf+{uuid.uuid4().hex[:6]}@ex.com", password="x")
+        self.thread = ChatThread.objects.create(created_by=self.user, title="t")
+
+    def _deck(self, *tokens):
+        return SlideSet.objects.create(
+            thread=self.thread, title="D",
+            content={"version": 1, "size": {"w": 960, "h": 540}, "slides": [
+                {"id": "s1", "elements": [
+                    {"id": f"e{i}", "type": "image", "x": 100, "y": 100, "w": 300, "h": 200, "token": t}
+                    for i, t in enumerate(tokens)
+                ]},
+            ]},
+        )
+
+    def test_build_after_prepare_touches_no_db_or_storage(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        from chat.assets import store_thread_image
+        from chat.slides import pptx_build
+
+        asset = store_thread_image(self.thread, img_bytes=_PNG, content_type="image/png")
+        with mock.patch.object(pptx_build, "_footer_logo_bytes", return_value=_PNG):
+            kwargs = pptx_build.prepare_pptx_build(self._deck(f"[[image:{asset.id}]]", "[[image:company-logo]]"))
+        with CaptureQueriesContext(connection) as cap, \
+                mock.patch("django.core.files.storage.default_storage.open", side_effect=AssertionError("storage read")), \
+                mock.patch.object(pptx_build, "_footer_logo_bytes", side_effect=AssertionError("logo read")):
+            data, warnings = pptx_build.build_deck_pptx(**kwargs)
+        self.assertEqual(cap.captured_queries, [])
+        self.assertEqual(warnings, [])
+        self.assertEqual(sum(1 for n in _pptx_parts(data) if n.startswith("ppt/media/")), 1)
+
+    def test_foreign_token_still_unavailable(self):
+        from chat.assets import store_thread_image
+        from chat.slides.pptx_build import build_deck_pptx, prepare_pptx_build
+
+        other = get_user_model().objects.create_user(email=f"po+{uuid.uuid4().hex[:6]}@ex.com", password="x")
+        foreign = store_thread_image(
+            ChatThread.objects.create(created_by=other, title="o"), img_bytes=_PNG, content_type="image/png",
+        )
+        _data, warnings = build_deck_pptx(**prepare_pptx_build(self._deck(f"[[image:{foreign.id}]]")))
+        self.assertTrue(any("unavailable" in w for w in warnings))
+
+    def test_same_output_as_the_live_resolver(self):
+        from chat.assets import store_thread_image
+        from chat.slides.pptx_build import build_deck_pptx, build_pptx, make_image_resolver
+
+        a1 = store_thread_image(self.thread, img_bytes=_PNG, content_type="image/png")
+        a2 = store_thread_image(self.thread, img_bytes=_PNG + b"x", content_type="image/png")
+        deck = self._deck(f"[[image:{a1.id}]]", f"[[image:{a2.id}]]", f"[[image:{uuid.uuid4()}]]")
+        new, new_w = build_pptx(deck)
+        old, old_w = build_deck_pptx(deck.content, image_resolver=make_image_resolver(deck))
+        self.assertEqual(new_w, old_w)
+        self.assertEqual(_pptx_parts(new), _pptx_parts(old))
+
+
+class SlidesExportViewTests(TestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.user = User.objects.create_user(email="sxv@ex.com", password="pass")
+        self.client.login(email="sxv@ex.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user, title="t")
+        self.deck = SlideSet.objects.create(thread=self.thread, title="Q3 review", content=json.loads(_deck_json()))
+        self.url = f"/chat/threads/{self.thread.id}/slides/{self.deck.id}/export/"
+
+    def test_downloads_pptx(self):
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp["Content-Type"], "application/vnd.openxmlformats-officedocument.presentationml.presentation")
+        self.assertIn("Q3 review", resp["Content-Disposition"])
+        self.assertTrue(b"".join(resp.streaming_content).startswith(b"PK"))
+
+    def test_build_runs_off_the_request_thread(self):
+        import threading
+
+        from chat.slides import pptx_build
+
+        seen = {}
+        real = pptx_build.build_deck_pptx
+
+        def spy(*a, **kw):
+            seen["thread"] = threading.current_thread()
+            return real(*a, **kw)
+
+        with mock.patch.object(pptx_build, "build_deck_pptx", spy):
+            resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsNot(seen["thread"], threading.main_thread())
+
+    def test_busy_when_no_render_slot_frees_up(self):
+        import threading
+
+        import chat.views as views
+
+        full = threading.BoundedSemaphore(1)
+        full.acquire()
+        with mock.patch.object(views, "_EXPORT_RENDER_SLOTS", full), \
+                self.settings(EXPORT_RENDER_SLOT_WAIT_SECONDS=0):
+            resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 503)
+        self.assertIn("busy", resp.json()["error"])
+
+    def test_build_failure_is_a_json_500(self):
+        with mock.patch("chat.slides.pptx_build.build_deck_pptx", side_effect=RuntimeError("boom")):
+            resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 500)
+        self.assertIn("error", resp.json())
+
+    def test_other_users_and_deleted_decks_404(self):
+        from django.utils import timezone
+
+        other = get_user_model().objects.create_user(email="sxo@ex.com", password="pass")
+        other_thread = ChatThread.objects.create(created_by=other, title="o")
+        other_deck = SlideSet.objects.create(thread=other_thread, title="X", content=json.loads(_deck_json()))
+        self.assertEqual(self.client.get(f"/chat/threads/{other_thread.id}/slides/{other_deck.id}/export/").status_code, 404)
+        SlideSet.objects.filter(pk=self.deck.pk).update(deleted_at=timezone.now())
+        self.assertEqual(self.client.get(self.url).status_code, 404)
+
+
 class PreviewToolTests(TestCase):
     def setUp(self):
         User = get_user_model()

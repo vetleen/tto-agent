@@ -330,7 +330,11 @@ extracts, describes pictures, checkpoints and titles the thread on the worker. T
 the request thread, then renders with `sync_to_async(thread_sensitive=False)` inside
 `_export_render_slot` (`EXPORT_RENDER_SLOTS`, default 2; 503 "busy" after
 `EXPORT_RENDER_SLOT_WAIT_SECONDS`). Never call html2docx's stock `init_tdth`: it is O(cells²);
-`chat/markdown_export.py:_HighlightHTML2Docx` overrides it.
+`chat/markdown_export.py:_HighlightHTML2Docx` overrides it. Deck export (`slides_export_pptx`)
+works the same way: `chat/slides/pptx_build.py:prepare_pptx_build` fetches image bytes (same
+ACL as `make_image_resolver`), the theme logo and font faces on the request thread, then the
+pure `build_deck_pptx` runs off it in the same slot. Both export buttons fetch and alert the
+server's `error` (incl. the 503 "busy").
 
 ## Logging
 

@@ -140,6 +140,7 @@ DASH_MAP = {
 }
 
 _TOKEN_RE = re.compile(r"\[\[image:([0-9a-fA-F-]{36})")
+_UNSET = object()
 
 
 # ---------------------------------------------------------------------------
@@ -1531,6 +1532,7 @@ def build_deck_pptx(
     only_slide_ids=None,
     image_resolver=None,
     font_bundle=None,
+    footer_logo=_UNSET,
 ) -> tuple[bytes, list[str]]:
     """Render a deck dict to ``.pptx`` bytes. Returns ``(bytes, warnings)``.
 
@@ -1544,10 +1546,15 @@ def build_deck_pptx(
     (uploaded/custom) TTF/OTF families are embedded into the ``.pptx`` so the brand
     font renders on machines that don't have it installed. Bundled families are left
     name-only (they alias to metric-compatible Office fonts).
+
+    ``footer_logo`` (bytes or ``None``) skips the theme-logo storage read, so a
+    caller that prefetched it (``prepare_pptx_build``) runs this with no DB or
+    storage access at all.
     """
     warnings: list[str] = []
     theme = theme_mod.resolve_theme(deck)
-    footer_logo = _footer_logo_bytes(theme)
+    if footer_logo is _UNSET:
+        footer_logo = _footer_logo_bytes(theme)
     prs = _open_template(base_template, theme)
     size = deck.get("size") or {}
     prs.slide_width = Pt(size.get("w", 960))
@@ -1609,8 +1616,18 @@ def _fonts_to_embed(font_bundle) -> list[dict]:
 # ---------------------------------------------------------------------------
 def build_pptx(slide_set, *, only_slide_ids=None) -> tuple[bytes, list[str]]:
     """Build ``.pptx`` bytes for a ``SlideSet`` model instance."""
+    return build_deck_pptx(**prepare_pptx_build(slide_set, only_slide_ids=only_slide_ids))
+
+
+def prepare_pptx_build(slide_set, *, only_slide_ids=None) -> dict:
+    """Everything ``build_deck_pptx`` needs that touches the DB or storage —
+    image bytes, the theme logo, the org's font faces — resolved up front.
+
+    Returns the kwargs for ``build_deck_pptx``; that call then does pure CPU
+    work, so the export view can run it off the request thread.
+    """
     deck = slide_set.content or {}
-    resolver = make_image_resolver(slide_set)
+    theme = theme_mod.resolve_theme(deck)
     font_bundle = None
     try:
         from accounts.models import get_user_org
@@ -1618,16 +1635,40 @@ def build_pptx(slide_set, *, only_slide_ids=None) -> tuple[bytes, list[str]]:
 
         thread = getattr(slide_set, "thread", None)
         org = get_user_org(thread.created_by) if thread is not None else None
-        font_bundle = resolve_deck_font_faces(theme_mod.resolve_theme(deck), org)
+        font_bundle = resolve_deck_font_faces(theme, org)
     except Exception:  # noqa: BLE001
         logger.warning("pptx font resolution failed", exc_info=True)
-    return build_deck_pptx(
-        deck,
-        base_template=slide_set.base_template or "wilfred_default",
-        only_slide_ids=only_slide_ids,
-        image_resolver=resolver,
-        font_bundle=font_bundle,
-    )
+    return {
+        "deck": deck,
+        "base_template": slide_set.base_template or "wilfred_default",
+        "only_slide_ids": only_slide_ids,
+        "image_resolver": make_prefetched_resolver(slide_set),
+        "font_bundle": font_bundle,
+        "footer_logo": _footer_logo_bytes(theme),
+    }
+
+
+def make_prefetched_resolver(slide_set):
+    """``make_image_resolver`` with every image the deck references fetched now.
+
+    The returned resolver answers from memory (no DB, no storage), with the same
+    token parsing and the same ACL — ids the live resolver refuses map to None.
+    """
+    import json
+
+    live = make_image_resolver(slide_set)
+    raw = json.dumps(slide_set.content or {})
+    fetched = {aid: live(f"[[image:{aid}]]") for aid in {m.group(1).lower() for m in _TOKEN_RE.finditer(raw)}}
+    brand = live("[[image:company-logo]]") if "[[image:company-logo" in raw else None
+
+    def resolve(token: str):
+        t = token or ""
+        if "[[image:company-logo" in t:
+            return brand
+        match = _TOKEN_RE.search(t)
+        return fetched.get(match.group(1).lower()) if match else None
+
+    return resolve
 
 
 def make_image_resolver(slide_set):

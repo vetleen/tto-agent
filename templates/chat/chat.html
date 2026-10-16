@@ -4578,7 +4578,11 @@
         headers: { "Content-Type": "application/json", "X-CSRFToken": getCSRFToken() },
         body: JSON.stringify({ content: content })
       });
-      if (!resp.ok) throw new Error("Couldn't export the document.");
+      if (!resp.ok) {
+        var errData = null;
+        try { errData = await resp.json(); } catch (_e) {}
+        throw new Error((errData && errData.error) || "Server error.");
+      }
       var cd = resp.headers.get("Content-Disposition") || "";
       var fnMatch = cd.match(/filename="?([^"]+)"?/);
       var filename = fnMatch ? fnMatch[1] : ("document." + format);
@@ -5476,16 +5480,39 @@
       if (openComments > 0) { commentBar.classList.remove("hidden"); commentBar.classList.add("flex"); commentCountEl.textContent = openComments + (openComments === 1 ? " comment" : " comments"); }
       else { commentBar.classList.add("hidden"); commentBar.classList.remove("flex"); }
     }
-    function setPdfBusy(b) {
-      // While the PDF builds, the shared export button shows a spinner (the
-      // .pptx path is instant, so it never enters this state).
-      if (exportBtn) { exportBtn.disabled = b; exportBtn.title = b ? "Building PDF…" : "Export"; }
+    function setPdfBusy(b, label) {
+      // While a PDF or .pptx export builds, the shared export button shows a spinner.
+      if (exportBtn) { exportBtn.disabled = b; exportBtn.title = b ? (label || "Building PDF…") : "Export"; }
       if (exportIcon) exportIcon.classList.toggle("hidden", b);
       if (exportSpinner) exportSpinner.classList.toggle("hidden", !b);
       if (b && exportDropdown) exportDropdown.classList.add("hidden");
     }
     function triggerDownload(url) { var a = document.createElement("a"); a.href = url; a.download = ""; document.body.appendChild(a); a.click(); a.remove(); }
-    function downloadPptx() { if (deckId) triggerDownload("/chat/threads/" + activeThreadId + "/slides/" + deckId + "/export/"); }
+    async function downloadPptx() {
+      if (!deckId) return;
+      // fetch, not a plain link: a failed export ("busy", build error) shows its
+      // message instead of a broken file in the browser's download bar.
+      setPdfBusy(true, "Exporting…");
+      try {
+        var resp = await fetch("/chat/threads/" + activeThreadId + "/slides/" + deckId + "/export/");
+        if (!resp.ok) {
+          var errData = null;
+          try { errData = await resp.json(); } catch (_e) {}
+          throw new Error((errData && errData.error) || "Couldn't export the presentation.");
+        }
+        var cd = resp.headers.get("Content-Disposition") || "";
+        var fnMatch = cd.match(/filename="?([^"]+)"?/);
+        var url = URL.createObjectURL(await resp.blob());
+        var a = document.createElement("a");
+        a.href = url; a.download = fnMatch ? fnMatch[1] : "presentation.pptx";
+        document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        setPdfBusy(false);
+      }
+    }
 
     function setState(data) {
       deckId = data.deck_id;
