@@ -2,6 +2,10 @@ import io
 import json
 import logging
 import re
+import threading
+from contextlib import contextmanager
+
+from django.conf import settings
 
 from django.contrib.auth.decorators import login_required
 from django.http import FileResponse, Http404, HttpResponseBadRequest, JsonResponse
@@ -1325,14 +1329,43 @@ def _canvas_content_to_html(content, base_url, user, *, inline_image_width=False
     return html_content, image_pcts
 
 
-def _render_canvas_pdf_bytes(html_content, title, org):
-    """Resolve fonts, build the stylesheet, and render the canvas HTML to PDF.
+class ExportBusy(Exception):
+    """Every export render slot stayed taken for EXPORT_RENDER_SLOT_WAIT_SECONDS."""
 
-    Returns ``(pdf_bytes, warnings)`` where ``warnings`` lists fonts that fell
-    back / were visually substituted (for the X-Font-Fallbacks header). CPU-bound
-    and blocking — call under ``sync_to_async``.
+
+_EXPORT_RENDER_SLOTS = None
+
+
+@contextmanager
+def _export_render_slot():
+    """Bound concurrent canvas renders per process. A 225k-char canvas renders
+    in seconds but holds tens of MB; a burst of them drove the staging web dyno
+    to R14/R15 on 2026-10-15. Raises ExportBusy instead of queueing forever."""
+    global _EXPORT_RENDER_SLOTS
+    if _EXPORT_RENDER_SLOTS is None:
+        _EXPORT_RENDER_SLOTS = threading.BoundedSemaphore(
+            max(1, int(getattr(settings, "EXPORT_RENDER_SLOTS", 2)))
+        )
+    wait = float(getattr(settings, "EXPORT_RENDER_SLOT_WAIT_SECONDS", 20))
+    if not _EXPORT_RENDER_SLOTS.acquire(timeout=wait):
+        raise ExportBusy()
+    try:
+        yield
+    finally:
+        _EXPORT_RENDER_SLOTS.release()
+
+
+def _export_busy_response():
+    return JsonResponse({"error": "Export is busy — try again in a moment."}, status=503)
+
+
+def _resolve_pdf_css(html_content, org):
+    """Fonts, org styles and logo for a PDF export → ``(css, warnings)``.
+
+    Touches the DB/storage (font files, logo blob), so it runs on the request
+    thread; ``warnings`` lists fonts that fell back / were visually substituted
+    (for the X-Font-Fallbacks header).
     """
-    from chat.pdf_export import render_canvas_pdf
     from core.fonts import resolve_fonts
     from core.styles import build_pdf_css, get_org_styles, resolve_org_logo
 
@@ -1344,13 +1377,105 @@ def _render_canvas_pdf_bytes(html_content, title, org):
     # .notdef box without bloating every PDF with the emoji font.
     symbol_fallback = any(ord(c) >= 0x2190 for c in html_content)
     css = build_pdf_css(styles, resolutions, logo, symbol_fallback=symbol_fallback)
-    pdf_bytes = render_canvas_pdf(html_content, title=title, css=css)
     warnings = [
         {"requested": r.requested, "actual": r.actual, "fidelity": r.fidelity, "note": r.note}
         for r in resolutions.values()
         if r.fidelity in ("fallback", "visual") and r.note
     ]
-    return pdf_bytes, warnings
+    return css, warnings
+
+
+def _render_pdf_in_slot(html_content, title, css):
+    """WeasyPrint render. Pure CPU (the URL fetcher only allows ``data:`` URIs,
+    chat.pdf_export._safe_url_fetcher), so it runs off the request thread."""
+    from chat.pdf_export import render_canvas_pdf
+
+    with _export_render_slot():
+        return render_canvas_pdf(html_content, title=title, css=css)
+
+
+def _render_canvas_pdf_bytes(html_content, title, org):
+    """Resolve fonts/styles and render the canvas HTML to PDF in one sync call →
+    ``(pdf_bytes, warnings)``. The export view uses the two halves separately so
+    the render can leave the request thread."""
+    css, warnings = _resolve_pdf_css(html_content, org)
+    return _render_pdf_in_slot(html_content, title, css), warnings
+
+
+def _render_canvas_docx_bytes(html_content, title, image_pcts, doc_styles, logo):
+    """HTML → .docx bytes. Pure python-docx work (no DB, no storage): the caller
+    resolves the org styles and logo first, so this can run off the request
+    thread (``thread_sensitive=False``) inside an export render slot."""
+    with _export_render_slot():
+        from chat.markdown_export import html2docx_with_highlight as html2docx
+
+        # html2docx drops <hr>; swap each for a marker paragraph we style as a rule.
+        html_content = _HR_RE.sub(f"<p>{_HR_DIVIDER_MARKER}</p>", html_content)
+        full_html = f"<html><body>{html_content}</body></html>"
+        buf = html2docx(full_html, title=title)
+
+        # html2docx sets gridCol widths to span the full page but leaves
+        # cell widths at 0 and table width at auto. With autofit Word
+        # auto-sizes from content, making tables narrower than the page.
+        # Fix: set table width to 100%, copy gridCol widths into cells,
+        # and switch to fixed layout so Word honours the widths exactly.
+        from docx import Document as DocxDocument
+        from docx.oxml.ns import qn
+
+        doc = DocxDocument(buf)
+        for table in doc.tables:
+            table.autofit = False
+            tblW = table._tbl.tblPr.find(qn("w:tblW"))
+            if tblW is not None:
+                tblW.set(qn("w:type"), "pct")
+                tblW.set(qn("w:w"), "5000")  # 5000 = 100%
+            grid_cols = table._tbl.tblGrid.findall(qn("w:gridCol"))
+            col_widths = [int(gc.get(qn("w:w"))) for gc in grid_cols]
+            for row in table.rows:
+                for i, cell in enumerate(row.cells):
+                    if i < len(col_widths):
+                        tcW = cell._tc.tcPr.find(qn("w:tcW"))
+                        if tcW is not None:
+                            tcW.set(qn("w:w"), str(col_widths[i]))
+                            tcW.set(qn("w:type"), "dxa")
+
+        # Repair html2docx's post-table output (leaked headings, junk blanks, spacing).
+        _fix_table_trailing_content(doc)
+        # Drop the leading space html2docx adds after each markdown hard break.
+        _strip_space_after_line_breaks(doc)
+        # Render `---` thematic breaks as a divider rule (html2docx drops <hr>).
+        _render_dividers(doc)
+
+        # Apply per-image display widths from the optional ``|NN%`` token suffix.
+        # image_pcts is aligned 1:1 with the doc's inline shapes in document order
+        # (mermaid <img>s reserve a None slot); resize each sized shape, scaling
+        # height to preserve the aspect ratio. pct >= 100 / None keeps html2docx's
+        # default sizing.
+        section = doc.sections[0]
+        text_width = section.page_width - section.left_margin - section.right_margin
+        shapes = doc.inline_shapes
+        for i, pct in enumerate(image_pcts):
+            if i >= len(shapes):
+                break
+            if pct is None or pct >= 100:
+                continue
+            shape = shapes[i]
+            if not shape.width:
+                continue
+            target = int(text_width * pct / 100)
+            ratio = target / shape.width
+            shape.height = int(shape.height * ratio)
+            shape.width = target
+
+        # Apply the org's configured document styles (fonts/colours), resolved by
+        # the caller on the request thread (the logo is a storage read).
+        from core.styles import apply_doc_styles
+
+        apply_doc_styles(doc, doc_styles, logo)
+
+        buf = io.BytesIO()
+        doc.save(buf)
+        return buf.getvalue()
 
 
 @login_required
@@ -1392,9 +1517,12 @@ async def canvas_export(request, thread_id, canvas_id=None):
     # --- PDF branch (HTML → WeasyPrint) ---
     if fmt == "pdf":
         try:
-            pdf_bytes, font_warnings = await sync_to_async(_render_canvas_pdf_bytes)(
-                html_content, canvas.title, org
+            css, font_warnings = await sync_to_async(_resolve_pdf_css)(html_content, org)
+            pdf_bytes = await sync_to_async(_render_pdf_in_slot, thread_sensitive=False)(
+                html_content, canvas.title, css,
             )
+        except ExportBusy:
+            return _export_busy_response()
         except Exception:
             logger.exception("PDF export failed for canvas %s", canvas.id)
             return JsonResponse({"error": "Couldn't render the PDF."}, status=500)
@@ -1409,76 +1537,17 @@ async def canvas_export(request, thread_id, canvas_id=None):
         return resp
 
     # --- DOCX branch (HTML → html2docx) ---
-    from chat.markdown_export import html2docx_with_highlight as html2docx
-
-    # html2docx drops <hr>; swap each for a marker paragraph we style as a rule.
-    html_content = _HR_RE.sub(f"<p>{_HR_DIVIDER_MARKER}</p>", html_content)
-    full_html = f"<html><body>{html_content}</body></html>"
-    buf = html2docx(full_html, title=canvas.title)
-
-    # html2docx sets gridCol widths to span the full page but leaves
-    # cell widths at 0 and table width at auto. With autofit Word
-    # auto-sizes from content, making tables narrower than the page.
-    # Fix: set table width to 100%, copy gridCol widths into cells,
-    # and switch to fixed layout so Word honours the widths exactly.
-    from docx import Document as DocxDocument
-    from docx.oxml.ns import qn
-
-    doc = DocxDocument(buf)
-    for table in doc.tables:
-        table.autofit = False
-        tblW = table._tbl.tblPr.find(qn("w:tblW"))
-        if tblW is not None:
-            tblW.set(qn("w:type"), "pct")
-            tblW.set(qn("w:w"), "5000")  # 5000 = 100%
-        grid_cols = table._tbl.tblGrid.findall(qn("w:gridCol"))
-        col_widths = [int(gc.get(qn("w:w"))) for gc in grid_cols]
-        for row in table.rows:
-            for i, cell in enumerate(row.cells):
-                if i < len(col_widths):
-                    tcW = cell._tc.tcPr.find(qn("w:tcW"))
-                    if tcW is not None:
-                        tcW.set(qn("w:w"), str(col_widths[i]))
-                        tcW.set(qn("w:type"), "dxa")
-
-    # Repair html2docx's post-table output (leaked headings, junk blanks, spacing).
-    _fix_table_trailing_content(doc)
-    # Drop the leading space html2docx adds after each markdown hard break.
-    _strip_space_after_line_breaks(doc)
-    # Render `---` thematic breaks as a divider rule (html2docx drops <hr>).
-    _render_dividers(doc)
-
-    # Apply per-image display widths from the optional ``|NN%`` token suffix.
-    # image_pcts is aligned 1:1 with the doc's inline shapes in document order
-    # (mermaid <img>s reserve a None slot); resize each sized shape, scaling
-    # height to preserve the aspect ratio. pct >= 100 / None keeps html2docx's
-    # default sizing.
-    section = doc.sections[0]
-    text_width = section.page_width - section.left_margin - section.right_margin
-    shapes = doc.inline_shapes
-    for i, pct in enumerate(image_pcts):
-        if i >= len(shapes):
-            break
-        if pct is None or pct >= 100:
-            continue
-        shape = shapes[i]
-        if not shape.width:
-            continue
-        target = int(text_width * pct / 100)
-        ratio = target / shape.width
-        shape.height = int(shape.height * ratio)
-        shape.width = target
-
-    # Apply the org's configured document styles (fonts/colours). Read at
-    # export time so the look follows the org, not whoever wrote the canvas.
-    from core.styles import apply_doc_styles, get_org_styles, resolve_org_logo
+    from core.styles import get_org_styles, resolve_org_logo
 
     doc_styles = get_org_styles(org)
-    apply_doc_styles(doc, doc_styles, resolve_org_logo(doc_styles, org))
-
-    buf = io.BytesIO()
-    doc.save(buf)
-    buf.seek(0)
+    logo = await sync_to_async(resolve_org_logo)(doc_styles, org)  # storage read
+    try:
+        docx_bytes = await sync_to_async(_render_canvas_docx_bytes, thread_sensitive=False)(
+            html_content, canvas.title, image_pcts, doc_styles, logo,
+        )
+    except ExportBusy:
+        return _export_busy_response()
+    buf = io.BytesIO(docx_bytes)
 
     filename = f"{_safe_doc_title(canvas.title)}.docx"
     return FileResponse(

@@ -2794,3 +2794,115 @@ class CanvasTruncationReportingTests(TestCase):
         self.assertEqual(result["source_truncation"]["original_chars"], self.cap + 10)
         self.assertEqual(result["source_truncation"]["kept_chars"], self.cap)
         self.assertIn("TRUNCATED", result["source_truncation"]["note"])
+
+
+# ---------------------------------------------------------------------------
+# Export performance + isolation (2026-10-16): O(1) docx cell lookup, renders
+# off the request thread, bounded concurrent renders.
+# ---------------------------------------------------------------------------
+
+def _table_html(rows, cols=4):
+    head = "".join(f"<th>H{c}</th>" for c in range(cols))
+    body = "".join(
+        "<tr>" + "".join(f"<td>r{r}c{c} <strong>b</strong></td>" for c in range(cols)) + "</tr>"
+        for r in range(rows)
+    )
+    return f"<html><body><p>Intro</p><table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table><p>After</p></body></html>"
+
+
+class DocxTableBuildTests(TestCase):
+    def test_output_identical_to_upstream_html2docx(self):
+        from docx import Document
+        from html2docx import HTML2Docx
+
+        from chat.markdown_export import html2docx_with_highlight
+
+        html = _table_html(5)
+        upstream = HTML2Docx("t")
+        upstream.feed(html)
+        buf = io.BytesIO()
+        upstream.doc.save(buf)
+        ours = html2docx_with_highlight(html, title="t")
+        self.assertEqual(Document(ours).element.xml, Document(buf).element.xml)
+
+    def test_large_table_never_uses_quadratic_cell_lookup(self):
+        # Table._cells rebuilds every cell; calling it per cell made a 400-row
+        # table take ~33 s. The override must not touch it at all.
+        from docx import Document
+        from docx.table import Table
+
+        from chat.markdown_export import html2docx_with_highlight
+
+        def boom(self):
+            raise AssertionError("Table._cells used while building the table")
+
+        with patch.object(Table, "_cells", property(boom)):
+            buf = html2docx_with_highlight(_table_html(300), title="t")
+        table = Document(buf).tables[0]
+        self.assertEqual(len(table.rows), 301)
+        self.assertEqual(table.rows[300].cells[3].text, "r299c3 b")
+
+
+class CanvasExportIsolationTests(TestCase):
+    """Renders run off the request thread and inside a bounded render slot."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="expiso@test.com", password="pass")
+        self.client.login(email="expiso@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+        self.canvas = ChatCanvas.objects.create(thread=self.thread, title="Doc", content="# Hi\n\nBody.")
+        self.thread.active_canvas = self.canvas
+        self.thread.save(update_fields=["active_canvas"])
+        self.url = f"/chat/threads/{self.thread.id}/canvas/export/"
+
+    def _post(self, query=""):
+        return self.client.post(self.url + query, json.dumps({}), content_type="application/json")
+
+    def test_docx_render_runs_off_the_request_thread(self):
+        import threading
+
+        import chat.markdown_export as me
+
+        seen = {}
+        real = me.html2docx_with_highlight
+
+        def spy(*a, **kw):
+            seen["thread"] = threading.current_thread()
+            return real(*a, **kw)
+
+        with patch.object(me, "html2docx_with_highlight", spy):
+            resp = self._post()
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsNot(seen["thread"], threading.main_thread())
+
+    def test_pdf_render_runs_off_the_request_thread(self):
+        import threading
+
+        seen = {}
+
+        def fake_render(html, *, title, css):
+            seen["thread"] = threading.current_thread()
+            return b"%PDF-1.4\n"
+
+        with patch("chat.pdf_export.render_canvas_pdf", side_effect=fake_render):
+            resp = self._post("?format=pdf")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsNot(seen["thread"], threading.main_thread())
+
+    def test_busy_when_no_render_slot_frees_up(self):
+        import threading
+
+        import chat.views as views
+
+        full = threading.BoundedSemaphore(1)
+        full.acquire()
+        with patch.object(views, "_EXPORT_RENDER_SLOTS", full), \
+                self.settings(EXPORT_RENDER_SLOT_WAIT_SECONDS=0):
+            docx = self._post()
+            pdf = self._post("?format=pdf")
+        for resp in (docx, pdf):
+            self.assertEqual(resp.status_code, 503)
+            self.assertIn("busy", resp.json()["error"])
+        # The slot is released again after a normal render.
+        ok = self._post()
+        self.assertEqual(ok.status_code, 200)

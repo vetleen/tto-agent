@@ -814,6 +814,11 @@ DOCUMENT_INLINE_EDIT_MAX_CHARS = _env_int("DOCUMENT_INLINE_EDIT_MAX_CHARS", "150
 # Above this size the save is queued on the worker like the UI's save-to-data-room
 # and the tool reports "queued" instead of a verdict.
 CANVAS_SYNC_SCAN_MAX_CHARS = _env_int("CANVAS_SYNC_SCAN_MAX_CHARS", "75000")
+# Canvas export (docx/pdf) renders run off the request thread, at most this many
+# at once per web process; a request waits up to the second value for a slot and
+# then gets "Export is busy" (503). A 225k-char render holds tens of MB.
+EXPORT_RENDER_SLOTS = _env_int("EXPORT_RENDER_SLOTS", "2")
+EXPORT_RENDER_SLOT_WAIT_SECONDS = _env_int("EXPORT_RENDER_SLOT_WAIT_SECONDS", "20")
 # DOCUMENT_BROWSER_EDIT_MAX_CHARS is what the editor + a multipart POST can carry:
 # Django's DATA_UPLOAD_MAX_MEMORY_SIZE (default 2.5 MB) bounds the form body, and a
 # multi-MB CodeMirror buffer is impractical. Above it the modal opens read-only;

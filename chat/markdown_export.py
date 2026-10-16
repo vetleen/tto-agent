@@ -14,6 +14,7 @@ from io import BytesIO
 from typing import List, Optional, Tuple
 
 from docx.enum.text import WD_COLOR_INDEX
+from docx.table import _Cell
 from html2docx import HTML2Docx
 from markdown.extensions import Extension
 from markdown.inlinepatterns import InlineProcessor
@@ -54,6 +55,25 @@ class _HighlightHTML2Docx(HTML2Docx):
             self.finish_run()
         else:
             super().handle_endtag(tag)
+
+    def init_tdth(self) -> None:
+        """html2docx 1.6.0's ``init_tdth`` with an O(1) cell lookup.
+
+        Upstream fetches each new cell with ``table.cell(row, col)``, and
+        python-docx 1.2.0 rebuilds the whole cell list on every ``Table.cell``
+        call, so building a table was O(cells²): a 400-row canvas table took
+        ~33 s and timed out the export. Markdown tables never merge cells, so
+        the cell is simply the row's ``col``-th ``<w:tc>``.
+        """
+        if self.table is None:
+            return
+        table, row, col = self.table
+        col += 1
+        self.table = (table, row, col)
+        if col >= len(table.columns):
+            table.add_column(0)
+        self.p = _Cell(table._tbl.tr_lst[row].tc_lst[col], table).paragraphs[0]
+        self.r = None
 
 
 def html2docx_with_highlight(content: str, title: str) -> BytesIO:
