@@ -1346,8 +1346,6 @@ def _export_render_slot():
         _EXPORT_RENDER_SLOTS = threading.BoundedSemaphore(
             max(1, int(getattr(settings, "EXPORT_RENDER_SLOTS", 2)))
         )
-    import faulthandler
-    import sys
     import time
 
     wait = float(getattr(settings, "EXPORT_RENDER_SLOT_WAIT_SECONDS", 20))
@@ -1356,16 +1354,14 @@ def _export_render_slot():
         logger.warning("canvas export: no render slot after %.1fs", time.monotonic() - t0)
         raise ExportBusy()
     t1 = time.monotonic()
-    logger.info("canvas export render start thread=%s waited=%.2fs", threading.current_thread().name, t1 - t0)
-    # Diagnostic (2026-10-16): a render that outlives the router timeout dumps
-    # every thread's stack to stderr so a stall on the web dyno is visible.
-    faulthandler.dump_traceback_later(25, repeat=False, file=sys.stderr, exit=False)
     try:
         yield
     finally:
-        faulthandler.cancel_dump_traceback_later()
         _EXPORT_RENDER_SLOTS.release()
-        logger.info("canvas export render end thread=%s took=%.2fs", threading.current_thread().name, time.monotonic() - t1)
+        logger.info(
+            "canvas export render took=%.2fs waited=%.2fs thread=%s",
+            time.monotonic() - t1, t1 - t0, threading.current_thread().name,
+        )
 
 
 def _export_busy_response():
