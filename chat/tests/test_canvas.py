@@ -1926,6 +1926,24 @@ class AgentSeenShaTests(TestCase):
         canvas = ChatCanvas.objects.get(thread=self.thread, title=title)
         return canvas, canvas_prompt_entry(canvas, open_id=None)
 
+    def test_insert_omitting_sha_columns_succeeds(self):
+        # Pre-0053 code (old dynos serving while the release migrates) INSERTs
+        # without these columns; the DB default must fill them, not NOT NULL fail.
+        from django.db import connection
+        from django.utils import timezone
+
+        now = timezone.now()
+        with connection.cursor() as cur:
+            cur.execute(
+                "INSERT INTO chat_chatcanvas (thread_id, title, content, is_active, "
+                "dr_save_attempts, created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                [self.thread.pk.hex, "Old code", "x", False, 0, now, now],
+            )
+        canvas = ChatCanvas.objects.get(thread=self.thread, title="Old code")
+        self.assertEqual(canvas.agent_seen_sha, "")
+        self.assertEqual(canvas.content_sha, "")
+        self.assertIsNone(canvas.token_count)
+
     def test_write_marks_seen_and_caches_tokens(self):
         from chat.services import canvas_content_sha
 

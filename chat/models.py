@@ -432,11 +432,13 @@ class ChatCanvas(models.Model):
     # built ("changed since you last read it"). NOT set by document/attachment/
     # template opens, canvas_paste_user_text, imports or user saves — the agent
     # has not seen that text. See chat.services.record_agent_canvas_view.
-    agent_seen_sha = models.CharField(max_length=64, blank=True, default="")
+    # db_default too (for both sha columns): during a release, migration 0053 runs
+    # while old dynos still serve, and their INSERTs omit these columns.
+    agent_seen_sha = models.CharField(max_length=64, blank=True, default="", db_default="")
     # Token count of ``content`` as of ``content_sha``: a sha-keyed cache, so a
     # mismatch at prompt-build time triggers a recount and no write path has to
     # remember to invalidate it (chat.services.canvas_prompt_entry).
-    content_sha = models.CharField(max_length=64, blank=True, default="")
+    content_sha = models.CharField(max_length=64, blank=True, default="", db_default="")
     token_count = models.PositiveIntegerField(null=True, blank=True)
     # Consecutive blocked (GDPR Art 9/10) sync saves of this canvas to a data room.
     # Reset on a successful save and after the agent's retry budget is exhausted (then
