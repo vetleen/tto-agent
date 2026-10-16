@@ -1346,13 +1346,26 @@ def _export_render_slot():
         _EXPORT_RENDER_SLOTS = threading.BoundedSemaphore(
             max(1, int(getattr(settings, "EXPORT_RENDER_SLOTS", 2)))
         )
+    import faulthandler
+    import sys
+    import time
+
     wait = float(getattr(settings, "EXPORT_RENDER_SLOT_WAIT_SECONDS", 20))
+    t0 = time.monotonic()
     if not _EXPORT_RENDER_SLOTS.acquire(timeout=wait):
+        logger.warning("canvas export: no render slot after %.1fs", time.monotonic() - t0)
         raise ExportBusy()
+    t1 = time.monotonic()
+    logger.info("canvas export render start thread=%s waited=%.2fs", threading.current_thread().name, t1 - t0)
+    # Diagnostic (2026-10-16): a render that outlives the router timeout dumps
+    # every thread's stack to stderr so a stall on the web dyno is visible.
+    faulthandler.dump_traceback_later(25, repeat=False, file=sys.stderr, exit=False)
     try:
         yield
     finally:
+        faulthandler.cancel_dump_traceback_later()
         _EXPORT_RENDER_SLOTS.release()
+        logger.info("canvas export render end thread=%s took=%.2fs", threading.current_thread().name, time.monotonic() - t1)
 
 
 def _export_busy_response():
@@ -1510,9 +1523,14 @@ async def canvas_export(request, thread_id, canvas_id=None):
     membership = await sync_to_async(get_membership)(request.user)
     org = membership.org if membership else None
 
+    import time as _time
+
+    _t = _time.monotonic()
+    logger.info("canvas export: canvas=%s fmt=%s chars=%d", canvas.id, fmt, len(content or ""))
     html_content, image_pcts = await sync_to_async(_canvas_content_to_html)(
         content, base_url, request.user, inline_image_width=(fmt == "pdf")
     )
+    logger.info("canvas export: html ready canvas=%s took=%.2fs", canvas.id, _time.monotonic() - _t)
 
     # --- PDF branch (HTML → WeasyPrint) ---
     if fmt == "pdf":
