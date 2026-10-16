@@ -410,6 +410,24 @@ class CanvasExportViewTests(TestCase):
         self.assertEqual(items, ["Grant power.", "Support the grant.", "Plan a review."])
         self.assertNotIn("1. Grant power.", labels[0].text)
 
+    def test_export_table_directly_after_prose_becomes_word_table(self):
+        """A preview-style table without a preceding blank stays a real table."""
+        self.canvas.content = "Prior art:\n| A | B |\n| --- | --- |\n| 1 | 2 |"
+        self.canvas.save(update_fields=["content"])
+
+        url = f"/chat/threads/{self.thread.id}/canvas/export/"
+        response = self._export(url)
+        self.assertEqual(response.status_code, 200)
+
+        from docx import Document as DocxDocument
+
+        doc = DocxDocument(io.BytesIO(response.getvalue()))
+        self.assertEqual(len(doc.tables), 1)
+        self.assertIn("Prior art:", [p.text.strip() for p in doc.paragraphs])
+        self.assertFalse(any("|" in p.text for p in doc.paragraphs))
+        cells = [cell.text.strip() for row in doc.tables[0].rows for cell in row.cells]
+        self.assertEqual(cells, ["A", "B", "1", "2"])
+
     def test_export_applies_org_styles(self):
         """The export should apply the exporting user's org styles to the .docx."""
         from accounts.models import Membership, Organization

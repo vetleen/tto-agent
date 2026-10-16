@@ -152,6 +152,9 @@ _LIST_ITEM_RE = re.compile(
     r"^(?P<indent> {0,3})(?:(?P<bullet>[-+*])|(?P<number>\d{1,9})(?P<delimiter>[.)]))[ \t]+(?P<body>\S.*)$"
 )
 _THEMATIC_BREAK_RE = re.compile(r"^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$")
+# GFM table delimiter row (``|---|:--:|``, ``--- | ---``). Whether it has a pipe
+# at all is checked separately, because a single-column delimiter needs one.
+_TABLE_DELIMITER_RE = re.compile(r"^ {0,3}\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$")
 
 
 def _iter_markdown_lines_skipping_code(lines):
@@ -422,6 +425,98 @@ def normalize_list_boundaries(markdown: str) -> str:
 
         out.append(line)
         at_boundary[quote_depth] = False
+
+    return "\n".join(out)
+
+
+def _table_cell_count(content):
+    """Count the cells of one GFM table row (outer pipes optional, ``\\|`` escaped)."""
+    row = content.strip()
+    if row.startswith("|"):
+        row = row[1:]
+    if row.endswith("|") and not row.endswith("\\|"):
+        row = row[:-1]
+    return len(re.split(r"(?<!\\)\|", row))
+
+
+def _is_table_header(content, next_content):
+    """True when ``content`` + ``next_content`` open a table Marked would render."""
+    if "|" not in content or not _TABLE_DELIMITER_RE.match(next_content):
+        return False
+    if "|" not in next_content and "|" not in content.strip().strip("|"):
+        return False
+    return _table_cell_count(content) == _table_cell_count(next_content)
+
+
+def normalize_table_boundaries(markdown: str) -> str:
+    """Make preview-style tables right after prose parse as tables during export.
+
+    Marked (the canvas preview, GFM) lets a table interrupt the preceding
+    paragraph; Python-Markdown's ``tables`` extension only starts a table at the
+    beginning of a block, so the whole table is folded into the paragraph as
+    literal pipes. Insert the missing blank line in the transient export copy.
+
+    Only a header row followed by a matching delimiter row counts, and only
+    when the previous line is ordinary prose at the same blockquote depth.
+    Fenced code is never rewritten; quoted tables get a quote-only separator.
+    """
+    if not markdown:
+        return markdown
+
+    lines = markdown.split("\n")
+    split = [_split_blockquote_prefix(line) for line in lines]
+    out = []
+    fences = {}
+    # Per quote depth: what the previous line was ("blank", "prose", "other",
+    # or "table" while a table is running).
+    previous = {}
+
+    for i, line in enumerate(lines):
+        quote_prefix, quote_depth, content = split[i]
+        fence = _CODE_FENCE_RE.match(content)
+        active_fence = fences.get(quote_depth)
+
+        if active_fence is not None:
+            out.append(line)
+            if fence:
+                marker = fence.group(2)
+                if marker[0] == active_fence[0] and len(marker) >= active_fence[1]:
+                    del fences[quote_depth]
+                    previous[quote_depth] = "other"
+            continue
+        if fence:
+            marker = fence.group(2)
+            fences[quote_depth] = (marker[0], len(marker))
+            out.append(line)
+            previous[quote_depth] = "other"
+            continue
+
+        if not line.strip():
+            out.append(line)
+            previous = {depth: "blank" for depth in previous}
+            continue
+        if not content.strip():
+            out.append(line)
+            previous[quote_depth] = "blank"
+            continue
+
+        prior = previous.get(quote_depth, "blank")
+        if prior != "table" and i + 1 < len(lines):
+            _, next_depth, next_content = split[i + 1]
+            if next_depth == quote_depth and _is_table_header(content, next_content):
+                if prior == "prose":
+                    out.append(quote_prefix.rstrip())
+                out.append(line)
+                previous[quote_depth] = "table"
+                continue
+
+        out.append(line)
+        if prior == "table":
+            continue  # GFM keeps every following non-blank line in the table
+        if _ATX_HEADING_RE.match(content) or _THEMATIC_BREAK_RE.match(content) or _LIST_ITEM_RE.match(content):
+            previous[quote_depth] = "other"
+        else:
+            previous[quote_depth] = "prose"
 
     return "\n".join(out)
 

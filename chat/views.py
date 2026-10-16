@@ -1299,6 +1299,7 @@ def _canvas_content_to_html(content, base_url, user, *, inline_image_width=False
     from chat.services import (
         normalize_heading_levels,
         normalize_list_boundaries,
+        normalize_table_boundaries,
         render_citations,
         replace_email_with_html,
     )
@@ -1307,9 +1308,10 @@ def _canvas_content_to_html(content, base_url, user, *, inline_image_width=False
     content = normalize_heading_levels(content)
     # Footnote citations [^1] → superscripts + numbered Sources list.
     content = render_citations(content)
-    # Marked (canvas preview) accepts lists directly after prose, while the
-    # Python-Markdown exporter requires a blank block boundary.
+    # Marked (canvas preview) accepts lists and tables directly after prose,
+    # while the Python-Markdown exporter requires a blank block boundary.
     content = normalize_list_boundaries(content)
+    content = normalize_table_boundaries(content)
     content = replace_email_with_html(content)
     # Resolve file-download tokens to absolute hyperlinks first (they persist as
     # links, not embedded bytes), then image-asset tokens to embedded <img>
