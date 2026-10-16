@@ -275,7 +275,6 @@ class ScratchpadEditPointTests(TestCase):
         self.assertEqual(mgr.edit_rounds, [])
 
     def test_edit_point_appends_one_block_and_shrinks_old_notes(self):
-        from chat.scratchpad_tools import SAVED_NOTE_MARKER
         from llm.types import Message
 
         base = [Message(role="system", content="sys"), Message(role="user", content="hi")]
@@ -300,7 +299,9 @@ class ScratchpadEditPointTests(TestCase):
         self.assertEqual(len(blocks), 1)
         self.assertIn("Fact B", blocks[0].content)
         note_call = out2[2].tool_calls[0]
-        self.assertEqual(note_call.arguments["note"], SAVED_NOTE_MARKER)
+        self.assertNotIn("note", note_call.arguments)  # dropped, never replaced by text
+        note_result = next(m for m in out2 if m.tool_call_id == "c1")
+        self.assertIn("It is in your scratchpad.", note_result.content)
         self.assertEqual(req.context.observability["edit_points_total"], 2)
 
     def test_main_agent_block_has_only_this_turns_notes(self):

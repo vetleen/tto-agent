@@ -16,14 +16,17 @@ from django.test import SimpleTestCase, TestCase
 from pydantic import BaseModel, Field
 
 from llm.pipelines.edit_points import (
+    RESULT_NOTE_FIELD,
+    TRIM_NOTES_KEY,
     EditPointManager,
     TRIMMED_ARGS_KEY,
+    attach_trim_notes,
     record_thinking_drops,
     trim_history_call_args,
     trim_old_tool_call_args,
 )
 from llm.pipelines.simple_chat import SimpleChatPipeline
-from llm.tools.interfaces import ContextAwareTool
+from llm.tools.interfaces import ArgTrim, ContextAwareTool, find_echoed_marker
 from llm.types.context import RunContext
 from llm.types.messages import Message, ToolCall
 from llm.types.requests import ChatRequest
@@ -125,7 +128,22 @@ class TrimOldToolCallArgsTests(SimpleTestCase):
             {"id": "b", "name": "writer", "arguments": {"content": "x" * 200}},
         ]
         out = trim_history_call_args(calls, {"a"}, tool_lookup=lambda name: tool)
-        self.assertEqual(out, {"a": {"content": "[trimmed]"}})
+        self.assertEqual(out, {"a": ArgTrim(args={"content": "[trimmed]"}, note="")})
+
+    def test_arg_trim_note_recorded_on_the_assistant_message(self):
+        class _Drops(_TrimAll):
+            def trim_args_at_edit_point(self, args, *, later_calls):
+                return ArgTrim(args={k: v for k, v in args.items() if k != "content"}, note="NOTE-c1")
+
+        msgs = [
+            Message(role="user", content="q"),
+            _asst("c1", "writer", {"title": "T", "content": "x" * 200}), _tool("c1", '{"status": "ok"}'),
+        ]
+        out, n = trim_old_tool_call_args(msgs, protected_call_ids=set(), tool_lookup=lambda name: _Drops())
+        self.assertEqual(n, 1)
+        self.assertEqual(out[1].tool_calls[0].arguments, {"title": "T"})
+        self.assertEqual(out[1].metadata[TRIM_NOTES_KEY], {"c1": "NOTE-c1"})
+        self.assertIs(out[2], msgs[2])  # the edit point attaches the note later
 
     def test_small_slide_edit_untouched(self):
         """Below trim_args_min_chars (2000) a slide edit keeps its args even though
@@ -271,39 +289,54 @@ class TrimOldToolResultsTests(SimpleTestCase):
 
 
 class ToolTrimHookTests(SimpleTestCase):
-    """The per-tool trim rules (content must stay reachable)."""
+    """The per-tool trim rules: big fields are REMOVED (never replaced by text the
+    model could copy back, WILFRED-9Q) and the note says where the content lives."""
+
+    def assertDropped(self, trim, key, *in_note):
+        self.assertIsInstance(trim, ArgTrim)
+        self.assertNotIn(key, trim.args)
+        self.assertIsNone(find_echoed_marker(trim.args))
+        self.assertTrue(trim.note.startswith("[Omitted from this transcript"), trim.note)
+        for text in in_note:
+            self.assertIn(text, trim.note)
 
     def test_canvas_write_and_edit_point_to_canvas_read(self):
         from chat.canvas_tools import EditCanvasTool, WriteCanvasTool
 
         w = WriteCanvasTool().trim_args_at_edit_point({"title": "T", "content": "y" * 3000}, later_calls=[])
-        self.assertIn("canvas_read", w["content"])
-        self.assertIn("Omitted from this transcript", w["content"])
-        self.assertEqual(w["title"], "T")
+        self.assertDropped(w, "content", "canvas_read", "3,000-char document")
+        self.assertEqual(w.args["title"], "T")
         e = EditCanvasTool().trim_args_at_edit_point(
-            {"edits": [{"old_text": "a", "new_text": "b"}]}, later_calls=[],
+            {"edits": [{"old_text": "a", "new_text": "b"}], "canvas_name": "C"}, later_calls=[],
         )
-        self.assertIn("canvas_read", e["edits"])
-        # Idempotent: an already-trimmed write is left alone.
-        self.assertIsNone(WriteCanvasTool().trim_args_at_edit_point(w, later_calls=[]))
+        self.assertDropped(e, "edits", "canvas_read", "list of 1 edit(s)")
+        self.assertEqual(e.args["canvas_name"], "C")
+        # Idempotent: an already-trimmed call is left alone.
+        self.assertIsNone(WriteCanvasTool().trim_args_at_edit_point(w.args, later_calls=[]))
+        self.assertIsNone(EditCanvasTool().trim_args_at_edit_point(e.args, later_calls=[]))
 
-    def test_subagent_canvas_args_trim_to_read_marker(self):
+    def test_subagent_canvas_args_trim_to_read_note(self):
         """Since subagent_canvas_read exists, old sub-agent canvas write/edit
-        arguments are recoverable and trim like the main agent's (no longer
-        only when a later full rewrite superseded them)."""
+        arguments are recoverable and trim like the main agent's."""
         from chat.subagent_canvas_tools import SubagentCanvasEditTool, SubagentCanvasWriteTool
 
-        args = {"content": "z" * 3000}
-        out = SubagentCanvasWriteTool().trim_args_at_edit_point(args, later_calls=[])
-        self.assertIn("subagent_canvas_read", out["content"])
-        self.assertIn("Omitted from this transcript", out["content"])
-        # Already-trimmed arguments are left alone.
-        self.assertIsNone(SubagentCanvasWriteTool().trim_args_at_edit_point(out, later_calls=[]))
-        edit_args = {"edits": [{"old_text": "a", "new_text": "b"}]}
-        self.assertIn(
-            "subagent_canvas_read",
-            SubagentCanvasEditTool().trim_args_at_edit_point(edit_args, later_calls=[])["edits"],
+        out = SubagentCanvasWriteTool().trim_args_at_edit_point({"content": "z" * 3000}, later_calls=[])
+        self.assertDropped(out, "content", "subagent_canvas_read")
+        self.assertIsNone(SubagentCanvasWriteTool().trim_args_at_edit_point(out.args, later_calls=[]))
+        edit = SubagentCanvasEditTool().trim_args_at_edit_point(
+            {"edits": [{"old_text": "a", "new_text": "b"}]}, later_calls=[],
         )
+        self.assertDropped(edit, "edits", "subagent_canvas_read")
+
+    def test_scratchpad_note_dropped(self):
+        from chat.scratchpad_tools import ScratchpadAppendTool, SubagentScratchpadAppendTool
+
+        for tool in (ScratchpadAppendTool(), SubagentScratchpadAppendTool()):
+            with self.subTest(tool=tool.name):
+                out = tool.trim_args_at_edit_point({"note": "n" * 300, "reason": "r"}, later_calls=[])
+                self.assertDropped(out, "note", "scratchpad")
+                self.assertEqual(out.args, {"reason": "r"})
+                self.assertIsNone(tool.trim_args_at_edit_point(out.args, later_calls=[]))
 
     def test_slide_write_trimmed_while_deck_stays_active(self):
         """A deck write is trimmed whenever its deck is still the active one (its
@@ -313,11 +346,10 @@ class ToolTrimHookTests(SimpleTestCase):
 
         args = {"content": {"slides": []}, "deck_name": "Pitch"}
         out = WriteDeckTool().trim_args_at_edit_point(args, later_calls=[])
-        self.assertIn("Active Slide Deck", out["content"])
-        self.assertIn("Omitted from this transcript", out["content"])
-        self.assertEqual(out["deck_name"], "Pitch")
+        self.assertDropped(out, "content", "Active Slide Deck")
+        self.assertEqual(out.args["deck_name"], "Pitch")
         same = [ToolCall(id="y", name="slide_canvas_write", arguments={"deck_name": "Pitch"})]
-        self.assertIn("replaced", WriteDeckTool().trim_args_at_edit_point(args, later_calls=same)["content"])
+        self.assertIn("replaced", WriteDeckTool().trim_args_at_edit_point(args, later_calls=same).note)
         other = [ToolCall(id="x", name="slide_canvas_write", arguments={"deck_name": "Other"})]
         self.assertIsNone(WriteDeckTool().trim_args_at_edit_point(args, later_calls=other))
         # Unnamed calls target the then-active deck; an unnamed later edit keeps it active.
@@ -325,10 +357,10 @@ class ToolTrimHookTests(SimpleTestCase):
         later_edit = [ToolCall(id="e", name="slide_canvas_edit", arguments={"edits": []})]
         self.assertIn(
             "Active Slide Deck",
-            WriteDeckTool().trim_args_at_edit_point(unnamed, later_calls=later_edit)["content"],
+            WriteDeckTool().trim_args_at_edit_point(unnamed, later_calls=later_edit).note,
         )
         # Idempotent: an already-trimmed write is left alone.
-        self.assertIsNone(WriteDeckTool().trim_args_at_edit_point(out, later_calls=[]))
+        self.assertIsNone(WriteDeckTool().trim_args_at_edit_point(out.args, later_calls=[]))
 
     def test_slide_write_kept_after_switch(self):
         """Anything that may have changed which deck is active keeps the JSON (the
@@ -354,7 +386,7 @@ class ToolTrimHookTests(SimpleTestCase):
         ):
             with self.subTest(harmless=harmless.name):
                 out = WriteDeckTool().trim_args_at_edit_point(args, later_calls=[harmless])
-                self.assertIn("Active Slide Deck", out["content"])
+                self.assertDropped(out, "content", "Active Slide Deck")
 
     def test_slide_write_not_superseded_across_a_switch(self):
         """write("") -> activate("Other") -> write(""): the second write hit another
@@ -373,13 +405,12 @@ class ToolTrimHookTests(SimpleTestCase):
 
         args = {"edits": [{"old_text": "a", "new_text": "b"}, {"old_text": "c", "new_text": "d"}], "deck_name": ""}
         out = EditDeckTool().trim_args_at_edit_point(args, later_calls=[])
-        self.assertIn("list of 2 edit(s)", out["edits"])
-        self.assertIn("Active Slide Deck", out["edits"])
-        self.assertIsNone(EditDeckTool().trim_args_at_edit_point(out, later_calls=[]))  # idempotent
+        self.assertDropped(out, "edits", "list of 2 edit(s)", "Active Slide Deck")
+        self.assertIsNone(EditDeckTool().trim_args_at_edit_point(out.args, later_calls=[]))  # idempotent
         as_string = {"edits": '[{"old_text": "a", "new_text": "b"}]'}
-        self.assertIn("Omitted", EditDeckTool().trim_args_at_edit_point(as_string, later_calls=[])["edits"])
+        self.assertDropped(EditDeckTool().trim_args_at_edit_point(as_string, later_calls=[]), "edits", "the edits")
         superseded = [ToolCall(id="w", name="slide_canvas_write", arguments={"content": {}})]
-        self.assertIn("replaced", EditDeckTool().trim_args_at_edit_point(args, later_calls=superseded)["edits"])
+        self.assertIn("replaced", EditDeckTool().trim_args_at_edit_point(args, later_calls=superseded).note)
         switched = [ToolCall(id="a", name="slide_canvas_activate", arguments={"deck_names": ["Other"]})]
         self.assertIsNone(EditDeckTool().trim_args_at_edit_point(args, later_calls=switched))
 
@@ -393,6 +424,13 @@ class ToolTrimHookTests(SimpleTestCase):
         self.assertFalse(WriteCanvasTool().trim_despite_recency)
         self.assertFalse(ContextAwareTool.model_fields["trim_despite_recency"].default)
 
+    def assertFieldDropped(self, data, key, *in_note):
+        self.assertNotIn(key, data)
+        note = data["omitted_fields_note"]
+        self.assertTrue(note.startswith("[Omitted from this transcript"), note)
+        for text in in_note:
+            self.assertIn(text, note)
+
     def test_create_deck_result_hook(self):
         from chat.slide_tools import CreateDeckTool
 
@@ -404,14 +442,13 @@ class ToolTrimHookTests(SimpleTestCase):
         tool = CreateDeckTool()
         out = tool.trim_result_at_edit_point(result, args, later_calls=[])
         data = json.loads(out)
-        self.assertIn("Active Slide Deck", data["deck_json"])
-        self.assertIn("Omitted from this transcript", data["deck_json"])
+        self.assertFieldDropped(data, "deck_json", "Active Slide Deck", "seeded deck JSON")
         self.assertEqual(data["slide_ids"], ["s1", "s2"])
         self.assertEqual(data["deck_id"], "7")
         self.assertLess(len(out), len(result))
         superseded = [ToolCall(id="w", name="slide_canvas_write", arguments={"deck_name": "Pitch"})]
         replaced = json.loads(tool.trim_result_at_edit_point(result, args, later_calls=superseded))
-        self.assertIn("replaced", replaced["deck_json"])
+        self.assertFieldDropped(replaced, "deck_json", "replaced")
         switched = [ToolCall(id="a", name="slide_canvas_activate", arguments={"deck_names": ["Other"]})]
         self.assertIsNone(tool.trim_result_at_edit_point(result, args, later_calls=switched))
         error = json.dumps({"status": "error", "deck_json": "x" * 3000})
@@ -429,19 +466,21 @@ class ToolTrimHookTests(SimpleTestCase):
             "slide_ids": ["s1"], "deck_json": "{" + "x" * 3000 + "}",
         })
         out = json.loads(tool.trim_result_at_edit_point(deck, args, later_calls=[]))
-        self.assertIn("loaded deck JSON", out["deck_json"])
+        self.assertFieldDropped(out, "deck_json", "loaded deck JSON")
         self.assertEqual(out["title"], "Full Deck (2)")
         # A later write naming "Full Deck" is ANOTHER deck: the stored title is the de-duplicated one.
         other = [ToolCall(id="w", name="slide_canvas_write", arguments={"deck_name": "Full Deck"})]
         self.assertIsNone(tool.trim_result_at_edit_point(deck, args, later_calls=other))
         same = [ToolCall(id="w", name="slide_canvas_write", arguments={"deck_name": "Full Deck (2)"})]
-        self.assertIn("replaced", json.loads(tool.trim_result_at_edit_point(deck, args, later_calls=same))["deck_json"])
+        self.assertFieldDropped(
+            json.loads(tool.trim_result_at_edit_point(deck, args, later_calls=same)), "deck_json", "replaced",
+        )
         slide = json.dumps({
             "status": "ok", "loaded_as": "slide", "deck_id": "9", "title": "QA Deck",
             "slide_id": "s3", "slide_json": "{" + "x" * 3000 + "}",
         })
         shrunk = json.loads(tool.trim_result_at_edit_point(slide, args, later_calls=[]))
-        self.assertIn("loaded slide JSON", shrunk["slide_json"])
+        self.assertFieldDropped(shrunk, "slide_json", "loaded slide JSON")
         self.assertEqual(shrunk["slide_id"], "s3")
         canvas = json.dumps({"status": "ok", "title": "Notes", "canvas_id": "c1", "note": "n" * 3000})
         self.assertIsNone(tool.trim_result_at_edit_point(canvas, args, later_calls=[]))
@@ -458,9 +497,9 @@ class ToolTrimHookTests(SimpleTestCase):
         result = json.dumps({"status": "ok", "title": "P", "deck_id": "1", "deck_json": "x" * 3000})
         self.assertIsNone(create.trim_result_at_edit_point(result, {"title": "P"}, later_calls=[]))
         ctx.deck_block_failed = False
-        self.assertIn("Active Slide Deck", write.trim_args_at_edit_point(args, later_calls=[])["content"])
+        self.assertDropped(write.trim_args_at_edit_point(args, later_calls=[]), "content", "Active Slide Deck")
         shrunk = json.loads(create.trim_result_at_edit_point(result, {"title": "P"}, later_calls=[]))
-        self.assertIn("Active Slide Deck", shrunk["deck_json"])
+        self.assertFieldDropped(shrunk, "deck_json", "Active Slide Deck")
 
     def test_document_edit_points_to_document_read(self):
         from llm.tools.registry import get_tool_registry
@@ -469,8 +508,137 @@ class ToolTrimHookTests(SimpleTestCase):
         out = tool.trim_args_at_edit_point(
             {"doc_index": 1, "mode": "rewrite", "content": "w" * 3000}, later_calls=[],
         )
-        self.assertIn("document_read", out["content"])
-        self.assertEqual(out["doc_index"], 1)
+        self.assertDropped(out, "content", "document_read")
+        self.assertEqual(out.args["doc_index"], 1)
+        both = tool.trim_args_at_edit_point(
+            {"doc_index": 1, "content": "w" * 300, "edits": [{"old_text": "a", "new_text": "b"}]},
+            later_calls=[],
+        )
+        self.assertDropped(both, "content", "300-char content", "list of 1 edit(s)")
+        self.assertNotIn("edits", both.args)
+        self.assertIsNone(tool.trim_args_at_edit_point(both.args, later_calls=[]))
+
+    def test_copied_trimmed_call_never_writes(self):
+        """A model that copies a trimmed call back gets an error, never a write:
+        each dropped field is required, or the tool rejects it as empty."""
+        from chat.canvas_tools import EditCanvasTool, WriteCanvasTool
+        from chat.scratchpad_tools import ScratchpadAppendTool
+        from chat.slide_tools import EditDeckTool, WriteDeckTool
+
+        cases = (
+            (WriteCanvasTool(), {"title": "T", "content": "y" * 3000}),
+            (EditCanvasTool(), {"edits": [{"old_text": "a", "new_text": "b"}]}),
+            (EditDeckTool(), {"edits": [{"old_text": "a", "new_text": "b"}]}),
+            (ScratchpadAppendTool(), {"note": "n" * 300}),
+        )
+        for tool, args in cases:
+            with self.subTest(tool=tool.name):
+                trimmed = tool.trim_args_at_edit_point(args, later_calls=[]).args
+                with patch.object(type(tool), "_run", side_effect=AssertionError("ran")):
+                    out = tool.invoke(trimmed)
+                self.assertIn("NOT run", out)
+        write_deck = WriteDeckTool()
+        trimmed = write_deck.trim_args_at_edit_point({"content": {"slides": []}}, later_calls=[]).args
+        out = json.loads(write_deck.invoke(trimmed))
+        self.assertEqual(out["status"], "error")
+
+
+class TrimNoteTests(TestCase):
+    """The note for a trimmed call goes on its RESULT, never in an argument slot
+    (WILFRED-9Q: Gemini copied ``"edits": "[Omitted…]"`` back as its edits)."""
+
+    def test_json_result_gets_a_field_and_stays_parseable(self):
+        msgs = [_tool("c1", '{"status": "ok", "applied": 3}')]
+        out = attach_trim_notes(msgs, {"c1": "[Omitted from this transcript: x. y]"})
+        data = json.loads(out[0].content)
+        self.assertEqual(data["applied"], 3)
+        self.assertEqual(data[RESULT_NOTE_FIELD], "[Omitted from this transcript: x. y]")
+        self.assertIs(attach_trim_notes(out, {"c1": "[Omitted from this transcript: x. y]"}), out)  # idempotent
+
+    def test_stub_and_text_results_get_the_note_appended(self):
+        stub = "[Earlier result of canvas_edit(canvas_name=C) was cleared to save context.]"
+        msgs = [_tool("c1", stub), _tool("c2", "plain"), _tool("c3", "other")]
+        out = attach_trim_notes(msgs, {"c1": "NOTE1", "c2": "NOTE2 \"quoted\""})
+        self.assertTrue(out[0].content.startswith(stub))  # prefix checks still hold
+        self.assertTrue(out[0].content.endswith("\nNOTE1"))
+        self.assertEqual(out[1].content, 'plain\nNOTE2 "quoted"')
+        self.assertIs(out[2], msgs[2])
+        twice = attach_trim_notes(out, {"c1": "NOTE1", "c2": "NOTE2 \"quoted\""})
+        self.assertEqual([m.content for m in twice], [m.content for m in out])
+
+    def test_history_dicts(self):
+        msgs = [{"role": "tool", "tool_call_id": "c1", "content": '{"status": "ok"}'}, {"role": "user", "content": "q"}]
+        out = attach_trim_notes(msgs, {"c1": "N"})
+        self.assertEqual(json.loads(out[0]["content"])[RESULT_NOTE_FIELD], "N")
+        self.assertEqual(msgs[0]["content"], '{"status": "ok"}')  # not mutated
+
+    def _req(self, messages):
+        ctx = RunContext.create(user_id="1")
+        return ChatRequest(
+            messages=messages, model="gpt-5.4", context=ctx,
+            params={"max_context_tokens": 50_000, "thinking_level": "low"},
+        )
+
+    def test_edit_point_leaves_no_marker_in_any_argument(self):
+        """Regression for WILFRED-9Q: after an edit point no replayed call carries
+        placeholder text in an argument, and each trimmed call's result says where
+        the content lives."""
+        from chat.canvas_tools import EditCanvasTool, WriteCanvasTool
+        from chat.scratchpad_tools import ScratchpadAppendTool
+
+        base = [
+            Message(role="user", content="q"),
+            _asst("w1", "canvas_write", {"title": "T", "content": "c" * 5000}),
+            _tool("w1", '{"status": "ok", "title": "T"}'),
+            _asst("e1", "canvas_edit", {"edits": [{"old_text": "c", "new_text": "d" * 3000}]}),
+            _tool("e1", '{"status": "ok", "applied": 1, "failed": []}'),
+            _asst("n1", "scratchpad_append", {"note": "n" * 400}),
+            _tool("n1", '{"status": "ok"}'),
+        ]
+        req = self._req(base)
+        tools = {
+            "canvas_write": WriteCanvasTool(), "canvas_edit": EditCanvasTool(),
+            "scratchpad_append": ScratchpadAppendTool(),
+        }
+        mgr = EditPointManager(SimpleChatPipeline(), req, tools)
+        new = base + [_asst("s2", "web_search", {"q": 1}), _tool("s2", "R")]
+        with self.settings(CONTEXT_MIDTURN_KEEP_TOOL_RESULTS=0):
+            out, _ = mgr.finish_round(new, req, [], prior_len=len(base), real_input_tokens=40_000,
+                                      round_call_ids={"s2"}, notice=None)
+        self.assertEqual(mgr.edit_rounds, [0])
+        for m in out:
+            for tc in m.tool_calls or []:
+                self.assertIsNone(find_echoed_marker(tc.arguments), tc.name)
+        results = {m.tool_call_id: m.content for m in out if m.role == "tool"}
+        self.assertIn("canvas_read", results["w1"])
+        self.assertIn("list of 1 edit(s)", results["e1"])
+        self.assertIn("scratchpad", results["n1"])
+        self.assertEqual(results["s2"], "R")  # current round untouched
+
+    def test_note_survives_a_later_prune_of_the_result(self):
+        """A call trimmed at an earlier edit point (args dropped, note recorded on
+        the assistant message) whose result a later prune turns into a stub: the
+        note is re-attached to the stub."""
+        note = "[Omitted from this transcript to save space: the doc. Call canvas_read.]"
+        trimmed = _asst("w1", "canvas_write", {"title": "T"}).model_copy(update={"metadata": {
+            TRIMMED_ARGS_KEY: ["w1"], TRIM_NOTES_KEY: {"w1": note},
+        }})
+        base = [
+            Message(role="user", content="q"),
+            trimmed, _tool("w1", json.dumps({"status": "ok", "title": "T", RESULT_NOTE_FIELD: note})),
+            _asst("s1", "web_search", {"q": 1}), _tool("s1", "R1"),
+        ]
+        req = self._req(base)
+        mgr = EditPointManager(SimpleChatPipeline(), req, {})
+        new = base + [_asst("s2", "web_search", {"q": 2}), _tool("s2", "R2")]
+        with self.settings(CONTEXT_MIDTURN_KEEP_TOOL_RESULTS=0):
+            out, _ = mgr.finish_round(new, req, [], prior_len=len(base), real_input_tokens=40_000,
+                                      round_call_ids={"s2"}, notice=None)
+        self.assertEqual(mgr.edit_rounds, [0])
+        w1 = next(m for m in out if m.tool_call_id == "w1")
+        self.assertTrue(w1.content.startswith("[Earlier result of canvas_write(title=T)"))
+        self.assertTrue(w1.content.endswith(note))
+        self.assertEqual(w1.content.count("[Omitted from this transcript"), 1)
 
 
 class NativeEvictionPlanTests(SimpleTestCase):
@@ -580,8 +748,10 @@ class EditPointManagerTests(TestCase):
                                       round_call_ids={"s2"}, notice=None)
         self.assertEqual(mgr.edit_rounds, [0])
         self.assertIn("THE CHUNK", out[-1].content)  # newest copy full (keep-newest)
-        self.assertIn("canvas_read", out[1].tool_calls[0].arguments["content"])
+        self.assertNotIn("content", out[1].tool_calls[0].arguments)
         self.assertTrue(out[2].content.startswith("[Earlier result of"))  # pruned
+        self.assertIn("canvas_read", out[2].content)  # the note rides on the stub
+        self.assertEqual(out[2].content.count("[Omitted from this transcript"), 1)
 
     def test_record_thinking_drops_counts_only_known_type(self):
         ctx = RunContext.create()
@@ -704,7 +874,8 @@ class EditPointManagerTests(TestCase):
         with self.settings(CONTEXT_MIDTURN_KEEP_TOOL_RESULTS=1):
             out = self._round(mgr, req, base, "s2")
         self.assertEqual(mgr.edit_rounds, [0])
-        self.assertIn("Active Slide Deck", out[1].tool_calls[0].arguments["content"])
+        self.assertNotIn("content", out[1].tool_calls[0].arguments)
+        self.assertIn("Active Slide Deck", out[2].content)
         self.assertTrue(out[-1].metadata.get(DECK_BLOCK_KEY))
 
     def test_subagent_ignores_deck_block_provider(self):
@@ -741,8 +912,10 @@ class EditPointManagerTests(TestCase):
         )
         out = self._round(mgr, req, base, "s1")  # default keep_recent=6: both writes are "recent"
         self.assertEqual(mgr.edit_rounds, [0])
-        self.assertIn("Active Slide Deck", out[1].tool_calls[0].arguments["content"])
+        self.assertNotIn("content", out[1].tool_calls[0].arguments)
+        self.assertIn("Active Slide Deck", out[2].content)
         self.assertEqual(out[3].tool_calls[0].arguments["content"], "c" * 5000)
+        self.assertEqual(out[4].content, "ok")  # untrimmed call: no note
         self.assertTrue(out[-1].metadata.get(DECK_BLOCK_KEY))
 
     def test_create_result_kept_in_its_round_then_trimmed_next_edit_point(self):
@@ -773,7 +946,8 @@ class EditPointManagerTests(TestCase):
         shrunk = out2[4]
         self.assertTrue(shrunk.metadata.get(TRIMMED_RESULT_KEY))
         data = json.loads(shrunk.content)
-        self.assertIn("Active Slide Deck", data["deck_json"])
+        self.assertNotIn("deck_json", data)
+        self.assertIn("Active Slide Deck", data["omitted_fields_note"])
         self.assertEqual(data["slide_ids"], ["s1"])
 
     def test_deck_block_provider_called_once_per_edit_point(self):
@@ -834,8 +1008,11 @@ class EditPointManagerTests(TestCase):
         self.assertFalse(req.context.deck_block_failed)
         blocks = [m for m in out3 if (m.metadata or {}).get(DECK_BLOCK_KEY)]
         self.assertEqual([b.content for b in blocks], ["DECK v3"])
-        self.assertIn("Omitted from this transcript", call(out3, "d1").tool_calls[0].arguments["content"])
-        self.assertIn("Active Slide Deck", call(out3, "d2").tool_calls[0].arguments["content"])
+        self.assertNotIn("content", call(out3, "d1").tool_calls[0].arguments)
+        self.assertNotIn("content", call(out3, "d2").tool_calls[0].arguments)
+        results = {m.tool_call_id: m.content for m in out3 if m.role == "tool"}
+        self.assertIn("replaced", results["d1"])  # d2 rewrote the same deck
+        self.assertIn("Active Slide Deck", results["d2"])
         self.assertEqual(mgr.edit_rounds, [0, 1, 2])
 
 

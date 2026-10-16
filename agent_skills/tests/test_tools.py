@@ -1063,7 +1063,8 @@ class LoadResourceToDeckTests(TestCase):
         out = json.loads(self.tool.trim_result_at_edit_point(
             raw, {"template_name": "Full Deck", "target": "deck"}, later_calls=[],
         ))
-        self.assertIn("loaded deck JSON", out["deck_json"])
+        self.assertNotIn("deck_json", out)
+        self.assertIn("loaded deck JSON", out["omitted_fields_note"])
         self.assertEqual(out["title"], "Full Deck (2)")
         self.assertEqual(out["slide_ids"], data["slide_ids"])
         self.assertIsNone(self.tool.trim_result_at_edit_point(
@@ -1072,7 +1073,7 @@ class LoadResourceToDeckTests(TestCase):
         out2 = json.loads(self.tool.trim_result_at_edit_point(
             raw, {}, later_calls=[self._later("slide_canvas_write", deck_name="Full Deck (2)")],
         ))
-        self.assertIn("replaced", out2["deck_json"])
+        self.assertIn("replaced", out2["omitted_fields_note"])
 
     def test_result_hook_trims_slide_json_of_slide_load(self):
         self._make_deck()
@@ -1080,7 +1081,8 @@ class LoadResourceToDeckTests(TestCase):
         data = json.loads(raw)
         self.assertEqual(data["loaded_as"], "slide")
         out = json.loads(self.tool.trim_result_at_edit_point(raw, {}, later_calls=[]))
-        self.assertIn("loaded slide JSON", out["slide_json"])
+        self.assertNotIn("slide_json", out)
+        self.assertIn("loaded slide JSON", out["omitted_fields_note"])
         self.assertEqual(out["slide_id"], data["slide_id"])
         self.assertEqual(out["slide_ids"], data["slide_ids"])
 

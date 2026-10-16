@@ -5504,19 +5504,21 @@ class ChatConsumer(AsyncWebsocketConsumer):
         #     (The call dicts are captured before any rewrite so later_calls carry
         #     the original arguments.)
         all_call_dicts = [tc for msg in messages for tc in msg.get("tool_calls") or []]
+        trim_notes: dict[str, str] = {}
         if trim_eligible_ids or recent_call_ids:
             from llm.pipelines.edit_points import trim_history_call_args
 
-            new_args = trim_history_call_args(
+            trims = trim_history_call_args(
                 all_call_dicts, trim_eligible_ids, recent_ids=recent_call_ids,
             )
-            if new_args:
+            trim_notes = {cid: t.note for cid, t in trims.items() if t.note}
+            if trims:
                 for msg in messages:
                     if msg.get("tool_calls") and any(
-                        tc.get("id") in new_args for tc in msg["tool_calls"]
+                        tc.get("id") in trims for tc in msg["tool_calls"]
                     ):
                         msg["tool_calls"] = [
-                            {**tc, "arguments": new_args[tc["id"]]} if tc.get("id") in new_args else tc
+                            {**tc, "arguments": trims[tc["id"]].args} if tc.get("id") in trims else tc
                             for tc in msg["tool_calls"]
                         ]
 
@@ -5532,6 +5534,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
             for msg in messages:
                 if msg["role"] == "tool" and msg.get("tool_call_id") in new_bodies:
                     msg["content"] = new_bodies[msg["tool_call_id"]]
+
+        # 4d. The trimmed calls' notes ("…omitted from this transcript. Call
+        #     canvas_read…") go on their results (stubbed or raw), never in the
+        #     argument slot the model would copy back (WILFRED-9Q).
+        if trim_notes:
+            from llm.pipelines.edit_points import attach_trim_notes
+
+            messages = attach_trim_notes(messages, trim_notes)
 
         # 5. Strip orphan tool results whose tool_call_id doesn't match any
         #    assistant tool_calls entry (e.g. from history truncation or

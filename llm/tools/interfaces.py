@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -94,17 +96,19 @@ class ContextAwareTool(BaseTool):
         completion label depends on the result (counts, names, status, etc.)."""
         return None
 
-    def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> dict | None:
+    def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> "ArgTrim | dict | None":
         """Return a shrunken copy of an OLD call's arguments, or None to keep them.
 
         Called only at edit points (the tool loop is already editing history) and
         on between-turn history, for calls outside the recent window whose
         serialized args exceed ``trim_args_min_chars``. Override in tools whose
         big arguments stay reachable another way (a read tool, a later call that
-        supersedes them, the scratchpad block) — replace the big fields with a
-        short marker saying where the content lives. Must return a JSON object.
-        ``later_calls`` are the ToolCalls made after this one, oldest first, so a
-        tool can tell whether this call was superseded.
+        supersedes them, the scratchpad block). REMOVE the big fields with
+        ``drop_args``, never replace them with text: the returned ``ArgTrim.note``
+        says where the content lives and is attached to the call's tool result.
+        A plain dict (args only, no note) is accepted too. ``later_calls`` are the
+        ToolCalls made after this one, oldest first, so a tool can tell whether
+        this call was superseded.
         """
         return None
 
@@ -115,8 +119,10 @@ class ContextAwareTool(BaseTool):
         only at edit points and on between-turn history, for results longer than
         ``trim_result_min_chars`` that recency no longer protects (or whose tool
         opted out of recency protection). ``args`` are the call's — possibly
-        already trimmed — arguments. Return the full replacement body (keep the
-        small fields; replace the big ones with ``omitted_result_marker``).
+        already trimmed — arguments. Return the full replacement body: keep the
+        small fields and REMOVE the big ones, with an ``omitted_note`` in a note
+        field. Never put the note where the value was, because the model copies
+        values out of results into its writes.
         """
         return None
 
@@ -124,24 +130,54 @@ class ContextAwareTool(BaseTool):
 OMITTED_ARG_PREFIX = "[Omitted from this transcript to save space"
 
 
-def omitted_arg_marker(what: str, where: str) -> str:
-    """Marker replacing a trimmed call argument (see trim_args_at_edit_point).
+@dataclass(frozen=True)
+class ArgTrim:
+    """What ``trim_args_at_edit_point`` returns: the call's arguments with the big
+    fields REMOVED, plus a note the trimming code attaches to the call's paired
+    tool result.
 
-    Worded so the model reads it as an omission from its own history — NOT as the
-    value the call ran with (a bare "[4,200 chars saved]" was read by a live
-    model as "I saved a placeholder", and it re-did the work)."""
-    return f"{OMITTED_ARG_PREFIX} — this call ran with the full {what}. {where}]"
+    The note never goes into an argument slot. A replayed call reads as the
+    model's own words: ``canvas_edit({"edits": "[Omitted…]"})`` paired with
+    ``{"status": "ok"}`` taught Gemini 4 Argon to send the placeholder as the
+    value (2026-10-15/16, WILFRED-9Q). A call with the field missing can't be
+    copied into a write: it fails validation or the tool's own empty-input check.
+    """
+
+    args: dict
+    note: str
 
 
-def omitted_result_marker(what: str, where: str) -> str:
-    """Marker replacing a big field of a trimmed tool RESULT (see
-    trim_result_at_edit_point). Same prefix as the argument marker, so
-    ``is_omitted_arg`` doubles as the idempotence check for both."""
-    return f"{OMITTED_ARG_PREFIX} — this result carried the full {what}. {where}]"
+def omitted_note(what: str, where: str) -> str:
+    """Note that a payload was left out of this transcript. It appears in tool
+    RESULTS only (the system's voice). The shared prefix lets
+    ``find_echoed_marker`` still catch a copy that lands in an argument.
+
+    Worded as an omission from the model's own history, NOT as the value the call
+    ran with (a bare "[4,200 chars saved]" was read by a live model as "I saved
+    a placeholder", and it re-did the work)."""
+    return f"{OMITTED_ARG_PREFIX}: {what}. It was there in full when the call ran. {where}]"
 
 
-def is_omitted_arg(value) -> bool:
-    return isinstance(value, str) and value.startswith(OMITTED_ARG_PREFIX)
+def edits_description(edits) -> str:
+    """How a note names a removed ``edits`` argument."""
+    if isinstance(edits, list):
+        return f"the list of {len(edits)} edit(s)"
+    return "the edits"
+
+
+def drop_args(args: dict, dropped: dict, where: str) -> ArgTrim | None:
+    """Remove the ``dropped`` keys (key → description, e.g. ``{"edits": "the list
+    of 3 edits"}``) from ``args`` and describe them in one note. Returns None when
+    none of the keys are present, which makes every hook built on it idempotent."""
+    present = {k: what for k, what in dropped.items() if k in args}
+    if not present:
+        return None
+    return ArgTrim(
+        args={k: v for k, v in args.items() if k not in present},
+        note=omitted_note(
+            f"{' and '.join(present.values())} this call sent ({', '.join(present)})", where,
+        ),
+    )
 
 
 # Keys whose value names text to FIND (canvas_edit/document_edit old_text): a
@@ -177,6 +213,6 @@ def find_echoed_marker(args, _path: str = "") -> str | None:
 Tool = ContextAwareTool
 
 __all__ = [
-    "ContextAwareTool", "Tool", "omitted_arg_marker", "omitted_result_marker",
-    "is_omitted_arg", "find_echoed_marker",
+    "ArgTrim", "ContextAwareTool", "Tool", "drop_args", "edits_description", "omitted_note",
+    "find_echoed_marker",
 ]

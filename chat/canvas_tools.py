@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from chat.services import CANVAS_MAX_CHARS
 from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
-from llm.tools.interfaces import omitted_arg_marker, is_omitted_arg
+from llm.tools.interfaces import ArgTrim, drop_args, edits_description
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +41,7 @@ _MD_IMAGE_WARNING = (
 )
 
 
-def _canvas_read_marker(what: str) -> str:
-    return omitted_arg_marker(what, "Call canvas_read to see the canvas as it is now.")
+_CANVAS_READ_WHERE = "Call canvas_read to see the canvas as it is now."
 
 
 class WriteCanvasInput(ReasonBaseModel):
@@ -124,11 +123,11 @@ class WriteCanvasTool(ContextAwareTool):
     )
     args_schema: type[BaseModel] = WriteCanvasInput
 
-    def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> dict | None:
+    def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> ArgTrim | None:
         content = args.get("content")
-        if not isinstance(content, str) or is_omitted_arg(content):
+        if not isinstance(content, str):
             return None
-        return {**args, "content": _canvas_read_marker(f"{len(content):,}-char document")}
+        return drop_args(args, {"content": f"the {len(content):,}-char document"}, _CANVAS_READ_WHERE)
 
     def _run(self, title: str, content: str, canvas_name: str = "", **kwargs) -> str:
         from django.db import IntegrityError
@@ -257,11 +256,10 @@ class EditCanvasTool(ContextAwareTool):
     )
     args_schema: type[BaseModel] = EditCanvasInput
 
-    def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> dict | None:
-        edits = args.get("edits")
-        if not isinstance(edits, list):
+    def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> ArgTrim | None:
+        if "edits" not in args:
             return None
-        return {**args, "edits": _canvas_read_marker(f"list of {len(edits)} edit(s)")}
+        return drop_args(args, {"edits": edits_description(args["edits"])}, _CANVAS_READ_WHERE)
 
     def _run(self, edits: list[dict] | list[EditItem], canvas_name: str = "", **kwargs) -> str:
         from chat.services import (

@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from chat.canvas_tools import EditItem, _read_canvas_result
 from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
-from llm.tools.interfaces import is_omitted_arg, omitted_arg_marker
+from llm.tools.interfaces import ArgTrim, drop_args, edits_description
 
 logger = logging.getLogger(__name__)
 
@@ -90,10 +90,9 @@ class SubagentCanvasEditInput(ReasonBaseModel):
         return value
 
 
-def _canvas_read_marker(what: str) -> str:
-    """Old write/edit arguments are recoverable: the canvas is re-readable with
-    ``subagent_canvas_read``, so they are trimmed like the main agent's."""
-    return omitted_arg_marker(what, "Call subagent_canvas_read to see the canvas as it is now.")
+# Old write/edit arguments are recoverable: the canvas is re-readable with
+# ``subagent_canvas_read``, so they are trimmed like the main agent's.
+_CANVAS_READ_WHERE = "Call subagent_canvas_read to see the canvas as it is now."
 
 
 def _read_end_label(result: dict) -> str | None:
@@ -128,11 +127,11 @@ class SubagentCanvasWriteTool(ContextAwareTool):
     )
     args_schema: type[BaseModel] = SubagentCanvasWriteInput
 
-    def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> dict | None:
+    def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> ArgTrim | None:
         content = args.get("content")
-        if not isinstance(content, str) or is_omitted_arg(content):
+        if not isinstance(content, str):
             return None
-        return {**args, "content": _canvas_read_marker(f"{len(content):,}-char content")}
+        return drop_args(args, {"content": f"the {len(content):,}-char content"}, _CANVAS_READ_WHERE)
 
     def _run(self, content: str, title: str = "", **kwargs) -> str:
         from chat.services import (
@@ -179,11 +178,10 @@ class SubagentCanvasEditTool(ContextAwareTool):
     )
     args_schema: type[BaseModel] = SubagentCanvasEditInput
 
-    def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> dict | None:
-        edits = args.get("edits")
-        if not isinstance(edits, list):
+    def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> ArgTrim | None:
+        if "edits" not in args:
             return None
-        return {**args, "edits": _canvas_read_marker(f"list of {len(edits)} edit(s)")}
+        return drop_args(args, {"edits": edits_description(args["edits"])}, _CANVAS_READ_WHERE)
 
     def _run(self, edits: list[dict] | list[EditItem], **kwargs) -> str:
         from chat.edit_utils import apply_unique_text_edits

@@ -1,8 +1,8 @@
-"""Agent-only scratchpad — one append-only tool for the assistant's private notes.
+"""Agent-only scratchpad â€” one append-only tool for the assistant's private notes.
 
 The notes are injected into every turn (see ``chat/prompts.py``) and are immune to
 history windowing/summarization, so findings survive aggressive tool-result pruning.
-They are the assistant's own working memory and are **never shown to the user** — no
+They are the assistant's own working memory and are **never shown to the user** â€” no
 ``canvas.updated``-style content event is emitted (the tool is deliberately absent
 from ``CANVAS_UPDATED_TOOLS``).
 """
@@ -15,26 +15,23 @@ import logging
 from django.conf import settings
 from pydantic import BaseModel, Field
 
-from llm.tools.interfaces import ContextAwareTool, ReasonBaseModel, omitted_arg_marker
+from llm.tools.interfaces import ArgTrim, ContextAwareTool, ReasonBaseModel, drop_args
 
 logger = logging.getLogger(__name__)
 
 
-SAVED_NOTE_MARKER = omitted_arg_marker("note", "It is in your scratchpad.")
-
-
-def _trim_note_args(args: dict) -> dict | None:
+def _trim_note_args(args: dict) -> ArgTrim | None:
     """At an edit point the scratchpad is re-shown in full, so an old note's
-    text is a duplicate — keep the call, shrink the note."""
-    if not isinstance(args.get("note"), str) or args["note"] == SAVED_NOTE_MARKER:
+    text is a duplicate: keep the call, drop the note."""
+    if not isinstance(args.get("note"), str):
         return None
-    return {**args, "note": SAVED_NOTE_MARKER}
+    return drop_args(args, {"note": "the note"}, "It is in your scratchpad.")
 
 
 class ScratchpadAppendInput(ReasonBaseModel):
     note: str = Field(
         description=(
-            "A note to append to your private scratchpad — key facts, findings, "
+            "A note to append to your private scratchpad â€” key facts, findings, "
             "URLs, or intermediate conclusions you'll need on later turns. Tool "
             "results (web pages, document reads) can be cleared from context to "
             "save space, so save anything important here first. Only you can see "
@@ -53,12 +50,12 @@ class ScratchpadAppendTool(ContextAwareTool):
         "Append a note to your private, persistent scratchpad. The scratchpad is "
         "shown back to you on every turn and survives context pruning and "
         "summarization, so use it to retain findings before large tool results are "
-        "cleared. It is agent-only — the user never sees it."
+        "cleared. It is agent-only â€” the user never sees it."
     )
     args_schema: type[BaseModel] = ScratchpadAppendInput
     trim_args_min_chars: int = 200
 
-    def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> dict | None:
+    def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> ArgTrim | None:
         return _trim_note_args(args)
 
     def _run(self, note: str, **kwargs) -> str:
@@ -102,7 +99,7 @@ class ScratchpadAppendTool(ContextAwareTool):
 class SubagentScratchpadAppendInput(ReasonBaseModel):
     note: str = Field(
         description=(
-            "A note to append to your private scratchpad — key facts, findings, "
+            "A note to append to your private scratchpad â€” key facts, findings, "
             "URLs, or intermediate conclusions you'll need later in this run. Tool "
             "results (web pages, document reads) get cleared from your context as "
             "the run grows, so save anything important here first. The scratchpad "
@@ -128,13 +125,13 @@ class SubagentScratchpadAppendTool(ContextAwareTool):
         "Append a note to your private, persistent scratchpad. The scratchpad is "
         "shown back to you whenever older context is cleared, so use it to "
         "retain findings before large tool results are cleared. It is private "
-        "working memory — NOT part of your deliverable (build that in your working "
+        "working memory â€” NOT part of your deliverable (build that in your working "
         "canvas) and the user never sees it."
     )
     args_schema: type[BaseModel] = SubagentScratchpadAppendInput
     trim_args_min_chars: int = 200
 
-    def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> dict | None:
+    def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> ArgTrim | None:
         return _trim_note_args(args)
 
     def _run(self, note: str, **kwargs) -> str:

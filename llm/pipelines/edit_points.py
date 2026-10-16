@@ -29,6 +29,7 @@ import json
 import logging
 from typing import Callable, List
 
+from llm.tools.interfaces import ArgTrim
 from llm.types.messages import Message, ToolCall
 from llm.types.requests import ChatRequest
 
@@ -45,6 +46,13 @@ SCRATCHPAD_BLOCK_KEY = "wf_scratchpad_block"
 DECK_BLOCK_KEY = "wf_deck_block"
 # Assistant-message metadata: ids of tool calls whose args were already trimmed.
 TRIMMED_ARGS_KEY = "wf_trimmed_args"
+# Assistant-message metadata: ``{call_id: note}`` for trimmed calls whose tool
+# described the removed fields (``ArgTrim.note``). Re-attached to the paired
+# result at every edit point, because a later prune can replace that result
+# with a stub.
+TRIM_NOTES_KEY = "wf_trim_notes"
+# Field that carries the note when the paired result is a JSON object.
+RESULT_NOTE_FIELD = "omitted_args_note"
 # Tool-message metadata: set once the result body was shrunk by its tool's
 # trim_result_at_edit_point hook, so it is not offered to the hook again.
 TRIMMED_RESULT_KEY = "wf_trimmed_result"
@@ -90,14 +98,77 @@ def default_tool_lookup(name: str):
     return get_tool_registry().get_tool(name)
 
 
+def _as_arg_trim(value, args: dict) -> ArgTrim | None:
+    """A hook's return value as an ArgTrim (a plain dict = args, no note), or None
+    when it keeps the arguments."""
+    if isinstance(value, ArgTrim):
+        new_args, note = value.args, value.note
+    elif isinstance(value, dict):
+        new_args, note = value, ""
+    else:
+        return None
+    if not isinstance(new_args, dict) or new_args == args:
+        return None
+    return ArgTrim(args=new_args, note=note or "")
+
+
+def with_trim_note(content, note: str):
+    """``content`` (a tool result body) carrying ``note``: a JSON object gets it as
+    the ``RESULT_NOTE_FIELD`` field; anything else (plain text, a pruning stub)
+    gets it appended on its own line. Bodies are only ever appended to, never
+    prefixed, so the prefix checks for stubs and dedup placeholders still hold.
+    Idempotent."""
+    if not note or not isinstance(content, str) or note in content:
+        return content
+    try:
+        data = json.loads(content)
+    except (TypeError, ValueError):
+        data = None
+    if isinstance(data, dict):
+        data[RESULT_NOTE_FIELD] = note
+        return json.dumps(data)
+    return f"{content}\n{note}" if content else note
+
+
+def attach_trim_notes(messages: list, notes: dict) -> list:
+    """Attach each ``{call_id: note}`` to its paired tool result. Works on
+    ``Message`` objects (mid-turn) and on history dicts (between turns). Returns
+    a new list, or the original one when nothing changed."""
+    if not notes:
+        return messages
+    out = None
+    for i, m in enumerate(messages):
+        is_dict = isinstance(m, dict)
+        role = m.get("role") if is_dict else getattr(m, "role", "")
+        cid = m.get("tool_call_id") if is_dict else getattr(m, "tool_call_id", None)
+        if role != "tool" or not cid or cid not in notes:
+            continue
+        content = m.get("content") if is_dict else m.content
+        new = with_trim_note(content, notes[cid])
+        if new == content:
+            continue
+        if out is None:
+            out = list(messages)
+        out[i] = {**m, "content": new} if is_dict else m.model_copy(update={"content": new})
+    return messages if out is None else out
+
+
+def _stored_trim_notes(messages: List[Message]) -> dict:
+    notes: dict = {}
+    for m in messages:
+        if getattr(m, "role", "") == "assistant":
+            notes.update((m.metadata or {}).get(TRIM_NOTES_KEY) or {})
+    return notes
+
+
 def _trimmed_args(
     calls: List[ToolCall], eligible: Callable[[int, ToolCall], bool], tool_lookup,
     recent_ids=frozenset(),
 ) -> dict:
-    """``{call_index: new_args}`` for eligible calls whose tool shrinks them. A
+    """``{call_index: ArgTrim}`` for eligible calls whose tool shrinks them. A
     call in ``recent_ids`` is skipped unless its tool sets
     ``trim_despite_recency`` (recency protects every other tool's arguments)."""
-    out: dict[int, dict] = {}
+    out: dict[int, ArgTrim] = {}
     for idx, tc in enumerate(calls):
         if not eligible(idx, tc):
             continue
@@ -114,12 +185,12 @@ def _trimmed_args(
         if size < int(getattr(tool, "trim_args_min_chars", 2000)):
             continue
         try:
-            new_args = tool.trim_args_at_edit_point(args, later_calls=calls[idx + 1:])
+            trim = _as_arg_trim(tool.trim_args_at_edit_point(args, later_calls=calls[idx + 1:]), args)
         except Exception:  # a buggy hook must never break a turn
             logger.exception("trim_args_at_edit_point failed for tool %s", tc.name)
             continue
-        if isinstance(new_args, dict) and new_args != args:
-            out[idx] = new_args
+        if trim is not None:
+            out[idx] = trim
     return out
 
 
@@ -140,9 +211,11 @@ def trim_history_call_args(
 ) -> dict:
     """Between-turn variant for DB history, whose tool calls are dicts
     (``{"id", "name", "arguments"}``) in chronological order. Returns
-    ``{call_id: new_args}`` for the eligible calls a tool chose to shrink.
-    ``recent_ids`` (calls inside the raw window) are offered too, but only a
-    tool with ``trim_despite_recency`` shrinks one of those."""
+    ``{call_id: ArgTrim}`` for the eligible calls a tool chose to shrink. The
+    caller applies ``.args`` and attaches each ``.note`` to the result
+    (``attach_trim_notes``). ``recent_ids`` (calls inside the raw window) are
+    offered too, but only a tool with ``trim_despite_recency`` shrinks one of
+    those."""
     calls = _calls_from_dicts(call_dicts)
     decided = _trimmed_args(
         calls, lambda _i, tc: tc.id in eligible_ids or tc.id in recent_ids, tool_lookup,
@@ -225,9 +298,12 @@ def trim_old_tool_call_args(
         [t[2] for t in triples], eligible, tool_lookup, recent_ids=recent_call_ids,
     )
     replacements: dict[int, dict[int, ToolCall]] = {}
-    for idx, new_args in decided.items():
+    notes_by_msg: dict[int, dict[str, str]] = {}
+    for idx, trim in decided.items():
         mi, ci, tc = triples[idx]
-        replacements.setdefault(mi, {})[ci] = tc.model_copy(update={"arguments": new_args})
+        replacements.setdefault(mi, {})[ci] = tc.model_copy(update={"arguments": trim.args})
+        if trim.note:
+            notes_by_msg.setdefault(mi, {})[tc.id] = trim.note
 
     if not replacements:
         return messages, 0
@@ -240,6 +316,8 @@ def trim_old_tool_call_args(
         meta[TRIMMED_ARGS_KEY] = list(meta.get(TRIMMED_ARGS_KEY) or []) + [
             calls[ci].id for ci in by_ci
         ]
+        if mi in notes_by_msg:
+            meta[TRIM_NOTES_KEY] = {**(meta.get(TRIM_NOTES_KEY) or {}), **notes_by_msg[mi]}
         out[mi] = msg.model_copy(update={"tool_calls": calls, "metadata": meta})
         count += len(by_ci)
     return out, count
@@ -463,6 +541,11 @@ class EditPointManager:
             if pruned and ctx is not None:
                 ctx.bump_stat("prunes", 1)
 
+        # 3b. Trimmed calls' notes go onto their results, after result trimming
+        #     (JSON hooks parse those bodies) and after pruning (a stub replaces
+        #     the body, so a note attached at an earlier edit point is re-added).
+        messages = attach_trim_notes(messages, _stored_trim_notes(messages))
+
         # 4. Native assets — evict with hysteresis so the next file doesn't
         #    trigger another edit.
         evicted = 0
@@ -643,8 +726,11 @@ __all__ = [
     "DECK_BLOCK_KEY",
     "EditPointManager",
     "SCRATCHPAD_BLOCK_HEADER",
+    "RESULT_NOTE_FIELD",
     "TRIMMED_RESULT_KEY",
+    "attach_trim_notes",
     "record_thinking_drops",
+    "with_trim_note",
     "trim_history_call_args",
     "trim_history_results",
     "trim_old_tool_call_args",

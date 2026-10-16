@@ -47,15 +47,16 @@ class SlideToolTests(TestCase):
         return json.loads(tool._run(**kw))
 
     def test_create_result_hook_round_trips_real_result(self):
-        """The create tool's own result shrinks to a pointer (deck_json) while the
-        ids the model needs for later edits stay."""
+        """The create tool's own result drops deck_json (a note says where the
+        deck is) while the ids the model needs for later edits stay."""
         tool = CreateDeckTool()
         tool.set_context(self.ctx)
         raw = tool._run(title="Deck A", layouts=["title", "bullets"])
         data = json.loads(raw)
         self.assertIn("Presentation title", data["deck_json"])
         out = json.loads(tool.trim_result_at_edit_point(raw, {"title": "Deck A"}, later_calls=[]))
-        self.assertIn("Active Slide Deck", out["deck_json"])
+        self.assertNotIn("deck_json", out)
+        self.assertIn("Active Slide Deck", out["omitted_fields_note"])
         self.assertEqual(out["slide_ids"], data["slide_ids"])
         self.assertEqual(out["deck_id"], data["deck_id"])
         self.assertLess(len(json.dumps(out)), len(raw))

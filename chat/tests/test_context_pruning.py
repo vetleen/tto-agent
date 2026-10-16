@@ -148,7 +148,8 @@ class LoadHistoryStubbingTests(TransactionTestCase):
     @override_settings(CONTEXT_RAW_TOOL_TURNS=2)
     async def test_old_big_call_args_trimmed_recent_kept(self):
         """Outside the raw window, a tool's trim_args_at_edit_point shrinks big
-        call arguments (canvas text → canvas_read pointer); recent calls keep theirs."""
+        call arguments (canvas text dropped, a canvas_read note on the result);
+        recent calls keep theirs."""
         big = "canvas body " * 400
         await self._msg("Question one", role="user")
         await self._msg("", role="assistant", tool_calls=[
@@ -165,8 +166,12 @@ class LoadHistoryStubbingTests(TransactionTestCase):
 
         messages = (await self.consumer._load_history(self.thread))["messages"]
         calls = {tc["id"]: tc for m in messages for tc in m.get("tool_calls") or []}
-        self.assertIn("canvas_read", calls["w-old"]["arguments"]["content"])
+        self.assertNotIn("content", calls["w-old"]["arguments"])
         self.assertEqual(calls["w-old"]["arguments"]["title"], "T")
+        results = {m["tool_call_id"]: m["content"] for m in messages if m["role"] == "tool"}
+        self.assertTrue(results["w-old"].startswith("[Earlier result of canvas_write("))  # stubbed
+        self.assertIn("canvas_read", results["w-old"])  # ...and carries the note
+        self.assertEqual(results["w-new"], '{"status": "ok"}')
         self.assertEqual(calls["w-new"]["arguments"]["content"], big)
         # The stored message is not modified.
         stored = await database_sync_to_async(
@@ -176,8 +181,8 @@ class LoadHistoryStubbingTests(TransactionTestCase):
 
     @override_settings(CONTEXT_RAW_TOOL_TURNS=2)
     async def test_old_slide_write_args_trimmed_between_turns(self):
-        """An old slide_canvas_write's deck JSON points at the Active Slide Deck
-        section the next preamble regenerates; a recent edit keeps its args and
+        """An old slide_canvas_write's deck JSON is dropped and its result points
+        at the Active Slide Deck section the next preamble regenerates; a recent edit keeps its args and
         the stored row is untouched."""
         deck = {"version": 1, "slides": [{"id": "s1", "name": "x" * 3000}]}
         await self._msg("Question one", role="user")
@@ -196,7 +201,9 @@ class LoadHistoryStubbingTests(TransactionTestCase):
 
         messages = (await self.consumer._load_history(self.thread))["messages"]
         calls = {tc["id"]: tc for m in messages for tc in m.get("tool_calls") or []}
-        self.assertIn("Active Slide Deck", calls["d-old"]["arguments"]["content"])
+        self.assertNotIn("content", calls["d-old"]["arguments"])
+        d_old = next(m["content"] for m in messages if m.get("tool_call_id") == "d-old")
+        self.assertIn("Active Slide Deck", d_old)
         self.assertEqual(calls["e-new"]["arguments"]["edits"], edits)
         stored = await database_sync_to_async(
             lambda: ChatMessage.objects.filter(thread=self.thread, role="assistant").order_by("created_at").first()
@@ -244,7 +251,10 @@ class LoadHistoryStubbingTests(TransactionTestCase):
 
         messages = (await self.consumer._load_history(self.thread))["messages"]
         calls = {tc["id"]: tc for m in messages for tc in m.get("tool_calls") or []}
-        self.assertIn("Active Slide Deck", calls["d-new"]["arguments"]["content"])
+        self.assertNotIn("content", calls["d-new"]["arguments"])
+        d_new = json.loads(next(m["content"] for m in messages if m.get("tool_call_id") == "d-new"))
+        self.assertEqual(d_new["status"], "ok")
+        self.assertIn("Active Slide Deck", d_new["omitted_args_note"])
         stored = await database_sync_to_async(
             lambda: ChatMessage.objects.filter(thread=self.thread, role="assistant").order_by("-created_at").first()
         )()
@@ -264,7 +274,8 @@ class LoadHistoryStubbingTests(TransactionTestCase):
 
         messages = (await self.consumer._load_history(self.thread))["messages"]
         body = json.loads(next(m["content"] for m in messages if m.get("tool_call_id") == "k-1"))
-        self.assertIn("Active Slide Deck", body["deck_json"])
+        self.assertNotIn("deck_json", body)
+        self.assertIn("Active Slide Deck", body["omitted_fields_note"])
         self.assertEqual(body["slide_ids"], ["s1"])
         stored = await database_sync_to_async(
             lambda: ChatMessage.objects.filter(thread=self.thread, role="tool").first()

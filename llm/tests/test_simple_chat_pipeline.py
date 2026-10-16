@@ -1251,9 +1251,9 @@ class SimpleChatPipelineTests(TestCase):
         """A model copying its own trimmed history back as content (2026-10-15
         prod: canvas_write with the marker wiped a search table) gets an error
         and the tool never runs — for a top-level string or one nested in a list."""
-        from llm.tools.interfaces import omitted_arg_marker
+        from llm.tools.interfaces import omitted_note
 
-        marker = omitted_arg_marker("26,695-char document", "Call canvas_read.")
+        marker = omitted_note("the 26,695-char document this call sent (content)", "Call canvas_read.")
         for args in (
             {"title": "T", "content": marker},
             {"edits": [{"old_text": "a", "new_text": "rows…\n" + marker}]},
@@ -1270,9 +1270,9 @@ class SimpleChatPipelineTests(TestCase):
     def test_marker_in_old_text_is_allowed(self):
         """old_text names text to FIND, so a canvas already holding a marker can be
         repaired with a targeted edit."""
-        from llm.tools.interfaces import find_echoed_marker, omitted_arg_marker
+        from llm.tools.interfaces import find_echoed_marker, omitted_note
 
-        marker = omitted_arg_marker("note", "It is in your scratchpad.")
+        marker = omitted_note("the note this call sent (note)", "It is in your scratchpad.")
         self.assertIsNone(find_echoed_marker({"edits": [{"old_text": marker, "new_text": "real"}]}))
         self.assertEqual(find_echoed_marker({"note": marker}), "note")
         self.assertEqual(find_echoed_marker({"edits": [{"new_text": marker}]}), "edits[0].new_text")

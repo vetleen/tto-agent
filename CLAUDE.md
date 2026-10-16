@@ -180,11 +180,19 @@ dropped (the model can always call the tool again):
   bare model window (`chat/subagent_service.py`).
 - **Per-tool argument trimming**: a tool whose old call arguments are big and recoverable
   elsewhere overrides `ContextAwareTool.trim_args_at_edit_point(args, *, later_calls)`
-  (returns shrunken args or None; gated by `trim_args_min_chars`). Applied at edit points
-  and between turns (`_load_history`, same window as result stubbing). The marker must say
-  where the content lives (`canvas_read`, `subagent_canvas_read`, `document_read`, the
-  scratchpad) — never trim content that has no read path (e.g. deck writes only when
-  superseded).
+  (gated by `trim_args_min_chars`). Applied at edit points and between turns
+  (`_load_history`, same window as result stubbing). The hook **removes** the big fields
+  with `llm.tools.interfaces.drop_args` and returns an `ArgTrim(args, note)`; it never
+  replaces a value with text. The note says where the content lives (`canvas_read`,
+  `subagent_canvas_read`, `document_read`, the scratchpad) and is attached to the call's
+  paired **result** (`edit_points.attach_trim_notes`: a JSON field `omitted_args_note`, or
+  appended to a stub; re-attached at every edit point from `metadata["wf_trim_notes"]`).
+  A note in argument position is a few-shot example: Gemini copied
+  `canvas_edit({"edits": "[Omitted…]"})` back as its edits (WILFRED-9Q). Result hooks
+  follow the same rule: drop the field and add `omitted_fields_note`. A copied short call
+  fails safely (missing required field, or the tool rejects empty input), and
+  `find_echoed_marker` stays as the backstop. Never trim content that has no read path
+  (e.g. deck writes only when superseded).
 - **Preserved thinking**: `ModelInfo.binds_thinking_to_prefix` (False for all current
   models; set it for Claude models released after 2026-10-01) makes the Anthropic adapter
   send beta `thinking-binding-controls-2026-08-01` + `block_binding.prefix_mismatch_behavior:

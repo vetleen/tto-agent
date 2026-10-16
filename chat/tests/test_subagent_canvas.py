@@ -492,11 +492,12 @@ class SubagentLargeCanvasTests(TestCase):
         self.assertIn("outline", out)
         self.assertIn("subagent_canvas_read", out["note"])
 
-    def test_write_and_edit_args_trim_to_read_marker(self):
+    def test_write_and_edit_args_trim_with_read_note(self):
         write = SubagentCanvasWriteTool()
         trimmed = write.trim_args_at_edit_point({"content": "x" * 5000, "title": "T"}, later_calls=[])
-        self.assertIn("subagent_canvas_read", trimmed["content"])
-        self.assertEqual(trimmed["title"], "T")
+        self.assertEqual(trimmed.args, {"title": "T"})
+        self.assertIn("subagent_canvas_read", trimmed.note)
         edit = SubagentCanvasEditTool()
         trimmed = edit.trim_args_at_edit_point({"edits": [{"old_text": "a", "new_text": "b"}]}, later_calls=[])
-        self.assertIn("subagent_canvas_read", trimmed["edits"])
+        self.assertEqual(trimmed.args, {})
+        self.assertIn("subagent_canvas_read", trimmed.note)
