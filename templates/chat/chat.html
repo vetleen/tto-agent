@@ -3168,6 +3168,7 @@
       const ph = messagesContainer.querySelector('[data-placeholder="true"]'); if (ph) ph.remove();
       currentStreamingElement = createAssistantBubble(); messagesContainer.appendChild(currentStreamingElement);
       accumulatedContent = ""; startStreamingTimeout();
+      lockForServerTurn();
     }
   }
   function hideWaitingIndicator() { if (!currentStreamingElement) return; const el = currentStreamingElement.querySelector(".waiting-indicator"); if (el) el.remove(); }
@@ -3670,7 +3671,7 @@
     if (et === "message_start") {
       const ph = messagesContainer.querySelector('[data-placeholder="true"]'); if (ph) ph.remove();
       const isNewBubble = !currentStreamingElement;
-      if (isNewBubble) { currentStreamingElement = createAssistantBubble(); messagesContainer.appendChild(currentStreamingElement); }
+      if (isNewBubble) { currentStreamingElement = createAssistantBubble(); messagesContainer.appendChild(currentStreamingElement); lockForServerTurn(); }
       if (currentThinkingBlock) collapseThinking();
       if (!isNewBubble) { flushNarration(); closeToolBatch(); foldTimeline(currentStreamingElement, false); }
       accumulatedContent = "";
@@ -3835,6 +3836,16 @@
     currentStreamingElement = null; accumulatedContent = ""; clearTimeout(streamingTimeout);
   }
   function enableInput() { locked = false; clearHandoff(); stopButton.classList.add("hidden"); button.classList.remove("hidden"); button.innerHTML = SEND_BTN_HTML; if (ws && ws.readyState === WebSocket.OPEN) { input.disabled = false; button.disabled = false; input.focus(); } syncSendReady(); renderTaskPlan(); }
+  // A turn the server started (e.g. a sub-agent reporting back) arrives without a
+  // sendMessage: lock the composer the same way, minus the hand-off beat. A turn the
+  // browser started already has its bubble, so the callers' new-bubble branches never
+  // reach here for it. enableInput() undoes this.
+  function lockForServerTurn() {
+    clearHandoff(); locked = true;
+    input.disabled = true; button.disabled = true;
+    button.classList.remove("is-ready"); button.classList.add("hidden");
+    stopButton.classList.remove("hidden");
+  }
   function startStreamingTimeout() { clearTimeout(streamingTimeout); streamingTimeout = setTimeout(function() { finishStreaming("{{ assistant_name|escapejs }} took too long to respond. Please try again."); enableInput(); }, STREAM_TIMEOUT_MS); }
 
   function createAssistantBubble() {
