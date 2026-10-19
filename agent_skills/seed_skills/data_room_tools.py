@@ -33,8 +33,8 @@ exact values come from `document_read_sheet`.
 
 ## Versioning
 
-Every save creates a new **version** — earlier versions are kept, not overwritten, so \
-edits are non-destructive. If the user wants to undo a change, compare, or return to an \
+Every save creates a new **version** — earlier versions are kept and can be \
+restored. If the user wants to undo a change, compare, or return to an \
 earlier state, restore a prior version rather than reconstructing it by hand.
 
 **Note:** Saving a document in any way (e.g. document_edit, canvas_save_to_document, or \
