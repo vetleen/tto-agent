@@ -741,9 +741,10 @@ class SubAgentRun(models.Model):
     chain_depth = models.PositiveSmallIntegerField(default=0, db_default=0)
     continuation_instructions = models.TextField(blank=True, default="", db_default="")
     # Heartbeat: bumped (throttled) while the run makes progress — a round
-    # starts, a tool call finishes. The stale-run sweeper fails a RUNNING run
-    # only after it has been silent longer than a model call or tool call could
-    # legitimately take (chat.subagent_limits.running_silence_limit).
+    # starts, a tool call finishes, a chunk is streamed, a provider retry wait
+    # ticks. The stale-run sweeper fails a RUNNING run only after it has been
+    # silent longer than one model request or tool call could legitimately
+    # take (chat.subagent_limits.running_silence_limit).
     last_activity_at = models.DateTimeField(null=True, blank=True)
     # Deprecated, unused since 2026-10-20 (the blocking-wait ``timeout`` argument
     # of chat_subagent_create was removed). Kept so a rolling deploy's old dynos

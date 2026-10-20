@@ -77,9 +77,11 @@ class ContextAwareTool(BaseTool):
 
     # Sub-agents only: how long one call may run before the tool loop stops
     # waiting for it and hands the round back with a timeout error (the call is
-    # abandoned, not killed; a late result is delivered on a later round). None
-    # = SUBAGENT_TOOL_TIMEOUT_DEFAULT (llm/pipelines/simple_chat.py). Set from
-    # ~1.5x the tool's observed p99 so only real outliers are cut.
+    # abandoned, not killed: its retry/throttle waits stop at this deadline —
+    # llm.tools._throttle.wait_budget — and a result that still arrives later
+    # is discarded). None = SUBAGENT_TOOL_TIMEOUT_DEFAULT
+    # (llm/pipelines/simple_chat.py). Set from ~1.5x the tool's observed p99 so
+    # only real outliers are cut.
     timeout_seconds: float | None = None
 
     def set_context(self, ctx: RunContext) -> "ContextAwareTool":

@@ -596,6 +596,39 @@ class StaleRunExpirationTests(TestCase):
         )
         self.assertEqual(_expire_stale_runs(), 0)
 
+    def test_silence_limit_is_one_request_or_one_tool_call_plus_margin(self):
+        """With the heartbeat beating on every chunk and retry wait, silence
+        means one stuck step: the longer of one model request and the slowest
+        tool, plus the margin — not four attempts plus a tool (46 min on Gemini)."""
+        from chat.subagent_limits import STALE_SILENCE_MARGIN_SECONDS, _longest_tool_timeout
+        from llm.core.model_factory import request_timeout_for_model
+
+        longest_tool = _longest_tool_timeout()
+        for model in ("openai/gpt-6-luna", "gemini/gemini-3.8-flash"):
+            expected = max(request_timeout_for_model(model), longest_tool) + STALE_SILENCE_MARGIN_SECONDS
+            self.assertEqual(running_silence_limit(model), expected)
+            self.assertEqual(running_silence_limit(model, longest_tool), expected)
+        self.assertEqual(running_silence_limit("gemini/gemini-3.8-flash", 30.0), 600 + 120)
+        self.assertLessEqual(running_silence_limit("gemini/gemini-3.8-flash"), 15 * 60)
+
+    def test_sweep_scans_the_tool_registry_once(self):
+        from chat import subagent_limits
+
+        for _ in range(3):
+            run = SubAgentRun.objects.create(
+                thread=self.thread, user=self.user, prompt="x", model_used="openai/gpt-6-luna",
+                status=SubAgentRun.Status.RUNNING,
+            )
+            SubAgentRun.objects.filter(pk=run.pk).update(
+                started_at=timezone.now() - timedelta(hours=2),
+                last_activity_at=timezone.now() - timedelta(hours=2),
+            )
+        with patch.object(
+            subagent_limits, "_longest_tool_timeout", wraps=subagent_limits._longest_tool_timeout,
+        ) as scan:
+            self.assertEqual(_expire_stale_runs(), 3)
+        self.assertEqual(scan.call_count, 1)
+
     def test_silence_limit_follows_the_model_request_timeout(self):
         """A Gemini run (600 s request timeout) may sit silent far longer than an
         OpenAI one (120 s) before it counts as stale."""
@@ -1766,6 +1799,43 @@ class RunSubagentServiceTests(TestCase):
         self.assertEqual(run.status, SubAgentRun.Status.COMPLETED)
         self.assertEqual(run.stop_reason, "truncation")
         self.assertFalse(run.budget_exhausted)
+
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
+    def test_untouched_template_is_decided_once_per_run(self, mock_prefs, mock_svc):
+        """A canvas-only finish needs the "is it still the template?" answer for
+        `delivered` and again for the result message: two queries, asked once."""
+        from chat import subagent_service
+        from chat.models import ChatMessage
+
+        mock_prefs.return_value = _prefs()
+        run = SubAgentRun.objects.create(thread=self.thread, user=self.user, prompt="task")
+
+        def _run_via_stream(pipeline_id, request):
+            # Tools write the canvas straight to the row during the run.
+            SubAgentRun.objects.filter(pk=run.pk).update(
+                canvas="# Report\nFindings.", canvas_title="Report",
+            )
+            response = MagicMock()
+            response.message.content = ""
+            response.usage.total_tokens = 10
+            response.usage.cost_usd = 0.0
+            return response
+
+        mock_svc.return_value.run_via_stream.side_effect = _run_via_stream
+        with patch.object(
+            subagent_service, "_is_untouched_template",
+            wraps=subagent_service._is_untouched_template,
+        ) as decide:
+            subagent_service.run_subagent(run.id)
+
+        self.assertEqual(decide.call_count, 1)
+        run.refresh_from_db()
+        self.assertEqual(run.status, SubAgentRun.Status.COMPLETED)
+        message = ChatMessage.objects.get(
+            thread=self.thread, metadata__subagent_run_id=str(run.id),
+        )
+        self.assertIn("=== SUBAGENT CANVAS: Report ===", message.content)
 
     @patch("chat.tasks.notify_subagent_status")
     @patch("chat.tasks.run_subagent_task")

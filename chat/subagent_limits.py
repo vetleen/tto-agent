@@ -41,25 +41,33 @@ STALE_PENDING_MINUTES = 7
 # long is given up on. Bounds the wait; it is not a throughput knob.
 STALE_WAITING_MINUTES = 45
 # A RUNNING run is stale only after it has been SILENT (no heartbeat:
-# SubAgentRun.last_activity_at, bumped as rounds start and tool calls finish)
-# for longer than one step could legitimately take. Nothing kills a run at a
-# fixed time (Celery enforces no time limit on our threads pool, see
-# config/celery.py), and a run's total length is bounded by its round budget,
-# not a clock — so a long but progressing run is never expired (which would
-# discard its result).
+# SubAgentRun.last_activity_at, bumped on every streamed chunk, every provider
+# retry wait, every round start and every tool-call end) for longer than one
+# step could legitimately take. Nothing kills a run at a fixed time (Celery
+# enforces no time limit on our threads pool, see config/celery.py), and a
+# run's total length is bounded by its round budget, not a clock — so a long
+# but progressing run is never expired (which would discard its result).
 STALE_SILENCE_MARGIN_SECONDS = 120
 
 
-def running_silence_limit(model_used: str) -> float:
+def running_silence_limit(model_used: str, longest_tool: float | None = None) -> float:
     """Seconds a RUNNING run on *model_used* may go without a heartbeat.
 
-    The longest single step: a model call with every SDK retry at the model's
-    request timeout, or the slowest sub-agent tool timeout — plus a margin.
-    """
-    from llm.core.model_factory import REQUEST_ATTEMPTS, request_timeout_for_model
+    Since the heartbeat beats on every chunk and retry wait, silence means one
+    step is stuck: a model request producing nothing (bounded by its request
+    timeout — Gemini's is the whole-generation deadline, 600 s) or one tool
+    call (the slowest sub-agent tool timeout). They never overlap, so the
+    limit is the longer of the two plus a margin. The SDK's own silent retries
+    of a dead connection are deliberately not counted: a provider that sends
+    nothing for a whole request timeout is treated as hung.
 
-    model_call = request_timeout_for_model(model_used) * REQUEST_ATTEMPTS
-    return model_call + _longest_tool_timeout() + STALE_SILENCE_MARGIN_SECONDS
+    ``longest_tool`` lets a sweep compute ``_longest_tool_timeout`` once.
+    """
+    from llm.core.model_factory import request_timeout_for_model
+
+    if longest_tool is None:
+        longest_tool = _longest_tool_timeout()
+    return max(request_timeout_for_model(model_used), longest_tool) + STALE_SILENCE_MARGIN_SECONDS
 
 
 def _longest_tool_timeout() -> float:
@@ -106,8 +114,10 @@ def _expire_stale_runs() -> int:
     # RUNNING staleness is measured from the last heartbeat (started_at /
     # created_at for rows that never beat), against the run's own silence limit
     # — a Gemini run may legitimately sit in one model call far longer than an
-    # OpenAI one. The DB pre-filter uses the shortest possible limit.
-    shortest = running_silence_limit("")
+    # OpenAI one. The DB pre-filter uses the shortest possible limit. The
+    # registry scan behind the tool-timeout term is done once per sweep.
+    longest_tool = _longest_tool_timeout()
+    shortest = running_silence_limit("", longest_tool)
     candidates = SubAgentRun.objects.filter(
         status=SubAgentRun.Status.RUNNING,
     ).annotate(
@@ -118,7 +128,7 @@ def _expire_stale_runs() -> int:
     stale_running = [
         (run_id, thread_id)
         for run_id, thread_id, model_used, quiet_since in candidates
-        if (now - quiet_since).total_seconds() > running_silence_limit(model_used)
+        if (now - quiet_since).total_seconds() > running_silence_limit(model_used, longest_tool)
     ]
 
     expired = 0

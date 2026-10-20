@@ -144,13 +144,10 @@ class RunContext(BaseModel):
     # tool-result budget. Locked because tools execute concurrently.
     _stats_lock: Any = PrivateAttr(default_factory=threading.Lock)
     observability: dict = Field(default_factory=dict)
-    # Sub-agent tool calls the tool loop stopped waiting for (per-tool timeout)
-    # whose abandoned threads may still return: the loop delivers a late result
-    # on a later round. Entries are dicts owned by llm/pipelines/simple_chat.py.
-    pending_late_tool_results: list = Field(default_factory=list)
-    # Sub-agent heartbeat: called by the tool loop whenever the run makes
-    # progress (a round starts, a tool call finishes). Set by the sub-agent
-    # service, which throttles its DB write; None elsewhere.
+    # Sub-agent heartbeat: called whenever the run makes progress — a round
+    # starts, a tool call finishes, a chunk is streamed, a provider retry wait
+    # ticks. Set by the sub-agent service, which throttles its DB write; None
+    # elsewhere.
     on_activity: Optional[Callable[[], None]] = None
 
     def bump_stat(self, key: str, amount: int = 1) -> None:

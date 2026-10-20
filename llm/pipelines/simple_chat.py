@@ -158,8 +158,8 @@ def _timeout_result(tool_name: str, timeout_s: float) -> str:
         "error": _TOOL_TIMEOUT_ERROR,
         "message": (
             f"This {tool_name} call timed out after {timeout_s:.0f} s and was not "
-            "completed. If it returns later, its result will be delivered to you. "
-            "You may retry, narrow, or move on."
+            "completed; whatever it returns later is discarded. Call it again "
+            "(narrower, if you can) if you still need it, or move on."
         ),
         "timeout_s": round(timeout_s),
     })
@@ -194,10 +194,12 @@ def _run_round_with_timeouts(tool_calls, tool_by_name, run_one, context) -> list
     (or a queued call can still get a worker), so a fast tool's timeout never
     cuts a round short while a slower sibling is legitimately working. Then
     every unfinished call gets a timeout result: a started one is abandoned
-    (Python cannot kill its thread — it runs on and, if it returns, the result
-    is delivered on a later round via ``context.pending_late_tool_results``),
-    a never-started one is cancelled. Each timeout is logged at WARNING and
-    recorded for calibration (``context.record_tool_timeout``).
+    (Python cannot kill its thread, but its waits stop at the call deadline;
+    whatever it returns is discarded — a late result has no legal place in the
+    history, since its call id was already answered and the loop is
+    append-only), a never-started one is cancelled. Each timeout is logged at
+    WARNING and recorded for calibration (``context.record_tool_timeout``),
+    including when the abandoned call eventually returned.
     """
     max_workers = min(len(tool_calls), 4)
     pool = ThreadPoolExecutor(max_workers=max_workers)
@@ -261,61 +263,20 @@ def _run_round_with_timeouts(tool_calls, tool_by_name, run_one, context) -> list
             "late_after_s": None,
         }
         context.record_tool_timeout(record)
-        entry = {
-            "future": future, "tool": tc.name, "round": record["round"],
-            "started": started_at[i], "timeout_s": timeout_s, "record": record,
-        }
+        started = started_at[i]
 
-        def _on_late_done(_f, entry=entry):
-            entry["done_after_s"] = time.monotonic() - entry["started"]
+        def _on_late_done(_f, record=record, started=started, tool=tc.name, timeout_s=timeout_s):
+            # Calibration only (how far past its timeout a tool really runs);
+            # the result itself is dropped.
+            record["late_after_s"] = round(time.monotonic() - started)
             logger.info(
-                "Abandoned sub-agent tool %s returned after %.0fs (timeout %.0fs)",
-                entry["tool"], entry["done_after_s"], entry["timeout_s"],
+                "Abandoned sub-agent tool %s returned after %ds (timeout %.0fs); result discarded",
+                tool, record["late_after_s"], timeout_s,
             )
 
         future.add_done_callback(_on_late_done)
-        context.pending_late_tool_results.append(entry)
         results.append((tc, _timeout_result(tc.name, timeout_s)))
     return results
-
-
-def _drain_late_tool_results(context) -> str:
-    """Text for the timed-out calls whose abandoned threads have since returned
-    (removed from the pending list), or "". Appended inside the round's single
-    notice message, so the loop stays append-only (prompt-cache safe)."""
-    pending = getattr(context, "pending_late_tool_results", None) if context else None
-    if not pending:
-        return ""
-    parts = []
-    for entry in list(pending):
-        future = entry["future"]
-        if not future.done():
-            continue
-        pending.remove(entry)
-        if future.cancelled():
-            continue
-        try:
-            _, result_str = future.result()
-        except Exception as exc:
-            result_str = json.dumps({"error": str(exc)})
-        done_after = entry.get("done_after_s") or (time.monotonic() - entry["started"])
-        entry["record"]["late_after_s"] = round(done_after)
-        parts.append(
-            f"[Late tool result] The {entry['tool']} call you made in round {entry['round']} "
-            f"timed out after {entry['timeout_s']:.0f} s but returned after {done_after:.0f} s. "
-            f"In case you still need it:\n{result_str}"
-        )
-    return "\n\n".join(parts)
-
-
-def _with_late_results(notice: Message | None, context) -> Message | None:
-    """Fold any late tool results into the round's notice (one user message)."""
-    late = _drain_late_tool_results(context)
-    if not late:
-        return notice
-    if notice is None or not isinstance(notice.content, str):
-        return Message(role="user", content=late)
-    return Message(role="user", content=f"{late}\n\n{notice.content}")
 
 
 def _count_round(context) -> None:
@@ -845,9 +806,6 @@ class SimpleChatPipeline(BasePipeline):
                 "Using the information you have gathered so far, provide your "
                 "comprehensive final response now as plain text."
             )
-        late = _drain_late_tool_results(req.context)
-        if late:
-            text = f"{late}\n\n{text}"
         final_messages = list(req.messages) + [Message(role="user", content=text)]
         final_messages = edits.finish_final(final_messages, req)
         return req.model_copy(update={
@@ -954,10 +912,10 @@ class SimpleChatPipeline(BasePipeline):
                                 Message(role="tool", content=result_str, tool_call_id=tc.id)
                             )
                         self._record_tool_round_stats(req.context, results)
-                    notice = _with_late_results(_truncated_round_notice(
+                    notice = _truncated_round_notice(
                         stop_reason,
                         _iteration_notice(i, effective_max, agent_kind),
-                    ), req.context)
+                    )
                     new_messages, tools = edits.finish_round(
                         new_messages, req, tools,
                         prior_len=prior_len,
@@ -995,10 +953,10 @@ class SimpleChatPipeline(BasePipeline):
                 )
             self._record_tool_round_stats(req.context, results)
 
-            notice = _with_late_results(_iteration_notice(
+            notice = _iteration_notice(
                 i, effective_max,
                 getattr(req.context, "agent_kind", "main") if req.context else "main",
-            ), req.context)
+            )
             new_messages, tools = edits.finish_round(
                 new_messages, req, tools,
                 prior_len=prior_len,
@@ -1251,10 +1209,10 @@ class SimpleChatPipeline(BasePipeline):
                             new_messages.append(
                                 Message(role="tool", content=result_str, tool_call_id=tc.id)
                             )
-                    notice = _with_late_results(_truncated_round_notice(
+                    notice = _truncated_round_notice(
                         stop_reason,
                         _iteration_notice(i, max_iterations, agent_kind),
-                    ), req.context)
+                    )
                     new_messages, tools = edits.finish_round(
                         new_messages, req, tools,
                         prior_len=prior_len,
@@ -1367,10 +1325,10 @@ class SimpleChatPipeline(BasePipeline):
                     Message(role="tool", content=result_str, tool_call_id=tc.id)
                 )
 
-            notice = _with_late_results(_iteration_notice(
+            notice = _iteration_notice(
                 i, max_iterations,
                 getattr(req.context, "agent_kind", "main") if req.context else "main",
-            ), req.context)
+            )
             new_messages, tools = edits.finish_round(
                 new_messages, req, tools,
                 prior_len=prior_len,

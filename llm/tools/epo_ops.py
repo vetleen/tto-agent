@@ -82,12 +82,21 @@ def _rpm() -> int:
 _THROTTLE_HEADER = "X-Throttling-Control"
 _THROTTLE_RE = re.compile(r"(\w+)=(\w+):(\d+)")
 # Per-service limit before the first header of a process: search at the lowest
-# allowance seen (overloaded), the rest at a modest rate.
+# allowance seen (overloaded), the rest at a modest rate. Only a fallback: the
+# allowance any process last observed is shared through the cache (below), so
+# a freshly booted dyno does not apply "5/min" to a start window the worker
+# legitimately filled under "30/min" and queue for a minute behind it.
 _INITIAL_LIMITS = {"search": 5}
 _INITIAL_LIMIT = 30
 # The window a limit counts over: OPS's 60 s plus a second against skew between
 # our clock and EPO's.
 _THROTTLE_WINDOW = 61.0
+# The per-service allowance OPS last reported, shared by every process through
+# the Django cache (the same Redis the start window lives in). Short-lived: the
+# allowance follows EPO's load, and a process corrects it from its own next
+# response anyway.
+_SHARED_LIMIT_KEY = "epo_ops_limit:v1:{service}"
+_SHARED_LIMIT_TTL = 600
 
 
 def _shared_redis():
@@ -96,6 +105,30 @@ def _shared_redis():
 
     getter = getattr(getattr(cache, "_cache", None), "get_client", None)
     return getter(write=True) if callable(getter) else None
+
+
+def _shared_limit_get(service: str) -> int | None:
+    """The allowance last observed for ``service`` by any process, or None."""
+    from django.core.cache import cache
+
+    try:
+        value = cache.get(_SHARED_LIMIT_KEY.format(service=service))
+    except Exception:
+        return None
+    return value if isinstance(value, int) and value > 0 else None
+
+
+def _shared_limits_set(limits: dict[str, int]) -> None:
+    """Publish the allowances a response just reported (never raises)."""
+    from django.core.cache import cache
+
+    try:
+        cache.set_many(
+            {_SHARED_LIMIT_KEY.format(service=s): rpm for s, rpm in limits.items()},
+            _SHARED_LIMIT_TTL,
+        )
+    except Exception:
+        logger.debug("EPO OPS: could not share the throttle allowance", exc_info=True)
 
 
 def _service_for_path(path: str) -> str:
@@ -143,6 +176,12 @@ class _ServiceThrottle:
         service = _service_for_path(path)
         with self._lock:
             limit = self._rpm[service]
+        # The shared allowance is at least as fresh as this process's own (every
+        # observe() publishes it), and it is what the shared window was filled
+        # under.
+        shared = _shared_limit_get(service)
+        if shared is not None:
+            limit = min(self.ceiling_rpm, shared)
         wait = self._scheduler.reserve(service, limit, max_wait=max_wait)
         if wait is None:
             return None
@@ -160,6 +199,7 @@ class _ServiceThrottle:
         if not pairs:
             return
         state = value.split("(", 1)[0].strip().lower()
+        observed: dict[str, int] = {}
         with self._lock:
             self._state = state
             for name, colour, limit in pairs:
@@ -168,6 +208,7 @@ class _ServiceThrottle:
                 limit = int(limit)
                 suspended = colour.lower() == "black" or limit <= 0
                 rpm = 1 if suspended else min(self.ceiling_rpm, limit)
+                observed[name] = rpm
                 if rpm == self._rpm[name]:
                     continue
                 if suspended:
@@ -179,6 +220,8 @@ class _ServiceThrottle:
                         name, rpm, state, colour, limit,
                     )
                 self._rpm[name] = rpm
+        if observed:
+            _shared_limits_set(observed)
 
     def snapshot(self) -> dict:
         with self._lock:

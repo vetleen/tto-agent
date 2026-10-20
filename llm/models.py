@@ -95,8 +95,9 @@ class LLMCallLog(models.Model):
     # Sub-agent tool calls cut by their per-tool timeout this turn, for
     # calibrating ContextAwareTool.timeout_seconds: count, and one entry per
     # timeout {"tool", "timeout_s", "round", "late_after_s"} (late_after_s =
-    # when the abandoned call returned, if it did while the run went on).
-    # NULL when none timed out.
+    # seconds after its start at which the abandoned call returned — its result
+    # is discarded — if it did before this row was written). NULL when none
+    # timed out.
     tool_timeout_count = models.PositiveIntegerField(null=True, blank=True)
     tool_timeouts = models.JSONField(null=True, blank=True)
 

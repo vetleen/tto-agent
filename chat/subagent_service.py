@@ -261,13 +261,17 @@ def _is_untouched_template(run) -> bool:
     return run.canvas == (first.content or "")[:CANVAS_MAX_CHARS]
 
 
-def render_canvas_block(run) -> str:
+def render_canvas_block(run, *, untouched: bool | None = None) -> str:
     """The delimited working-canvas block appended to a sub-agent's return.
 
     Empty string when the run has no canvas, or only the untouched template, so
-    callers can append it unconditionally.
+    callers can append it unconditionally. ``untouched`` is the result of
+    ``_is_untouched_template(run)`` when the caller already has it (two queries
+    a finishing run would otherwise repeat); None computes it here.
     """
-    if not run.canvas or _is_untouched_template(run):
+    if untouched is None:
+        untouched = _is_untouched_template(run)
+    if not run.canvas or untouched:
         return ""
     title = run.canvas_title or "Working document"
     return f"\n\n=== SUBAGENT CANVAS: {title} ===\n{run.canvas}"
@@ -340,13 +344,14 @@ def result_header(run) -> str:
     )
 
 
-def _create_subagent_result_message(run) -> None:
+def _create_subagent_result_message(run, *, untouched: bool | None = None) -> None:
     """Persist the sub-agent's result (+ working canvas) as a hidden ChatMessage.
 
     Hidden, ``role="user"`` (not ``"tool"``, to avoid orphan tool_call_ids that
     OpenAI rejects). The canvas is appended clearly delimited so the orchestrator
     sees it automatically on its next turn (``_load_history`` replays the content
-    verbatim). Survives reconnects and failed LLM streams.
+    verbatim). Survives reconnects and failed LLM streams. ``untouched`` is
+    passed through to ``render_canvas_block``.
     """
     from chat.models import ChatMessage
     from core.tokens import count_tokens
@@ -359,7 +364,7 @@ def _create_subagent_result_message(run) -> None:
             f"{header}\n"
             "The sub-agent produced no final message, but left the following working canvas."
         )
-    wrapped += render_canvas_block(run)
+    wrapped += render_canvas_block(run, untouched=untouched)
     ChatMessage.objects.create(
         thread_id=run.thread_id,
         role="user",
@@ -687,7 +692,9 @@ def run_subagent(run_id: uuid.UUID) -> None:
         # A populated canvas is a deliverable in its own right, so a run that
         # built one but emitted no final text still counts as completed — but
         # not the specialization's template the sub-agent never touched.
-        delivered = bool(run.result) or (bool(run.canvas) and not _is_untouched_template(run))
+        # Decided once (two queries) and reused for the result message.
+        untouched = _is_untouched_template(run)
+        delivered = bool(run.result) or (bool(run.canvas) and not untouched)
         if delivered:
             run.status = SubAgentRun.Status.COMPLETED
         elif _is_cancelled():
@@ -730,7 +737,7 @@ def run_subagent(run_id: uuid.UUID) -> None:
         # reconnects and failed LLM streams — a no-content failure gets a
         # failure message so the orchestrator still reacts to it.
         if delivered:
-            _create_subagent_result_message(run)
+            _create_subagent_result_message(run, untouched=untouched)
         else:
             _create_subagent_failure_message(run)
 
@@ -775,11 +782,12 @@ def run_subagent(run_id: uuid.UUID) -> None:
             # guard. (Celery's on_failure is a no-op once the row is FAILED.)
             try:
                 fresh = SubAgentRun.objects.get(pk=run_id)
+                fresh_untouched = _is_untouched_template(fresh)
                 if (
-                    fresh.canvas and not _is_untouched_template(fresh)
+                    fresh.canvas and not fresh_untouched
                     and not _subagent_result_message_exists(fresh)
                 ):
-                    _create_subagent_result_message(fresh)
+                    _create_subagent_result_message(fresh, untouched=fresh_untouched)
                 else:
                     _create_subagent_failure_message(fresh)
                 from chat.tasks import _notify_consumer

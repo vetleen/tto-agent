@@ -2066,6 +2066,7 @@ class GetTextPagingTests(TestCase):
 # --------------------------------------------------------------------------- #
 # Adaptive per-service throttle (X-Throttling-Control, Reference Guide 2.3.3).
 # --------------------------------------------------------------------------- #
+@override_settings(CACHES=_DUMMY_CACHE)  # the shared allowance is covered below
 class ServiceThrottleTests(SimpleTestCase):
     GUIDE = {  # the three successive example headers from the guide
         "idle": "idle (retrieval=green:200, search=green:30, inpadoc=green:60, images=green:200, other=green:1000)",
@@ -2097,6 +2098,51 @@ class ServiceThrottleTests(SimpleTestCase):
         t.observe({"X-Throttling-Control": self.GUIDE["idle"]})
         self.assertEqual(t.snapshot()["rpm"]["retrieval"], 30)
         self.assertEqual(t.snapshot()["rpm"]["search"], 30)
+
+
+@override_settings(CACHES=_LOCMEM_CACHE)
+class SharedThrottleAllowanceTests(SimpleTestCase):
+    """The allowance one process observes is applied by every process: the
+    start window is shared, so a fresh dyno must not book against it with its
+    conservative initial guess (search=5) while the worker filled it at 30."""
+
+    GUIDE = ServiceThrottleTests.GUIDE
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        self.addCleanup(cache.clear)
+
+    def _throttle(self, ceiling=200):
+        return _ServiceThrottle(ceiling, scheduler=_SlidingWindowScheduler("t", window=61.0))
+
+    def _reserved_limit(self, t, path="published-data/search"):
+        with patch.object(t._scheduler, "reserve", return_value=0.0) as res:
+            t.acquire(path)
+        return res.call_args.args[1]
+
+    def test_fresh_process_uses_the_allowance_another_process_observed(self):
+        worker = self._throttle()
+        worker.observe({"X-Throttling-Control": self.GUIDE["idle"]})
+        web = self._throttle()  # has never seen a header: local guess is 5
+        self.assertEqual(web.snapshot()["rpm"]["search"], 5)
+        self.assertEqual(self._reserved_limit(web), 30)
+        self.assertEqual(self._reserved_limit(web, "family/publication/docdb/EP.1.A1/legal"), 60)
+
+    def test_without_a_shared_value_the_local_limit_applies(self):
+        self.assertEqual(self._reserved_limit(self._throttle()), 5)
+
+    def test_shared_value_is_capped_by_this_process_ceiling(self):
+        self._throttle(ceiling=200).observe({"X-Throttling-Control": self.GUIDE["idle"]})
+        self.assertEqual(self._reserved_limit(self._throttle(ceiling=10)), 10)
+
+    def test_newest_observation_wins_including_a_suspension(self):
+        a, b = self._throttle(), self._throttle()
+        a.observe({"X-Throttling-Control": self.GUIDE["idle"]})
+        with self.assertLogs("llm.tools.epo_ops", level="WARNING"):
+            b.observe({"X-Throttling-Control": "overloaded (search=black:0)"})
+        self.assertEqual(self._reserved_limit(a), 1)
 
     def test_black_suspends_to_one_per_minute_with_a_warning(self):
         t = self._throttle()
