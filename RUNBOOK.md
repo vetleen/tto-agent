@@ -55,7 +55,7 @@ whenever a slot frees (on every run's completion, on user cancel, and from the 1
 "queued (position N)" from the real line. **On a worker R14 day, lowering
 `SUBAGENT_WORKER_SLOTS` is the first lever** — it takes effect on the next dispatch, no restart.
 Caveat: a worker restart mid-load leaves RUNNING ghosts that hold their slots until the sweeper
-expires them (15 min from `started_at`), which can stall the whole line for that long.
+expires them (45 min from `started_at`), which can stall the whole line for that long.
 
 **Chat-turn queue (web).** The web dyno has its own, unrelated queue for interactive chat
 turns: `chat/turn_gate.py`. At most `CHAT_TURN_MAX_PER_USER` (2) of one user's turns and
@@ -246,7 +246,7 @@ If the release included a migration, rolling back the code without reversing the
 | Task | App | Retries | Time Limit | Purpose |
 |------|-----|---------|------------|---------|
 | `process_document_task` | documents | 5 | 600s hard / 540s soft | Extract → chunk → embed uploaded documents |
-| `run_subagent_task` | chat | 2 | 600s hard / 540s soft | Execute sub-agent runs (slot-gated — see *Sub-agent execution queue*) |
+| `run_subagent_task` | chat | 2 | none (bounded by its round budget) | Execute sub-agent runs (slot-gated — see *Sub-agent execution queue*) |
 | `scan_document_chunks` | guardrails | 3 | 600s hard / 570s soft | Adversarial content scanning (heuristic + LLM) |
 | `transcribe_meeting_chunk_task` | meetings | default | 600s hard / 540s soft | Transcribe a live-meeting audio chunk |
 | `transcribe_uploaded_audio_task` | meetings | default | 1800s hard / 1740s soft | Transcribe an uploaded audio file (may be long) |

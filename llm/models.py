@@ -84,6 +84,13 @@ class LLMCallLog(models.Model):
     # stream guard aborted for degenerate repetition (their tool calls were not
     # run). NULL when it never happened.
     output_truncated_rounds = models.PositiveIntegerField(null=True, blank=True)
+    # Model calls the tool loop made this turn, the forced tool-less final call
+    # included (a sub-agent's round budget counts these). NULL outside a loop.
+    tool_rounds = models.PositiveIntegerField(null=True, blank=True)
+    # Why the tool loop ended: "answered", "budget" (round budget used up →
+    # forced final call), "truncation" (cut-off rounds → forced final call) or
+    # "cancelled". Blank outside a loop.
+    loop_stop = models.CharField(max_length=16, blank=True, default="")
 
     # Status / errors
     status = models.CharField(

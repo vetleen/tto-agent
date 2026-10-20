@@ -286,7 +286,15 @@ class BuildSubagentSystemPromptTests(TestCase):
 
     def test_includes_return_findings_instruction(self):
         prompt = build_subagent_system_prompt()
-        self.assertIn("Return your findings as text", prompt)
+        self.assertIn("Deliver your findings in your working canvas", prompt)
+        self.assertIn('"Not covered" list', prompt)
+        self.assertIn("Never repeat what is in the canvas", prompt)
+
+    def test_round_budget_section_only_with_a_budget(self):
+        self.assertNotIn("# Round budget", build_subagent_system_prompt())
+        prompt = build_subagent_system_prompt(round_budget=6)
+        self.assertIn("# Round budget\nYou have a budget of 6 rounds.", prompt)
+        self.assertIn("Round 6/6 is your final round with tools", prompt)
 
     def test_includes_data_rooms(self):
         rooms = [{"name": "Room A", "description": "Patent docs"}]
@@ -501,7 +509,7 @@ class StaleRunExpirationTests(TestCase):
             prompt="stuck", status=SubAgentRun.Status.RUNNING,
         )
         SubAgentRun.objects.filter(pk=run.pk).update(
-            created_at=timezone.now() - timedelta(minutes=16),
+            created_at=timezone.now() - timedelta(minutes=STALE_RUNNING_MINUTES + 1),
         )
 
         expired = _expire_stale_runs()
@@ -534,7 +542,7 @@ class StaleRunExpirationTests(TestCase):
             prompt="stuck", status=SubAgentRun.Status.RUNNING,
         )
         SubAgentRun.objects.filter(pk=run.pk).update(
-            created_at=timezone.now() - timedelta(minutes=16),
+            created_at=timezone.now() - timedelta(minutes=STALE_RUNNING_MINUTES + 1),
         )
 
         # The stale run is cleaned up, so this user should be allowed
@@ -1734,8 +1742,85 @@ class RunSubagentServiceTests(TestCase):
         pipeline_id, request = mock_svc.return_value.run_via_stream.call_args[0]
         self.assertEqual(pipeline_id, "simple_chat")
         self.assertTrue(request.stream)
-        # Sub-agents run with a reduced iteration budget (pipeline default is 100).
-        self.assertEqual(request.params["max_tool_iterations"], 35)
+        # The run's round budget (default "standard") caps the tool loop.
+        self.assertEqual(request.params["max_tool_iterations"], 15)
+        self.assertIn("You have a budget of 15 rounds.", request.messages[0].content)
+
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
+    def test_round_budget_sets_iterations_and_records_outcome(self, mock_prefs, mock_svc):
+        """A deep run gets 30 rounds; the loop's round count and stop reason are
+        stored on the run (budget → budget_exhausted)."""
+        mock_prefs.return_value = _prefs()
+
+        def _run_via_stream(pipeline_id, request):
+            request.context.observability["rounds"] = 31
+            request.context.observability["loop_stop"] = "budget"
+            response = MagicMock()
+            response.message.content = "Summary. Not covered: X."
+            response.usage.total_tokens = 10
+            response.usage.cost_usd = 0.0
+            return response
+
+        mock_svc.return_value.run_via_stream.side_effect = _run_via_stream
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="task", round_budget="deep",
+        )
+
+        from chat.subagent_service import run_subagent
+        run_subagent(run.id)
+
+        _, request = mock_svc.return_value.run_via_stream.call_args[0]
+        self.assertEqual(request.params["max_tool_iterations"], 30)
+        self.assertIsNone(request.context.deadline_seconds)
+        run.refresh_from_db()
+        self.assertEqual(run.status, SubAgentRun.Status.COMPLETED)
+        self.assertEqual(run.rounds_used, 31)
+        self.assertTrue(run.budget_exhausted)
+
+    @patch("chat.tasks.notify_subagent_status")
+    @patch("chat.tasks.run_subagent_task")
+    def test_create_stores_round_budget(self, mock_task, _mock_notify):
+        mock_task.delay.return_value = MagicMock(id="t1")
+        ctx = _ctx(self.user.pk, self.thread.id)
+        _invoke(CreateSubagentTool, {"prompt": "task", "round_budget": "quick"}, ctx)
+        self.assertEqual(SubAgentRun.objects.get().round_budget, "quick")
+
+
+class UntouchedTemplateTests(TestCase):
+    """A specialization's auto-loaded template the sub-agent never edited is not
+    a deliverable: it is neither returned nor counted as output."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="tmpl@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+
+    def _skill(self, content):
+        skill = MagicMock()
+        skill.templates.all.return_value.first.return_value = MagicMock(content=content)
+        return skill
+
+    def test_untouched_template_is_not_rendered(self):
+        from chat.subagent_service import render_canvas_block
+
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="t", skill_slug="web-researcher",
+            canvas="# Template", canvas_title="Report",
+        )
+        with patch("chat.subagent_service.get_run_specialization_skill",
+                   return_value=self._skill("# Template")):
+            self.assertEqual(render_canvas_block(run), "")
+
+    def test_edited_template_is_rendered(self):
+        from chat.subagent_service import render_canvas_block
+
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="t", skill_slug="web-researcher",
+            canvas="# Template\nFindings", canvas_title="Report",
+        )
+        with patch("chat.subagent_service.get_run_specialization_skill",
+                   return_value=self._skill("# Template")):
+            self.assertIn("=== SUBAGENT CANVAS: Report ===", render_canvas_block(run))
 
 
 # ---------------------------------------------------------------------------

@@ -11,11 +11,22 @@ from core.preferences import MIN_CONTEXT_TOKENS, SUBAGENT_TIER_FEATURES, Resolve
 
 logger = logging.getLogger(__name__)
 
-# Sub-agents get fewer tool iterations than the pipeline default (100): long
-# runs are the worker's main memory spike (history grows every iteration), and
-# the per-iteration progress counter the pipeline injects for sub-agents keeps
-# the model pacing itself instead of hitting the cliff.
-SUBAGENT_MAX_TOOL_ITERATIONS = 35
+# A sub-agent run is bounded by a round budget the orchestrator picks per task
+# (``round_budget`` on chat_subagent_create). A round is one model reply that
+# calls tools; the pipeline counts them down to the sub-agent every round
+# (llm/pipelines/simple_chat.py) and forces a tool-less final reply after the
+# last one. There is no wall-clock limit: hangs are caught by per-tool timeouts
+# and the heartbeat sweeper.
+ROUND_BUDGETS = {"quick": 6, "standard": 15, "deep": 30}
+DEFAULT_ROUND_BUDGET = "standard"
+# Sanity clamp on any budget (long runs are the worker's main memory spike).
+SUBAGENT_MAX_ROUNDS = 40
+
+
+def round_budget_rounds(name: str) -> int:
+    """Rounds for a budget name; an unknown name gets the default budget."""
+    rounds = ROUND_BUDGETS.get(name) or ROUND_BUDGETS[DEFAULT_ROUND_BUDGET]
+    return min(rounds, SUBAGENT_MAX_ROUNDS)
 
 def subagent_context_budget(prefs: ResolvedPreferences, tier: str) -> int:
     """Context aim (tokens) for a sub-agent of *tier*.
@@ -231,13 +242,27 @@ def get_run_specialization_skill(run):
     )
 
 
+def _is_untouched_template(run) -> bool:
+    """Whether the run's canvas is still exactly its specialization's auto-loaded
+    template — i.e. the sub-agent never wrote to it, so it is not a deliverable."""
+    if not run.canvas or not run.skill_slug:
+        return False
+    skill = get_run_specialization_skill(run)
+    first = skill.templates.all().first() if skill is not None else None
+    if first is None:
+        return False
+    from chat.services import CANVAS_MAX_CHARS
+
+    return run.canvas == (first.content or "")[:CANVAS_MAX_CHARS]
+
+
 def render_canvas_block(run) -> str:
     """The delimited working-canvas block appended to a sub-agent's return.
 
-    Empty string when the run has no canvas, so callers can append it
-    unconditionally.
+    Empty string when the run has no canvas, or only the untouched template, so
+    callers can append it unconditionally.
     """
-    if not run.canvas:
+    if not run.canvas or _is_untouched_template(run):
         return ""
     title = run.canvas_title or "Working document"
     return f"\n\n=== SUBAGENT CANVAS: {title} ===\n{run.canvas}"
@@ -318,8 +343,13 @@ def _create_subagent_failure_message(run) -> None:
     )
 
 
-def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> None:
-    """Execute a sub-agent run. Called by the Celery task."""
+def run_subagent(run_id: uuid.UUID) -> None:
+    """Execute a sub-agent run. Called by the Celery task.
+
+    Bounded by the run's round budget (no wall clock): the tool loop counts the
+    rounds down to the sub-agent and forces a tool-less final reply after the
+    last one, which marks the run ``budget_exhausted``.
+    """
     from chat.models import SubAgentRun
     from chat.services import attachment_kind_label
     from chat.subagent_prompts import build_subagent_system_prompt
@@ -421,6 +451,7 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
         from llm.context_budget import canvas_read_token_cap
 
         budget = subagent_context_budget(prefs, run.model_tier)
+        rounds = round_budget_rounds(run.round_budget)
         system_prompt = build_subagent_system_prompt(
             data_rooms=data_rooms_info,
             organization_name=org_name,
@@ -439,6 +470,7 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
                 }
                 for n, att in shared_rows
             ],
+            round_budget=rounds,
         )
 
         # Build LLM request
@@ -446,7 +478,6 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
             user_id=user.pk,
             conversation_id=str(run.thread_id),
             data_room_ids=data_room_ids,
-            deadline_seconds=deadline_seconds,
         )
         context.run_id = str(run_id)
         context.agent_kind = "subagent"
@@ -470,7 +501,7 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
         # Context aim the mid-turn pruner (llm/pipelines/edit_points.py) sizes to.
         params = {
             "_cancel_check": _is_cancelled,
-            "max_tool_iterations": SUBAGENT_MAX_TOOL_ITERATIONS,
+            "max_tool_iterations": rounds,
             "max_context_tokens": budget,
         }
         # Org-chosen reasoning level for this tier; absent = registry default
@@ -507,9 +538,13 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
         if response.usage:
             run.tokens_used = response.usage.total_tokens or 0
             run.cost_usd = response.usage.cost_usd or 0.0
+        obs = context.observability
+        run.rounds_used = obs.get("rounds")
+        run.budget_exhausted = obs.get("loop_stop") == "budget"
         # A populated canvas is a deliverable in its own right, so a run that
-        # built one but emitted no final text still counts as completed.
-        delivered = bool(run.result) or bool(run.canvas)
+        # built one but emitted no final text still counts as completed — but
+        # not the specialization's template the sub-agent never touched.
+        delivered = bool(run.result) or (bool(run.canvas) and not _is_untouched_template(run))
         if delivered:
             run.status = SubAgentRun.Status.COMPLETED
         elif _is_cancelled():
@@ -535,6 +570,8 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
             result=run.result,
             tokens_used=run.tokens_used,
             cost_usd=run.cost_usd,
+            rounds_used=run.rounds_used,
+            budget_exhausted=run.budget_exhausted,
             status=run.status,
             error=run.error,
             completed_at=run.completed_at,
@@ -594,7 +631,10 @@ def run_subagent(run_id: uuid.UUID, *, deadline_seconds: int | None = None) -> N
             # guard. (Celery's on_failure is a no-op once the row is FAILED.)
             try:
                 fresh = SubAgentRun.objects.get(pk=run_id)
-                if fresh.canvas and not _subagent_result_message_exists(fresh):
+                if (
+                    fresh.canvas and not _is_untouched_template(fresh)
+                    and not _subagent_result_message_exists(fresh)
+                ):
                     _create_subagent_result_message(fresh)
                 else:
                     _create_subagent_failure_message(fresh)

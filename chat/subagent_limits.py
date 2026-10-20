@@ -42,10 +42,9 @@ STALE_WAITING_MINUTES = 45
 # Must comfortably exceed a normal run's wall clock so the sweeper never expires
 # a run the worker is still legitimately executing (which would discard its
 # completed result). Nothing kills a run at a fixed time (Celery enforces no
-# time limit on our threads pool, see config/celery.py): the 540s deadline only
-# stops new tool rounds, so the last round and the final answer run past it —
-# typically ~9-10 min in total.
-STALE_RUNNING_MINUTES = 15
+# time limit on our threads pool, see config/celery.py); a run is bounded by
+# its round budget, so a deep run with slow tools can take well over 15 min.
+STALE_RUNNING_MINUTES = 45
 
 # Transaction-scoped Postgres advisory lock that serializes dispatchers.
 # Arbitrary value; only has to be unique among the advisory locks this app takes.

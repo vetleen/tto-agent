@@ -717,6 +717,13 @@ class SubAgentRun(models.Model):
     # Model quality: "low" / "medium" / "high" (core.preferences.SUBAGENT_TIERS).
     model_tier = models.CharField(max_length=10, default="medium")
     model_used = models.CharField(max_length=128, blank=True)
+    # Round budget the orchestrator picked ("quick" / "standard" / "deep",
+    # chat.subagent_service.ROUND_BUDGETS) and how it went: model calls made
+    # (the forced final call included) and whether the budget ran out, which
+    # forces a tool-less final reply and marks the result PARTIAL.
+    round_budget = models.CharField(max_length=10, default="standard")
+    rounds_used = models.PositiveIntegerField(null=True, blank=True)
+    budget_exhausted = models.BooleanField(default=False)
     timeout = models.PositiveIntegerField(
         default=0,
         help_text="Seconds the tool waited for the result (0=fire-and-forget)",

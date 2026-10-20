@@ -195,10 +195,10 @@ def run_subagent_task(self, run_id: str) -> None:
             thread_id=meta["thread_id"] if meta else None,
             subagent_type=(meta["skill_slug"] or "generic") if meta else None,
         )
-        # The only time bound on a run: the tool loop stops starting new rounds
-        # near it (llm/pipelines/simple_chat.py). Celery enforces no time limit
-        # on our threads pool (see config/celery.py).
-        run_subagent(uuid.UUID(run_id), deadline_seconds=540)
+        # No wall clock bounds a run (Celery enforces no time limit on our
+        # threads pool, see config/celery.py): its round budget does, plus
+        # per-tool timeouts and the heartbeat sweeper for hangs.
+        run_subagent(uuid.UUID(run_id))
     except Exception as exc:
         if is_retryable_subagent_error(exc):
             # Transient (LLM rate-limit/overload/timeout, network blip, DB

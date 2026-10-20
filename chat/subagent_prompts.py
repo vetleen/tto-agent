@@ -55,12 +55,13 @@ def _render_working_canvas(
         "\n# Working canvas\n"
         "You have a single working canvas — a durable document you build with the "
         "`subagent_canvas_*` tools. It is your **deliverable**: it is returned to "
-        "the orchestrator alongside your final message, so build substantial "
-        "structured output there rather than squeezing it into your final answer. "
+        "the orchestrator exactly as it is when your run ends, alongside your short "
+        "final message. Build your report there as you go — a draft of every section "
+        "early, refined later — so it is useful even if your rounds run out. "
         "You can re-read it at any time with `subagent_canvas_read` (leave "
         "canvas_name empty), by line range when it is long. (For rough notes you "
-        "only need to remember while working, use your scratchpad instead — that "
-        "is private and is not returned.)\n"
+        "only need to remember while working, use your scratchpad instead — the "
+        "orchestrator never sees it.)\n"
     )
     if not content:
         return block + "\nYour canvas is currently empty.\n"
@@ -164,8 +165,27 @@ def _render_scratchpad_guidance() -> str:
         "facts, figures, quotes, and source URLs you'll need *as you find them*, "
         "not all at once at the end. It is private working memory: unlike your "
         "working canvas it is NOT returned to the orchestrator, and the user never "
-        "sees it. Keep the canvas for your polished deliverable; keep the "
-        "scratchpad for rough notes you don't want to lose.\n"
+        "sees it — but if the orchestrator continues your task in a new run, that "
+        "run starts with your scratchpad. Keep the canvas for your deliverable; "
+        "keep the scratchpad for rough notes you don't want to lose.\n"
+    )
+
+
+def _render_round_budget(rounds: int | None) -> str:
+    """Explain the round budget the tool loop counts down (llm/pipelines/simple_chat.py)."""
+    if not rounds:
+        return ""
+    return (
+        "\n# Round budget\n"
+        f"You have a budget of {rounds} rounds. A round is one reply of yours that "
+        "calls tools; calling several tools in parallel in one round is encouraged "
+        "and still counts as one round. After every round you are told how many "
+        "rounds are left, with advice for the stage you are in: explore first, then "
+        "converge (start no new lines of inquiry), then finish your canvas report. "
+        f"Round {rounds}/{rounds} is your final round with tools: use it to finish the "
+        "canvas and write your final reply. If you still call tools after that, the "
+        "tools are switched off and you get one last reply; your canvas is returned "
+        "as it is at that point. Finishing before the budget is used up is fine.\n"
     )
 
 
@@ -181,6 +201,7 @@ def build_subagent_system_prompt(
     canvas_token_cap: int | None = None,
     shared_canvases: list[dict] | None = None,
     shared_attachments: list[dict] | None = None,
+    round_budget: int | None = None,
 ) -> str:
     """Build a focused system prompt for a sub-agent.
 
@@ -199,8 +220,8 @@ You have been given a specific task. Complete it thoroughly and return your find
 - Structure your response clearly with headings if appropriate. You may use markdown.
 - Never use LaTeX or `$…$` math notation — it does not render and shows up as raw code. Write formulas, units and simple equations in plain text with Unicode sub/superscripts and symbols (Li₂Sₓ, Li⁺, CO₂, m², ≤, ×, →). Put a genuinely complex equation in a code block.
 - If you cannot complete the task with the tools available, explain what's missing.
-- IMPORTANT: Return your findings as text in your final message. For substantial structured deliverables, build them in your working canvas (see "Working canvas" below) instead of inlining everything.
-- You may be as exhaustive as you like. Make sure you don't exclude any important findings from your answer.
+- IMPORTANT: Deliver your findings in your working canvas (see "Working canvas" below) — it is returned to the orchestrator as it is when your run ends. Keep your final message short: a brief summary and a "Not covered" list of anything you did not get to. Never repeat what is in the canvas in your final message. (For a very short answer with no canvas, the final message alone is fine.)
+- You may be as exhaustive as you like in the canvas. Make sure you don't exclude any important findings.
 - Make sure you cite and source in such way that it is unambigously clear where each fact came from. 
   - For websites provie the concrete URL where you sourced the data.
   - For documents in data rooms, provide name of the exact document.
@@ -217,6 +238,7 @@ You have been given a specific task. Complete it thoroughly and return your find
     prompt += _render_shared_canvases(shared_canvases)
     prompt += _render_shared_attachments(shared_attachments)
     prompt += _render_scratchpad_guidance()
+    prompt += _render_round_budget(round_budget)
 
     if has_task_tool:
         prompt += """

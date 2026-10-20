@@ -95,7 +95,7 @@ class SubagentRetryTests(TestCase):
         # A retry re-entering run_subagent on a COMPLETED row must no-op, not flip
         # it back to RUNNING and re-run the LLM job. If the guard failed, get_llm
         # would be reached; the early return means it never is.
-        run_subagent(run.id, deadline_seconds=1)
+        run_subagent(run.id)
         run.refresh_from_db()
         self.assertEqual(run.status, SubAgentRun.Status.COMPLETED)
         self.assertEqual(run.result, "already delivered")

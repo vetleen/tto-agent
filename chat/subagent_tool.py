@@ -6,6 +6,8 @@ import json
 import logging
 import time
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from core.preferences import DEFAULT_SUBAGENT_TIER, SUBAGENT_TIERS
@@ -126,6 +128,13 @@ def _resolve_shared_attachments(thread_id, numbers: list[int]) -> tuple[list[dic
     return entries, ""
 
 
+def _valid_round_budget(name) -> str:
+    """The round budget name to store; anything unknown becomes the default."""
+    from chat.subagent_service import DEFAULT_ROUND_BUDGET, ROUND_BUDGETS
+
+    return name if name in ROUND_BUDGETS else DEFAULT_ROUND_BUDGET
+
+
 # --- Input schemas ---
 
 class CreateSubagentInput(ReasonBaseModel):
@@ -165,6 +174,14 @@ class CreateSubagentInput(ReasonBaseModel):
             'Model quality: "low" for simple, well-defined tasks (lookups, narrow searches, '
             'summaries); "medium" (default) for most tasks; "high" only for tasks that '
             "require exceptional intelligence (rarely relevant)."
+        ),
+    )
+    round_budget: Literal["quick", "standard", "deep"] = Field(
+        default="standard",
+        description=(
+            'How many tool rounds the sub-agent gets: "quick" (6 rounds — a few lookups), '
+            '"standard" (15 rounds, default), "deep" (30 rounds — broad research). A round '
+            "is one reply that calls tools (parallel calls count once)."
         ),
     )
     timeout: int = Field(
@@ -297,6 +314,7 @@ class CreateSubagentTool(ContextAwareTool):
             prompt=prompt,
             reason=str(kwargs.get("reason") or "").strip()[:500],
             model_tier=model_tier,
+            round_budget=_valid_round_budget(kwargs.get("round_budget")),
             timeout=timeout,
             data_room_ids=data_room_ids,
             skill_slug=specialization,

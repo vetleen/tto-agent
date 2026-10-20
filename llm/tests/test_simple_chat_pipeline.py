@@ -1277,10 +1277,10 @@ class SimpleChatPipelineTests(TestCase):
         self.assertEqual(find_echoed_marker({"note": marker}), "note")
         self.assertEqual(find_echoed_marker({"edits": [{"new_text": marker}]}), "edits[0].new_text")
 
-    def test_run_tool_loop_respects_deadline(self):
-        """Tool loop should break early when the RunContext deadline is exceeded."""
+    def test_deadline_seconds_no_longer_bounds_the_loop(self):
+        """Sub-agents are bounded by their round budget, not a wall clock: an
+        already-expired deadline_seconds on the context does not cut the loop."""
         mock_tool = self._make_mock_tool("document_search")
-        # Context with started_at in the past so the deadline is already expired
         ctx = RunContext.create(deadline_seconds=60)
         ctx.started_at = datetime.now(timezone.utc) - timedelta(seconds=120)
 
@@ -1294,74 +1294,48 @@ class SimpleChatPipelineTests(TestCase):
         tool_call = ToolCall(id="c1", name="document_search", arguments={"a": 1, "b": 2})
         tool_response = ChatResponse(
             message=Message(role="assistant", content="", tool_calls=[tool_call]),
-            model="gpt-4o-mini",
-            usage=None,
-            metadata={},
+            model="gpt-4o-mini", usage=None, metadata={},
         )
         final_response = ChatResponse(
-            message=Message(role="assistant", content="Done via deadline."),
-            model="gpt-4o-mini",
-            usage=None,
-            metadata={},
+            message=Message(role="assistant", content="Done."),
+            model="gpt-4o-mini", usage=None, metadata={},
         )
         fake_model = MagicMock()
-        # Only the final (tool-stripped) generate should be called since deadline is already past
-        fake_model.generate.side_effect = [final_response]
-
-        pipeline = SimpleChatPipeline(max_tool_iterations=50)
-        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
-             self._patch_tool_registry(mock_tool):
-            mock_create.return_value = fake_model
-            response = pipeline.run(request)
-
-        # Should only have 1 generate call (the final tool-stripped one), not 50
-        self.assertEqual(fake_model.generate.call_count, 1)
-        self.assertEqual(response.message.content, "Done via deadline.")
-
-    def test_stream_tool_loop_respects_deadline(self):
-        """Streaming tool loop should break early when the RunContext deadline is exceeded."""
-        mock_tool = self._make_mock_tool("document_search")
-        ctx = RunContext.create(deadline_seconds=60)
-        ctx.started_at = datetime.now(timezone.utc) - timedelta(seconds=120)
-
-        request = ChatRequest(
-            messages=[Message(role="user", content="Stream loop")],
-            stream=True,
-            model="gpt-4o-mini",
-            tools=["document_search"],
-            context=ctx,
-        )
-
-        def final_stream(req):
-            yield StreamEvent(event_type="message_start", data={}, sequence=1, run_id="")
-            yield StreamEvent(event_type="token", data={"text": "Deadline hit"}, sequence=2, run_id="")
-            yield StreamEvent(event_type="message_end", data={
-                "content": "Deadline hit",
-                "input_tokens": 100, "output_tokens": 50, "total_tokens": 150,
-            }, sequence=3, run_id="")
-
-        fake_model = MagicMock()
-        fake_model.stream.side_effect = [final_stream(None)]
+        fake_model.generate.side_effect = [tool_response, final_response]
 
         with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
              self._patch_tool_registry(mock_tool):
             mock_create.return_value = fake_model
-            events = list(SimpleChatPipeline().stream(request))
+            response = SimpleChatPipeline(max_tool_iterations=50).run(request)
 
-        # Should only have 1 stream call (the final tool-stripped one)
-        self.assertEqual(fake_model.stream.call_count, 1)
-        token_events = [e for e in events if e.event_type == "token"]
-        self.assertEqual(token_events[0].data["text"], "Deadline hit")
+        self.assertEqual(fake_model.generate.call_count, 2)
+        self.assertEqual(response.message.content, "Done.")
+        self.assertEqual(ctx.observability["rounds"], 2)
+        self.assertEqual(ctx.observability["loop_stop"], "answered")
 
 
 class IterationNoticeTests(TestCase):
-    """_iteration_notice: sub-agents get a progress counter every iteration;
-    main chat keeps the old warn-only-near-the-end behavior byte-for-byte."""
+    """_iteration_notice: sub-agents get a round-budget countdown with a pacing
+    stage every round; main chat keeps the old warn-only-near-the-end behavior
+    byte-for-byte."""
 
-    def _notice(self, i, max_iter, agent_kind, deadline_dt=None):
+    def _notice(self, i, max_iter, agent_kind):
         from llm.pipelines.simple_chat import _iteration_notice
 
-        return _iteration_notice(i, max_iter, deadline_dt, agent_kind)
+        return _iteration_notice(i, max_iter, agent_kind)
+
+    def _stage(self, rounds_left, budget):
+        from llm.pipelines.simple_chat import _round_stage_line
+
+        line = _round_stage_line(rounds_left, budget)
+        if line.startswith("Explore"):
+            return "explore"
+        if line.startswith("Converge"):
+            return "converge"
+        if line.startswith("Your rounds are almost up"):
+            return "wrap"
+        self.assertIn("final round with tools", line)
+        return "final"
 
     def test_main_no_notice_far_from_limit(self):
         self.assertIsNone(self._notice(0, 10, "main"))
@@ -1378,32 +1352,49 @@ class IterationNoticeTests(TestCase):
         notice = self._notice(8, 10, "main")  # finished 9 of 10 -> 1 remaining
         self.assertIn("This is your last tool iteration.", notice.content)
 
-    def test_main_time_low_warning(self):
-        deadline = datetime.now(timezone.utc) + timedelta(seconds=30)
-        notice = self._notice(0, 10, "main", deadline_dt=deadline)
-        self.assertIn("You are running low on time.", notice.content)
-
-    def test_subagent_gets_counter_every_iteration(self):
-        notice = self._notice(2, 35, "subagent")  # finished 3 of 35
-        self.assertEqual(
-            notice.content,
-            "[Progress: finished tool iteration 3 of 35 — 32 remaining.]",
-        )
+    def test_subagent_countdown_text(self):
+        notice = self._notice(5, 15, "subagent")  # round 6 of 15 done -> 9 left
         self.assertEqual(notice.role, "user")
+        self.assertTrue(notice.content.startswith(
+            "[Round budget: 9 rounds left (round 6/15 done). When the budget runs out, "
+            "tools are switched off and you get one final reply. Your canvas is "
+            "returned as it is at that point.] "
+        ))
 
-    def test_subagent_last_iteration_absorbs_warning_into_one_message(self):
-        notice = self._notice(34, 35, "subagent")  # finished 35 -> 0 remaining
-        self.assertIn("[Progress: finished tool iteration 35 of 35 — 0 remaining.]", notice.content)
-        self.assertIn("This is your last tool iteration.", notice.content)
+    def test_subagent_final_round_notice(self):
+        notice = self._notice(13, 15, "subagent")  # round 14 done -> 1 left
+        self.assertIn("1 rounds left (round 14/15 done)", notice.content)
+        self.assertIn("Your next round (15/15) is your final round with tools", notice.content)
+        self.assertIn("Do not repeat what is in the canvas", notice.content)
 
-    def test_subagent_time_low_absorbed(self):
-        deadline = datetime.now(timezone.utc) + timedelta(seconds=30)
-        notice = self._notice(0, 35, "subagent", deadline_dt=deadline)
-        self.assertIn("[Progress: finished tool iteration 1 of 35 — 34 remaining.]", notice.content)
-        self.assertIn("You are running low on time.", notice.content)
+    def _stages_after_each_round(self, budget):
+        """Stage shown after rounds 1..budget-1 (no notice is needed after the last)."""
+        return [self._stage(budget - n, budget) for n in range(1, budget)]
 
-    def test_run_loop_injects_counter_for_subagent_context(self):
-        """Integration: a 2-tool-round sub-agent run sees a progress message
+    def test_quick_budget_stages(self):
+        self.assertEqual(
+            self._stages_after_each_round(6),
+            ["explore", "explore", "converge", "wrap", "final"],
+        )
+
+    def test_standard_budget_stages(self):
+        stages = self._stages_after_each_round(15)
+        self.assertEqual(stages[:7], ["explore"] * 7)       # after rounds 1-7
+        self.assertEqual(stages[7:11], ["converge"] * 4)    # after rounds 8-11
+        self.assertEqual(stages[11:13], ["wrap"] * 2)       # after rounds 12-13
+        self.assertEqual(stages[13], "final")               # after round 14
+
+    def test_deep_budget_stages(self):
+        stages = self._stages_after_each_round(30)
+        # Notices after rounds 1-14 explore (rounds 1-15 explore), 15-23 converge,
+        # 24-28 wrap up, 29 announces the final round 30.
+        self.assertEqual(stages.count("explore"), 14)
+        self.assertEqual(stages.count("converge"), 9)
+        self.assertEqual(stages.count("wrap"), 5)
+        self.assertEqual(stages[-1], "final")
+
+    def test_run_loop_injects_countdown_for_subagent_context(self):
+        """Integration: a 2-tool-round sub-agent run sees a countdown message
         after each round in the history the next generate receives."""
         tool = _MockToolImpl(name="document_search")
         ctx = RunContext.create()
@@ -1438,14 +1429,61 @@ class IterationNoticeTests(TestCase):
 
         self.assertEqual(response.message.content, "Done.")
         final_messages = fake_model.generate.call_args_list[2][0][0].messages
-        progress = [
-            m.content for m in final_messages
-            if m.role == "user" and isinstance(m.content, str) and m.content.startswith("[Progress:")
+        countdown = [
+            m.content.split("]")[0] + "]" for m in final_messages
+            if m.role == "user" and isinstance(m.content, str)
+            and m.content.startswith("[Round budget:")
         ]
-        self.assertEqual(progress, [
-            "[Progress: finished tool iteration 1 of 5 — 4 remaining.]",
-            "[Progress: finished tool iteration 2 of 5 — 3 remaining.]",
-        ])
+        self.assertEqual(len(countdown), 2)
+        self.assertIn("4 rounds left (round 1/5 done)", countdown[0])
+        self.assertIn("3 rounds left (round 2/5 done)", countdown[1])
+        self.assertEqual(ctx.observability["rounds"], 3)
+        self.assertEqual(ctx.observability["loop_stop"], "answered")
+
+    def test_budget_exhaustion_forces_subagent_final_reply(self):
+        """Round budget used up: one more call with tools switched off and the
+        sub-agent's "budget used up" text; the loop records stop=budget."""
+        tool = _MockToolImpl(name="document_search")
+        ctx = RunContext.create()
+        ctx.agent_kind = "subagent"
+        request = ChatRequest(
+            messages=[Message(role="user", content="Go")],
+            stream=False,
+            model="gpt-4o-mini",
+            tools=["document_search"],
+            context=ctx,
+        )
+        tool_call = ToolCall(id="c1", name="document_search", arguments={"a": 1, "b": 2})
+        tool_response = ChatResponse(
+            message=Message(role="assistant", content="", tool_calls=[tool_call]),
+            model="gpt-4o-mini", usage=None, metadata={},
+        )
+        final_response = ChatResponse(
+            message=Message(role="assistant", content="Summary. Not covered: X."),
+            model="gpt-4o-mini", usage=None, metadata={},
+        )
+        fake_model = MagicMock()
+        fake_model.generate.side_effect = [tool_response, tool_response, final_response]
+
+        mock_registry = MagicMock()
+        mock_registry.return_value.get_tool.side_effect = (
+            lambda n: tool if n == "document_search" else None
+        )
+        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
+             patch("llm.pipelines.simple_chat.get_tool_registry", mock_registry):
+            mock_create.return_value = fake_model
+            SimpleChatPipeline(max_tool_iterations=2).run(request)
+
+        final_req = fake_model.generate.call_args_list[2][0][0]
+        self.assertEqual(final_req.params.get("_tool_choice"), "none")
+        last = final_req.messages[-1]
+        self.assertEqual(last.role, "user")
+        self.assertTrue(last.content.startswith(
+            "[Round 3/2: your round budget is used up. Tools are off.]"
+        ))
+        self.assertIn('"Not covered" list', last.content)
+        self.assertEqual(ctx.observability["rounds"], 3)
+        self.assertEqual(ctx.observability["loop_stop"], "budget")
 
     def test_run_loop_no_counter_for_main_context(self):
         tool = _MockToolImpl(name="document_search")
@@ -1481,7 +1519,7 @@ class IterationNoticeTests(TestCase):
         progress = [
             m for m in final_messages
             if m.role == "user" and isinstance(m.content, str)
-            and ("[Progress:" in m.content or "IMPORTANT:" in m.content)
+            and ("[Round budget:" in m.content or "IMPORTANT:" in m.content)
         ]
         self.assertEqual(progress, [])
 

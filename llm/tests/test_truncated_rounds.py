@@ -131,7 +131,7 @@ class TruncatedRoundTests(TestCase):
         self.assertFalse(any(m.role == "assistant" for m in msgs))
         self.assertEqual(msgs[-1].role, "user")
         self.assertIn("cut off", msgs[-1].content)
-        self.assertIn("[Progress:", msgs[-1].content)
+        self.assertIn("[Round budget:", msgs[-1].content)
         self.assertEqual(request.context.observability["output_truncated_rounds"], 1)
 
     def test_main_agent_cut_visible_answer_ends_the_turn(self):
@@ -171,6 +171,8 @@ class TruncatedRoundTests(TestCase):
         self.assertIn("tool-use limit", seen[2].messages[-1].content)
         self.assertTrue(any("consecutive truncated" in r.getMessage() for r in logs.records))
         self.assertEqual(request.context.observability["output_truncated_rounds"], 2)
+        self.assertEqual(request.context.observability["loop_stop"], "truncation")
+        self.assertEqual(request.context.observability["rounds"], 3)
         self.assertEqual(CALLS, [])
 
     def test_normal_round_resets_the_streak(self):

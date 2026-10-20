@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
 from typing import Iterator, List, Tuple
 
 from llm.core.interfaces import ChatModel
@@ -32,56 +32,67 @@ logger = logging.getLogger(__name__)
 MAX_TOOL_RESULT_CHARS = 200_000
 
 
+def _round_stage_line(rounds_left: int, budget: int) -> str:
+    """The pacing advice for a sub-agent with *rounds_left* of *budget* rounds.
+
+    Stages, from first to last: explore → converge (more than half the budget
+    used) → wrap up (the last ~20%, at least 2 rounds) → final round. Tested at
+    the boundaries for the quick/standard/deep budgets.
+    """
+    if rounds_left <= 1:
+        return (
+            f"Your next round ({budget}/{budget}) is your final round with tools: finish "
+            "your canvas and write your final reply. Do not repeat what is in the canvas "
+            "in your reply."
+        )
+    if rounds_left <= max(2, math.ceil(0.2 * budget)):
+        return "Your rounds are almost up: finish your canvas report soon."
+    if rounds_left <= budget // 2:
+        return (
+            "Converge: start no new lines of inquiry; fill the gaps that matter and make "
+            "sure every section has a draft in your canvas."
+        )
+    return (
+        "Explore: search broadly; note key facts and source URLs in your scratchpad as "
+        "you find them."
+    )
+
+
 def _iteration_notice(
     iteration_index: int,
     max_iterations: int,
-    deadline_dt: datetime | None,
     agent_kind: str,
 ) -> Message | None:
     """The user message appended after an iteration's tool results, or None.
 
-    Sub-agents get a progress counter EVERY iteration so they pace themselves
-    across the whole run (they have a hard iteration budget and a deadline);
-    the last-iteration / time-low warnings are absorbed into the same message.
-    Main-chat behavior is unchanged: warnings only at <=2 remaining or when
-    time runs low. Cache-safe either way — the message is appended after the
-    tool results, never edited into earlier history.
+    Sub-agents get a round-budget countdown EVERY round, plus one line of pacing
+    advice for the stage they are in (``_round_stage_line``), so they pace
+    themselves across the whole budget instead of hitting the cliff. Main-chat
+    behavior is unchanged: a warning only at <=2 remaining. Cache-safe either
+    way — the message is appended after the tool results, never edited into
+    earlier history.
     """
     finished = iteration_index + 1
     remaining = max_iterations - finished
-    time_running_low = bool(
-        deadline_dt
-        and (deadline_dt - datetime.now(timezone.utc)).total_seconds() <= 90
-    )
-
-    warnings = []
-    if remaining <= 2:
-        if remaining <= 1:
-            warnings.append("This is your last tool iteration.")
-        else:
-            warnings.append("You have 2 tool iterations remaining.")
-    if time_running_low:
-        warnings.append("You are running low on time.")
-
-    warning_text = ""
-    if warnings:
-        warning_text = (
-            f"IMPORTANT: {' '.join(warnings)} Wrap up your research "
-            "and prepare to deliver your comprehensive final response "
-            "as plain text."
-        )
 
     if agent_kind == "subagent":
-        progress = (
-            f"[Progress: finished tool iteration {finished} of {max_iterations} "
-            f"— {remaining} remaining.]"
-        )
-        content = f"{progress} {warning_text}" if warning_text else progress
-        return Message(role="user", content=content)
+        return Message(role="user", content=(
+            f"[Round budget: {remaining} rounds left (round {finished}/{max_iterations} done). "
+            "When the budget runs out, tools are switched off and you get one final reply. "
+            "Your canvas is returned as it is at that point.] "
+            + _round_stage_line(remaining, max_iterations)
+        ))
 
-    if not warning_text:
+    if remaining > 2:
         return None
-    return Message(role="user", content=warning_text)
+    warning = (
+        "This is your last tool iteration." if remaining <= 1
+        else "You have 2 tool iterations remaining."
+    )
+    return Message(role="user", content=(
+        f"IMPORTANT: {warning} Wrap up your research and prepare to deliver your "
+        "comprehensive final response as plain text."
+    ))
 
 
 # A round is "truncated" when the provider cut it at the output cap or the
@@ -89,7 +100,7 @@ def _iteration_notice(
 # ``output_truncated``). Its tool calls are never run: a cut-off call's JSON was
 # repaired by LangChain's partial parser, so the arguments may be silently
 # truncated. After this many in a row the loop gives up on tools and streams the
-# final answer, like the deadline path.
+# final answer, like the round-budget path.
 _MAX_CONSECUTIVE_TRUNCATED_ROUNDS = 2
 _TRUNCATED_TOOL_LABEL = "Not run — output was cut off"
 
@@ -121,6 +132,22 @@ def _truncated_round_notice(stop_reason: str, progress: Message | None) -> Messa
     if progress is not None and progress.content:
         text = f"{text} {progress.content}"
     return Message(role="user", content=text)
+
+
+def _count_round(context) -> None:
+    """Count one model call of the tool loop (the forced final call included)
+    as a round; ``observability["rounds"]`` is what a sub-agent run reports."""
+    if context is not None:
+        context.bump_stat("rounds")
+
+
+def _set_loop_stop(context, reason: str) -> None:
+    """Record why the tool loop ended: ``answered`` (the model replied without
+    tools), ``budget`` (the round budget ran out → forced final call),
+    ``truncation`` (consecutive cut-off rounds → forced final call) or
+    ``cancelled``. Read by the sub-agent service and logged on LLMCallLog."""
+    if context is not None:
+        context.observability["loop_stop"] = reason
 
 
 def _usable_tool_call_dicts(tool_call_dicts) -> list[dict]:
@@ -588,24 +615,33 @@ class SimpleChatPipeline(BasePipeline):
         )
 
     @staticmethod
-    def _final_request(req: ChatRequest, edits: EditPointManager) -> ChatRequest:
-        """The last, tool-less call after the loop ends (iteration cap or deadline).
+    def _final_request(
+        req: ChatRequest, edits: EditPointManager, max_iterations: int,
+    ) -> ChatRequest:
+        """The last, tool-less call after the loop ends (round budget or truncation).
 
         Tools stay bound and ``tool_choice`` is set to "none" (passed as the
         ``_tool_choice`` param; each provider adapter maps it) instead of dropping
         ``tool_schemas`` — removing the tool set would change the request prefix,
         breaking the prompt cache and invalidating Anthropic's replayed thinking.
+        A sub-agent is told its canvas is returned as-is, so the reply is a short
+        summary plus what it did not get to (the orchestrator can continue it).
         """
-        final_messages = list(req.messages) + [
-            Message(
-                role="user",
-                content=(
-                    "You have reached the tool-use limit. Do NOT call any more tools. "
-                    "Using the information you have gathered so far, provide your "
-                    "comprehensive final response now as plain text."
-                ),
+        agent_kind = getattr(req.context, "agent_kind", "main") if req.context else "main"
+        if agent_kind == "subagent":
+            text = (
+                f"[Round {max_iterations + 1}/{max_iterations}: your round budget is used up. "
+                "Tools are off.] Write your final reply now: a short summary of your findings "
+                'and a "Not covered" list of what you did not get to. Your canvas is returned '
+                "as it is — do not repeat it in your reply."
             )
-        ]
+        else:
+            text = (
+                "You have reached the tool-use limit. Do NOT call any more tools. "
+                "Using the information you have gathered so far, provide your "
+                "comprehensive final response now as plain text."
+            )
+        final_messages = list(req.messages) + [Message(role="user", content=text)]
         final_messages = edits.finish_final(final_messages, req)
         return req.model_copy(update={
             "messages": final_messages,
@@ -625,12 +661,6 @@ class SimpleChatPipeline(BasePipeline):
         edits = EditPointManager(self, request, tool_by_name)
 
         ctx = request.context
-        deadline_dt = None
-        if ctx and ctx.deadline_seconds:
-            # Reserve 60s for the final tool-stripped generate + result storage.
-            # The check runs between rounds, so a round in flight still completes.
-            margin = min(60, ctx.deadline_seconds // 4)
-            deadline_dt = ctx.started_at + timedelta(seconds=ctx.deadline_seconds - margin)
 
         agg_input = 0
         agg_output = 0
@@ -671,18 +701,12 @@ class SimpleChatPipeline(BasePipeline):
         truncated_streak = 0
         for i in range(effective_max):
             if cancel_check and cancel_check():
+                _set_loop_stop(ctx, "cancelled")
                 return ChatResponse(
                     message=Message(role="assistant", content="[Cancelled]"),
                     metadata={"stop_reason": "cancelled"},
                 )
-
-            if deadline_dt and datetime.now(timezone.utc) >= deadline_dt:
-                logger.warning(
-                    "Tool loop deadline (%ds) reached at iteration %d; "
-                    "stripping tools for final generate",
-                    ctx.deadline_seconds, i,
-                )
-                break
+            _count_round(ctx)
 
             self._record_outbound_estimate(req.context, req)
             response = chat_model.generate(req)
@@ -725,7 +749,7 @@ class SimpleChatPipeline(BasePipeline):
                         self._record_tool_round_stats(req.context, results)
                     notice = _truncated_round_notice(
                         stop_reason,
-                        _iteration_notice(i, effective_max, deadline_dt, agent_kind),
+                        _iteration_notice(i, effective_max, agent_kind),
                     )
                     new_messages, tools = edits.finish_round(
                         new_messages, req, tools,
@@ -741,6 +765,7 @@ class SimpleChatPipeline(BasePipeline):
                             "stripping tools for final generate",
                             truncated_streak, i,
                         )
+                        _set_loop_stop(ctx, "truncation")
                         break
                     continue
                 # A cut plain-text answer for the main agent ends the turn as
@@ -751,6 +776,7 @@ class SimpleChatPipeline(BasePipeline):
                 truncated_streak = 0
 
             if not msg.tool_calls:
+                _set_loop_stop(ctx, "answered")
                 return _with_aggregate(response)
 
             prior_len = len(req.messages)
@@ -763,7 +789,7 @@ class SimpleChatPipeline(BasePipeline):
             self._record_tool_round_stats(req.context, results)
 
             notice = _iteration_notice(
-                i, effective_max, deadline_dt,
+                i, effective_max,
                 getattr(req.context, "agent_kind", "main") if req.context else "main",
             )
             new_messages, tools = edits.finish_round(
@@ -779,8 +805,10 @@ class SimpleChatPipeline(BasePipeline):
                 "Tool loop exhausted %d iterations; disabling tools for final generate",
                 effective_max,
             )
+            _set_loop_stop(ctx, "budget")
 
-        final_req = self._final_request(req, edits)
+        _count_round(ctx)
+        final_req = self._final_request(req, edits, effective_max)
         self._record_outbound_estimate(final_req.context, final_req)
         response = chat_model.generate(final_req)
         _accumulate(response.usage)
@@ -831,10 +859,6 @@ class SimpleChatPipeline(BasePipeline):
             )
 
         ctx = request.context
-        deadline_dt = None
-        if ctx and ctx.deadline_seconds:
-            margin = min(60, ctx.deadline_seconds // 4)
-            deadline_dt = ctx.started_at + timedelta(seconds=ctx.deadline_seconds - margin)
 
         # Aggregate usage across all iterations.
         # Cost stays None until at least one iteration reports it, so unknown-pricing
@@ -897,15 +921,9 @@ class SimpleChatPipeline(BasePipeline):
         truncated_streak = 0
         for i in range(max_iterations):
             if _is_cancelled():
+                _set_loop_stop(ctx, "cancelled")
                 return
-
-            if deadline_dt and datetime.now(timezone.utc) >= deadline_dt:
-                logger.warning(
-                    "Streaming tool loop deadline (%ds) reached at iteration %d; "
-                    "stripping tools for final stream",
-                    ctx.deadline_seconds, i,
-                )
-                break
+            _count_round(ctx)
             # Stream from the model, forwarding all events except message_end
             end_data = {}
             saw_error = False
@@ -929,6 +947,7 @@ class SimpleChatPipeline(BasePipeline):
                 return
 
             if _is_cancelled():
+                _set_loop_stop(ctx, "cancelled")
                 # Cancelled mid-stream: return WITHOUT a message_end so log_stream
                 # sees an interrupted stream (-> CANCELLED with token estimation),
                 # not a normally-completed final iteration. Closes the race where
@@ -1021,7 +1040,7 @@ class SimpleChatPipeline(BasePipeline):
                             )
                     notice = _truncated_round_notice(
                         stop_reason,
-                        _iteration_notice(i, max_iterations, deadline_dt, agent_kind),
+                        _iteration_notice(i, max_iterations, agent_kind),
                     )
                     new_messages, tools = edits.finish_round(
                         new_messages, req, tools,
@@ -1037,6 +1056,7 @@ class SimpleChatPipeline(BasePipeline):
                             "iteration %d; stripping tools for final stream",
                             truncated_streak, i,
                         )
+                        _set_loop_stop(ctx, "truncation")
                         break
                     continue
                 # A cut plain-text answer for the main agent: the user already
@@ -1047,6 +1067,7 @@ class SimpleChatPipeline(BasePipeline):
                 truncated_streak = 0
 
             if not tool_call_dicts:
+                _set_loop_stop(ctx, "answered")
                 # Final iteration — response already streamed. Emit message_end with aggregates.
                 end_data["input_tokens"] = agg_input_tokens
                 end_data["output_tokens"] = agg_output_tokens
@@ -1099,6 +1120,7 @@ class SimpleChatPipeline(BasePipeline):
                 sequence += 1
 
             if _is_cancelled():
+                _set_loop_stop(ctx, "cancelled")
                 return
 
             # Execute tools (in parallel when multiple)
@@ -1130,7 +1152,7 @@ class SimpleChatPipeline(BasePipeline):
                 )
 
             notice = _iteration_notice(
-                i, max_iterations, deadline_dt,
+                i, max_iterations,
                 getattr(req.context, "agent_kind", "main") if req.context else "main",
             )
             new_messages, tools = edits.finish_round(
@@ -1146,8 +1168,10 @@ class SimpleChatPipeline(BasePipeline):
                 "Streaming tool loop exhausted %d iterations; disabling tools for final stream",
                 max_iterations,
             )
+            _set_loop_stop(ctx, "budget")
 
-        final_req = self._final_request(req, edits)
+        _count_round(ctx)
+        final_req = self._final_request(req, edits, max_iterations)
         self._record_outbound_estimate(final_req.context, final_req)
         saw_error = False
         for item in _do_stream_iteration(final_req, sequence):
