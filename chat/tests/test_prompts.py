@@ -883,7 +883,7 @@ class BuildDynamicContextTests(TestCase):
     def test_subagent_runs_rendered(self):
         runs = [{
             "id": uuid.uuid4(), "status": "completed",
-            "prompt": "Research patents", "model_tier": "mid",
+            "prompt": "Research patents", "model_tier": "medium",
             "result": "Found 3 patents.", "error": "",
         }]
         result = build_dynamic_context(subagent_runs=runs)
@@ -896,7 +896,7 @@ class BuildDynamicContextTests(TestCase):
         """Completed sub-agent results are persisted as messages, not injected in context."""
         runs = [{
             "id": uuid.uuid4(), "status": "completed",
-            "prompt": "Research topic", "model_tier": "mid",
+            "prompt": "Research topic", "model_tier": "medium",
             "result": "Some findings from the web.", "error": "",
         }]
         result = build_dynamic_context(subagent_runs=runs)
@@ -908,7 +908,7 @@ class BuildDynamicContextTests(TestCase):
         """Completed sub-agent with empty result tells orchestrator not to fabricate."""
         runs = [{
             "id": uuid.uuid4(), "status": "completed",
-            "prompt": "Research topic", "model_tier": "mid",
+            "prompt": "Research topic", "model_tier": "medium",
             "result": "", "error": "",
         }]
         result = build_dynamic_context(subagent_runs=runs)

@@ -47,7 +47,7 @@ class ResolvedPreferences:
     theme: str = "system"
     parallel_subagents: bool = True
     # Per-tier sub-agent context-token budgets (org-only). Keys are
-    # SubAgentRun.model_tier values ("mid"/"top"); each value is the aim handed
+    # SubAgentRun.model_tier values (SUBAGENT_TIERS); each value is the aim handed
     # to the mid-turn pruner for that tier. Absent/0 = unlimited (model window).
     subagent_context_budgets: dict[str, int] = field(default_factory=dict)
     # Per-tier sub-agent reasoning levels (org-only), keyed by tier. Each entry
@@ -125,12 +125,18 @@ FEATURE_DEFAULTS: dict[str, FeatureDefault] = {
     "pii_scan": FeatureDefault("cheap", "org"),
     "pii_reviewer": FeatureDefault("primary", "org"),
     # Per-tier model for sub-agent runs, keyed to SubAgentRun.model_tier
-    # ("mid"/"top"). default_slot mid/primary means "no override" resolves to the
-    # org's mid_model / top_model — identical to the historical behavior in
-    # chat.subagent_service.resolve_subagent_model.
-    "subagent_mid": FeatureDefault("mid", "org"),
-    "subagent_top": FeatureDefault("primary", "org"),
+    # (SUBAGENT_TIERS). "No override" resolves to the org's cheap / mid / top
+    # slot model (see chat.subagent_service.resolve_subagent_model).
+    "subagent_low": FeatureDefault("cheap", "org"),
+    "subagent_medium": FeatureDefault("mid", "org"),
+    "subagent_high": FeatureDefault("primary", "org"),
 }
+
+# Sub-agent model-quality tiers (SubAgentRun.model_tier), lowest first. Not to
+# be confused with the slot vocabulary ("primary"/"mid"/"cheap") above.
+SUBAGENT_TIERS = ("low", "medium", "high")
+DEFAULT_SUBAGENT_TIER = "medium"
+SUBAGENT_TIER_FEATURES = {tier: f"subagent_{tier}" for tier in SUBAGENT_TIERS}
 
 _SLOT_TO_ATTR = {"primary": "top_model", "mid": "mid_model", "cheap": "cheap_model"}
 
@@ -524,13 +530,13 @@ def get_preferences(user) -> ResolvedPreferences:
     raw_budgets = org_subagent_prefs.get("context_budget", {}) or {}
     subagent_context_budgets = {
         tier: v
-        for tier in ("mid", "top")
+        for tier in SUBAGENT_TIERS
         if isinstance((v := raw_budgets.get(tier)), int) and v > 0
     }
     raw_reasoning = org_subagent_prefs.get("reasoning", {}) or {}
     subagent_reasoning = {
         tier: {"model": e["model"], "level": e["level"]}
-        for tier in ("mid", "top")
+        for tier in SUBAGENT_TIERS
         if isinstance((e := raw_reasoning.get(tier)), dict)
         and isinstance(e.get("model"), str) and e.get("model")
         and isinstance(e.get("level"), str) and e.get("level")

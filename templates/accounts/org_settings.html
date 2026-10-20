@@ -362,7 +362,7 @@
           {% if subagent_model_rows %}
           <div class="border-t border-default px-5 pt-4">
             <h3 class="text-sm font-semibold text-heading">Sub-agent models</h3>
-            <p class="mt-0.5 text-sm text-body">By default, mid-tier sub-agents use your Mid model and top-tier sub-agents use your Primary model (see Model defaults). Pick a model here to override that for sub-agents only.</p>
+            <p class="mt-0.5 text-sm text-body">By default, low-quality sub-agents use your Cheap model, medium-quality sub-agents your Mid model and high-quality sub-agents your Primary model (see Model defaults). Pick a model here to override that for sub-agents only.</p>
             <p class="mt-1 text-sm text-body">Reasoning sets how long the model thinks before acting. Lower is faster and cheaper; higher can help on hard tasks. Changing the model resets it to that model's default.</p>
           </div>
           <div class="divide-y divide-default">
@@ -475,24 +475,18 @@
           <div class="border-t border-default px-5 py-4">
             <h3 class="text-sm font-medium text-heading">Sub-agent context budgets</h3>
             <p class="text-xs text-body mt-0.5">Cap how large a sub-agent's context may grow before older tool results are trimmed to re-read stubs. <span class="wf-mono">0</span> = unlimited (the model's full window). Applied per sub-agent tier.</p>
-            <label class="block text-xs font-medium text-heading mt-3" for="subagent-budget-mid">Mid</label>
+            {% for budget in subagent_budget_rows %}
+            <label class="block text-xs font-medium text-heading mt-3" for="subagent-budget-{{ budget.tier }}">{{ budget.label }}</label>
             <input
               type="number"
-              id="subagent-budget-mid"
+              id="subagent-budget-{{ budget.tier }}"
+              data-tier="{{ budget.tier }}"
               min="0"
               step="10000"
-              value="{{ subagent_budget_mid }}"
-              class="wf-mono mt-1 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+              value="{{ budget.value }}"
+              class="org-subagent-budget-input wf-mono mt-1 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
             >
-            <label class="block text-xs font-medium text-heading mt-3" for="subagent-budget-top">Standard</label>
-            <input
-              type="number"
-              id="subagent-budget-top"
-              min="0"
-              step="10000"
-              value="{{ subagent_budget_top }}"
-              class="wf-mono mt-1 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
-            >
+            {% endfor %}
           </div>
         </div>
       </section>
@@ -1179,9 +1173,8 @@
   }
 
   // --- Sub-agent context budgets ---
-  function wireSubagentBudget(id, tier) {
-    var el = document.getElementById(id);
-    if (!el) return;
+  function wireSubagentBudget(el) {
+    var tier = el.dataset.tier;
     el.addEventListener('change', function() {
       var val = parseInt(this.value, 10);
       if (isNaN(val) || val < 0) { val = 0; this.value = 0; }
@@ -1197,8 +1190,7 @@
       });
     });
   }
-  wireSubagentBudget('subagent-budget-mid', 'mid');
-  wireSubagentBudget('subagent-budget-top', 'top');
+  document.querySelectorAll('.org-subagent-budget-input').forEach(wireSubagentBudget);
 
   // --- Skills section ---
 

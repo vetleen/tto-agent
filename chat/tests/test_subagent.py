@@ -83,7 +83,7 @@ class SubAgentRunModelTests(TestCase):
             thread=self.thread,
             user=self.user,
             prompt="Analyze patent claims",
-            model_tier="mid",
+            model_tier="medium",
         )
         self.assertEqual(run.status, SubAgentRun.Status.PENDING)
         self.assertEqual(run.prompt, "Analyze patent claims")
@@ -143,31 +143,44 @@ class ResolveSubagentModelTests(TestCase):
         prefs = _prefs()
         self.assertEqual(resolve_subagent_model("fast", prefs), "openai/gpt-5-mini")
 
-    def test_mid_maps_to_mid(self):
+    def test_low_maps_to_cheap_slot(self):
+        prefs = _prefs()
+        self.assertEqual(resolve_subagent_model("low", prefs), "openai/gpt-5-nano")
+
+    def test_medium_maps_to_mid_slot(self):
+        prefs = _prefs()
+        self.assertEqual(resolve_subagent_model("medium", prefs), "openai/gpt-5-mini")
+
+    def test_high_maps_to_top_slot(self):
+        prefs = _prefs()
+        self.assertEqual(resolve_subagent_model("high", prefs), "openai/gpt-5")
+
+    def test_org_override_honored_for_low(self):
+        prefs = _prefs(feature_models={"subagent_low": "openai/gpt-5-custom-low"})
+        self.assertEqual(resolve_subagent_model("low", prefs), "openai/gpt-5-custom-low")
+
+    def test_legacy_tier_names_resolve_as_medium(self):
         prefs = _prefs()
         self.assertEqual(resolve_subagent_model("mid", prefs), "openai/gpt-5-mini")
+        self.assertEqual(resolve_subagent_model("top", prefs), "openai/gpt-5-mini")
 
-    def test_top_maps_to_top(self):
-        prefs = _prefs()
-        self.assertEqual(resolve_subagent_model("top", prefs), "openai/gpt-5")
-
-    def test_invalid_tier_defaults_to_mid(self):
+    def test_invalid_tier_defaults_to_medium(self):
         prefs = _prefs()
         self.assertEqual(resolve_subagent_model("invalid", prefs), "openai/gpt-5-mini")
 
     def test_org_override_honored_for_top(self):
-        prefs = _prefs(feature_models={"subagent_top": "openai/gpt-5-custom-top"})
-        self.assertEqual(resolve_subagent_model("top", prefs), "openai/gpt-5-custom-top")
+        prefs = _prefs(feature_models={"subagent_high": "openai/gpt-5-custom-top"})
+        self.assertEqual(resolve_subagent_model("high", prefs), "openai/gpt-5-custom-top")
 
     def test_org_override_honored_for_mid(self):
-        prefs = _prefs(feature_models={"subagent_mid": "openai/gpt-5-custom-mid"})
-        self.assertEqual(resolve_subagent_model("mid", prefs), "openai/gpt-5-custom-mid")
+        prefs = _prefs(feature_models={"subagent_medium": "openai/gpt-5-custom-mid"})
+        self.assertEqual(resolve_subagent_model("medium", prefs), "openai/gpt-5-custom-mid")
 
     def test_no_subagent_override_falls_back_to_slot_model(self):
         # feature_models present but without the sub-agent keys -> slot fallback.
         prefs = _prefs(feature_models={"chat": "openai/gpt-5"})
-        self.assertEqual(resolve_subagent_model("top", prefs), "openai/gpt-5")
-        self.assertEqual(resolve_subagent_model("mid", prefs), "openai/gpt-5-mini")
+        self.assertEqual(resolve_subagent_model("high", prefs), "openai/gpt-5")
+        self.assertEqual(resolve_subagent_model("medium", prefs), "openai/gpt-5-mini")
 
 
 # ---------------------------------------------------------------------------
@@ -415,7 +428,7 @@ class CreateSubagentRunIfAllowedTests(TestCase):
             self.user,
             thread_id=self.thread.id,
             prompt="research task",
-            model_tier="mid",
+            model_tier="medium",
         )
         self.assertIsNotNone(run)
         self.assertEqual(err, "")
@@ -953,7 +966,7 @@ class CreateSubagentToolBackgroundTests(TestCase):
 
     @patch("chat.tasks.notify_subagent_status")
     @patch("chat.tasks.run_subagent_task")
-    def test_invalid_tier_defaults_to_mid(self, mock_task, _mock_notify):
+    def test_invalid_tier_defaults_to_medium(self, mock_task, _mock_notify):
         mock_task.delay.return_value = MagicMock(id="t1")
 
         ctx = _ctx(self.user.pk, self.thread.id)
@@ -962,7 +975,7 @@ class CreateSubagentToolBackgroundTests(TestCase):
         }, ctx)
 
         run = SubAgentRun.objects.first()
-        self.assertEqual(run.model_tier, "mid")
+        self.assertEqual(run.model_tier, "medium")
 
 
 class ActiveSubagentRunsPayloadTests(TestCase):
@@ -1069,7 +1082,7 @@ class BuildSystemPromptSubagentStatusTests(TestCase):
         from chat.prompts import build_system_prompt
         runs = [{
             "id": uuid.uuid4(), "status": "pending",
-            "prompt": "Research patent claims", "model_tier": "mid",
+            "prompt": "Research patent claims", "model_tier": "medium",
             "result": "", "error": "",         }]
         prompt = build_system_prompt(has_subagent_tool=True, subagent_runs=runs)
         self.assertIn("# Sub-agent Status", prompt)
@@ -1080,7 +1093,7 @@ class BuildSystemPromptSubagentStatusTests(TestCase):
         from chat.prompts import build_system_prompt
         runs = [{
             "id": uuid.uuid4(), "status": "running",
-            "prompt": "Analyze documents", "model_tier": "mid",
+            "prompt": "Analyze documents", "model_tier": "medium",
             "result": "", "error": "",         }]
         prompt = build_system_prompt(has_subagent_tool=True, subagent_runs=runs)
         self.assertIn("RUNNING", prompt)
@@ -1090,7 +1103,7 @@ class BuildSystemPromptSubagentStatusTests(TestCase):
         from chat.prompts import build_system_prompt
         runs = [{
             "id": uuid.uuid4(), "status": "completed",
-            "prompt": "Summarize findings", "model_tier": "top",
+            "prompt": "Summarize findings", "model_tier": "high",
             "result": "Found 3 key patents.", "error": "",
         }]
         prompt = build_system_prompt(has_subagent_tool=True, subagent_runs=runs)
@@ -1102,7 +1115,7 @@ class BuildSystemPromptSubagentStatusTests(TestCase):
         from chat.prompts import build_system_prompt
         runs = [{
             "id": uuid.uuid4(), "status": "failed",
-            "prompt": "Bad task", "model_tier": "mid",
+            "prompt": "Bad task", "model_tier": "medium",
             "result": "", "error": "LLM provider timeout",         }]
         prompt = build_system_prompt(has_subagent_tool=True, subagent_runs=runs)
         self.assertIn("FAILED", prompt)
@@ -1118,7 +1131,7 @@ class BuildSystemPromptSubagentStatusTests(TestCase):
         long_result = "x" * 10000
         runs = [{
             "id": uuid.uuid4(), "status": "completed",
-            "prompt": "Big task", "model_tier": "mid",
+            "prompt": "Big task", "model_tier": "medium",
             "result": long_result, "error": "",
         }]
         prompt = build_system_prompt(has_subagent_tool=True, subagent_runs=runs)
@@ -1258,7 +1271,7 @@ class RunSubagentServiceTests(TestCase):
 
         run = SubAgentRun.objects.create(
             thread=self.thread, user=self.user,
-            prompt="task", model_tier="mid",
+            prompt="task", model_tier="medium",
         )
 
         from chat.subagent_service import run_subagent
@@ -1296,7 +1309,7 @@ class RunSubagentServiceTests(TestCase):
     def test_tier_budget_sets_max_context_tokens(self, mock_prefs, mock_svc):
         """An org budget for the run's tier is passed into the request params so
         the mid-turn pruner sizes to it (mid tier -> mid budget)."""
-        mock_prefs.return_value = _prefs(subagent_context_budgets={"mid": 120_000})
+        mock_prefs.return_value = _prefs(subagent_context_budgets={"medium": 120_000})
         mock_response = MagicMock()
         mock_response.message.content = "Done"
         mock_response.usage.total_tokens = 100
@@ -1304,7 +1317,7 @@ class RunSubagentServiceTests(TestCase):
         mock_svc.return_value.run_via_stream.return_value = mock_response
 
         run = SubAgentRun.objects.create(
-            thread=self.thread, user=self.user, prompt="task", model_tier="mid",
+            thread=self.thread, user=self.user, prompt="task", model_tier="medium",
         )
 
         from chat.subagent_service import run_subagent
@@ -1319,7 +1332,7 @@ class RunSubagentServiceTests(TestCase):
         """With no budget for the tier, the sub-agent uses the org's context limit
         (default 200k) — never the model's full window."""
         mock_prefs.return_value = _prefs(
-            subagent_context_budgets={"top": 150_000}, max_context_tokens=90_000,
+            subagent_context_budgets={"high": 150_000}, max_context_tokens=90_000,
         )
         mock_response = MagicMock()
         mock_response.message.content = "Done"
@@ -1328,7 +1341,7 @@ class RunSubagentServiceTests(TestCase):
         mock_svc.return_value.run_via_stream.return_value = mock_response
 
         run = SubAgentRun.objects.create(
-            thread=self.thread, user=self.user, prompt="task", model_tier="mid",
+            thread=self.thread, user=self.user, prompt="task", model_tier="medium",
         )
 
         from chat.subagent_service import run_subagent
@@ -1343,7 +1356,7 @@ class RunSubagentServiceTests(TestCase):
         """A tiny budget is floored at MIN_CONTEXT_TOKENS to avoid prune thrash."""
         from core.preferences import MIN_CONTEXT_TOKENS
 
-        mock_prefs.return_value = _prefs(subagent_context_budgets={"top": 10_000})
+        mock_prefs.return_value = _prefs(subagent_context_budgets={"high": 10_000})
         mock_response = MagicMock()
         mock_response.message.content = "Done"
         mock_response.usage.total_tokens = 100
@@ -1351,7 +1364,7 @@ class RunSubagentServiceTests(TestCase):
         mock_svc.return_value.run_via_stream.return_value = mock_response
 
         run = SubAgentRun.objects.create(
-            thread=self.thread, user=self.user, prompt="task", model_tier="top",
+            thread=self.thread, user=self.user, prompt="task", model_tier="high",
         )
 
         from chat.subagent_service import run_subagent
@@ -1366,7 +1379,7 @@ class RunSubagentServiceTests(TestCase):
         """An org sub-agent-tier model override (feature_models) wins over the
         tier's slot model when resolving model_used."""
         mock_prefs.return_value = _prefs(
-            feature_models={"subagent_mid": "openai/gpt-5-nano"},
+            feature_models={"subagent_medium": "openai/gpt-5-nano"},
         )
         mock_response = MagicMock()
         mock_response.message.content = "Done"
@@ -1375,7 +1388,7 @@ class RunSubagentServiceTests(TestCase):
         mock_svc.return_value.run_via_stream.return_value = mock_response
 
         run = SubAgentRun.objects.create(
-            thread=self.thread, user=self.user, prompt="task", model_tier="mid",
+            thread=self.thread, user=self.user, prompt="task", model_tier="medium",
         )
 
         from chat.subagent_service import run_subagent
@@ -1386,7 +1399,7 @@ class RunSubagentServiceTests(TestCase):
 
     def _run_params(self, mock_prefs, mock_svc, **pref_overrides):
         mock_prefs.return_value = _prefs(
-            feature_models={"subagent_mid": "openai/gpt-6-luna"}, **pref_overrides,
+            feature_models={"subagent_medium": "openai/gpt-6-luna"}, **pref_overrides,
         )
         mock_response = MagicMock()
         mock_response.message.content = "Done"
@@ -1394,7 +1407,7 @@ class RunSubagentServiceTests(TestCase):
         mock_response.usage.cost_usd = 0.0
         mock_svc.return_value.run_via_stream.return_value = mock_response
         run = SubAgentRun.objects.create(
-            thread=self.thread, user=self.user, prompt="task", model_tier="mid",
+            thread=self.thread, user=self.user, prompt="task", model_tier="medium",
         )
         from chat.subagent_service import run_subagent
         run_subagent(run.id)
@@ -1404,7 +1417,7 @@ class RunSubagentServiceTests(TestCase):
     @patch("core.preferences.get_preferences")
     def test_org_tier_reasoning_level_sets_thinking_level(self, mock_prefs, mock_svc):
         params = self._run_params(mock_prefs, mock_svc, subagent_reasoning={
-            "mid": {"model": "openai/gpt-6-luna", "level": "medium"},
+            "medium": {"model": "openai/gpt-6-luna", "level": "medium"},
         })
         self.assertEqual(params.get("thinking_level"), "medium")
 
@@ -1414,7 +1427,7 @@ class RunSubagentServiceTests(TestCase):
         """A level chosen for a model the tier no longer runs on falls back to
         the registry default (no thinking_level key)."""
         params = self._run_params(mock_prefs, mock_svc, subagent_reasoning={
-            "mid": {"model": "anthropic/claude-sonnet-5-5", "level": "medium"},
+            "medium": {"model": "anthropic/claude-sonnet-5-5", "level": "medium"},
         })
         self.assertNotIn("thinking_level", params)
 
@@ -1422,7 +1435,7 @@ class RunSubagentServiceTests(TestCase):
     @patch("core.preferences.get_preferences")
     def test_reasoning_level_invalid_for_model_is_ignored(self, mock_prefs, mock_svc):
         params = self._run_params(mock_prefs, mock_svc, subagent_reasoning={
-            "mid": {"model": "openai/gpt-6-luna", "level": "bogus"},
+            "medium": {"model": "openai/gpt-6-luna", "level": "bogus"},
         })
         self.assertNotIn("thinking_level", params)
 
@@ -1430,7 +1443,7 @@ class RunSubagentServiceTests(TestCase):
     @patch("core.preferences.get_preferences")
     def test_no_reasoning_entry_leaves_registry_default(self, mock_prefs, mock_svc):
         params = self._run_params(mock_prefs, mock_svc, subagent_reasoning={
-            "top": {"model": "openai/gpt-6-luna", "level": "low"},
+            "high": {"model": "openai/gpt-6-luna", "level": "low"},
         })
         self.assertNotIn("thinking_level", params)
 

@@ -422,7 +422,7 @@ class SubagentStatusPromptWordingTests(TestCase):
 
         base = {
             "id": uuid.uuid4(), "status": "pending", "prompt": "Research",
-            "model_tier": "mid", "result": "", "error": "",
+            "model_tier": "medium", "result": "", "error": "",
         }
         base.update(run)
         return build_system_prompt(has_subagent_tool=True, subagent_runs=[base])

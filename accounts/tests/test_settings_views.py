@@ -278,19 +278,26 @@ class OrgSettingsAccessTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         rows = {row["key"]: row for row in response.context["subagent_model_rows"]}
-        self.assertEqual(set(rows), {"subagent_mid", "subagent_top"})
-        self.assertEqual(rows["subagent_mid"]["label"], "Mid-tier sub-agents")
-        self.assertEqual(rows["subagent_top"]["label"], "Top-tier sub-agents")
-        # "No override" follows the org's mid / primary tier models.
-        self.assertEqual(rows["subagent_mid"]["default_slot"], "mid")
-        self.assertEqual(rows["subagent_top"]["default_slot"], "primary")
+        self.assertEqual(set(rows), {"subagent_low", "subagent_medium", "subagent_high"})
+        self.assertEqual(rows["subagent_low"]["label"], "Low-quality sub-agents")
+        self.assertEqual(rows["subagent_medium"]["label"], "Medium-quality sub-agents")
+        self.assertEqual(rows["subagent_high"]["label"], "High-quality sub-agents")
+        # "No override" follows the org's cheap / mid / primary slot models.
+        self.assertEqual(rows["subagent_low"]["default_slot"], "cheap")
+        self.assertEqual(rows["subagent_medium"]["default_slot"], "mid")
+        self.assertEqual(rows["subagent_high"]["default_slot"], "primary")
+        # Budget inputs: one per tier, lowest first.
+        self.assertEqual(
+            [b["tier"] for b in response.context["subagent_budget_rows"]],
+            ["low", "medium", "high"],
+        )
         # No star floor: every allowed model is offered, luna (2*) included.
-        self.assertIn("openai/gpt-5.6-sol", rows["subagent_top"]["eligible_models"])
-        self.assertIn("openai/gpt-5.6-luna", rows["subagent_top"]["eligible_models"])
+        self.assertIn("openai/gpt-5.6-sol", rows["subagent_high"]["eligible_models"])
+        self.assertIn("openai/gpt-5.6-luna", rows["subagent_high"]["eligible_models"])
         # They render in the Sub-agents section, not the generic feature list.
         feature_keys = {row["key"] for row in response.context["org_features"]}
-        self.assertNotIn("subagent_mid", feature_keys)
-        self.assertNotIn("subagent_top", feature_keys)
+        self.assertNotIn("subagent_medium", feature_keys)
+        self.assertNotIn("subagent_high", feature_keys)
 
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
     @patch("llm.tools.registry.get_tool_registry")
@@ -1012,7 +1019,7 @@ class OrgSubagentBudgetsUpdateTests(TestCase):
     def test_requires_admin(self):
         self.client.login(email=self.member_user.email, password=self.password)
         response = self.client.post(
-            self.url, json.dumps({"mid": 120_000}), content_type="application/json",
+            self.url, json.dumps({"medium": 120_000}), content_type="application/json",
         )
         self.assertEqual(response.status_code, 403)
 
@@ -1020,52 +1027,52 @@ class OrgSubagentBudgetsUpdateTests(TestCase):
         self.client.login(email=self.admin_user.email, password=self.password)
         response = self.client.post(
             self.url,
-            json.dumps({"mid": 120_000, "top": 180_000}),
+            json.dumps({"medium": 120_000, "high": 180_000}),
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 200)
         self.org.refresh_from_db()
         self.assertEqual(
             self.org.preferences["subagents"]["context_budget"],
-            {"mid": 120_000, "top": 180_000},
+            {"medium": 120_000, "high": 180_000},
         )
 
     def test_zero_clears_tier(self):
         self.client.login(email=self.admin_user.email, password=self.password)
-        self.org.preferences = {"subagents": {"context_budget": {"mid": 120_000}}}
+        self.org.preferences = {"subagents": {"context_budget": {"medium": 120_000}}}
         self.org.save(update_fields=["preferences"])
         response = self.client.post(
-            self.url, json.dumps({"mid": 0}), content_type="application/json",
+            self.url, json.dumps({"medium": 0}), content_type="application/json",
         )
         self.assertEqual(response.status_code, 200)
         self.org.refresh_from_db()
-        self.assertNotIn("mid", self.org.preferences["subagents"]["context_budget"])
+        self.assertNotIn("medium", self.org.preferences["subagents"]["context_budget"])
 
     def test_partial_update_leaves_other_tier(self):
         self.client.login(email=self.admin_user.email, password=self.password)
-        self.org.preferences = {"subagents": {"context_budget": {"top": 180_000}}}
+        self.org.preferences = {"subagents": {"context_budget": {"high": 180_000}}}
         self.org.save(update_fields=["preferences"])
         response = self.client.post(
-            self.url, json.dumps({"mid": 120_000}), content_type="application/json",
+            self.url, json.dumps({"medium": 120_000}), content_type="application/json",
         )
         self.assertEqual(response.status_code, 200)
         self.org.refresh_from_db()
         self.assertEqual(
             self.org.preferences["subagents"]["context_budget"],
-            {"top": 180_000, "mid": 120_000},
+            {"high": 180_000, "medium": 120_000},
         )
 
     def test_above_cap_returns_400(self):
         self.client.login(email=self.admin_user.email, password=self.password)
         response = self.client.post(
-            self.url, json.dumps({"mid": 2_000_001}), content_type="application/json",
+            self.url, json.dumps({"medium": 2_000_001}), content_type="application/json",
         )
         self.assertEqual(response.status_code, 400)
 
     def test_non_integer_returns_400(self):
         self.client.login(email=self.admin_user.email, password=self.password)
         response = self.client.post(
-            self.url, json.dumps({"mid": "lots"}), content_type="application/json",
+            self.url, json.dumps({"medium": "lots"}), content_type="application/json",
         )
         self.assertEqual(response.status_code, 400)
 
@@ -1604,54 +1611,54 @@ class OrgFeatureModelUpdateTests(TestCase):
         "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
         "openai/gpt-5.6-sol", "openai/gpt-5.6-luna",
     ])
-    def test_sets_subagent_top_model(self, mock_models):
-        # subagent_top has a 3-star floor; sol (4 stars) clears it.
+    def test_sets_subagent_high_model(self, mock_models):
+        # subagent_high has a 3-star floor; sol (4 stars) clears it.
         self.client.login(email=self.admin_user.email, password=self.password)
         response = self.client.post(
             self.url,
-            json.dumps({"feature": "subagent_top", "model": "openai/gpt-5.6-sol"}),
+            json.dumps({"feature": "subagent_high", "model": "openai/gpt-5.6-sol"}),
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 200)
         self.org.refresh_from_db()
         self.assertEqual(
-            self.org.preferences["feature_models"]["subagent_top"], "openai/gpt-5.6-sol"
+            self.org.preferences["feature_models"]["subagent_high"], "openai/gpt-5.6-sol"
         )
 
     @patch("llm.service.policies.get_allowed_models", return_value=[
         "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
         "openai/gpt-5.6-sol", "openai/gpt-5.6-luna",
     ])
-    def test_sets_subagent_mid_model(self, mock_models):
-        # subagent_mid has a 2-star floor; luna's curated 2 stars clear it.
+    def test_sets_subagent_medium_model(self, mock_models):
+        # subagent_medium has a 2-star floor; luna's curated 2 stars clear it.
         self.client.login(email=self.admin_user.email, password=self.password)
         response = self.client.post(
             self.url,
-            json.dumps({"feature": "subagent_mid", "model": "openai/gpt-5.6-luna"}),
+            json.dumps({"feature": "subagent_medium", "model": "openai/gpt-5.6-luna"}),
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 200)
         self.org.refresh_from_db()
         self.assertEqual(
-            self.org.preferences["feature_models"]["subagent_mid"], "openai/gpt-5.6-luna"
+            self.org.preferences["feature_models"]["subagent_medium"], "openai/gpt-5.6-luna"
         )
 
     @patch("llm.service.policies.get_allowed_models", return_value=[
         "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
         "openai/gpt-5.6-sol", "openai/gpt-5.6-luna",
     ])
-    def test_accepts_low_star_model_for_subagent_top(self, mock_models):
+    def test_accepts_low_star_model_for_subagent_high(self, mock_models):
         # No star floor: luna's 2 stars are fine for top-tier sub-agents.
         self.client.login(email=self.admin_user.email, password=self.password)
         response = self.client.post(
             self.url,
-            json.dumps({"feature": "subagent_top", "model": "openai/gpt-5.6-luna"}),
+            json.dumps({"feature": "subagent_high", "model": "openai/gpt-5.6-luna"}),
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 200)
         self.org.refresh_from_db()
         self.assertEqual(
-            self.org.preferences["feature_models"]["subagent_top"], "openai/gpt-5.6-luna"
+            self.org.preferences["feature_models"]["subagent_high"], "openai/gpt-5.6-luna"
         )
 
     @patch("llm.service.policies.get_allowed_models", return_value=[
@@ -2360,7 +2367,7 @@ class OrgSubagentReasoningUpdateTests(TestCase):
         self.member_user.email_verified = True
         self.member_user.save(update_fields=["email_verified"])
         self.org = Organization.objects.create(name="ReasonOrg", slug="reasonorg", preferences={
-            "feature_models": {"subagent_mid": "openai/gpt-6-luna"},
+            "feature_models": {"subagent_medium": "openai/gpt-6-luna"},
         })
         Membership.objects.create(user=self.admin_user, org=self.org, role=Membership.Role.ADMIN)
         Membership.objects.create(user=self.member_user, org=self.org, role=Membership.Role.MEMBER)
@@ -2375,24 +2382,24 @@ class OrgSubagentReasoningUpdateTests(TestCase):
         return (self.org.preferences.get("subagents") or {}).get("reasoning") or {}
 
     def test_saves_level_with_effective_override_model(self, _models):
-        response = self._post({"tier": "mid", "level": "medium"})
+        response = self._post({"tier": "medium", "level": "medium"})
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertEqual(data["model"], "openai/gpt-6-luna")
         self.assertEqual(data["current"], "medium")
         self.assertEqual(data["default_level"], "high")
-        self.assertEqual(self._reasoning(), {"mid": {"model": "openai/gpt-6-luna", "level": "medium"}})
+        self.assertEqual(self._reasoning(), {"medium": {"model": "openai/gpt-6-luna", "level": "medium"}})
 
     def test_saves_level_with_tier_default_model_when_no_override(self, _models):
-        # No subagent_top override: the tier runs on the org's primary model.
-        self._post({"tier": "top", "level": "low"})
-        self.assertEqual(self._reasoning()["top"], {"model": "openai/gpt-6-sol", "level": "low"})
+        # No subagent_high override: the tier runs on the org's primary model.
+        self._post({"tier": "high", "level": "low"})
+        self.assertEqual(self._reasoning()["high"], {"model": "openai/gpt-6-sol", "level": "low"})
 
     def test_rejects_level_not_offered_by_model(self, _models):
         # Sonnet 5.5 has no "none"; Luna does — validated against the tier model.
-        self.org.preferences["feature_models"]["subagent_mid"] = "anthropic/claude-sonnet-5-5"
+        self.org.preferences["feature_models"]["subagent_medium"] = "anthropic/claude-sonnet-5-5"
         self.org.save(update_fields=["preferences"])
-        response = self._post({"tier": "mid", "level": "none"})
+        response = self._post({"tier": "medium", "level": "none"})
         self.assertEqual(response.status_code, 400)
         self.assertEqual(self._reasoning(), {})
 
@@ -2410,30 +2417,30 @@ class OrgSubagentReasoningUpdateTests(TestCase):
             return info
 
         with patch("llm.model_registry.get_model_info", side_effect=_no_levels):
-            response = self._post({"tier": "mid", "level": "low"})
+            response = self._post({"tier": "medium", "level": "low"})
         self.assertEqual(response.status_code, 400)
         self.assertIn("does not support configurable reasoning", response.json()["error"])
 
     def test_member_forbidden(self, _models):
-        response = self._post({"tier": "mid", "level": "low"}, user=self.member_user)
+        response = self._post({"tier": "medium", "level": "low"}, user=self.member_user)
         self.assertEqual(response.status_code, 403)
         self.assertEqual(self._reasoning(), {})
 
     def test_empty_or_default_level_clears_entry(self, _models):
-        self._post({"tier": "mid", "level": "medium"})
-        self._post({"tier": "mid", "level": ""})
+        self._post({"tier": "medium", "level": "medium"})
+        self._post({"tier": "medium", "level": ""})
         self.assertEqual(self._reasoning(), {})
         # Picking the model's own default stores nothing either.
-        response = self._post({"tier": "mid", "level": "high"})
+        response = self._post({"tier": "medium", "level": "high"})
         self.assertEqual(response.json()["current"], "")
         self.assertEqual(self._reasoning(), {})
 
     def test_model_change_resets_tier_level(self, _models):
-        self._post({"tier": "mid", "level": "medium"})
-        self._post({"tier": "top", "level": "low"})
+        self._post({"tier": "medium", "level": "medium"})
+        self._post({"tier": "high", "level": "low"})
         response = self.client.post(
             reverse("accounts:org_feature_model_update"),
-            json.dumps({"feature": "subagent_mid", "model": "anthropic/claude-sonnet-5-5"}),
+            json.dumps({"feature": "subagent_medium", "model": "anthropic/claude-sonnet-5-5"}),
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 200)
@@ -2442,14 +2449,14 @@ class OrgSubagentReasoningUpdateTests(TestCase):
         self.assertEqual(reasoning["current"], "")
         self.assertNotIn("none", reasoning["levels"])
         # Only the changed tier is reset.
-        self.assertEqual(self._reasoning(), {"top": {"model": "openai/gpt-6-sol", "level": "low"}})
+        self.assertEqual(self._reasoning(), {"high": {"model": "openai/gpt-6-sol", "level": "low"}})
 
     def test_stale_level_not_shown_on_page(self, _models):
         """A level stored for a model the tier no longer runs on renders as
         "model default" — the run ignores it too."""
         self.org.preferences["subagents"] = {"reasoning": {
-            "mid": {"model": "openai/gpt-6-luna", "level": "medium"},
-            "top": {"model": "anthropic/claude-sonnet-5-5", "level": "low"},
+            "medium": {"model": "openai/gpt-6-luna", "level": "medium"},
+            "high": {"model": "anthropic/claude-sonnet-5-5", "level": "low"},
         }}
         self.org.save(update_fields=["preferences"])
         self.client.login(email=self.admin_user.email, password=self.password)
@@ -2458,9 +2465,10 @@ class OrgSubagentReasoningUpdateTests(TestCase):
             response = self.client.get(reverse("accounts:org_settings"))
         self.assertEqual(response.status_code, 200)
         rows = {r["key"]: r["reasoning"] for r in response.context["subagent_model_rows"]}
-        self.assertEqual(rows["subagent_mid"]["current"], "medium")
-        self.assertEqual(rows["subagent_mid"]["default_label"], "High")
-        self.assertEqual(rows["subagent_top"]["model"], "openai/gpt-6-sol")
-        self.assertEqual(rows["subagent_top"]["current"], "")
-        self.assertContains(response, 'id="subagent-reasoning-mid"')
+        self.assertEqual(rows["subagent_medium"]["current"], "medium")
+        self.assertEqual(rows["subagent_medium"]["default_label"], "High")
+        self.assertEqual(rows["subagent_high"]["model"], "openai/gpt-6-sol")
+        self.assertEqual(rows["subagent_high"]["current"], "")
+        self.assertContains(response, 'id="subagent-reasoning-medium"')
+        self.assertContains(response, 'id="subagent-reasoning-low"')
         self.assertContains(response, "Model default (High)")

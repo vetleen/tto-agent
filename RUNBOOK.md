@@ -527,8 +527,8 @@ See `.env.example` for the full list with comments. Key production variables:
 | `MEM_DEBUG_WORKER` | No | Worker memory attribution (`core.memreport`): logs a `MEMREPORT` line set before/after every non-trivial task (RSS delta, glibc `mallinfo2`, pymalloc arenas, gc type movers, busy-thread stacks, tracemalloc growth when `MEM_DEBUG_TRACEMALLOC=1`) plus a periodic sample every `MEM_DEBUG_INTERVAL` s. Diagnostics only — leave unset in production. Independently of it, `manage.py memreport` enqueues a one-off report from the live worker. Read with `heroku logs --dyno worker \| grep MEMREPORT`. |
 | `OPENAI_API_KEY` | Yes | Embeddings + OpenAI LLM provider |
 | `LLM_DEFAULT_MODEL` | Yes | Primary model (e.g., `openai/gpt-5.2`) |
-| `LLM_DEFAULT_MID_MODEL` | Yes | Mid-tier model for sub-agents |
-| `LLM_DEFAULT_CHEAP_MODEL` | Yes | Fast model for descriptions, classification |
+| `LLM_DEFAULT_MID_MODEL` | Yes | Mid-tier model (also medium-quality sub-agents) |
+| `LLM_DEFAULT_CHEAP_MODEL` | Yes | Fast model for descriptions, classification (also low-quality sub-agents) |
 | `LLM_ALLOWED_MODELS` | Yes | Comma-separated `provider/model` allowlist |
 | `ANTHROPIC_API_KEY` | No | Anthropic LLM provider |
 | `GEMINI_API_KEY` | No | Google Gemini LLM provider |

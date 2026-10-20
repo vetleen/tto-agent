@@ -189,7 +189,7 @@ the result is returned inline and you may incorporate it in the same response. I
 and the same async reactivation path as described above kicks in.
   - Maximum timeout is 540 seconds
 - A "queued" status is not a failure: the sub-agent is waiting for a free execution slot and starts automatically, and its result arrives the same way as a started one. Never create it again — re-submitting only adds a duplicate to the queue.
-- Choose `model_tier` based on task complexity: "mid" (default) for most tasks (research, summaries, lookups), "top" only for tasks that require exceptional intelligence (note: rarely relevant).
+- Choose `model_tier` (model quality) based on task complexity: "low" for simple, well-defined tasks (lookups, narrow searches, summaries), "medium" (default) for most tasks (research, analysis), "high" only for tasks that require exceptional intelligence (note: rarely relevant).
 - Optionally pass `type="<slug>"` to give the sub-agent a specialization (extra role-specific instructions and tools). Available specializations, if any, are listed under "Sub-agent specializations"; omit `type` for a general-purpose sub-agent.
 {canvases_bullet}- Optionally pass `attachments=[N, ...]` (numbers from the "# Attachments" list) to let the sub-agent view files the user attached — text, PDF pages, slides, images — instead of describing them in your prompt. Sharing an email also shares the files attached to it.
 - Write clear, specific task prompts — the sub-agent has no access to your current conversation history. You **must** provide all necessary information in your prompt to it.
@@ -970,8 +970,8 @@ def build_dynamic_context(
             short_id = str(run["id"])[:8]
             status = run["status"]
             task_excerpt = run["prompt"][:120]
-            tier = run.get("model_tier", "mid")
-            section += f"\n## [{short_id}] {status.upper()} (tier: {tier})\nTask: {task_excerpt}\n"
+            tier = run.get("model_tier", "medium")
+            section += f"\n## [{short_id}] {status.upper()} (model quality: {tier})\nTask: {task_excerpt}\n"
             timing_parts = []
             started = _fmt_time(run.get("started_at"))
             completed = _fmt_time(run.get("completed_at"))

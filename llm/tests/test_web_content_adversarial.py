@@ -276,7 +276,7 @@ class SubagentResultBoundaryTests(TestCase):
             "id": uuid.uuid4(),
             "status": "completed",
             "prompt": "Research maritime regulations",
-            "model_tier": "mid",
+            "model_tier": "medium",
             "result": "FuelEU Maritime requires -2% GHG intensity from 2025.",
             "error": "",
         }]

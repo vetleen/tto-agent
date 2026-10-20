@@ -20,6 +20,7 @@ from accounts.views._builders import (
 )
 from accounts.views._helpers import org_admin_required
 from core.http import parse_json_object
+from core.preferences import SUBAGENT_TIER_FEATURES, SUBAGENT_TIERS
 
 logger = logging.getLogger(__name__)
 
@@ -359,13 +360,16 @@ def org_settings_page(request):
     if not isinstance(org_max_context_tokens, int):
         org_max_context_tokens = DEFAULT_MAX_CONTEXT_TOKENS
 
-    # Per-tier sub-agent context budgets (0 = unlimited). The "top" tier is
-    # surfaced as "Standard" in the UI.
-    subagent_budgets = org_subagent_prefs.get("context_budget", {}) or {}
-    subagent_budget_mid = subagent_budgets.get("mid")
-    subagent_budget_mid = subagent_budget_mid if isinstance(subagent_budget_mid, int) else 0
-    subagent_budget_top = subagent_budgets.get("top")
-    subagent_budget_top = subagent_budget_top if isinstance(subagent_budget_top, int) else 0
+    # Per-tier sub-agent context budgets (0 = unlimited), one row per tier.
+    stored_budgets = org_subagent_prefs.get("context_budget", {}) or {}
+    subagent_budget_rows = [
+        {
+            "tier": tier,
+            "label": _SUBAGENT_TIER_LABELS[tier],
+            "value": v if isinstance((v := stored_budgets.get(tier)), int) else 0,
+        }
+        for tier in SUBAGENT_TIERS
+    ]
 
     from llm.transcription_registry import get_all_transcription_models
 
@@ -431,8 +435,9 @@ def org_settings_page(request):
         "skill_emoji": ("Skill emoji", "Picks an emoji for newly created skills."),
         "guardrail_chunk_scan": ("Chunk scan", "Scans document chunks for hidden adversarial content during file processing. Runs on every chunk, so a cheap, fast model keeps costs low."),
         "pii_scan": ("PII classification", "Classifies documents by GDPR personal data categories during processing. Uses a mid-tier model for accuracy."),
-        "subagent_mid": ("Mid-tier sub-agents", "Handle most delegated work, such as web research, summaries and lookups."),
-        "subagent_top": ("Top-tier sub-agents", f"Used rarely, only for tasks that need exceptional intelligence. {django_settings.ASSISTANT_NAME} picks the tier for each sub-agent."),
+        "subagent_low": ("Low-quality sub-agents", "For simple, well-defined delegated work, such as lookups, narrow searches and summaries."),
+        "subagent_medium": ("Medium-quality sub-agents", "Handle most delegated work, such as web research, summaries and lookups."),
+        "subagent_high": ("High-quality sub-agents", f"Used rarely, only for tasks that need exceptional intelligence. {django_settings.ASSISTANT_NAME} picks the model quality for each sub-agent."),
     }
     org_features = build_feature_rows(
         "org", org_feature_models, effective_org_allowed, _ORG_FEATURE_META
@@ -440,10 +445,10 @@ def org_settings_page(request):
     # The sub-agent per-tier model overrides render in the Sub-agents section, not
     # the generic feature-override list, so split them out. They stay in
     # model_options["features"] below, so the client's live re-populate still works.
-    _SUBAGENT_MODEL_KEYS = ("subagent_mid", "subagent_top")
+    _SUBAGENT_MODEL_KEYS = set(SUBAGENT_TIER_FEATURES.values())
     subagent_model_rows = [r for r in org_features if r["key"] in _SUBAGENT_MODEL_KEYS]
     for row in subagent_model_rows:
-        tier = next(t for t, f in _SUBAGENT_TIER_FEATURES.items() if f == row["key"])
+        tier = next(t for t, f in SUBAGENT_TIER_FEATURES.items() if f == row["key"])
         row["reasoning"] = _subagent_reasoning_row(org, tier)
     org_features = [r for r in org_features if r["key"] not in _SUBAGENT_MODEL_KEYS]
 
@@ -513,8 +518,7 @@ def org_settings_page(request):
         "pii_scan_enabled": pii_scan_enabled,
         "pii_quarantine_enabled": pii_quarantine_enabled,
         "org_max_context_tokens": org_max_context_tokens,
-        "subagent_budget_mid": subagent_budget_mid,
-        "subagent_budget_top": subagent_budget_top,
+        "subagent_budget_rows": subagent_budget_rows,
         "system_transcription_models": system_transcription_models,
         "org_allowed_transcription": org_allowed_transcription,
         "org_transcription_default": org_transcription_models.get("default", ""),
@@ -1447,7 +1451,7 @@ def org_max_context_update(request):
     return JsonResponse({"ok": True, "max_context_tokens": value})
 
 
-_SUBAGENT_TIER_FEATURES = {"mid": "subagent_mid", "top": "subagent_top"}
+_SUBAGENT_TIER_LABELS = {"low": "Low", "medium": "Medium", "high": "High"}
 
 
 def _subagent_reasoning_row(org, tier: str) -> dict:
@@ -1462,7 +1466,7 @@ def _subagent_reasoning_row(org, tier: str) -> dict:
     from llm.display import reasoning_level_label
     from llm.model_registry import get_model_info
 
-    model = resolve_org_feature_model(org.id, _SUBAGENT_TIER_FEATURES[tier])
+    model = resolve_org_feature_model(org.id, SUBAGENT_TIER_FEATURES[tier])
     info = get_model_info(model) if model else None
     levels = list(info.reasoning_levels) if info else []
     entry = (((org.preferences or {}).get("subagents") or {}).get("reasoning") or {}).get(tier) or {}
@@ -1499,7 +1503,7 @@ def org_subagent_reasoning_update(request):
         return err
 
     tier = _str_field(data, "tier")
-    if tier not in _SUBAGENT_TIER_FEATURES:
+    if tier not in SUBAGENT_TIER_FEATURES:
         return JsonResponse({"error": "Unknown sub-agent tier"}, status=400)
     level = _str_field(data, "level")
 
@@ -1538,10 +1542,10 @@ def org_subagent_reasoning_update(request):
 def org_subagent_budgets_update(request):
     """Set org's per-tier sub-agent context-token budgets (0 = unlimited).
 
-    Accepts a POST body with optional "mid" and/or "top" integer fields (the
-    SubAgentRun.model_tier values; "top" is labelled "Standard" in the UI).
-    A value of 0 clears that tier's budget (unlimited). Only the tiers present
-    in the request are touched, so each field can save independently.
+    Accepts a POST body with optional integer fields keyed by tier ("low",
+    "medium", "high" — the SubAgentRun.model_tier values). A value of 0 clears
+    that tier's budget (unlimited). Only the tiers present in the request are
+    touched, so each field can save independently.
     """
     from core.preferences import MAX_CONTEXT_TOKENS
 
@@ -1552,7 +1556,7 @@ def org_subagent_budgets_update(request):
         return err
 
     cleaned: dict[str, int] = {}
-    for tier in ("mid", "top"):
+    for tier in SUBAGENT_TIERS:
         if tier not in data:
             continue
         value = data.get(tier)
@@ -1699,7 +1703,7 @@ def org_feature_model_update(request):
         if model not in effective:
             return JsonResponse({"error": "Model not in allowed list"}, status=400)
 
-    tier = next((t for t, f in _SUBAGENT_TIER_FEATURES.items() if f == feature), None)
+    tier = next((t for t, f in SUBAGENT_TIER_FEATURES.items() if f == feature), None)
 
     def mutate(prefs):
         feature_models = prefs.get("feature_models", {})

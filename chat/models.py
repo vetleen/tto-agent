@@ -714,7 +714,8 @@ class SubAgentRun(models.Model):
     # the sub-agent panel (never sent to the sub-agent itself).
     reason = models.CharField(max_length=500, blank=True, default="")
     skill_slug = models.CharField(max_length=64, blank=True)
-    model_tier = models.CharField(max_length=10, default="mid")
+    # Model quality: "low" / "medium" / "high" (core.preferences.SUBAGENT_TIERS).
+    model_tier = models.CharField(max_length=10, default="medium")
     model_used = models.CharField(max_length=128, blank=True)
     timeout = models.PositiveIntegerField(
         default=0,

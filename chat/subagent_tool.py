@@ -8,6 +8,7 @@ import time
 
 from pydantic import BaseModel, Field
 
+from core.preferences import DEFAULT_SUBAGENT_TIER, SUBAGENT_TIERS
 from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
 
 logger = logging.getLogger(__name__)
@@ -159,8 +160,12 @@ class CreateSubagentInput(ReasonBaseModel):
         ),
     )
     model_tier: str = Field(
-        default="mid",
-        description='Model tier: "mid" (default) for most tasks; "top" only for tasks that require exceptional intelligence (rarely relevant).',
+        default=DEFAULT_SUBAGENT_TIER,
+        description=(
+            'Model quality: "low" for simple, well-defined tasks (lookups, narrow searches, '
+            'summaries); "medium" (default) for most tasks; "high" only for tasks that '
+            "require exceptional intelligence (rarely relevant)."
+        ),
     )
     timeout: int = Field(
         default=0,
@@ -200,7 +205,7 @@ class CreateSubagentTool(ContextAwareTool):
     def _run(
         self,
         prompt: str,
-        model_tier: str = "mid",
+        model_tier: str = DEFAULT_SUBAGENT_TIER,
         timeout: int = 0,
         **kwargs,
     ) -> str:
@@ -222,8 +227,8 @@ class CreateSubagentTool(ContextAwareTool):
             return json.dumps({"status": "error", "message": "No thread context available."})
 
         # Validate model_tier
-        if model_tier not in ("mid", "top"):
-            model_tier = "mid"
+        if model_tier not in SUBAGENT_TIERS:
+            model_tier = DEFAULT_SUBAGENT_TIER
 
         # Clamp timeout to [0, 540]
         timeout = max(0, min(timeout, 540))

@@ -105,7 +105,7 @@ Live LLM API tests: set `TEST_APIS=True` and add API keys to `.env`.
 - **URLs:** `/chat/` (home, thread list and chat UI), `/chat/threads/<uuid>/delete/`, `/chat/threads/<uuid>/canvas/export/`, `/chat/threads/<uuid>/canvas/import/`.
 - **Threads:** Each `ChatThread` can attach multiple data rooms (many-to-many via `ChatThreadDataRoom`) and any number of `AgentSkill`s.
 - **Canvas:** Per-thread document editor (`ChatCanvas`) with multi-canvas support, checkpoint history, DOCX export/import, and save-to-data-room. Canvases hold up to 225,000 characters; the model reads them with a ranged, token-paged `canvas_read` (large canvases come back as a page plus an outline).
-- **Sub-agents:** Delegate tasks to background or timeout-bounded sub-agent runs (`SubAgentRun`) with tiered model selection (cheap/mid/top).
+- **Sub-agents:** Delegate tasks to background or timeout-bounded sub-agent runs (`SubAgentRun`) with model-quality tiers (low/medium/high → the org's cheap/mid/primary models).
 - **Tools available in chat:**
   - `search_documents` — Hybrid (semantic + full-text) search on attached data rooms
   - `read_document` — Read full document content
@@ -161,8 +161,8 @@ Use `.env` (from `.env.example`). Key variables:
 | `BRAVE_SEARCH_API_KEY` | Web search via Brave Search API |
 | `LLM_ALLOWED_MODELS` | Model allowlist (comma-separated `provider/model` pairs) |
 | `LLM_DEFAULT_MODEL` | Default model for primary tasks |
-| `LLM_DEFAULT_MID_MODEL` | Default model for mid-tier tasks (sub-agents) |
-| `LLM_DEFAULT_CHEAP_MODEL` | Default model for cheap/fast tasks (sub-agents) |
+| `LLM_DEFAULT_MID_MODEL` | Default model for mid-tier tasks (medium-quality sub-agents) |
+| `LLM_DEFAULT_CHEAP_MODEL` | Default model for cheap/fast tasks (low-quality sub-agents) |
 | `LLM_REQUEST_TIMEOUT`, `LLM_MAX_RETRIES` | Request timeout (seconds) and retry count |
 | `TRANSCRIPTION_ALLOWED_MODELS`, `TRANSCRIPTION_DEFAULT_MODEL` | Transcription model allowlist and default (meetings) |
 | `TEST_APIS` | Set `True` for live LLM API tests |

@@ -544,12 +544,12 @@ class MaxContextTokensTest(TestCase):
 
         user = _create_user(email="ctx-budget@example.com")
         org = Organization.objects.create(name="CtxOrg5", slug="ctxorg5", preferences={
-            "subagents": {"context_budget": {"mid": 120_000, "top": 0, "bogus": 5}},
+            "subagents": {"context_budget": {"medium": 120_000, "high": 0, "bogus": 5}},
         })
         Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
 
         prefs = get_preferences(user)
-        self.assertEqual(prefs.subagent_context_budgets, {"mid": 120_000})
+        self.assertEqual(prefs.subagent_context_budgets, {"medium": 120_000})
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
@@ -582,8 +582,8 @@ class MaxContextTokensTest(TestCase):
         user = _create_user(email="sa-reasoning@example.com")
         org = Organization.objects.create(name="ReasonOrg", slug="reasonorg", preferences={
             "subagents": {"reasoning": {
-                "mid": {"model": "openai/gpt-6-luna", "level": "medium"},
-                "top": {"model": "openai/gpt-6-luna"},
+                "medium": {"model": "openai/gpt-6-luna", "level": "medium"},
+                "high": {"model": "openai/gpt-6-luna"},
                 "bogus": {"model": "openai/gpt-6-luna", "level": "low"},
             }},
         })
@@ -592,7 +592,7 @@ class MaxContextTokensTest(TestCase):
         prefs = get_preferences(user)
         self.assertEqual(
             prefs.subagent_reasoning,
-            {"mid": {"model": "openai/gpt-6-luna", "level": "medium"}},
+            {"medium": {"model": "openai/gpt-6-luna", "level": "medium"}},
         )
 
 
@@ -1034,14 +1034,14 @@ class FeatureModelOverrideTest(TestCase):
     ])
     @patch("llm.tools.registry.get_tool_registry")
     def test_subagent_tiers_use_slot_defaults_when_no_override(self, mock_registry, mock_allowed):
-        # No override -> subagent_mid follows the mid slot, subagent_top the
+        # No override -> subagent_medium follows the mid slot, subagent_high the
         # primary slot, i.e. identical to the historical resolve_subagent_model.
         mock_registry.return_value.list_tools.return_value = {}
 
         user = _create_user(email="subagent-tier-default@example.com")
         prefs = get_preferences(user)
-        self.assertEqual(prefs.feature_models["subagent_mid"], "openai/gpt-5.4-mini")
-        self.assertEqual(prefs.feature_models["subagent_top"], "openai/gpt-5.4")
+        self.assertEqual(prefs.feature_models["subagent_medium"], "openai/gpt-5.4-mini")
+        self.assertEqual(prefs.feature_models["subagent_high"], "openai/gpt-5.4")
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
@@ -1066,16 +1066,16 @@ class FeatureModelOverrideTest(TestCase):
                 ],
                 # sol (4*) clears the top 3-star floor; luna (2*) clears mid's 2-star floor.
                 "feature_models": {
-                    "subagent_top": "openai/gpt-5.6-sol",
-                    "subagent_mid": "openai/gpt-5.6-luna",
+                    "subagent_high": "openai/gpt-5.6-sol",
+                    "subagent_medium": "openai/gpt-5.6-luna",
                 },
             },
         )
         Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
 
         prefs = get_preferences(user)
-        self.assertEqual(prefs.feature_models["subagent_top"], "openai/gpt-5.6-sol")
-        self.assertEqual(prefs.feature_models["subagent_mid"], "openai/gpt-5.6-luna")
+        self.assertEqual(prefs.feature_models["subagent_high"], "openai/gpt-5.6-sol")
+        self.assertEqual(prefs.feature_models["subagent_medium"], "openai/gpt-5.6-luna")
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
@@ -1086,7 +1086,7 @@ class FeatureModelOverrideTest(TestCase):
         "openai/gpt-5.4", "openai/gpt-5.6-luna", "openai/gpt-5.4-nano",
     ])
     @patch("llm.tools.registry.get_tool_registry")
-    def test_subagent_top_override_with_few_stars_is_honored(self, mock_registry, mock_allowed):
+    def test_subagent_high_override_with_few_stars_is_honored(self, mock_registry, mock_allowed):
         # Luna is 2 stars; there is no star floor, so the override is used.
         from llm.model_registry import canonical_model_id
 
@@ -1100,17 +1100,17 @@ class FeatureModelOverrideTest(TestCase):
                 "allowed_models": [
                     "openai/gpt-5.4", "openai/gpt-5.6-luna", "openai/gpt-5.4-nano",
                 ],
-                "feature_models": {"subagent_top": "openai/gpt-5.6-luna"},
+                "feature_models": {"subagent_high": "openai/gpt-5.6-luna"},
             },
         )
         Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
 
         prefs = get_preferences(user)
         self.assertEqual(
-            canonical_model_id(prefs.feature_models["subagent_top"]),
+            canonical_model_id(prefs.feature_models["subagent_high"]),
             canonical_model_id("openai/gpt-5.6-luna"),
         )
-        self.assertNotEqual(prefs.feature_models["subagent_top"], prefs.top_model)
+        self.assertNotEqual(prefs.feature_models["subagent_high"], prefs.top_model)
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.6-sol",

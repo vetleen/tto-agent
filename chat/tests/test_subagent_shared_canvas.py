@@ -132,13 +132,13 @@ class CreateSubagentSharedCanvasTests(TestCase):
 
 class SharedCanvasLimitTests(TestCase):
     def test_context_budget_prefers_tier_budget(self):
-        prefs = _prefs(max_context_tokens=200_000, subagent_context_budgets={"mid": 120_000})
-        self.assertEqual(subagent_context_budget(prefs, "mid"), 120_000)
-        self.assertEqual(subagent_context_budget(prefs, "top"), 200_000)
+        prefs = _prefs(max_context_tokens=200_000, subagent_context_budgets={"medium": 120_000})
+        self.assertEqual(subagent_context_budget(prefs, "medium"), 120_000)
+        self.assertEqual(subagent_context_budget(prefs, "high"), 200_000)
 
     def test_context_budget_floored(self):
-        prefs = _prefs(subagent_context_budgets={"mid": 10_000})
-        self.assertEqual(subagent_context_budget(prefs, "mid"), MIN_CONTEXT_TOKENS)
+        prefs = _prefs(subagent_context_budgets={"medium": 10_000})
+        self.assertEqual(subagent_context_budget(prefs, "medium"), MIN_CONTEXT_TOKENS)
 
 
 class SharedCanvasPromptTests(TestCase):
@@ -198,7 +198,7 @@ class RunSubagentSharedCanvasTests(TestCase):
         self.assertIn('- "Draft" —', system)
         self.assertNotIn("SNAPSHOT BODY", system)
         # The read tool's page cap derives from the run's budget via the context.
-        self.assertEqual(request.context.max_context_tokens, subagent_context_budget(_prefs(), "mid"))
+        self.assertEqual(request.context.max_context_tokens, subagent_context_budget(_prefs(), "medium"))
 
 
 def _run_ctx(user, thread, run):

@@ -7,7 +7,7 @@ import uuid
 
 from django.utils import timezone
 
-from core.preferences import MIN_CONTEXT_TOKENS, ResolvedPreferences
+from core.preferences import MIN_CONTEXT_TOKENS, SUBAGENT_TIER_FEATURES, ResolvedPreferences
 
 logger = logging.getLogger(__name__)
 
@@ -108,19 +108,20 @@ def active_subagent_runs_payload(thread_id) -> dict:
 def resolve_subagent_model(tier: str, prefs: ResolvedPreferences) -> str:
     """Map a tier name to the model configured for that sub-agent tier.
 
-    Honors the org's per-tier override (the ``subagent_mid`` / ``subagent_top``
-    feature models), falling back to the tier's slot model (``mid_model`` /
-    ``top_model``) when no override is set — which is also what
-    ``feature_models`` resolves to by default, so behavior is unchanged unless an
-    org configures an override. The slot fallback also covers callers that build
-    a bare ``ResolvedPreferences`` without the subagent feature keys.
+    Honors the org's per-tier override (the ``subagent_low`` / ``subagent_medium``
+    / ``subagent_high`` feature models), falling back to the tier's slot model
+    (``cheap_model`` / ``mid_model`` / ``top_model``) when no override is set —
+    which is also what ``feature_models`` resolves to by default. The slot
+    fallback also covers callers that build a bare ``ResolvedPreferences``
+    without the subagent feature keys. An unknown tier resolves as medium.
     """
-    feature = {"mid": "subagent_mid", "top": "subagent_top"}.get(tier)
+    feature = SUBAGENT_TIER_FEATURES.get(tier)
     if feature:
         model = prefs.feature_models.get(feature)
         if model:
             return model
-    return {"mid": prefs.mid_model, "top": prefs.top_model}.get(tier, prefs.mid_model)
+    slot_model = {"low": prefs.cheap_model, "medium": prefs.mid_model, "high": prefs.top_model}
+    return slot_model.get(tier) or prefs.mid_model
 
 
 def subagent_thinking_level(prefs: ResolvedPreferences, tier: str, model: str) -> str | None:
