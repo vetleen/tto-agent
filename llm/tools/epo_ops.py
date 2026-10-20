@@ -2205,6 +2205,8 @@ class PatentEpoOpsSearchTool(ContextAwareTool):
     """Search EPO/Espacenet published patent data."""
 
     name: str = "patent_epoops_search"
+    # Sub-agent per-call timeout: 1.5x the 14-day p99 (174 s), before the 2026-10-20 throttle rework.
+    timeout_seconds: float | None = 270
     section: str = "skills"
     audience: str = "shared"
     start_label: str = "Searching patents..."
@@ -2473,6 +2475,8 @@ class PatentEpoOpsGetTool(ContextAwareTool):
     """Retrieve a single EPO/Espacenet publication."""
 
     name: str = "patent_epoops_get"
+    # Sub-agent per-call timeout: 1.5x the 14-day p99 (23 s).
+    timeout_seconds: float | None = 35
     section: str = "skills"
     audience: str = "shared"
     start_label: str = "Retrieving patent..."
@@ -2567,6 +2571,8 @@ class PatentEpoOpsFamilyTool(ContextAwareTool):
     """Retrieve the INPADOC patent family + legal status for a publication."""
 
     name: str = "patent_epoops_family"
+    # Sub-agent per-call timeout: 1.5x the 14-day p99 (22 s).
+    timeout_seconds: float | None = 35
     section: str = "skills"
     audience: str = "shared"
     start_label: str = "Looking up patent family..."
@@ -2634,6 +2640,8 @@ class PatentEpoOpsClassificationTool(ContextAwareTool):
     """Look up the CPC classification scheme (EPO OPS classification services)."""
 
     name: str = "patent_epoops_classification"
+    # Sub-agent per-call timeout: 1.5x the 14-day p99 (22 s).
+    timeout_seconds: float | None = 35
     section: str = "skills"
     audience: str = "shared"
     start_label: str = "Looking up patent classification..."

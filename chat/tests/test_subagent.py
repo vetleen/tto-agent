@@ -15,7 +15,7 @@ from django.utils import timezone
 
 from chat.models import ChatMessage, ChatThread, SubAgentRun
 from chat.subagent_limits import (
-    STALE_RUNNING_MINUTES,
+    running_silence_limit,
     _expire_stale_runs,
     check_subagent_limits,
     create_subagent_run_if_allowed,
@@ -509,7 +509,7 @@ class StaleRunExpirationTests(TestCase):
             prompt="stuck", status=SubAgentRun.Status.RUNNING,
         )
         SubAgentRun.objects.filter(pk=run.pk).update(
-            created_at=timezone.now() - timedelta(minutes=STALE_RUNNING_MINUTES + 1),
+            created_at=timezone.now() - timedelta(seconds=running_silence_limit("") + 60),
         )
 
         expired = _expire_stale_runs()
@@ -542,7 +542,7 @@ class StaleRunExpirationTests(TestCase):
             prompt="stuck", status=SubAgentRun.Status.RUNNING,
         )
         SubAgentRun.objects.filter(pk=run.pk).update(
-            created_at=timezone.now() - timedelta(minutes=STALE_RUNNING_MINUTES + 1),
+            created_at=timezone.now() - timedelta(seconds=running_silence_limit("") + 60),
         )
 
         # The stale run is cleaned up, so this user should be allowed
@@ -573,7 +573,7 @@ class StaleRunExpirationTests(TestCase):
             prompt="stuck", status=SubAgentRun.Status.RUNNING,
         )
         SubAgentRun.objects.filter(pk=run.pk).update(
-            started_at=timezone.now() - timedelta(minutes=STALE_RUNNING_MINUTES + 1),
+            started_at=timezone.now() - timedelta(seconds=running_silence_limit("") + 60),
         )
 
         expired = _expire_stale_runs()
@@ -581,6 +581,58 @@ class StaleRunExpirationTests(TestCase):
 
         run.refresh_from_db()
         self.assertEqual(run.status, SubAgentRun.Status.FAILED)
+
+    def test_long_running_run_with_recent_heartbeat_not_expired(self):
+        """No wall clock: a run that started long ago but is still making
+        progress (recent heartbeat) is left alone."""
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user,
+            prompt="deep research", status=SubAgentRun.Status.RUNNING,
+        )
+        SubAgentRun.objects.filter(pk=run.pk).update(
+            started_at=timezone.now() - timedelta(hours=2),
+            last_activity_at=timezone.now() - timedelta(seconds=30),
+        )
+        self.assertEqual(_expire_stale_runs(), 0)
+
+    def test_silence_limit_follows_the_model_request_timeout(self):
+        """A Gemini run (600 s request timeout) may sit silent far longer than an
+        OpenAI one (120 s) before it counts as stale."""
+        openai_limit = running_silence_limit("openai/gpt-6-luna")
+        gemini_limit = running_silence_limit("gemini/gemini-3.8-flash")
+        self.assertGreater(gemini_limit, openai_limit)
+        quiet = timedelta(seconds=openai_limit + 60)
+        runs = {}
+        for model in ("openai/gpt-6-luna", "gemini/gemini-3.8-flash"):
+            runs[model] = SubAgentRun.objects.create(
+                thread=self.thread, user=self.user, prompt="x", model_used=model,
+                status=SubAgentRun.Status.RUNNING,
+            )
+            SubAgentRun.objects.filter(pk=runs[model].pk).update(
+                started_at=timezone.now() - timedelta(hours=1),
+                last_activity_at=timezone.now() - quiet,
+            )
+        self.assertEqual(_expire_stale_runs(), 1)
+        runs["openai/gpt-6-luna"].refresh_from_db()
+        runs["gemini/gemini-3.8-flash"].refresh_from_db()
+        self.assertEqual(runs["openai/gpt-6-luna"].status, SubAgentRun.Status.FAILED)
+        self.assertEqual(runs["gemini/gemini-3.8-flash"].status, SubAgentRun.Status.RUNNING)
+
+    def test_heartbeat_is_throttled_and_stamps_running_rows(self):
+        from chat import subagent_service
+
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="x", status=SubAgentRun.Status.RUNNING,
+        )
+        with patch.object(subagent_service, "HEARTBEAT_MIN_INTERVAL_SECONDS", 0):
+            subagent_service._heartbeat(run.pk)()
+        run.refresh_from_db()
+        self.assertIsNotNone(run.last_activity_at)
+        stamped = run.last_activity_at
+        beat = subagent_service._heartbeat(run.pk)  # default interval: first call too soon
+        beat()
+        run.refresh_from_db()
+        self.assertEqual(run.last_activity_at, stamped)
 
     def test_task_swallows_transient_db_error(self):
         """A transient DB outage (e.g. Postgres restarting during maintenance)
@@ -2338,7 +2390,7 @@ class SubagentFailureMessageTests(TestCase):
             dispatched_at=timezone.now() - timedelta(minutes=11),
         )
         SubAgentRun.objects.filter(pk=running.pk).update(
-            started_at=timezone.now() - timedelta(minutes=STALE_RUNNING_MINUTES + 1),
+            started_at=timezone.now() - timedelta(seconds=running_silence_limit("") + 60),
         )
 
         expired = _expire_stale_runs()

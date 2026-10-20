@@ -18,6 +18,7 @@ from datetime import timedelta
 from django.contrib.auth import get_user_model
 from django.db import connection, transaction
 from django.db.models import Q
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
@@ -39,12 +40,39 @@ STALE_PENDING_MINUTES = 7
 # Safety valve for a runaway queue: a run still waiting for a slot after this
 # long is given up on. Bounds the wait; it is not a throughput knob.
 STALE_WAITING_MINUTES = 45
-# Must comfortably exceed a normal run's wall clock so the sweeper never expires
-# a run the worker is still legitimately executing (which would discard its
-# completed result). Nothing kills a run at a fixed time (Celery enforces no
-# time limit on our threads pool, see config/celery.py); a run is bounded by
-# its round budget, so a deep run with slow tools can take well over 15 min.
-STALE_RUNNING_MINUTES = 45
+# A RUNNING run is stale only after it has been SILENT (no heartbeat:
+# SubAgentRun.last_activity_at, bumped as rounds start and tool calls finish)
+# for longer than one step could legitimately take. Nothing kills a run at a
+# fixed time (Celery enforces no time limit on our threads pool, see
+# config/celery.py), and a run's total length is bounded by its round budget,
+# not a clock — so a long but progressing run is never expired (which would
+# discard its result).
+STALE_SILENCE_MARGIN_SECONDS = 120
+
+
+def running_silence_limit(model_used: str) -> float:
+    """Seconds a RUNNING run on *model_used* may go without a heartbeat.
+
+    The longest single step: a model call with every SDK retry at the model's
+    request timeout, or the slowest sub-agent tool timeout — plus a margin.
+    """
+    from llm.core.model_factory import REQUEST_ATTEMPTS, request_timeout_for_model
+
+    model_call = request_timeout_for_model(model_used) * REQUEST_ATTEMPTS
+    return model_call + _longest_tool_timeout() + STALE_SILENCE_MARGIN_SECONDS
+
+
+def _longest_tool_timeout() -> float:
+    from llm.pipelines.simple_chat import SUBAGENT_TOOL_TIMEOUT_DEFAULT
+    from llm.tools import get_tool_registry
+
+    tools = get_tool_registry().list_tools()
+    values = tools.values() if isinstance(tools, dict) else tools
+    return max(
+        [SUBAGENT_TOOL_TIMEOUT_DEFAULT]
+        + [float(t.timeout_seconds) for t in values if getattr(t, "timeout_seconds", None)]
+    )
+
 
 # Transaction-scoped Postgres advisory lock that serializes dispatchers.
 # Arbitrary value; only has to be unique among the advisory locks this app takes.
@@ -75,16 +103,23 @@ def _expire_stale_runs() -> int:
         created_at__lt=now - timedelta(minutes=STALE_WAITING_MINUTES),
     ).values_list("id", "thread_id"))
 
-    # Measure RUNNING staleness from started_at, not created_at — a run that
-    # waited in the queue before starting must get its full execution window
-    # (created_at fallback covers legacy rows that predate started_at).
-    running_cutoff = now - timedelta(minutes=STALE_RUNNING_MINUTES)
-    stale_running = list(SubAgentRun.objects.filter(
+    # RUNNING staleness is measured from the last heartbeat (started_at /
+    # created_at for rows that never beat), against the run's own silence limit
+    # — a Gemini run may legitimately sit in one model call far longer than an
+    # OpenAI one. The DB pre-filter uses the shortest possible limit.
+    shortest = running_silence_limit("")
+    candidates = SubAgentRun.objects.filter(
         status=SubAgentRun.Status.RUNNING,
+    ).annotate(
+        quiet_since=Coalesce("last_activity_at", "started_at", "created_at"),
     ).filter(
-        Q(started_at__lt=running_cutoff)
-        | Q(started_at__isnull=True, created_at__lt=running_cutoff)
-    ).values_list("id", "thread_id"))
+        quiet_since__lt=now - timedelta(seconds=shortest),
+    ).values_list("id", "thread_id", "model_used", "quiet_since")
+    stale_running = [
+        (run_id, thread_id)
+        for run_id, thread_id, model_used, quiet_since in candidates
+        if (now - quiet_since).total_seconds() > running_silence_limit(model_used)
+    ]
 
     expired = 0
     # Re-assert the status in the UPDATE filter: a run that transitioned since the

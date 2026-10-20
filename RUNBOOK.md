@@ -55,7 +55,13 @@ whenever a slot frees (on every run's completion, on user cancel, and from the 1
 "queued (position N)" from the real line. **On a worker R14 day, lowering
 `SUBAGENT_WORKER_SLOTS` is the first lever** — it takes effect on the next dispatch, no restart.
 Caveat: a worker restart mid-load leaves RUNNING ghosts that hold their slots until the sweeper
-expires them (45 min from `started_at`), which can stall the whole line for that long.
+expires them. A run is stale once its heartbeat (`SubAgentRun.last_activity_at`, bumped as rounds
+start and tool calls finish) has been silent longer than one step could take: the model's request
+timeout x 4 attempts + the slowest sub-agent tool timeout + 2 min (~14.5 min on OpenAI/Anthropic,
+~45 min on Gemini; `chat.subagent_limits.running_silence_limit`). There is no wall-clock limit: a run
+is bounded by its round budget (quick 6 / standard 15 / deep 30 rounds), and each sub-agent tool
+call by its `timeout_seconds` (a timed-out call is abandoned and logged at WARNING; timeouts per
+turn are on `LLMCallLog.tool_timeouts` for recalibrating the timeouts).
 
 **Chat-turn queue (web).** The web dyno has its own, unrelated queue for interactive chat
 turns: `chat/turn_gate.py`. At most `CHAT_TURN_MAX_PER_USER` (2) of one user's turns and

@@ -173,6 +173,16 @@ def _request_timeout(provider: str) -> int:
     return _DEFAULT_REQUEST_TIMEOUT_SECONDS
 
 
+# Attempts per model call: the first plus the SDK's ``max_retries`` (below).
+REQUEST_ATTEMPTS = 1 + 3
+
+
+def request_timeout_for_model(model: str) -> int:
+    """The per-request timeout (seconds) a call to *model* runs under; the
+    default for an unknown model. A call can take up to REQUEST_ATTEMPTS of these."""
+    return _request_timeout(detect_provider(model or ""))
+
+
 # Shared per-provider rate limiters (thread-safe singletons)
 _rate_limiters: dict[str, object] = {}
 _rate_limiter_lock = threading.Lock()
@@ -238,7 +248,7 @@ def _build_client(provider: str, api_model: str, provider_kwargs: dict[str, Any]
 
             client = WilfredChatAnthropic(
                 model=api_model,
-                max_retries=3,
+                max_retries=REQUEST_ATTEMPTS - 1,
                 timeout=_request_timeout(provider),
                 **({"rate_limiter": rate_limiter} if rate_limiter else {}),
                 **provider_kwargs,
@@ -248,7 +258,7 @@ def _build_client(provider: str, api_model: str, provider_kwargs: dict[str, Any]
             client = init_chat_model(
                 api_model,
                 model_provider=provider,
-                max_retries=3,
+                max_retries=REQUEST_ATTEMPTS - 1,
                 timeout=_request_timeout(provider),
                 **({"rate_limiter": rate_limiter} if rate_limiter else {}),
                 **provider_kwargs,

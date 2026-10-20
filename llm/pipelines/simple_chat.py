@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import math
-from concurrent.futures import ThreadPoolExecutor
+import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Iterator, List, Tuple
 
 from llm.core.interfaces import ChatModel
@@ -134,11 +135,183 @@ def _truncated_round_notice(stop_reason: str, progress: Message | None) -> Messa
     return Message(role="user", content=text)
 
 
+# Sub-agents only: a tool call without its own ``timeout_seconds`` may run this
+# long before the round stops waiting for it (see _run_round_with_timeouts).
+SUBAGENT_TOOL_TIMEOUT_DEFAULT = 60.0
+_TOOL_TIMEOUT_ERROR = "tool_timeout"
+
+
+def _tool_timeout(tool) -> float:
+    value = getattr(tool, "timeout_seconds", None) if tool is not None else None
+    return float(value) if value else SUBAGENT_TOOL_TIMEOUT_DEFAULT
+
+
+def _timeout_result(tool_name: str, timeout_s: float) -> str:
+    return json.dumps({
+        "status": "error",
+        "error": _TOOL_TIMEOUT_ERROR,
+        "message": (
+            f"This {tool_name} call timed out after {timeout_s:.0f} s and was not "
+            "completed. If it returns later, its result will be delivered to you. "
+            "Retry it, narrow it, or move on."
+        ),
+        "timeout_s": round(timeout_s),
+    })
+
+
+def _not_started_result(tool_name: str) -> str:
+    return json.dumps({
+        "status": "error",
+        "error": _TOOL_TIMEOUT_ERROR,
+        "message": (
+            f"This {tool_name} call was not run: other calls in this round timed out "
+            "and held every worker. Call it again if you still need it."
+        ),
+    })
+
+
+def _timed_out_label(result_str: str) -> str | None:
+    """The tool_end label for a timed-out call, else None."""
+    if f'"error": "{_TOOL_TIMEOUT_ERROR}"' not in result_str[:80]:
+        return None
+    try:
+        timeout_s = json.loads(result_str).get("timeout_s")
+    except (ValueError, AttributeError):
+        timeout_s = None
+    return f"Timed out after {timeout_s} s" if timeout_s else "Not run — round timed out"
+
+
+def _run_round_with_timeouts(tool_calls, tool_by_name, run_one, context) -> list:
+    """Run a sub-agent round's calls in parallel, each under its tool's timeout.
+
+    The round waits while any started call is still within its own timeout
+    (or a queued call can still get a worker), so a fast tool's timeout never
+    cuts a round short while a slower sibling is legitimately working. Then
+    every unfinished call gets a timeout result: a started one is abandoned
+    (Python cannot kill its thread — it runs on and, if it returns, the result
+    is delivered on a later round via ``context.pending_late_tool_results``),
+    a never-started one is cancelled. Each timeout is logged at WARNING and
+    recorded for calibration (``context.record_tool_timeout``).
+    """
+    max_workers = min(len(tool_calls), 4)
+    pool = ThreadPoolExecutor(max_workers=max_workers)
+    started_at: dict[int, float] = {}
+    timeouts = [_tool_timeout(tool_by_name.get(tc.name)) for tc in tool_calls]
+
+    def _wrapped(index, tc):
+        started_at[index] = time.monotonic()
+        try:
+            return run_one(tc)
+        finally:
+            context.note_activity()
+
+    futures = [pool.submit(_wrapped, i, tc) for i, tc in enumerate(tool_calls)]
+    try:
+        while True:
+            pending = [i for i, f in enumerate(futures) if not f.done()]
+            if not pending:
+                break
+            now = time.monotonic()
+            running = [i for i in pending if i in started_at]
+            within = [i for i in running if now - started_at[i] < timeouts[i]]
+            queued = [i for i in pending if i not in started_at]
+            # A queued call still gets a worker unless every worker is held by
+            # an overdue call.
+            can_start = bool(queued) and len(running) - len(within) < max_workers
+            if not within and not can_start:
+                break
+            wake = min((timeouts[i] - (now - started_at[i]) for i in within), default=1.0)
+            wait([futures[i] for i in pending], timeout=max(0.05, min(wake, 1.0)),
+                 return_when=FIRST_COMPLETED)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+    results = []
+    for i, (tc, future) in enumerate(zip(tool_calls, futures)):
+        if future.done() and not future.cancelled():
+            try:
+                results.append(future.result())
+            except Exception as exc:  # run_one never raises; belt and braces
+                results.append((tc, json.dumps({"error": str(exc)})))
+            continue
+        if i not in started_at:
+            results.append((tc, _not_started_result(tc.name)))
+            continue
+        timeout_s = timeouts[i]
+        logger.warning(
+            "Sub-agent tool %s timed out after %.0fs (run %s); abandoning the call",
+            tc.name, timeout_s, getattr(context, "run_id", ""),
+        )
+        record = {
+            "tool": tc.name,
+            "timeout_s": round(timeout_s),
+            "round": context.observability.get("rounds", 0),
+            "late_after_s": None,
+        }
+        context.record_tool_timeout(record)
+        entry = {
+            "future": future, "tool": tc.name, "round": record["round"],
+            "started": started_at[i], "timeout_s": timeout_s, "record": record,
+        }
+
+        def _on_late_done(_f, entry=entry):
+            entry["done_after_s"] = time.monotonic() - entry["started"]
+            logger.info(
+                "Abandoned sub-agent tool %s returned after %.0fs (timeout %.0fs)",
+                entry["tool"], entry["done_after_s"], entry["timeout_s"],
+            )
+
+        future.add_done_callback(_on_late_done)
+        context.pending_late_tool_results.append(entry)
+        results.append((tc, _timeout_result(tc.name, timeout_s)))
+    return results
+
+
+def _drain_late_tool_results(context) -> str:
+    """Text for the timed-out calls whose abandoned threads have since returned
+    (removed from the pending list), or "". Appended inside the round's single
+    notice message, so the loop stays append-only (prompt-cache safe)."""
+    pending = getattr(context, "pending_late_tool_results", None) if context else None
+    if not pending:
+        return ""
+    parts = []
+    for entry in list(pending):
+        future = entry["future"]
+        if not future.done():
+            continue
+        pending.remove(entry)
+        if future.cancelled():
+            continue
+        try:
+            _, result_str = future.result()
+        except Exception as exc:
+            result_str = json.dumps({"error": str(exc)})
+        done_after = entry.get("done_after_s") or (time.monotonic() - entry["started"])
+        entry["record"]["late_after_s"] = round(done_after)
+        parts.append(
+            f"[Late tool result] The {entry['tool']} call you made in round {entry['round']} "
+            f"timed out after {entry['timeout_s']:.0f} s but returned after {done_after:.0f} s. "
+            f"In case you still need it:\n{result_str}"
+        )
+    return "\n\n".join(parts)
+
+
+def _with_late_results(notice: Message | None, context) -> Message | None:
+    """Fold any late tool results into the round's notice (one user message)."""
+    late = _drain_late_tool_results(context)
+    if not late:
+        return notice
+    if notice is None or not isinstance(notice.content, str):
+        return Message(role="user", content=late)
+    return Message(role="user", content=f"{late}\n\n{notice.content}")
+
+
 def _count_round(context) -> None:
     """Count one model call of the tool loop (the forced final call included)
     as a round; ``observability["rounds"]`` is what a sub-agent run reports."""
     if context is not None:
         context.bump_stat("rounds")
+        context.note_activity()
 
 
 def _set_loop_stop(context, reason: str) -> None:
@@ -365,11 +538,15 @@ class SimpleChatPipeline(BasePipeline):
     def _execute_tool_calls(
         tool_calls: List[ToolCall],
         tool_by_name: dict[str, ContextAwareTool],
+        context: RunContext | None = None,
     ) -> List[Tuple[ToolCall, str]]:
         """Execute a batch of tool calls and return (tool_call, result_json) pairs.
 
         When multiple tool calls are present, they execute concurrently via
         ThreadPoolExecutor (capped at 4 workers).  Single calls skip the pool.
+        A sub-agent's calls always go through the pool, each under its tool's
+        timeout (_run_round_with_timeouts); the main agent waits as long as a
+        tool takes.
         """
 
         def _run_one(tc: ToolCall) -> Tuple[ToolCall, str]:
@@ -420,6 +597,9 @@ class SimpleChatPipeline(BasePipeline):
                     "paginate to see more.]"
                 )
             return (tc, result_str)
+
+        if tool_calls and context is not None and context.agent_kind == "subagent":
+            return _run_round_with_timeouts(tool_calls, tool_by_name, _run_one, context)
 
         if len(tool_calls) <= 1:
             return [_run_one(tc) for tc in tool_calls]
@@ -641,6 +821,9 @@ class SimpleChatPipeline(BasePipeline):
                 "Using the information you have gathered so far, provide your "
                 "comprehensive final response now as plain text."
             )
+        late = _drain_late_tool_results(req.context)
+        if late:
+            text = f"{late}\n\n{text}"
         final_messages = list(req.messages) + [Message(role="user", content=text)]
         final_messages = edits.finish_final(final_messages, req)
         return req.model_copy(update={
@@ -747,10 +930,10 @@ class SimpleChatPipeline(BasePipeline):
                                 Message(role="tool", content=result_str, tool_call_id=tc.id)
                             )
                         self._record_tool_round_stats(req.context, results)
-                    notice = _truncated_round_notice(
+                    notice = _with_late_results(_truncated_round_notice(
                         stop_reason,
                         _iteration_notice(i, effective_max, agent_kind),
-                    )
+                    ), req.context)
                     new_messages, tools = edits.finish_round(
                         new_messages, req, tools,
                         prior_len=prior_len,
@@ -781,17 +964,17 @@ class SimpleChatPipeline(BasePipeline):
 
             prior_len = len(req.messages)
             new_messages = list(req.messages) + [msg]
-            results = self._execute_tool_calls(msg.tool_calls, tool_by_name)
+            results = self._execute_tool_calls(msg.tool_calls, tool_by_name, req.context)
             for tc, result_str in results:
                 new_messages.append(
                     Message(role="tool", content=result_str, tool_call_id=tc.id)
                 )
             self._record_tool_round_stats(req.context, results)
 
-            notice = _iteration_notice(
+            notice = _with_late_results(_iteration_notice(
                 i, effective_max,
                 getattr(req.context, "agent_kind", "main") if req.context else "main",
-            )
+            ), req.context)
             new_messages, tools = edits.finish_round(
                 new_messages, req, tools,
                 prior_len=prior_len,
@@ -1038,10 +1221,10 @@ class SimpleChatPipeline(BasePipeline):
                             new_messages.append(
                                 Message(role="tool", content=result_str, tool_call_id=tc.id)
                             )
-                    notice = _truncated_round_notice(
+                    notice = _with_late_results(_truncated_round_notice(
                         stop_reason,
                         _iteration_notice(i, max_iterations, agent_kind),
-                    )
+                    ), req.context)
                     new_messages, tools = edits.finish_round(
                         new_messages, req, tools,
                         prior_len=prior_len,
@@ -1124,7 +1307,7 @@ class SimpleChatPipeline(BasePipeline):
                 return
 
             # Execute tools (in parallel when multiple)
-            results = self._execute_tool_calls(parsed_tool_calls, tool_by_name)
+            results = self._execute_tool_calls(parsed_tool_calls, tool_by_name, req.context)
             self._record_tool_round_stats(req.context, results)
 
             # Emit tool_end for all results and append to history
@@ -1134,6 +1317,9 @@ class SimpleChatPipeline(BasePipeline):
                 # keys the card's icon on this flag so a refusal never renders
                 # as a green check. Shared with the history view (reload).
                 display_label, is_error = tool_end_display(tool, result_str)
+                timed_out = _timed_out_label(result_str)
+                if timed_out:
+                    display_label, is_error = timed_out, True
                 yield StreamEvent(
                     event_type="tool_end",
                     data={
@@ -1151,10 +1337,10 @@ class SimpleChatPipeline(BasePipeline):
                     Message(role="tool", content=result_str, tool_call_id=tc.id)
                 )
 
-            notice = _iteration_notice(
+            notice = _with_late_results(_iteration_notice(
                 i, max_iterations,
                 getattr(req.context, "agent_kind", "main") if req.context else "main",
-            )
+            ), req.context)
             new_messages, tools = edits.finish_round(
                 new_messages, req, tools,
                 prior_len=prior_len,

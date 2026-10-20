@@ -91,6 +91,13 @@ class LLMCallLog(models.Model):
     # forced final call), "truncation" (cut-off rounds → forced final call) or
     # "cancelled". Blank outside a loop.
     loop_stop = models.CharField(max_length=16, blank=True, default="")
+    # Sub-agent tool calls cut by their per-tool timeout this turn, for
+    # calibrating ContextAwareTool.timeout_seconds: count, and one entry per
+    # timeout {"tool", "timeout_s", "round", "late_after_s"} (late_after_s =
+    # when the abandoned call returned, if it did while the run went on).
+    # NULL when none timed out.
+    tool_timeout_count = models.PositiveIntegerField(null=True, blank=True)
+    tool_timeouts = models.JSONField(null=True, blank=True)
 
     # Status / errors
     status = models.CharField(

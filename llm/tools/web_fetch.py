@@ -1240,6 +1240,8 @@ class WebFetchTool(ContextAwareTool):
     """Fetch a web page and extract clean markdown content."""
 
     name: str = "web_fetch"
+    # Sub-agent per-call timeout: 1.5x the 14-day p99 (30 s).
+    timeout_seconds: float | None = 45
     section: str = "skills"
     subagent_section: str = "chat"
     start_label: str = "Fetching web page..."

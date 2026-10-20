@@ -144,11 +144,35 @@ class RunContext(BaseModel):
     # tool-result budget. Locked because tools execute concurrently.
     _stats_lock: Any = PrivateAttr(default_factory=threading.Lock)
     observability: dict = Field(default_factory=dict)
+    # Sub-agent tool calls the tool loop stopped waiting for (per-tool timeout)
+    # whose abandoned threads may still return: the loop delivers a late result
+    # on a later round. Entries are dicts owned by llm/pipelines/simple_chat.py.
+    pending_late_tool_results: list = Field(default_factory=list)
+    # Sub-agent heartbeat: called by the tool loop whenever the run makes
+    # progress (a round starts, a tool call finishes). Set by the sub-agent
+    # service, which throttles its DB write; None elsewhere.
+    on_activity: Optional[Callable[[], None]] = None
 
     def bump_stat(self, key: str, amount: int = 1) -> None:
         """Add ``amount`` to a per-turn observability counter (thread-safe)."""
         with self._stats_lock:
             self.observability[key] = self.observability.get(key, 0) + amount
+
+    def record_tool_timeout(self, entry: dict) -> None:
+        """Append a tool-timeout record (``observability["tool_timeouts"]``,
+        logged on LLMCallLog for calibrating the per-tool timeouts). The dict
+        is kept by reference so a late result can fill in ``late_after_s``."""
+        with self._stats_lock:
+            self.observability.setdefault("tool_timeouts", []).append(entry)
+
+    def note_activity(self) -> None:
+        """Signal progress to the heartbeat (best-effort, never raises)."""
+        if self.on_activity is None:
+            return
+        try:
+            self.on_activity()
+        except Exception:  # pragma: no cover - a heartbeat must never break a run
+            pass
 
     def reserve_native_asset(
         self, size_b64: int, pathway: str = PATHWAY_DATAROOM

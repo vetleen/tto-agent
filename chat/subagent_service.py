@@ -393,6 +393,45 @@ def _create_subagent_failure_message(run) -> None:
     )
 
 
+# At most one heartbeat write per run per this many seconds.
+HEARTBEAT_MIN_INTERVAL_SECONDS = 15
+
+
+def _heartbeat(run_id):
+    """A throttled ``RunContext.on_activity`` callback that stamps the run's
+    ``last_activity_at``. Called from the run's thread and from tool worker
+    threads; a worker thread closes the DB connection it opened (a stray
+    connection per thread would eat into the Postgres/PgBouncer cap)."""
+    import threading
+    import time
+
+    from django.db import connection
+
+    owner = threading.get_ident()
+    lock = threading.Lock()
+    last = [time.monotonic()]  # run start already stamped the row
+
+    def beat():
+        now = time.monotonic()
+        with lock:
+            if now - last[0] < HEARTBEAT_MIN_INTERVAL_SECONDS:
+                return
+            last[0] = now
+        from chat.models import SubAgentRun
+
+        try:
+            SubAgentRun.objects.filter(
+                pk=run_id, status=SubAgentRun.Status.RUNNING,
+            ).update(last_activity_at=timezone.now())
+        except Exception:
+            logger.debug("Sub-agent heartbeat for run %s failed", run_id, exc_info=True)
+        finally:
+            if threading.get_ident() != owner:
+                connection.close()
+
+    return beat
+
+
 def continuation_brief(run) -> str:
     """The block appended to a continuation's task: how the previous run went,
     its final reply ("Not covered" list included) and the orchestrator's extra
@@ -445,7 +484,10 @@ def run_subagent(run_id: uuid.UUID) -> None:
         started_at = timezone.now()
         started = SubAgentRun.objects.filter(pk=run_id).exclude(
             status__in=[SubAgentRun.Status.FAILED, SubAgentRun.Status.COMPLETED],
-        ).update(status=SubAgentRun.Status.RUNNING, started_at=started_at)
+        ).update(
+            status=SubAgentRun.Status.RUNNING, started_at=started_at,
+            last_activity_at=started_at,
+        )
         if not started:
             logger.info("Sub-agent run %s already terminal; skipping re-entry", run_id)
             return
@@ -569,6 +611,8 @@ def run_subagent(run_id: uuid.UUID) -> None:
         # the tool loop shows context.scratchpad once up front and again at every
         # edit point (llm/pipelines/edit_points.py).
         context.scratchpad = run.scratchpad or ""
+        # Heartbeat for the stale-run sweeper (there is no wall-clock limit).
+        context.on_activity = _heartbeat(run_id)
         # Reuse this one (already memoized) User instance for every tool call in the
         # run, so UserSettings/Membership are read once instead of per tool. Set on
         # this single thread before the streaming tool loop spawns its workers.

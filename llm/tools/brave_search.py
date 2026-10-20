@@ -355,6 +355,8 @@ class BraveSearchTool(ContextAwareTool):
     """Search the web using the Brave Search API."""
 
     name: str = "web_search"
+    # Sub-agent per-call timeout: 1.5x the 14-day p99 (19 s).
+    timeout_seconds: float | None = 30
     section: str = "skills"
     subagent_section: str = "chat"
     start_label: str = "Searching the web..."

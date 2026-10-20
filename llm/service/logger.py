@@ -190,6 +190,7 @@ def _observability_fields(context) -> dict:
     distinguishable from "no tools"."""
     obs = getattr(context, "observability", None) or {}
     had_tools = "tool_calls" in obs
+    timeouts = obs.get("tool_timeouts")
     edit_kinds = {
         key.split(":", 1)[1]: value
         for key, value in obs.items() if key.startswith("edit_point:")
@@ -206,6 +207,8 @@ def _observability_fields(context) -> dict:
         "output_truncated_rounds": obs.get("output_truncated_rounds"),
         "tool_rounds": obs.get("rounds"),
         "loop_stop": obs.get("loop_stop") or "",
+        "tool_timeout_count": len(timeouts) if timeouts else None,
+        "tool_timeouts": [dict(t) for t in timeouts] if timeouts else None,
     }
 
 
