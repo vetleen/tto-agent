@@ -236,14 +236,16 @@ class OrgSettingsAccessTests(TestCase):
     @patch("llm.tools.registry.get_tool_registry")
     def test_tools_grouped_by_section(self, mock_reg, mock_models):
         from unittest.mock import MagicMock
-        chat_tool = MagicMock(section="chat", description="Fetch a URL")
+        chat_tool = MagicMock(section="chat", audience="shared", description="Fetch a URL")
         mock_reg.return_value.list_tools.return_value = {
             "web_fetch": chat_tool,
         }
         self.client.login(email=self.admin_user.email, password=self.password)
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, f"{settings.ASSISTANT_NAME} Chat")
+        self.assertContains(response, f"{settings.ASSISTANT_NAME} tools")
+        chat_tools = [t["name"] for t in response.context["tool_sections"]["chat"]["tools"]]
+        self.assertEqual(chat_tools, ["web_fetch"])
 
     @patch("llm.service.policies.get_allowed_models", return_value=[
         "openai/gpt-5.6-sol", "openai/gpt-6-luna",
@@ -725,8 +727,9 @@ class PreferencesSkillCascadeTests(TestCase):
 
         mock_reg.return_value.list_tools.return_value = {}
         # filter_to_skill_tools() resolves each tool via registry.get_tool()
-        # and keeps only section == "skills" tools.
-        skills_tool = MagicMock(section="skills")
+        # and keeps only section == "skills" tools whose audience the carrying
+        # skill may use (a bare MagicMock's audience fails that check).
+        skills_tool = MagicMock(section="skills", audience="main")
         mock_reg.return_value.get_tool.side_effect = (
             lambda name: skills_tool if name in ("skill_create", "skill_edit") else None
         )
@@ -749,8 +752,9 @@ class PreferencesSkillCascadeTests(TestCase):
 
         mock_reg.return_value.list_tools.return_value = {}
         # filter_to_skill_tools() resolves each tool via registry.get_tool()
-        # and keeps only section == "skills" tools.
-        skills_tool = MagicMock(section="skills")
+        # and keeps only section == "skills" tools whose audience the carrying
+        # skill may use (a bare MagicMock's audience fails that check).
+        skills_tool = MagicMock(section="skills", audience="main")
         mock_reg.return_value.get_tool.side_effect = (
             lambda name: skills_tool if name in ("skill_create", "skill_edit") else None
         )
