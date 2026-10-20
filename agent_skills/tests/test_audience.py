@@ -155,12 +155,15 @@ class PreferenceAudienceTests(TestCase):
 
     def test_main_only_tool_excluded_from_subagent_bucket(self):
         prefs = get_preferences(self.user)
-        # chat_subagent_create is audience="main" (always-on); chat_task_update is
-        # shared. (canvas_write is now skills-gated, so no longer a good probe here.)
+        # chat_subagent_create and chat_task_update (the thread's plan) are
+        # audience="main" (always-on); sub-agents get their run-scoped twin.
+        # (canvas_write is now skills-gated, so no longer a good probe here.)
         self.assertIn("chat_subagent_create", prefs.allowed_tools)
         self.assertNotIn("chat_subagent_create", prefs.allowed_subagent_tools)
         self.assertIn("chat_task_update", prefs.allowed_tools)
-        self.assertIn("chat_task_update", prefs.allowed_subagent_tools)
+        self.assertNotIn("chat_task_update", prefs.allowed_subagent_tools)
+        self.assertIn("subagent_task_update", prefs.allowed_subagent_tools)
+        self.assertNotIn("subagent_task_update", prefs.allowed_tools)
 
     def test_specialization_surfaced_with_filtered_tools(self):
         AgentSkill.objects.create(

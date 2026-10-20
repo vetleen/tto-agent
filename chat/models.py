@@ -773,6 +773,11 @@ class SubAgentRun(models.Model):
     # user — it is discarded once the run ends (kept here only for durability
     # during the run / a retry).
     scratchpad = models.TextField(blank=True, default="")
+    # The sub-agent's own task plan (subagent_task_update):
+    # ``[{"id", "title", "status", "order"}, ...]``. Run-scoped, never the
+    # thread's ThreadTask rows (those are the orchestrator's); carried over to a
+    # continuation like the scratchpad and never shown to the user.
+    task_plan = models.JSONField(default=list, blank=True, db_default=[])
 
     # Read-only copies of the orchestrator's canvases it chose to share
     # (chat_subagent_create ``canvases``): ``[{"title", "content"}, ...]``.

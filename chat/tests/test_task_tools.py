@@ -187,3 +187,64 @@ class UpdateTasksToolTests(TestCase):
         self.assertEqual(result2["tasks"][0]["status"], "completed")
         self.assertNotEqual(result2["tasks"][1]["id"], existing_id)
         self.assertEqual(result2["tasks"][1]["title"], "Brand new")
+
+
+class SubagentTaskUpdateToolTests(TestCase):
+    """A sub-agent's plan lives on its run, never on the thread (that plan is
+    the orchestrator's, and the main tool replaces it wholesale)."""
+
+    def setUp(self):
+        from chat.models import SubAgentRun
+
+        self.user = User.objects.create_user(email="subtasks@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+        ThreadTask.objects.create(thread=self.thread, title="Orchestrator step", status="pending")
+        self.run = SubAgentRun.objects.create(thread=self.thread, user=self.user, prompt="t")
+        self.ctx = _ctx(self.user.pk, self.thread.id)
+        self.ctx.run_id = str(self.run.id)
+        self.ctx.agent_kind = "subagent"
+
+    def _invoke(self, args, ctx=None):
+        from chat.task_tools import SubagentTaskUpdateTool
+
+        tool = SubagentTaskUpdateTool()
+        tool.set_context(ctx or self.ctx)
+        return json.loads(tool.invoke(args))
+
+    def test_writes_run_plan_and_leaves_thread_plan_alone(self):
+        result = self._invoke({"tasks": [
+            {"title": "Search", "status": "in_progress"},
+            {"title": "Write canvas"},
+        ]})
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["summary"], "2 tasks (1 active, 1 pending)")
+        self.run.refresh_from_db()
+        self.assertEqual([t["title"] for t in self.run.task_plan], ["Search", "Write canvas"])
+        self.assertEqual(
+            list(ThreadTask.objects.filter(thread=self.thread).values_list("title", flat=True)),
+            ["Orchestrator step"],
+        )
+
+    def test_keeps_known_ids_drops_omitted_and_normalizes_status(self):
+        first = self._invoke({"tasks": [{"title": "A"}, {"title": "B"}]})
+        a_id = first["tasks"][0]["id"]
+        foreign = "00000000-0000-0000-0000-000000000001"
+        second = self._invoke({"tasks": [
+            {"id": a_id, "title": "A", "status": "completed"},
+            {"id": foreign, "title": "C", "status": "bogus"},
+        ]})
+        self.assertEqual(second["tasks"][0]["id"], a_id)
+        self.assertNotEqual(second["tasks"][1]["id"], foreign)
+        self.assertEqual(second["tasks"][1]["status"], "pending")
+        self.run.refresh_from_db()
+        self.assertEqual([t["title"] for t in self.run.task_plan], ["A", "C"])
+
+    def test_errors_outside_a_subagent_run(self):
+        result = self._invoke({"tasks": [{"title": "A"}]}, ctx=_ctx(self.user.pk, self.thread.id))
+        self.assertEqual(result["status"], "error")
+
+    def test_audiences(self):
+        from chat.task_tools import SubagentTaskUpdateTool
+
+        self.assertEqual(UpdateTasksTool().audience, "main")
+        self.assertEqual(SubagentTaskUpdateTool().audience, "subagent")

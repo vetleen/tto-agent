@@ -526,6 +526,7 @@ class ContinueSubagentTool(ContextAwareTool):
             canvas=previous.canvas,
             canvas_title=previous.canvas_title,
             scratchpad=previous.scratchpad,
+            task_plan=previous.task_plan or [],
             continued_from=previous,
             chain_depth=previous.chain_depth + 1,
             continuation_instructions=str(kwargs.get("instructions") or "").strip()[:4000],

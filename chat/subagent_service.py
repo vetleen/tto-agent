@@ -582,15 +582,11 @@ def run_subagent(run_id: uuid.UUID) -> None:
                 if _user_can_access_data_room(user, r)
             ]
 
-        # Load thread tasks for sub-agent context
-        from chat.models import ThreadTask
-        thread_tasks = list(
-            ThreadTask.objects.filter(thread_id=run.thread_id)
-            .order_by("order", "created_at")
-            .values("id", "title", "status")
-        )
+        # The run's own plan (a continuation carries the previous run's over);
+        # never the thread's ThreadTask rows — those are the orchestrator's.
+        thread_tasks = list(run.task_plan or [])
 
-        has_task_tool = "chat_task_update" in (tool_list or [])
+        has_task_tool = "subagent_task_update" in (tool_list or [])
         # Context aim for this run: the org's per-tier budget, else its context
         # limit. It sizes the mid-turn pruner AND the per-read cap of
         # subagent_canvas_read (via context.max_context_tokens).

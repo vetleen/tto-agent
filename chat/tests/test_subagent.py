@@ -332,7 +332,8 @@ class BuildSubagentSystemPromptTests(TestCase):
     def test_task_planning_included_when_tool_available(self):
         prompt = build_subagent_system_prompt(has_task_tool=True)
         self.assertIn("# Task Planning", prompt)
-        self.assertIn("chat_task_update", prompt)
+        self.assertIn("subagent_task_update", prompt)
+        self.assertNotIn("chat_task_update", prompt)
 
     def test_task_planning_excluded_without_tool(self):
         prompt = build_subagent_system_prompt(has_task_tool=False)
@@ -714,6 +715,7 @@ class ContinueSubagentToolTests(TestCase):
             rounds_used=16, budget_exhausted=True,
             result="Summary. Not covered: family check.",
             canvas="# Report\nFindings", canvas_title="Report", scratchpad="note 1",
+            task_plan=[{"id": "a", "title": "Search", "status": "completed", "order": 0}],
             data_room_ids=[3], shared_canvases=[{"title": "Draft", "content": "d"}],
         )
 
@@ -735,7 +737,7 @@ class ContinueSubagentToolTests(TestCase):
         self.assertEqual(run.round_budget, "quick")
         self.assertEqual(run.model_tier, "low")
         for field in ("prompt", "skill_slug", "canvas", "canvas_title", "scratchpad",
-                      "data_room_ids", "shared_canvases", "reason"):
+                      "task_plan", "data_room_ids", "shared_canvases", "reason"):
             self.assertEqual(getattr(run, field), getattr(self.previous, field), field)
         self.assertEqual(run.continuation_instructions, "Check the families.")
 
@@ -892,6 +894,39 @@ class ResultHeaderTests(TestCase):
         _, request = mock_svc.return_value.run_via_stream.call_args[0]
         self.assertTrue(request.messages[1].content.startswith(
             "# Original task\ntask\n\n# Continuing earlier work"))
+
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
+    def test_prompt_shows_own_plan_not_the_threads(self, mock_prefs, mock_svc):
+        """The thread's ThreadTask rows are the orchestrator's plan: a sub-agent
+        never sees them; a continuation sees its carried-over run plan."""
+        from chat.models import ThreadTask
+        from chat.subagent_service import run_subagent
+
+        mock_prefs.return_value = _prefs()
+        response = MagicMock()
+        response.message.content = "Done"
+        response.usage.total_tokens = 1
+        response.usage.cost_usd = 0.0
+        mock_svc.return_value.run_via_stream.return_value = response
+        ThreadTask.objects.create(thread=self.thread, title="Orchestrator step", status="pending")
+
+        fresh = SubAgentRun.objects.create(thread=self.thread, user=self.user, prompt="task")
+        run_subagent(fresh.id)
+        _, request = mock_svc.return_value.run_via_stream.call_args[0]
+        self.assertNotIn("Orchestrator step", request.messages[0].content)
+        self.assertNotIn("# Your Task Plan", request.messages[0].content)
+
+        continued = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="task", continued_from=fresh,
+            chain_depth=1,
+            task_plan=[{"id": "x", "title": "Check families", "status": "pending", "order": 0}],
+        )
+        run_subagent(continued.id)
+        _, request = mock_svc.return_value.run_via_stream.call_args[0]
+        self.assertIn("# Your Task Plan", request.messages[0].content)
+        self.assertIn("[ ] Check families", request.messages[0].content)
+        self.assertNotIn("Orchestrator step", request.messages[0].content)
 
 
 class CreateSubagentToolSpecializationTests(TestCase):
