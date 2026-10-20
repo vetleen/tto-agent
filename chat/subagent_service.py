@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 # (llm/pipelines/simple_chat.py) and forces a tool-less final reply after the
 # last one. There is no wall-clock limit: hangs are caught by per-tool timeouts
 # and the heartbeat sweeper.
-ROUND_BUDGETS = {"quick": 6, "standard": 15, "deep": 30}
+ROUND_BUDGETS = {"quick": 10, "standard": 20, "deep": 40}
 DEFAULT_ROUND_BUDGET = "standard"
 # Sanity clamp on any budget (long runs are the worker's main memory spike).
 SUBAGENT_MAX_ROUNDS = 40
@@ -314,9 +314,9 @@ def forced_reply_reason(run) -> str:
     on its own: its round budget ran out, or its output was cut off (output
     cap / repetition guard) twice in a row so the loop gave up on tools."""
     if run.budget_exhausted:
-        return "round budget used up"
+        return "round budget reached"
     if run.stop_reason == "truncation":
-        return "its output was cut off repeatedly, so its final reply was forced"
+        return "its output was cut off repeatedly"
     return ""
 
 
@@ -325,7 +325,8 @@ def result_header(run) -> str:
 
     Says how the run went (rounds used of its budget, time taken) and how to
     continue it. A run whose tool-less final reply was forced (budget ran out,
-    or repeatedly cut-off output — ``forced_reply_reason``) is marked PARTIAL.
+    or repeatedly cut-off output — ``forced_reply_reason``) says so neutrally:
+    the forced reply may still be complete, so the orchestrator checks it.
     """
     short_id = str(run.id)[:8]
     progress = run_progress(run)
@@ -333,9 +334,9 @@ def result_header(run) -> str:
     forced = forced_reply_reason(run)
     if forced:
         return (
-            f"[Sub-agent result: {short_id}{continuation} — PARTIAL: {forced}"
-            f"{f' ({progress})' if progress else ''}. See its \"Not covered\" list; if more "
-            f'work is needed, you may continue it with chat_subagent_continue(run_id="{short_id}").]'
+            f"[Sub-agent result: {short_id}{continuation} — {forced}: its final reply was "
+            f"forced{f' after {progress}' if progress else ''}. Check its reply for anything "
+            "it did not cover; if more work is needed, consider continuing it.]"
         )
     return (
         f"[Sub-agent result: {short_id}{continuation} — finished"

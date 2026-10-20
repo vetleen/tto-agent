@@ -1418,27 +1418,34 @@ class IterationNoticeTests(TestCase):
         """Stage shown after rounds 1..budget-1 (no notice is needed after the last)."""
         return [self._stage(budget - n, budget) for n in range(1, budget)]
 
+    # Budgets as in chat.subagent_service.ROUND_BUDGETS (quick / standard / deep).
     def test_quick_budget_stages(self):
         self.assertEqual(
-            self._stages_after_each_round(6),
-            ["explore", "explore", "converge", "wrap", "final"],
+            self._stages_after_each_round(10),
+            ["explore"] * 4 + ["converge"] * 3 + ["wrap"] + ["final"],
         )
 
     def test_standard_budget_stages(self):
-        stages = self._stages_after_each_round(15)
-        self.assertEqual(stages[:7], ["explore"] * 7)       # after rounds 1-7
-        self.assertEqual(stages[7:11], ["converge"] * 4)    # after rounds 8-11
-        self.assertEqual(stages[11:13], ["wrap"] * 2)       # after rounds 12-13
-        self.assertEqual(stages[13], "final")               # after round 14
+        stages = self._stages_after_each_round(20)
+        self.assertEqual(stages[:9], ["explore"] * 9)       # after rounds 1-9
+        self.assertEqual(stages[9:15], ["converge"] * 6)    # after rounds 10-15
+        self.assertEqual(stages[15:18], ["wrap"] * 3)       # after rounds 16-18
+        self.assertEqual(stages[18], "final")               # after round 19
 
     def test_deep_budget_stages(self):
-        stages = self._stages_after_each_round(30)
-        # Notices after rounds 1-14 explore (rounds 1-15 explore), 15-23 converge,
-        # 24-28 wrap up, 29 announces the final round 30.
-        self.assertEqual(stages.count("explore"), 14)
-        self.assertEqual(stages.count("converge"), 9)
-        self.assertEqual(stages.count("wrap"), 5)
+        stages = self._stages_after_each_round(40)
+        # Notices after rounds 1-19 explore (rounds 1-20 explore), 20-31 converge,
+        # 32-38 wrap up, 39 announces the final round 40.
+        self.assertEqual(stages.count("explore"), 19)
+        self.assertEqual(stages.count("converge"), 12)
+        self.assertEqual(stages.count("wrap"), 7)
         self.assertEqual(stages[-1], "final")
+
+    def test_budgets_match_round_budgets(self):
+        from chat.subagent_service import ROUND_BUDGETS, SUBAGENT_MAX_ROUNDS
+
+        self.assertEqual(ROUND_BUDGETS, {"quick": 10, "standard": 20, "deep": 40})
+        self.assertLessEqual(max(ROUND_BUDGETS.values()), SUBAGENT_MAX_ROUNDS)
 
     def test_run_loop_injects_countdown_for_subagent_context(self):
         """Integration: a 2-tool-round sub-agent run sees a countdown message

@@ -60,7 +60,7 @@ streamed chunk, provider retry wait, round start and tool-call end) has been sil
 step could take: the longer of the model's request timeout and the slowest sub-agent tool timeout,
 + 2 min (~6.5 min on OpenAI/Anthropic, ~12 min on Gemini, whose 600 s timeout is the
 whole-generation deadline; `chat.subagent_limits.running_silence_limit`). There is no wall-clock
-limit: a run is bounded by its round budget (quick 6 / standard 15 / deep 30 rounds), and each
+limit: a run is bounded by its round budget (quick 10 / standard 20 / deep 40 rounds), and each
 sub-agent tool call by its `timeout_seconds` (a timed-out call is abandoned and logged at WARNING;
 its thread's retry and rate-window waits stop at that deadline, and a result that still arrives
 later is discarded — timeouts per turn, with when the call eventually returned, are on

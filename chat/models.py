@@ -720,10 +720,10 @@ class SubAgentRun(models.Model):
     # Round budget the orchestrator picked ("quick" / "standard" / "deep",
     # chat.subagent_service.ROUND_BUDGETS) and how it went: model calls made
     # (the forced final call included), whether the budget ran out, which
-    # forces a tool-less final reply and marks the result PARTIAL, and why the
+    # forces a tool-less final reply and the result header says so, and why the
     # tool loop stopped (``answered`` / ``budget`` / ``truncation`` /
     # ``cancelled``, the pipeline's ``loop_stop``) — a truncation stop also
-    # forces the final reply and is marked PARTIAL.
+    # forces the final reply and the header says so.
     # NOT NULL columns added after 2026-10-20 carry a db_default so the old
     # code still serving during a rolling deploy can insert rows.
     round_budget = models.CharField(max_length=10, default="standard", db_default="standard")

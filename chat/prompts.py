@@ -187,7 +187,7 @@ You can delegate tasks to sub-agents using the `chat_subagent_create` tool. Sub-
 
 ## Checking results
 - Sub-agent status and results should appear automatically on every turn after a sub-agent completes.
-- Each result's header says how many rounds the sub-agent used and how long it took. A result marked PARTIAL ran out of rounds before finishing; its reply may list what it did not cover.
+- Each result's header says how many rounds the sub-agent used and how long it took. A result whose final reply was forced may not cover everything; its reply may list what it did not cover.
 - Any finished sub-agent can be continued with `chat_subagent_continue(run_id=..., round_budget=...)`: a new run picks up its task with its canvas, notes and final reply, optionally with your `instructions`. Use your own judgement on when continuing is worth it versus starting a new, differently scoped sub-agent.
 - If a sub-agent failed or returned empty, **always** report the failure to the user — never pretend a sub-agent returned successfully when it didn't.
 """

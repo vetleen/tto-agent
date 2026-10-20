@@ -803,43 +803,49 @@ class ResultHeaderTests(TestCase):
         short = str(run.id)[:8]
         self.assertEqual(
             result_header(run),
-            f"[Sub-agent result: {short} — finished (9/15 rounds (standard), 4:12). If more "
+            f"[Sub-agent result: {short} — finished (9/20 rounds (standard), 4:12). If more "
             f'work is needed, you may continue it with chat_subagent_continue(run_id="{short}").]',
         )
 
-    def test_partial_header_when_budget_ran_out(self):
+    def test_forced_header_when_budget_ran_out(self):
+        """Neutral wording: the forced reply may still be complete."""
         from chat.subagent_service import result_header
 
-        run = self._run(round_budget="quick", rounds_used=7, budget_exhausted=True)
-        header = result_header(run)
-        self.assertIn("— PARTIAL: round budget used up (6/6 rounds (quick), 4:12)", header)
-        self.assertIn('"Not covered" list', header)
+        run = self._run(round_budget="quick", rounds_used=11, budget_exhausted=True)
+        short = str(run.id)[:8]
+        self.assertEqual(
+            result_header(run),
+            f"[Sub-agent result: {short} — round budget reached: its final reply was forced "
+            "after 10/10 rounds (quick), 4:12. Check its reply for anything it did not cover; "
+            "if more work is needed, consider continuing it.]",
+        )
+        self.assertNotIn("PARTIAL", result_header(run))
 
-    def test_partial_header_and_brief_when_output_was_cut_off(self):
-        """A truncation stop (two cut-off rounds) also forced the final reply:
-        PARTIAL, but it must not be blamed on the round budget."""
+    def test_forced_header_and_brief_when_output_was_cut_off(self):
+        """A truncation stop (two cut-off rounds) also forced the final reply,
+        but it must not be blamed on the round budget."""
         from chat.subagent_service import result_header, task_message
 
         previous = self._run(round_budget="standard", rounds_used=3, stop_reason="truncation",
                              result="Summary. Not covered: Z.")
         header = result_header(previous)
         self.assertIn(
-            "— PARTIAL: its output was cut off repeatedly, so its final reply was forced "
-            "(3/15 rounds (standard), 4:12)",
+            "— its output was cut off repeatedly: its final reply was forced after "
+            "3/20 rounds (standard), 4:12.",
             header,
         )
         self.assertNotIn("budget", header)
         run = self._run(round_budget="standard", continued_from=previous, chain_depth=1)
         self.assertIn(
             "A previous sub-agent had its output cut off repeatedly (its reply was forced) "
-            "after 3/15 rounds (standard), 4:12.",
+            "after 3/20 rounds (standard), 4:12.",
             task_message(run),
         )
 
     def test_continuation_header_and_brief(self):
         from chat.subagent_service import result_header, task_message
 
-        previous = self._run(round_budget="quick", rounds_used=7, budget_exhausted=True,
+        previous = self._run(round_budget="quick", rounds_used=11, budget_exhausted=True,
                              result="Summary. Not covered: Y.")
         run = self._run(round_budget="standard", rounds_used=3, continued_from=previous,
                         chain_depth=1, continuation_instructions="Focus on Y.")
@@ -848,7 +854,7 @@ class ResultHeaderTests(TestCase):
         # The original task and the continuation brief are separate sections.
         self.assertTrue(message.startswith("# Original task\nt\n\n# Continuing earlier work\n"))
         self.assertIn(
-            "A previous sub-agent ran out of rounds (its reply was forced) after 6/6 rounds "
+            "A previous sub-agent ran out of rounds (its reply was forced) after 10/10 rounds "
             "(quick), 4:12. Its working canvas and scratchpad were carried over to you as a "
             "starting point. Continue where it left off.",
             message,
@@ -1739,18 +1745,18 @@ class RunSubagentServiceTests(TestCase):
         self.assertEqual(pipeline_id, "simple_chat")
         self.assertTrue(request.stream)
         # The run's round budget (default "standard") caps the tool loop.
-        self.assertEqual(request.params["max_tool_iterations"], 15)
-        self.assertIn("You have a budget of 15 rounds.", request.messages[0].content)
+        self.assertEqual(request.params["max_tool_iterations"], 20)
+        self.assertIn("You have a budget of 20 rounds.", request.messages[0].content)
 
     @patch("llm.get_llm_service")
     @patch("core.preferences.get_preferences")
     def test_round_budget_sets_iterations_and_records_outcome(self, mock_prefs, mock_svc):
-        """A deep run gets 30 rounds; the loop's round count and stop reason are
+        """A deep run gets 40 rounds; the loop's round count and stop reason are
         stored on the run (budget → budget_exhausted)."""
         mock_prefs.return_value = _prefs()
 
         def _run_via_stream(pipeline_id, request):
-            request.context.observability["rounds"] = 31
+            request.context.observability["rounds"] = 41
             request.context.observability["loop_stop"] = "budget"
             response = MagicMock()
             response.message.content = "Summary. Not covered: X."
@@ -1767,11 +1773,11 @@ class RunSubagentServiceTests(TestCase):
         run_subagent(run.id)
 
         _, request = mock_svc.return_value.run_via_stream.call_args[0]
-        self.assertEqual(request.params["max_tool_iterations"], 30)
+        self.assertEqual(request.params["max_tool_iterations"], 40)
         self.assertIsNone(request.context.deadline_seconds)
         run.refresh_from_db()
         self.assertEqual(run.status, SubAgentRun.Status.COMPLETED)
-        self.assertEqual(run.rounds_used, 31)
+        self.assertEqual(run.rounds_used, 41)
         self.assertTrue(run.budget_exhausted)
         self.assertEqual(run.stop_reason, "budget")
 

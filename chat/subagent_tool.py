@@ -467,7 +467,7 @@ class ContinueSubagentTool(ContextAwareTool):
 
     description: str = (
         "Continue a finished sub-agent's task with a fresh round budget — e.g. when its "
-        'result is PARTIAL (its round budget ran out) or its "Not covered" list matters. '
+        'round budget ran out or its "Not covered" list matters. '
         "A new sub-agent run starts with the same task, specialization, data rooms and "
         "shared files, plus the previous run's working canvas, private notes and final "
         "reply, and essentially picks up where it left off. Its result arrives in the conversation "
