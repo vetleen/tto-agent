@@ -1,7 +1,7 @@
 """Classify transcription failures into friendly, user-facing messages.
 
 Mirrors the LLM provider pattern in ``llm/core/providers/base.py`` (the
-``ClassifiedError`` / ``classify_api_error`` / ``_highlight_if_unmapped``
+``ClassifiedError`` / ``classify_api_error`` / ``_report_to_sentry``
 trio). The goal is the same: never surface a raw ``str(exc)`` to the client,
 keep a curated message per known failure mode, and emit a distinct,
 Sentry-actionable log line whenever an error hits the ``unknown`` catch-all so

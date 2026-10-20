@@ -49,6 +49,16 @@ def _auth_error():
     return exc
 
 
+def _gemini_rejected_error():
+    """Gemini's detail-less 400 (prod 2026-10-19)."""
+    exc = Exception(
+        "400 INVALID_ARGUMENT. {'error': {'code': 400, 'message': 'Request contains an "
+        "invalid argument.', 'status': 'INVALID_ARGUMENT'}}"
+    )
+    exc.code = 400
+    return exc
+
+
 def _ai_message(text="hello"):
     msg = MagicMock()
     msg.content = text
@@ -120,6 +130,27 @@ class TestGenerateErrorHandling(TestCase):
         self.assertEqual(result.message.content, "ok")
         self.assertEqual(model._client.invoke.call_count, 2)
         self.assertEqual(mock_sleep.call_count, 1)
+
+    def test_generate_gemini_rejected_retries_once_then_succeeds(self, mock_sleep):
+        model = _make_model()
+        model._client.invoke = MagicMock(
+            side_effect=[_gemini_rejected_error(), _ai_message("ok")]
+        )
+        result = model.generate(_make_request())
+        self.assertEqual(result.message.content, "ok")
+        self.assertEqual(model._client.invoke.call_count, 2)
+        mock_sleep.assert_called_once_with(10)
+
+    def test_generate_gemini_rejected_twice_raises_classified(self, mock_sleep):
+        model = _make_model()
+        model._client.invoke = MagicMock(side_effect=_gemini_rejected_error())
+        with self.assertRaises(LLMProviderError) as ctx:
+            model.generate(_make_request())
+        self.assertEqual(ctx.exception.error_code, "provider_rejected_request")
+        self.assertIn("different provider", str(ctx.exception))
+        # One retry only, not the 4-attempt transient backoff.
+        self.assertEqual(model._client.invoke.call_count, 2)
+        mock_sleep.assert_called_once_with(10)
 
     def test_generate_success(self, mock_sleep):
         model = _make_model()
@@ -301,6 +332,57 @@ class TestStreamErrorHandling(TestCase):
         self.assertNotIn("error", event_types)
         self.assertEqual(model._client.stream.call_count, 2)
         self.assertEqual(mock_sleep.call_count, 1)
+
+    def test_stream_gemini_rejected_retries_once_then_succeeds(self, mock_sleep):
+        model = _make_model()
+
+        chunk = MagicMock()
+        chunk.content = "hello"
+        chunk.usage_metadata = {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8}
+        chunk.response_metadata = {}
+
+        model._client.stream = MagicMock(side_effect=[_gemini_rejected_error(), [chunk]])
+        model._client.bind_tools = MagicMock(return_value=model._client)
+
+        events = list(model.stream(_make_request()))
+        event_types = [e.event_type for e in events]
+        self.assertIn("token", event_types)
+        self.assertIn("message_end", event_types)
+        self.assertNotIn("error", event_types)
+        self.assertEqual(model._client.stream.call_count, 2)
+        mock_sleep.assert_called_once_with(10)
+
+    def test_stream_gemini_rejected_twice_yields_classified_error(self, mock_sleep):
+        model = _make_model()
+        model._client.stream = MagicMock(side_effect=_gemini_rejected_error())
+        model._client.bind_tools = MagicMock(return_value=model._client)
+
+        events = list(model.stream(_make_request()))
+        error_events = [e for e in events if e.event_type == "error"]
+        self.assertEqual(len(error_events), 1)
+        self.assertEqual(error_events[0].data["error_code"], "provider_rejected_request")
+        self.assertIn("may be temporary", error_events[0].data["message"])
+        self.assertEqual(model._client.stream.call_count, 2)
+        mock_sleep.assert_called_once_with(10)
+
+    def test_stream_gemini_rejected_after_rate_limit_still_gets_its_retry(self, mock_sleep):
+        """The one rejected-retry is counted separately from transient backoff."""
+        model = _make_model()
+
+        chunk = MagicMock()
+        chunk.content = "hello"
+        chunk.usage_metadata = {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8}
+        chunk.response_metadata = {}
+
+        model._client.stream = MagicMock(
+            side_effect=[_rate_limit_error(), _gemini_rejected_error(), [chunk]]
+        )
+        model._client.bind_tools = MagicMock(return_value=model._client)
+
+        events = list(model.stream(_make_request()))
+        self.assertNotIn("error", [e.event_type for e in events])
+        self.assertEqual(model._client.stream.call_count, 3)
+        self.assertEqual([c.args[0] for c in mock_sleep.call_args_list], [30, 10])
 
     def test_stream_success(self, mock_sleep):
         model = _make_model()

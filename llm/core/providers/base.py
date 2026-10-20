@@ -54,9 +54,17 @@ _TOKEN_KEYWORDS = (
     "max_tokens",
 )
 # If any of these appear, it's a config error, not a size error — let it fall
-# through to the ``unknown`` catch-all so _highlight_if_unmapped surfaces it to
+# through to the ``unknown`` catch-all so _report_to_sentry surfaces it to
 # Sentry and a specific branch can be added later.
 _TOKEN_KEYWORD_EXCLUSIONS = ("budget_tokens",)
+
+# Gemini's bare 400 "Request contains an invalid argument." names no field. In
+# prod (2026-10-19, thread 3e5bf99a) it came back after ~60 s on requests with
+# large scanned PDFs whose identical bytes went through on other attempts, so it
+# is treated as possibly transient: retried once, then reported to the user.
+_GEMINI_GENERIC_INVALID_ARGUMENT = "request contains an invalid argument"
+_PROVIDER_REJECTED_MAX_RETRIES = 1
+_PROVIDER_REJECTED_RETRY_WAIT = 10  # seconds
 
 
 @dataclass(frozen=True)
@@ -78,6 +86,7 @@ _ERROR_CODE_TO_EXCEPTION: dict[str, type[LLMProviderError]] = {
     "connection_error": LLMConnectionError,
     "server_error": LLMProviderError,
     "model_history_rejected": LLMProviderError,
+    "provider_rejected_request": LLMProviderError,
     "unknown": LLMProviderError,
 }
 
@@ -224,6 +233,21 @@ def _is_connection_error(exc: Exception) -> bool:
     return isinstance(exc, httpx.TransportError) or isinstance(cause, httpx.TransportError)
 
 
+def _is_provider_rejected_error(exc: Exception) -> bool:
+    """True for Gemini's detail-less 400 "Request contains an invalid argument."
+
+    The text lives on the google-genai cause when langchain wraps it, so both
+    the exception and its cause are checked.
+    """
+    if _extract_status_code(exc) != 400:
+        return False
+    text = str(exc)
+    cause = getattr(exc, "__cause__", None)
+    if cause is not None:
+        text = f"{text} {cause}"
+    return _GEMINI_GENERIC_INVALID_ARGUMENT in text.lower()
+
+
 def classify_api_error(exc: Exception, provider_label: str) -> ClassifiedError:
     """Inspect an exception and return a classified error with user-facing message."""
     status = _extract_status_code(exc)
@@ -297,6 +321,17 @@ def classify_api_error(exc: Exception, provider_label: str) -> ClassifiedError:
             ),
             log_level="error",
         )
+    if _is_provider_rejected_error(exc):
+        # Already retried once by the caller (see _retry_wait_seconds). Stays
+        # "error" so a recurrence is visible in Sentry.
+        return ClassifiedError(
+            error_code="provider_rejected_request",
+            user_message=(
+                f"{provider_label} returned an error, which may be temporary. Try again "
+                "in a few minutes, or switch to a model from a different provider."
+            ),
+            log_level="error",
+        )
     return ClassifiedError(
         error_code="unknown",
         user_message=f"{provider_label} encountered an unexpected error. Please try again.",
@@ -304,23 +339,67 @@ def classify_api_error(exc: Exception, provider_label: str) -> ClassifiedError:
     )
 
 
-def _highlight_if_unmapped(classified: ClassifiedError, exc: Exception, model: str, provider_label: str, run_id: str) -> None:
-    """Emit a distinct, Sentry-actionable line when an error hits the ``unknown``
-    catch-all in :func:`classify_api_error`.
+def _report_to_sentry(
+    classified: ClassifiedError,
+    exc: Exception,
+    model: str,
+    provider_label: str,
+    run_id: str,
+    *,
+    retries_exhausted: bool = False,
+) -> None:
+    """Emit a Sentry event for an alert-worthy provider error.
 
-    These are failures we have no curated user-facing message for yet. The
-    dedicated message (grouped in Sentry by ``exc_type``) flags each new failure
-    mode so we can add a branch to ``classify_api_error`` with a friendly message
-    and resolve the Sentry issue — incrementally growing the mapping.
+    Our traceback-carrying log lines never reach Sentry on their own: Sentry's
+    LangChain integration captures the provider exception first, and its
+    DedupeIntegration then drops every later event carrying the SAME exception
+    object (2026-10-19 Gemini 400s went unseen). This line deliberately has no
+    ``exc_info``, so Dedupe lets it through; the fingerprint groups it per
+    provider + error_code + exception type. ``unknown`` gets the "add a branch"
+    wording so each new failure mode can be mapped in ``classify_api_error``.
+    Warning-level codes (rate limits, timeouts) only report once retries are
+    exhausted.
     """
-    if classified.error_code != "unknown":
+    if classified.log_level != "error" and not retries_exhausted:
         return
-    logger.error(
-        "Unmapped LLM provider error — add a branch to classify_api_error so the "
-        "user gets a specific message. exc_type=%s model=%s provider=%s run_id=%s",
-        type(exc).__name__, model, provider_label, run_id,
-        exc_info=True,
-    )
+    import sentry_sdk
+
+    exc_type = type(exc).__name__
+    detail = str(exc)[:300]
+    with sentry_sdk.new_scope() as scope:
+        scope.fingerprint = ["llm-provider-error", provider_label, classified.error_code, exc_type]
+        scope.set_tag("llm.error_code", classified.error_code)
+        scope.set_tag("llm.provider", provider_label)
+        scope.set_tag("llm.model", model)
+        if classified.error_code == "unknown":
+            logger.error(
+                "Unmapped LLM provider error — add a branch to classify_api_error so the "
+                "user gets a specific message. exc_type=%s model=%s provider=%s run_id=%s detail=%s",
+                exc_type, model, provider_label, run_id, detail,
+            )
+        else:
+            logger.error(
+                "LLM provider error error_code=%s retries_exhausted=%s exc_type=%s "
+                "model=%s provider=%s run_id=%s detail=%s",
+                classified.error_code, retries_exhausted, exc_type, model, provider_label,
+                run_id, detail,
+            )
+
+
+def _retry_wait_seconds(exc: Exception, attempt: int, rejected_retries: int) -> float | None:
+    """Seconds to wait before retrying *exc*, or None when it is not retryable.
+
+    Rate limits / overloads back off exponentially; Gemini's detail-less 400
+    gets one short retry. The caller still bounds the total attempts.
+    """
+    if _is_retryable_transient_error(exc):
+        return min(
+            _RATE_LIMIT_INITIAL_WAIT * (_RATE_LIMIT_BACKOFF_FACTOR ** attempt),
+            _RATE_LIMIT_MAX_WAIT,
+        )
+    if rejected_retries < _PROVIDER_REJECTED_MAX_RETRIES and _is_provider_rejected_error(exc):
+        return _PROVIDER_REJECTED_RETRY_WAIT
+    return None
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
@@ -699,11 +778,13 @@ class BaseLangChainChatModel(ChatModel):
         raw SDK exceptions the caller couldn't tell apart from fatal errors).
         """
         last_exc: Exception | None = None
+        rejected_retries = 0
         for attempt in range(_RATE_LIMIT_MAX_RETRIES + 1):
             try:
                 return invoke_fn()
             except Exception as exc:
-                if not _is_retryable_transient_error(exc):
+                wait = _retry_wait_seconds(exc, attempt, rejected_retries)
+                if wait is None:
                     classified = classify_api_error(exc, self._provider_label)
                     log_fn = getattr(logger, classified.log_level, logger.error)
                     log_fn(
@@ -711,7 +792,7 @@ class BaseLangChainChatModel(ChatModel):
                         op_label, self.name, self._provider_label, classified.error_code, run_id,
                         exc_info=True,
                     )
-                    _highlight_if_unmapped(classified, exc, self.name, self._provider_label, run_id)
+                    _report_to_sentry(classified, exc, self.name, self._provider_label, run_id)
                     exc_cls = exception_for_error_code(classified.error_code)
                     raise exc_cls(
                         classified.user_message,
@@ -719,10 +800,8 @@ class BaseLangChainChatModel(ChatModel):
                     ) from exc
                 last_exc = exc
                 if attempt < _RATE_LIMIT_MAX_RETRIES:
-                    wait = min(
-                        _RATE_LIMIT_INITIAL_WAIT * (_RATE_LIMIT_BACKOFF_FACTOR ** attempt),
-                        _RATE_LIMIT_MAX_WAIT,
-                    )
+                    if _is_provider_rejected_error(exc):
+                        rejected_retries += 1
                     err_code = classify_api_error(exc, self._provider_label).error_code
                     # Mid-retry: only the "retries exhausted" path below is alert-worthy.
                     logger.info(
@@ -945,6 +1024,7 @@ class BaseLangChainChatModel(ChatModel):
 
         stream_succeeded = False
         last_exc: Exception | None = None
+        rejected_retries = 0
         for attempt in range(_RATE_LIMIT_MAX_RETRIES + 1):
             try:
                 gen = client.stream(lc_messages, config=config)
@@ -974,7 +1054,8 @@ class BaseLangChainChatModel(ChatModel):
                 break
             except Exception as exc:
                 last_exc = exc
-                if _is_retryable_transient_error(exc) and attempt < _RATE_LIMIT_MAX_RETRIES:
+                wait = _retry_wait_seconds(exc, attempt, rejected_retries)
+                if wait is not None and attempt < _RATE_LIMIT_MAX_RETRIES:
                     # Only retry if nothing (token or thinking) has streamed yet
                     if events_yielded:
                         mid_classified = classify_api_error(exc, self._provider_label)
@@ -982,6 +1063,10 @@ class BaseLangChainChatModel(ChatModel):
                             "LLM stream transient error mid-stream model=%s provider=%s error_code=%s run_id=%s",
                             self.name, self._provider_label, mid_classified.error_code, run_id,
                             exc_info=exc,
+                        )
+                        _report_to_sentry(
+                            mid_classified, exc, self.name, self._provider_label, run_id,
+                            retries_exhausted=True,
                         )
                         yield StreamEvent(
                             event_type="error",
@@ -994,10 +1079,8 @@ class BaseLangChainChatModel(ChatModel):
                             run_id=run_id,
                         )
                         return
-                    wait = min(
-                        _RATE_LIMIT_INITIAL_WAIT * (_RATE_LIMIT_BACKOFF_FACTOR ** attempt),
-                        _RATE_LIMIT_MAX_WAIT,
-                    )
+                    if _is_provider_rejected_error(exc):
+                        rejected_retries += 1
                     err_code = classify_api_error(exc, self._provider_label).error_code
                     # Mid-retry: only the "retries exhausted" path below is alert-worthy.
                     logger.info(
@@ -1039,7 +1122,11 @@ class BaseLangChainChatModel(ChatModel):
                         self.name, self._provider_label, classified.error_code, run_id,
                         exc_info=True,
                     )
-                    _highlight_if_unmapped(classified, exc, self.name, self._provider_label, run_id)
+                    # wait set here = retryable, but out of attempts.
+                    _report_to_sentry(
+                        classified, exc, self.name, self._provider_label, run_id,
+                        retries_exhausted=wait is not None,
+                    )
                     yield StreamEvent(
                         event_type="error",
                         data={
@@ -1063,6 +1150,11 @@ class BaseLangChainChatModel(ChatModel):
                 self.name, self._provider_label, classified.error_code, run_id,
                 exc_info=last_exc,
             )
+            if last_exc is not None:
+                _report_to_sentry(
+                    classified, last_exc, self.name, self._provider_label, run_id,
+                    retries_exhausted=True,
+                )
             yield StreamEvent(
                 event_type="error",
                 data={

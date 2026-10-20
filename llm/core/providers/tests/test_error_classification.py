@@ -10,6 +10,7 @@ from llm.core.providers.base import (
     classify_api_error,
     exception_for_error_code,
     _is_overloaded_error,
+    _is_provider_rejected_error,
     _is_rate_limit_error,
     _is_retryable_transient_error,
 )
@@ -135,6 +136,48 @@ class TestClassifyApiError(TestCase):
         self.assertIn("send a new message to continue", result.user_message)
         self.assertEqual(result.log_level, "error")
         self.assertIs(exception_for_error_code("model_history_rejected"), LLMProviderError)
+
+    def test_gemini_generic_invalid_argument_maps_to_provider_rejected(self):
+        # Verbatim shape of the 2026-10-19 prod failure (thread 3e5bf99a).
+        message = (
+            "400 INVALID_ARGUMENT. {'error': {'code': 400, 'message': 'Request contains "
+            "an invalid argument.', 'status': 'INVALID_ARGUMENT'}}"
+        )
+        exc = _gemini_exc(code=400, status="INVALID_ARGUMENT", message=message)
+        result = classify_api_error(exc, "Gemini")
+        self.assertEqual(result.error_code, "provider_rejected_request")
+        self.assertIn("Gemini", result.user_message)
+        self.assertIn("may be temporary", result.user_message)
+        self.assertIn("different provider", result.user_message)
+        self.assertEqual(result.log_level, "error")
+        self.assertIs(exception_for_error_code("provider_rejected_request"), LLMProviderError)
+        self.assertTrue(_is_provider_rejected_error(exc))
+        # Retried once by the provider loop, never by the transient backoff.
+        self.assertFalse(_is_retryable_transient_error(exc))
+
+    def test_generic_invalid_argument_text_only_on_cause(self):
+        # langchain's wrapper message may not repeat the google-genai body.
+        cause = Exception("400 INVALID_ARGUMENT. Request contains an invalid argument.")
+        cause.code = 400
+        wrapper = Exception("Error calling model 'gemini-4-argon' (INVALID_ARGUMENT)")
+        wrapper.__cause__ = cause
+        self.assertEqual(
+            classify_api_error(wrapper, "Gemini").error_code, "provider_rejected_request",
+        )
+
+    def test_specific_invalid_argument_is_not_provider_rejected(self):
+        # A 400 that names the problem is deterministic: no retry, no "temporary".
+        exc = _gemini_exc(
+            code=400, status="INVALID_ARGUMENT",
+            message="400 INVALID_ARGUMENT. Unable to submit request because it has an empty text parameter.",
+        )
+        self.assertFalse(_is_provider_rejected_error(exc))
+        self.assertEqual(classify_api_error(exc, "Gemini").error_code, "unknown")
+
+    def test_invalid_argument_phrase_without_400_is_not_provider_rejected(self):
+        exc = _exc_with_status(500, "Request contains an invalid argument.")
+        self.assertFalse(_is_provider_rejected_error(exc))
+        self.assertEqual(classify_api_error(exc, "Gemini").error_code, "server_error")
 
     def test_thought_signature_without_400_is_not_history_rejected(self):
         result = classify_api_error(_exc_with_status(500, "thought_signature"), "Gemini")
