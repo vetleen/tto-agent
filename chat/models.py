@@ -724,10 +724,20 @@ class SubAgentRun(models.Model):
     round_budget = models.CharField(max_length=10, default="standard")
     rounds_used = models.PositiveIntegerField(null=True, blank=True)
     budget_exhausted = models.BooleanField(default=False)
-    timeout = models.PositiveIntegerField(
-        default=0,
-        help_text="Seconds the tool waited for the result (0=fire-and-forget)",
+    # Continuation (chat_subagent_continue): a new run that picks up a finished
+    # run's task with its canvas, scratchpad and final reply. chain_depth counts
+    # the continuations before this run (0 = the original); the orchestrator's
+    # extra direction for this continuation, if any, is in
+    # continuation_instructions.
+    continued_from = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.SET_NULL, related_name="continuations",
     )
+    chain_depth = models.PositiveSmallIntegerField(default=0)
+    continuation_instructions = models.TextField(blank=True, default="")
+    # Deprecated, unused since 2026-10-20 (the blocking-wait ``timeout`` argument
+    # of chat_subagent_create was removed). Kept so a rolling deploy's old dynos
+    # can still insert rows; drop in a later release.
+    timeout = models.PositiveIntegerField(default=0)
 
     # Context (copied at creation time)
     data_room_ids = models.JSONField(default=list)
@@ -783,8 +793,8 @@ class SubAgentRun(models.Model):
     reported_at = models.DateTimeField(null=True, blank=True)
     # When the outcome actually reached the orchestrator model: its hidden
     # outcome message was replayed into a turn that persisted a final assistant
-    # message (ChatConsumer._mark_subagents_delivered), or the blocking
-    # chat_subagent_create wait returned it inline. NULL until then — and
+    # message (ChatConsumer._mark_subagents_delivered) (or, before 2026-10-20,
+    # the blocking chat_subagent_create wait returned it inline). NULL until then — and
     # forever for user-cancelled runs, which never get an outcome message and
     # are never claimable. The per-run marker (not "some later assistant reply")
     # is what keeps an outcome that lands mid-turn from being skipped.

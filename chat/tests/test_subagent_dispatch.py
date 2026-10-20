@@ -369,23 +369,6 @@ class CreateSubagentToolQueueStatusTests(_QueueTestCase):
         run = SubAgentRun.objects.get(pk=result["run_id"])
         self.assertEqual(run.celery_task_id, "celery-sibling")
 
-    @patch("chat.subagent_limits.SUBAGENT_WORKER_SLOTS", 1)
-    @patch("chat.tasks.run_subagent_task")
-    def test_deadline_branch_reports_queued_when_still_waiting(self, mock_task):
-        self._other_run(SubAgentRun.Status.RUNNING)
-
-        with patch("chat.subagent_tool.time") as mock_time:
-            mock_time.monotonic.side_effect = [0, 2, 32]
-            mock_time.sleep.return_value = None
-            result = _invoke(
-                CreateSubagentTool, {"prompt": "task", "timeout": 30},
-                _ctx(self.user.pk, self.thread.id),
-            )
-
-        self.assertEqual(result["status"], "queued")
-        self.assertIn("waiting for a free execution slot", result["message"])
-        mock_task.delay.assert_not_called()
-
     @patch("chat.subagent_limits.SUBAGENT_MAX_PER_USER", 1)
     def test_per_user_cap_counts_waiting_runs(self):
         self._run()

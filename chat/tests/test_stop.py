@@ -263,7 +263,7 @@ class SequentialSubagentEnforcementTests(TestCase):
         )
 
         ctx = _ctx(self.user.pk, self.thread.id)
-        result = _invoke(CreateSubagentTool, {"prompt": "second task", "timeout": 0}, ctx)
+        result = _invoke(CreateSubagentTool, {"prompt": "second task"}, ctx)
 
         self.assertEqual(result["status"], "error")
         self.assertIn("one at a time", result["message"])
@@ -281,6 +281,6 @@ class SequentialSubagentEnforcementTests(TestCase):
         )
 
         ctx = _ctx(self.user.pk, self.thread.id)
-        result = _invoke(CreateSubagentTool, {"prompt": "second task", "timeout": 0}, ctx)
+        result = _invoke(CreateSubagentTool, {"prompt": "second task"}, ctx)
 
         self.assertEqual(result["status"], "started")

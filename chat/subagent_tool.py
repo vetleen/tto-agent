@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 
 from typing import Literal
 
@@ -137,6 +136,18 @@ def _valid_round_budget(name) -> str:
 
 # --- Input schemas ---
 
+_ROUND_BUDGET_DESCRIPTION = (
+    'How many tool rounds the sub-agent gets: "quick" (6 rounds — a few lookups), '
+    '"standard" (15 rounds, default), "deep" (30 rounds — broad research). A round '
+    "is one reply that calls tools (parallel calls count once)."
+)
+_MODEL_TIER_DESCRIPTION = (
+    'Model quality: "low" for simple, well-defined tasks (lookups, narrow searches, '
+    'summaries); "medium" (default) for most tasks; "high" only for tasks that '
+    "require exceptional intelligence (rarely relevant)."
+)
+
+
 class CreateSubagentInput(ReasonBaseModel):
     prompt: str = Field(description="The task description for the sub-agent.")
     type: str | None = Field(
@@ -168,27 +179,142 @@ class CreateSubagentInput(ReasonBaseModel):
             "other attachment. Sharing an email also shares the files attached to it."
         ),
     )
-    model_tier: str = Field(
-        default=DEFAULT_SUBAGENT_TIER,
+    model_tier: str = Field(default=DEFAULT_SUBAGENT_TIER, description=_MODEL_TIER_DESCRIPTION)
+    round_budget: Literal["quick", "standard", "deep"] = Field(
+        default="standard", description=_ROUND_BUDGET_DESCRIPTION,
+    )
+
+
+class ContinueSubagentInput(ReasonBaseModel):
+    run_id: str = Field(
         description=(
-            'Model quality: "low" for simple, well-defined tasks (lookups, narrow searches, '
-            'summaries); "medium" (default) for most tasks; "high" only for tasks that '
-            "require exceptional intelligence (rarely relevant)."
+            "The id of the finished sub-agent run to continue — the short id from its "
+            '"[Sub-agent result: <id> …]" header (or the full id).'
         ),
     )
     round_budget: Literal["quick", "standard", "deep"] = Field(
-        default="standard",
+        description="Rounds for the continuation. " + _ROUND_BUDGET_DESCRIPTION,
+    )
+    instructions: str = Field(
+        default="",
         description=(
-            'How many tool rounds the sub-agent gets: "quick" (6 rounds — a few lookups), '
-            '"standard" (15 rounds, default), "deep" (30 rounds — broad research). A round '
-            "is one reply that calls tools (parallel calls count once)."
+            "Optional direction for the continuation: what to focus on, what to skip, "
+            "what was missing. Omit to just let it carry on with its \"Not covered\" list."
         ),
     )
-    timeout: int = Field(
-        default=0,
-        description="Seconds to wait for the result (0-540). 0=background, 30-60=quick tasks, 120=research.",
+    model_tier: str | None = Field(
+        default=None,
+        description="Optional model quality; defaults to the previous run's. " + _MODEL_TIER_DESCRIPTION,
     )
 
+
+# --- Spawning (shared by create and continue) ---
+
+def _load_user(context):
+    """``(user, None)`` or ``(None, error_json)`` for the tool's run context."""
+    from django.contrib.auth import get_user_model
+
+    if not context or not context.user_id:
+        return None, json.dumps({"status": "error", "message": "No user context available."})
+    if not context.conversation_id:
+        return None, json.dumps({"status": "error", "message": "No thread context available."})
+    User = get_user_model()
+    try:
+        return User.objects.get(pk=context.user_id), None
+    except User.DoesNotExist:
+        return None, json.dumps({"status": "error", "message": "User not found."})
+
+
+def _parallel_policy_error(prefs, thread_id) -> str | None:
+    """The error JSON when the org runs sub-agents one at a time and one is active."""
+    from chat.models import SubAgentRun
+
+    if prefs.parallel_subagents:
+        return None
+    active = SubAgentRun.objects.filter(
+        thread_id=thread_id,
+        status__in=[SubAgentRun.Status.PENDING, SubAgentRun.Status.RUNNING],
+    ).exists()
+    if active:
+        return json.dumps({"status": "error", "message": "Sub-agents must run one at a time. Wait for the current one to complete."})
+    return None
+
+
+def _spawn_run(user, thread_id, **run_kwargs) -> str:
+    """Admit, dispatch and announce a new run; return the tool's JSON result.
+
+    Admission goes through the per-user / system caps. The run is handed to
+    Celery now if an execution slot is free, else it waits in line. The result
+    is always "started" or "queued" (or an admission error): sub-agents run in
+    the background and their outcome reaches the orchestrator as a hidden
+    message that wakes it.
+    """
+    from chat.models import SubAgentRun
+    from chat.subagent_limits import (
+        create_subagent_run_if_allowed,
+        dispatch_pending_subagents,
+        get_queue_depth,
+    )
+
+    run, err_msg = create_subagent_run_if_allowed(user, thread_id=thread_id, **run_kwargs)
+    if run is None:
+        return json.dumps({"status": "error", "message": err_msg})
+
+    # A dispatcher error is not a spawn error: the row exists and the sweeper
+    # backstop will dispatch it.
+    try:
+        dispatch_pending_subagents()
+    except Exception:
+        logger.exception("Dispatch after creating sub-agent run %s failed", run.id)
+    # Read the outcome from the row, not from this call's return value:
+    # sibling spawn calls in the same turn run in parallel threads, and
+    # whichever dispatcher runs first hands out every waiting run — including
+    # ours — leaving our own call nothing to return.
+    started = not _is_waiting(run.id)
+    # Show the run in the user's sub-agent panel now (queued or dispatched).
+    from chat.tasks import notify_subagent_status
+
+    notify_subagent_status(str(thread_id), str(run.id))
+
+    short_id = str(run.id)[:8]
+    if started:
+        return json.dumps({
+            "status": "started",
+            "run_id": str(run.id),
+            "message": (
+                f"Sub-agent {short_id} started (model quality: {run.model_tier}, round "
+                f"budget: {run.round_budget}). Its result will appear in the "
+                "conversation automatically."
+            ),
+        })
+    queue = get_queue_depth()
+    ahead = SubAgentRun.objects.filter(
+        status=SubAgentRun.Status.PENDING,
+        dispatched_at__isnull=True,
+        created_at__lt=run.created_at,
+    ).count()
+    return json.dumps({
+        "status": "queued",
+        "run_id": str(run.id),
+        "queue_position": ahead + 1,
+        "ahead_in_queue": ahead,
+        "currently_running": queue["running"],
+        "worker_slots": queue["worker_slots"],
+        "message": (
+            f"Sub-agent {short_id} queued (position {ahead + 1}): all {queue['worker_slots']} "
+            f"execution slots are busy ({queue['running']} running, {ahead} waiting ahead of it). "
+            "It starts automatically when a slot frees up and its result will appear "
+            "in the conversation — do not create it again."
+        ),
+    })
+
+
+def _spawn_end_label(result: dict) -> str | None:
+    return {
+        "queued": "Sub-agent queued",
+        "started": "Sub-agent dispatched",
+        "error": "Sub-agent failed",
+    }.get(result.get("status"))
 
 
 # --- Tools ---
@@ -202,20 +328,14 @@ class CreateSubagentTool(ContextAwareTool):
     end_label: str = "Sub-agent dispatched"
 
     def end_label_for_result(self, result: dict) -> str | None:
-        return {
-            "queued": "Sub-agent queued",
-            "started": "Sub-agent dispatched",
-            "completed": "Sub-agent finished",
-            "timeout": "Sub-agent dispatched",
-            "error": "Sub-agent failed",
-        }.get(result.get("status"))
+        return _spawn_end_label(result)
 
     description: str = (
-        "Delegate a task to an independent sub-agent that runs with its own context and tools. "
-        "Use for tasks requiring extensive research, parallel analysis, or focused work. "
-        "Set timeout=0 for background, 30-60 for quick tasks, 120 for research. "
-        "Pass canvases to give it a read-only copy of canvas text, and attachments "
-        "to let it view files the user attached."
+        "Delegate a task to an independent sub-agent that runs in the background with its "
+        "own context and tools. Use for tasks requiring extensive research, parallel "
+        "analysis, or focused work. Size round_budget to the task. Pass canvases to give "
+        "it a read-only copy of canvas text, and attachments to let it view files the user "
+        "attached. Its result arrives in the conversation automatically."
     )
     args_schema: type[BaseModel] = CreateSubagentInput
 
@@ -223,44 +343,18 @@ class CreateSubagentTool(ContextAwareTool):
         self,
         prompt: str,
         model_tier: str = DEFAULT_SUBAGENT_TIER,
-        timeout: int = 0,
         **kwargs,
     ) -> str:
-        from django.contrib.auth import get_user_model
-
-        from chat.models import SubAgentRun
-        from chat.subagent_limits import (
-            create_subagent_run_if_allowed,
-            dispatch_pending_subagents,
-            get_queue_depth,
-        )
+        from core.preferences import get_preferences
 
         context = self.context
-        if not context or not context.user_id:
-            return json.dumps({"status": "error", "message": "No user context available."})
+        user, err = _load_user(context)
+        if err:
+            return err
+        thread_id = context.conversation_id
 
-        thread_id = context.conversation_id if context else None
-        if not thread_id:
-            return json.dumps({"status": "error", "message": "No thread context available."})
-
-        # Validate model_tier
         if model_tier not in SUBAGENT_TIERS:
             model_tier = DEFAULT_SUBAGENT_TIER
-
-        # Clamp timeout to [0, 540]
-        timeout = max(0, min(timeout, 540))
-
-        # Load user
-        User = get_user_model()
-        try:
-            user = User.objects.get(pk=context.user_id)
-        except User.DoesNotExist:
-            return json.dumps({"status": "error", "message": "User not found."})
-
-        data_room_ids = context.data_room_ids if context else []
-
-        # Enforce sequential subagent policy if parallel is disabled
-        from core.preferences import get_preferences
         prefs = get_preferences(user)
 
         # Resolve an optional specialization ("type"). Validate against the
@@ -286,13 +380,9 @@ class CreateSubagentTool(ContextAwareTool):
                     ),
                 })
 
-        if not prefs.parallel_subagents:
-            active = SubAgentRun.objects.filter(
-                thread_id=thread_id,
-                status__in=[SubAgentRun.Status.PENDING, SubAgentRun.Status.RUNNING],
-            ).exists()
-            if active:
-                return json.dumps({"status": "error", "message": "Sub-agents must run one at a time. Wait for the current one to complete."})
+        err = _parallel_policy_error(prefs, thread_id)
+        if err:
+            return err
 
         # Snapshot shared canvases now, not when the run executes: a queued or
         # retried run must see the text the orchestrator delegated against.
@@ -306,179 +396,131 @@ class CreateSubagentTool(ContextAwareTool):
         if err_msg:
             return json.dumps({"status": "error", "message": err_msg})
 
-        # Atomically check limits and create the run record.
         # The service resolves model_used and tool_names when it executes.
-        run, err_msg = create_subagent_run_if_allowed(
-            user,
-            thread_id=thread_id,
+        return _spawn_run(
+            user, thread_id,
             prompt=prompt,
             reason=str(kwargs.get("reason") or "").strip()[:500],
             model_tier=model_tier,
             round_budget=_valid_round_budget(kwargs.get("round_budget")),
-            timeout=timeout,
-            data_room_ids=data_room_ids,
+            data_room_ids=context.data_room_ids or [],
             skill_slug=specialization,
             shared_canvases=shared_canvases,
             shared_attachments=shared_attachments,
         )
-        if run is None:
+
+
+# A continuation chain (original run + continuations) may hold at most this many
+# runs, so a task can't be continued forever.
+MAX_CHAIN_LENGTH = 10
+
+
+def _resolve_run_for_continuation(thread_id, run_id: str):
+    """``(run, None)`` or ``(None, error_message)`` for an id within the thread."""
+    from django.core.exceptions import ValidationError
+
+    from chat.models import SubAgentRun
+
+    ref = (run_id or "").strip().strip("[]").lower()
+    if not ref:
+        return None, "Give the id of the sub-agent run to continue."
+    runs = SubAgentRun.objects.filter(thread_id=thread_id)
+    try:
+        if len(ref) == 36:
+            match = list(runs.filter(pk=ref)[:2])
+        else:
+            match = [r for r in runs.only("id") if str(r.id).startswith(ref)][:2]
+    except ValidationError:
+        match = []
+    if not match:
+        return None, f"No sub-agent run '{run_id}' in this conversation."
+    if len(match) > 1:
+        return None, f"'{run_id}' matches more than one sub-agent run; give more of its id."
+    return SubAgentRun.objects.get(pk=match[0].pk), None
+
+
+class ContinueSubagentTool(ContextAwareTool):
+    """Continue a finished sub-agent run in a new run that picks up its work."""
+
+    name: str = "chat_subagent_continue"
+    audience: str = "main"
+    start_label: str = "Continuing sub-agent..."
+    end_label: str = "Sub-agent continued"
+
+    def end_label_for_result(self, result: dict) -> str | None:
+        status = result.get("status")
+        if status in ("started", "queued"):
+            return "Sub-agent continued" if status == "started" else "Sub-agent queued"
+        return _spawn_end_label(result)
+
+    description: str = (
+        "Continue a finished sub-agent's task with a fresh round budget — e.g. when its "
+        'result is PARTIAL (its round budget ran out) or its "Not covered" list matters. '
+        "A new sub-agent run starts with the same task, specialization, data rooms and "
+        "shared files, plus the previous run's working canvas, private notes and final "
+        "reply, and picks up where it left off. Its result arrives in the conversation "
+        "automatically, like any sub-agent's."
+    )
+    args_schema: type[BaseModel] = ContinueSubagentInput
+
+    def _run(self, run_id: str, round_budget: str = "standard", **kwargs) -> str:
+        from chat.models import SubAgentRun
+        from core.preferences import get_preferences
+
+        context = self.context
+        user, err = _load_user(context)
+        if err:
+            return err
+        thread_id = context.conversation_id
+
+        previous, err_msg = _resolve_run_for_continuation(thread_id, run_id)
+        if err_msg:
             return json.dumps({"status": "error", "message": err_msg})
-
-        # Hand it to Celery now if an execution slot is free; otherwise it waits
-        # in line and is dispatched when a running sub-agent finishes. A
-        # dispatcher error is not a spawn error: the row exists and the sweeper
-        # backstop will dispatch it.
-        try:
-            dispatch_pending_subagents()
-        except Exception:
-            logger.exception("Dispatch after creating sub-agent run %s failed", run.id)
-        # Read the outcome from the row, not from this call's return value:
-        # sibling chat_subagent_create calls in the same turn run in parallel
-        # threads, and whichever dispatcher runs first hands out every waiting
-        # run — including ours — leaving our own call nothing to return.
-        started = not _is_waiting(run.id)
-        # Show the run in the user's sub-agent panel now (queued or dispatched),
-        # not only when it reports back — the turn may be blocking on it.
-        from chat.tasks import notify_subagent_status
-
-        notify_subagent_status(str(thread_id), str(run.id))
-
-        if timeout == 0:
-            if started:
-                return json.dumps({
-                    "status": "started",
-                    "run_id": str(run.id),
-                    "message": f"Sub-agent started (model: {model_tier}). Its result will appear in the conversation automatically.",
-                })
-            queue = get_queue_depth()
-            ahead = SubAgentRun.objects.filter(
-                status=SubAgentRun.Status.PENDING,
-                dispatched_at__isnull=True,
-                created_at__lt=run.created_at,
-            ).count()
+        if previous.status not in (SubAgentRun.Status.COMPLETED, SubAgentRun.Status.FAILED):
             return json.dumps({
-                "status": "queued",
-                "run_id": str(run.id),
-                "queue_position": ahead + 1,
-                "ahead_in_queue": ahead,
-                "currently_running": queue["running"],
-                "worker_slots": queue["worker_slots"],
+                "status": "error",
                 "message": (
-                    f"Sub-agent queued (position {ahead + 1}): all {queue['worker_slots']} "
-                    f"execution slots are busy ({queue['running']} running, {ahead} waiting ahead of it). "
-                    "It starts automatically when a slot frees up and its result will appear "
-                    "in the conversation — do not create it again."
+                    f"Sub-agent {str(previous.id)[:8]} is still {previous.status}; wait for "
+                    "its result before continuing it."
+                ),
+            })
+        if previous.chain_depth + 1 >= MAX_CHAIN_LENGTH:
+            return json.dumps({
+                "status": "error",
+                "message": (
+                    f"This task has already been continued {previous.chain_depth} times "
+                    "(the limit). Start a new sub-agent with a fresh, narrower task instead."
                 ),
             })
 
-        # Blocking wait: this turn delivers the outcome inline, so claim the run
-        # NOW and keep the claim fresh while waiting — not only when the poll
-        # notices completion. The completion event reaches every consumer on
-        # the thread (another tab, or the page a dropped socket reloaded) inside
-        # the 2 s poll gap, and an outcome that is still unclaimed there seeds a
-        # duplicate orchestrator turn. Once the outcome goes back in this tool
-        # result the run is marked delivered outright (the hidden outcome
-        # message is never replayed by a seeded turn; the lease alone expired
-        # mid-turn and re-seeded a duplicate). The claim is released on timeout
-        # so the usual event/watchdog delivery takes over.
-        _claim_run(run.id)
-        polls = 0
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            time.sleep(2)
-            polls += 1
-            if polls % _CLAIM_REFRESH_POLLS == 0:
-                _claim_run(run.id)  # a wait longer than the report lease stays claimed
-            run.refresh_from_db()
-            if run.status == SubAgentRun.Status.COMPLETED:
-                _mark_run_delivered(run.id)
-                if run.result or run.canvas:
-                    from chat.subagent_service import render_canvas_block
+        model_tier = kwargs.get("model_tier") or previous.model_tier
+        if model_tier not in SUBAGENT_TIERS:
+            model_tier = DEFAULT_SUBAGENT_TIER
+        prefs = get_preferences(user)
+        err = _parallel_policy_error(prefs, thread_id)
+        if err:
+            return err
 
-                    body = run.result or (
-                        "The sub-agent produced no final message, but left the "
-                        "following working canvas."
-                    )
-                    return body + render_canvas_block(run)
-                return json.dumps({
-                    "status": "completed",
-                    "run_id": str(run.id),
-                    "message": "Sub-agent completed but returned no text content. "
-                    "Its findings may have been lost. Consider doing this research directly.",
-                })
-            if run.status == SubAgentRun.Status.FAILED:
-                # The full outcome — error plus any partial working canvas the
-                # worker kept — goes back inline, so this is a delivery too.
-                _mark_run_delivered(run.id)
-                message = f"Sub-agent failed: {run.error}"
-                if run.canvas:
-                    from chat.subagent_service import render_canvas_block
-
-                    message += (
-                        " It left a partial working canvas (below)."
-                        + render_canvas_block(run)
-                    )
-                return json.dumps({
-                    "status": "error",
-                    "message": message,
-                })
-
-        # Timeout exceeded — still waiting for a slot, or still running. Release
-        # the inline claim: the outcome will be delivered by a seeded turn.
-        SubAgentRun.objects.filter(pk=run.id).update(reported_at=None)
-        queue = get_queue_depth()
-        if _is_waiting(run.id):
-            return json.dumps({
-                "status": "queued",
-                "run_id": str(run.id),
-                "currently_running": queue["running"],
-                "ahead_in_queue": queue["waiting"],
-                "worker_slots": queue["worker_slots"],
-                "message": (
-                    f"Sub-agent is still waiting for a free execution slot after {timeout}s "
-                    f"({queue['running']} running, {queue['waiting']} waiting). It starts "
-                    "automatically and its result will appear in the conversation — do not create it again."
-                ),
-            })
-        return json.dumps({
-            "status": "started",
-            "run_id": str(run.id),
-            "currently_running": queue["running"],
-            "ahead_in_queue": queue["waiting"],
-            "worker_slots": queue["worker_slots"],
-            "message": f"Sub-agent is still running after {timeout}s. Its result will appear in the conversation automatically.",
-        })
-
-
-
-# Re-claim the run every this many 2 s polls (~60 s) while blocking on it, so
-# the claim never ages past ChatConsumer.SUBAGENT_REPORT_LEASE_MINUTES mid-wait.
-_CLAIM_REFRESH_POLLS = 30
-
-
-def _claim_run(run_id) -> None:
-    """Mark the run as claimed by the orchestrator turn that is waiting on it."""
-    from django.utils import timezone
-
-    from chat.models import SubAgentRun
-
-    SubAgentRun.objects.filter(pk=run_id).update(reported_at=timezone.now())
-
-
-def _mark_run_delivered(run_id) -> None:
-    """The waiting turn is returning the outcome inline: claimed AND delivered.
-
-    Nothing may replay the hidden outcome message afterwards — a seeded
-    continuation would only duplicate what this tool result already carries.
-    """
-    from django.utils import timezone
-
-    from chat.models import SubAgentRun
-
-    now = timezone.now()
-    SubAgentRun.objects.filter(pk=run_id).update(reported_at=now, delivered_at=now)
+        return _spawn_run(
+            user, thread_id,
+            prompt=previous.prompt,
+            reason=(str(kwargs.get("reason") or "").strip() or previous.reason)[:500],
+            model_tier=model_tier,
+            round_budget=_valid_round_budget(round_budget),
+            data_room_ids=previous.data_room_ids or [],
+            skill_slug=previous.skill_slug,
+            shared_canvases=previous.shared_canvases,
+            shared_attachments=previous.shared_attachments,
+            canvas=previous.canvas,
+            canvas_title=previous.canvas_title,
+            scratchpad=previous.scratchpad,
+            continued_from=previous,
+            chain_depth=previous.chain_depth + 1,
+            continuation_instructions=str(kwargs.get("instructions") or "").strip()[:4000],
+        )
 
 
 # Register on import
 registry = get_tool_registry()
 registry.register_tool(CreateSubagentTool())
+registry.register_tool(ContinueSubagentTool())

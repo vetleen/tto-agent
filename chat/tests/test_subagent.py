@@ -22,7 +22,7 @@ from chat.subagent_limits import (
 )
 from chat.subagent_prompts import build_subagent_system_prompt
 from chat.subagent_service import resolve_subagent_model, resolve_subagent_tools
-from chat.subagent_tool import CreateSubagentTool
+from chat.subagent_tool import ContinueSubagentTool, CreateSubagentTool
 from chat.tool_groups import DATA_ROOM_TOOL_NAMES
 from core.preferences import ResolvedPreferences
 from llm.types.context import RunContext
@@ -614,282 +614,164 @@ class StaleRunExpirationTests(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# CreateSubagentTool tests — timeout polling
+# ContinueSubagentTool + result header + continuation brief
 # ---------------------------------------------------------------------------
 
-class CreateSubagentToolTimeoutTests(TestCase):
+class ContinueSubagentToolTests(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user(email="timeout_tool@test.com", password="pass")
+        self.user = User.objects.create_user(email="continue@test.com", password="pass")
         self.thread = ChatThread.objects.create(created_by=self.user)
+        self.previous = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="Find prior art for X",
+            reason="Prior art for X", status=SubAgentRun.Status.COMPLETED,
+            skill_slug="patent-searcher", model_tier="low", round_budget="standard",
+            rounds_used=16, budget_exhausted=True,
+            result="Summary. Not covered: family check.",
+            canvas="# Report\nFindings", canvas_title="Report", scratchpad="note 1",
+            data_room_ids=[3], shared_canvases=[{"title": "Draft", "content": "d"}],
+        )
 
-    @patch("chat.tasks.run_subagent_task")
-    @patch("chat.subagent_tool.time")
-    def test_completed_during_poll_returns_result(self, mock_time, mock_task):
-        """Run completes after 2 poll cycles — tool returns the result inline."""
-        mock_task.delay.return_value = MagicMock(id="celery-task-123")
-        # monotonic: start=0, then 2, 4 (two polls), then 6 (exit check)
-        mock_time.monotonic.side_effect = [0, 2, 4, 6]
-        mock_time.sleep = MagicMock()
-
-        poll_count = 0
-
-        def fake_refresh(run_obj):
-            nonlocal poll_count
-            poll_count += 1
-            if poll_count >= 2:
-                SubAgentRun.objects.filter(pk=run_obj.pk).update(
-                    status=SubAgentRun.Status.COMPLETED,
-                    result="Analysis complete: 3 claims found.",
-                )
-            run_obj.__dict__.update(
-                SubAgentRun.objects.filter(pk=run_obj.pk).values()[0]
-            )
-
+    def _continue(self, **args):
         ctx = _ctx(self.user.pk, self.thread.id)
-        tool = CreateSubagentTool()
-        tool.set_context(ctx)
+        return _invoke(ContinueSubagentTool, {"round_budget": "quick", **args}, ctx)
 
-        with patch.object(SubAgentRun, "refresh_from_db", autospec=True, side_effect=fake_refresh):
-            result = tool.invoke({"prompt": "Analyze patent claims", "timeout": 60})
-
-        self.assertEqual(result, "Analysis complete: 3 claims found.")
-        run = SubAgentRun.objects.first()
-        self.assertEqual(run.timeout, 60)
-        # Sync inline delivery marks the run claimed AND delivered, so the
-        # consumer's _claim_unreported_subagents never fires a duplicate seeded
-        # turn — not even once the lease expires mid-turn.
-        self.assertIsNotNone(run.reported_at)
-        self.assertIsNotNone(run.delivered_at)
-
+    @patch("chat.tasks.notify_subagent_status")
     @patch("chat.tasks.run_subagent_task")
-    @patch("chat.subagent_tool.time")
-    def test_completed_with_empty_result_returns_warning(self, mock_time, mock_task):
-        """Run completes with empty result — tool returns a structured warning."""
-        mock_task.delay.return_value = MagicMock(id="celery-empty")
-        mock_time.monotonic.side_effect = [0, 2, 4]
-        mock_time.sleep = MagicMock()
-
-        def fake_refresh(run_obj):
-            SubAgentRun.objects.filter(pk=run_obj.pk).update(
-                status=SubAgentRun.Status.COMPLETED,
-                result="",
-            )
-            run_obj.__dict__.update(
-                SubAgentRun.objects.filter(pk=run_obj.pk).values()[0]
-            )
-
-        ctx = _ctx(self.user.pk, self.thread.id)
-        tool = CreateSubagentTool()
-        tool.set_context(ctx)
-
-        with patch.object(SubAgentRun, "refresh_from_db", autospec=True, side_effect=fake_refresh):
-            raw = tool.invoke({"prompt": "Research task", "timeout": 60})
-
-        result = json.loads(raw)
-        self.assertEqual(result["status"], "completed")
-        self.assertIn("no text content", result["message"])
-
-    @patch("chat.tasks.run_subagent_task")
-    @patch("chat.subagent_tool.time")
-    def test_failed_during_poll_returns_error(self, mock_time, mock_task):
-        """Run fails during poll — tool returns an error."""
-        mock_task.delay.return_value = MagicMock(id="celery-task-456")
-        mock_time.monotonic.side_effect = [0, 2, 4]
-        mock_time.sleep = MagicMock()
-
-        def fake_refresh(run_obj):
-            SubAgentRun.objects.filter(pk=run_obj.pk).update(
-                status=SubAgentRun.Status.FAILED,
-                error="LLM API error",
-            )
-            run_obj.__dict__.update(
-                SubAgentRun.objects.filter(pk=run_obj.pk).values()[0]
-            )
-
-        ctx = _ctx(self.user.pk, self.thread.id)
-
-        with patch.object(SubAgentRun, "refresh_from_db", autospec=True, side_effect=fake_refresh):
-            result = _invoke(CreateSubagentTool, {"prompt": "task", "timeout": 30}, ctx)
-
-        self.assertEqual(result["status"], "error")
-        self.assertIn("LLM API error", result["message"])
-        # The failure went back inline: delivered, nothing left to replay.
-        self.assertIsNotNone(SubAgentRun.objects.get().delivered_at)
-
-    @patch("chat.tasks.run_subagent_task")
-    @patch("chat.subagent_tool.time")
-    def test_failed_with_canvas_during_poll_returns_canvas_inline(self, mock_time, mock_task):
-        """A partial working canvas is part of the outcome: it rides along with
-        the inline error so marking the run delivered loses nothing."""
-        mock_task.delay.return_value = MagicMock(id="celery-task-457")
-        mock_time.monotonic.side_effect = [0, 2, 4]
-        mock_time.sleep = MagicMock()
-
-        def fake_refresh(run_obj):
-            SubAgentRun.objects.filter(pk=run_obj.pk).update(
-                status=SubAgentRun.Status.FAILED,
-                error="LLM API error",
-                canvas="Partial work so far.",
-                canvas_title="Draft",
-            )
-            run_obj.__dict__.update(
-                SubAgentRun.objects.filter(pk=run_obj.pk).values()[0]
-            )
-
-        ctx = _ctx(self.user.pk, self.thread.id)
-
-        with patch.object(SubAgentRun, "refresh_from_db", autospec=True, side_effect=fake_refresh):
-            result = _invoke(CreateSubagentTool, {"prompt": "task", "timeout": 30}, ctx)
-
-        self.assertEqual(result["status"], "error")
-        self.assertIn("LLM API error", result["message"])
-        self.assertIn("SUBAGENT CANVAS: Draft", result["message"])
-        self.assertIn("Partial work so far.", result["message"])
-        self.assertIsNotNone(SubAgentRun.objects.get().delivered_at)
-
-    @patch("chat.tasks.run_subagent_task")
-    @patch("chat.subagent_tool.time")
-    def test_timeout_exceeded_returns_started(self, mock_time, mock_task):
-        """Run still RUNNING after timeout — returns run_id for later check."""
-        mock_task.delay.return_value = MagicMock(id="celery-task-789")
-        # monotonic: start=0, then 2 (first sleep done), then 32 (past deadline of 30)
-        mock_time.monotonic.side_effect = [0, 2, 32]
-        mock_time.sleep = MagicMock()
-
-        def fake_refresh(run_obj):
-            # Stay PENDING — never completes
-            run_obj.__dict__.update(
-                SubAgentRun.objects.filter(pk=run_obj.pk).values()[0]
-            )
-
-        ctx = _ctx(self.user.pk, self.thread.id)
-
-        with patch.object(SubAgentRun, "refresh_from_db", autospec=True, side_effect=fake_refresh):
-            result = _invoke(CreateSubagentTool, {"prompt": "slow task", "timeout": 30}, ctx)
+    def test_creates_linked_run_carrying_work_forward(self, mock_task, _mock_notify):
+        mock_task.delay.return_value = MagicMock(id="t1")
+        short_id = str(self.previous.id)[:8]
+        result = self._continue(run_id=short_id, instructions="Check the families.")
 
         self.assertEqual(result["status"], "started")
-        self.assertIn("run_id", result)
+        run = SubAgentRun.objects.exclude(pk=self.previous.pk).get()
+        self.assertEqual(run.continued_from_id, self.previous.id)
+        self.assertEqual(run.chain_depth, 1)
+        self.assertEqual(run.round_budget, "quick")
+        self.assertEqual(run.model_tier, "low")
+        for field in ("prompt", "skill_slug", "canvas", "canvas_title", "scratchpad",
+                      "data_room_ids", "shared_canvases", "reason"):
+            self.assertEqual(getattr(run, field), getattr(self.previous, field), field)
+        self.assertEqual(run.continuation_instructions, "Check the families.")
+
+    @patch("chat.tasks.notify_subagent_status")
+    @patch("chat.tasks.run_subagent_task")
+    def test_model_tier_override(self, mock_task, _mock_notify):
+        mock_task.delay.return_value = MagicMock(id="t1")
+        self._continue(run_id=str(self.previous.id), model_tier="high")
+        run = SubAgentRun.objects.exclude(pk=self.previous.pk).get()
+        self.assertEqual(run.model_tier, "high")
+
+    def test_rejects_running_run(self):
+        SubAgentRun.objects.filter(pk=self.previous.pk).update(status=SubAgentRun.Status.RUNNING)
+        result = self._continue(run_id=str(self.previous.id)[:8])
+        self.assertEqual(result["status"], "error")
         self.assertIn("still running", result["message"])
 
+    def test_rejects_run_of_another_thread(self):
+        other = ChatThread.objects.create(created_by=self.user)
+        ctx = _ctx(self.user.pk, other.id)
+        result = _invoke(ContinueSubagentTool, {
+            "run_id": str(self.previous.id)[:8], "round_budget": "quick",
+        }, ctx)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("No sub-agent run", result["message"])
+
+    def test_rejects_unknown_id(self):
+        result = self._continue(run_id="zzzzzzzz")
+        self.assertEqual(result["status"], "error")
+
+    def test_chain_cap(self):
+        SubAgentRun.objects.filter(pk=self.previous.pk).update(chain_depth=9)
+        result = self._continue(run_id=str(self.previous.id)[:8])
+        self.assertEqual(result["status"], "error")
+        self.assertIn("the limit", result["message"])
+
+    @patch("chat.subagent_limits.SUBAGENT_MAX_PER_USER", 1)
+    @patch("chat.tasks.notify_subagent_status")
     @patch("chat.tasks.run_subagent_task")
-    @patch("chat.subagent_tool.time")
-    def test_blocking_wait_claims_the_run_before_it_completes(self, mock_time, mock_task):
-        """The inline claim is made at dispatch, not when the poll sees COMPLETED.
+    def test_counts_against_per_user_cap(self, mock_task, _mock_notify):
+        SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="busy", status=SubAgentRun.Status.RUNNING,
+        )
+        result = self._continue(run_id=str(self.previous.id)[:8])
+        self.assertEqual(result["status"], "error")
+        self.assertIn("too many", result["message"])
 
-        The completion event reaches every consumer on the thread (another tab,
-        or a page reloaded after a dropped socket) inside the 2 s poll gap; an
-        outcome still unclaimed there seeds a duplicate orchestrator turn.
-        """
-        mock_task.delay.return_value = MagicMock(id="celery-claim")
-        mock_time.monotonic.side_effect = [0, 2, 4, 6]
-        mock_time.sleep = MagicMock()
-        seen = []
 
-        def fake_refresh(run_obj):
-            seen.append(SubAgentRun.objects.get(pk=run_obj.pk).reported_at)
-            if len(seen) >= 2:
-                SubAgentRun.objects.filter(pk=run_obj.pk).update(
-                    status=SubAgentRun.Status.COMPLETED, result="done",
-                )
-            run_obj.__dict__.update(SubAgentRun.objects.filter(pk=run_obj.pk).values()[0])
+class ResultHeaderTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="header@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
 
-        tool = CreateSubagentTool()
-        tool.set_context(_ctx(self.user.pk, self.thread.id))
-        with patch.object(SubAgentRun, "refresh_from_db", autospec=True, side_effect=fake_refresh):
-            result = tool.invoke({"prompt": "task", "timeout": 60})
+    def _run(self, **kw):
+        now = timezone.now()
+        return SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="t", status=SubAgentRun.Status.COMPLETED,
+            started_at=now - timedelta(seconds=252), completed_at=now, **kw,
+        )
 
-        self.assertEqual(result, "done")
-        self.assertIsNotNone(seen[0], "run must be claimed before the first poll")
+    def test_finished_header_shows_rounds_time_and_continue_hint(self):
+        from chat.subagent_service import result_header
 
-    @patch("chat.tasks.run_subagent_task")
-    @patch("chat.subagent_tool.time")
-    def test_timeout_releases_the_inline_claim(self, mock_time, mock_task):
-        mock_task.delay.return_value = MagicMock(id="celery-release")
-        mock_time.monotonic.side_effect = [0, 2, 32]
-        mock_time.sleep = MagicMock()
-        seen = []
+        run = self._run(round_budget="standard", rounds_used=9)
+        short = str(run.id)[:8]
+        self.assertEqual(
+            result_header(run),
+            f"[Sub-agent result: {short} — finished (9/15 rounds (standard), 4:12). If more "
+            f'is needed, continue it with chat_subagent_continue(run_id="{short}").]',
+        )
 
-        def fake_refresh(run_obj):
-            seen.append(SubAgentRun.objects.get(pk=run_obj.pk).reported_at)
-            run_obj.__dict__.update(SubAgentRun.objects.filter(pk=run_obj.pk).values()[0])
+    def test_partial_header_when_budget_ran_out(self):
+        from chat.subagent_service import result_header
 
-        ctx = _ctx(self.user.pk, self.thread.id)
-        with patch.object(SubAgentRun, "refresh_from_db", autospec=True, side_effect=fake_refresh):
-            result = _invoke(CreateSubagentTool, {"prompt": "slow", "timeout": 30}, ctx)
+        run = self._run(round_budget="quick", rounds_used=7, budget_exhausted=True)
+        header = result_header(run)
+        self.assertIn("— PARTIAL: round budget used up (6/6 rounds (quick), 4:12)", header)
+        self.assertIn('"Not covered" list', header)
 
-        self.assertEqual(result["status"], "started")
-        self.assertIsNotNone(seen[0], "claimed while waiting")
-        run = SubAgentRun.objects.get()
-        self.assertIsNone(run.reported_at, "released on timeout")
-        self.assertIsNone(run.delivered_at, "a seeded turn still has to replay the outcome")
+    def test_continuation_header_and_brief(self):
+        from chat.subagent_service import continuation_brief, result_header
 
-    @patch("chat.subagent_tool._claim_run")
-    @patch("chat.tasks.run_subagent_task")
-    @patch("chat.subagent_tool.time")
-    def test_long_wait_refreshes_the_claim(self, mock_time, mock_task, mock_claim):
-        """A wait longer than the report lease must not let the claim go stale."""
-        from chat.subagent_tool import _CLAIM_REFRESH_POLLS
+        previous = self._run(round_budget="quick", rounds_used=7, budget_exhausted=True,
+                             result="Summary. Not covered: Y.")
+        run = self._run(round_budget="standard", rounds_used=3, continued_from=previous,
+                        chain_depth=1, continuation_instructions="Focus on Y.")
+        self.assertIn("(continuation 1) — finished", result_header(run))
+        brief = continuation_brief(run)
+        self.assertIn("# Continuing earlier work", brief)
+        self.assertIn("ran out of rounds (its reply was forced) after 6/6 rounds (quick)", brief)
+        self.assertIn("Summary. Not covered: Y.", brief)
+        self.assertIn("## Direction from the orchestrator\nFocus on Y.", brief)
+        self.assertEqual(continuation_brief(previous), "")
 
-        mock_task.delay.return_value = MagicMock(id="celery-refresh")
-        mock_time.monotonic.side_effect = [0] + [1] * (_CLAIM_REFRESH_POLLS + 5)
-        mock_time.sleep = MagicMock()
-        polls = 0
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
+    def test_continuation_keeps_carried_canvas_and_gets_brief(self, mock_prefs, mock_svc):
+        """run_subagent: a continuation's carried-over canvas is not replaced by the
+        specialization template, and its task message carries the brief."""
+        mock_prefs.return_value = _prefs()
+        response = MagicMock()
+        response.message.content = "Done"
+        response.usage.total_tokens = 1
+        response.usage.cost_usd = 0.0
+        mock_svc.return_value.run_via_stream.return_value = response
+        previous = self._run(result="Summary.", canvas="# Report\nold work")
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="task", skill_slug="web-researcher",
+            canvas="# Report\nold work", continued_from=previous, chain_depth=1,
+        )
+        skill = MagicMock()
+        skill.templates.all.return_value.first.return_value = MagicMock(content="# Template", name="T")
+        skill.instructions, skill.description, skill.name = "", "", "Web"
 
-        def fake_refresh(run_obj):
-            nonlocal polls
-            polls += 1
-            if polls > _CLAIM_REFRESH_POLLS:
-                SubAgentRun.objects.filter(pk=run_obj.pk).update(
-                    status=SubAgentRun.Status.COMPLETED, result="done",
-                )
-            run_obj.__dict__.update(SubAgentRun.objects.filter(pk=run_obj.pk).values()[0])
+        from chat.subagent_service import run_subagent
+        with patch("chat.subagent_service.get_run_specialization_skill", return_value=skill):
+            run_subagent(run.id)
 
-        tool = CreateSubagentTool()
-        tool.set_context(_ctx(self.user.pk, self.thread.id))
-        with patch.object(SubAgentRun, "refresh_from_db", autospec=True, side_effect=fake_refresh):
-            tool.invoke({"prompt": "long", "timeout": 540})
-
-        # dispatch + one refresh at poll 30; completion marks delivered instead
-        self.assertEqual(mock_claim.call_count, 2)
-        self.assertIsNotNone(SubAgentRun.objects.get().delivered_at)
-
-    @patch("chat.tasks.run_subagent_task")
-    def test_timeout_clamped_to_max(self, mock_task):
-        """timeout=999 is clamped to 540 and stored on the run."""
-        mock_task.delay.return_value = MagicMock(id="celery-clamp")
-
-        ctx = _ctx(self.user.pk, self.thread.id)
-        # timeout=0 after clamping would skip polling, but 999 clamps to 540.
-        # We use timeout=0 path indirectly — just verify the stored value.
-        # Actually, 999 clamps to 540 which is >0, so it would poll.
-        # Easier: just invoke with timeout=0 style to skip polling, and check the DB.
-        # Let's mock time to immediately exceed deadline.
-        with patch("chat.subagent_tool.time") as mock_time:
-            mock_time.monotonic.side_effect = [0, 541]
-            mock_time.sleep = MagicMock()
-
-            def fake_refresh(run_obj):
-                run_obj.__dict__.update(
-                    SubAgentRun.objects.filter(pk=run_obj.pk).values()[0]
-                )
-
-            with patch.object(SubAgentRun, "refresh_from_db", autospec=True, side_effect=fake_refresh):
-                _invoke(CreateSubagentTool, {"prompt": "task", "timeout": 999}, ctx)
-
-        run = SubAgentRun.objects.first()
-        self.assertEqual(run.timeout, 540)
-
-    @patch("chat.tasks.run_subagent_task")
-    def test_timeout_negative_clamped_to_zero(self, mock_task):
-        """timeout=-10 is clamped to 0 — behaves as fire-and-forget."""
-        mock_task.delay.return_value = MagicMock(id="celery-neg")
-
-        ctx = _ctx(self.user.pk, self.thread.id)
-        result = _invoke(CreateSubagentTool, {"prompt": "task", "timeout": -10}, ctx)
-
-        self.assertEqual(result["status"], "started")
-        run = SubAgentRun.objects.first()
-        self.assertEqual(run.timeout, 0)
+        run.refresh_from_db()
+        self.assertEqual(run.canvas, "# Report\nold work")
+        _, request = mock_svc.return_value.run_via_stream.call_args[0]
+        self.assertTrue(request.messages[1].content.startswith("task\n\n# Continuing earlier work"))
 
 
 class CreateSubagentToolSpecializationTests(TestCase):
@@ -925,7 +807,7 @@ class CreateSubagentToolSpecializationTests(TestCase):
         ctx = _ctx(self.user.pk, self.thread.id)
         result = _invoke(
             CreateSubagentTool,
-            {"prompt": "task", "type": "web-researcher", "timeout": 0},
+            {"prompt": "task", "type": "web-researcher"},
             ctx,
         )
         self.assertIn(result["status"], ("started", "queued"))
@@ -939,7 +821,7 @@ class CreateSubagentToolBackgroundTests(TestCase):
         self.thread = ChatThread.objects.create(created_by=self.user)
 
     @patch("chat.tasks.run_subagent_task")
-    def test_timeout_zero_returns_started(self, mock_task):
+    def test_create_returns_started(self, mock_task):
         mock_task.delay.return_value = MagicMock(id="celery-task-123")
 
         ctx = _ctx(self.user.pk, self.thread.id)
@@ -1482,7 +1364,7 @@ class RunSubagentServiceTests(TestCase):
         self.assertEqual(msg.role, "user")
         self.assertIsNone(msg.tool_call_id)
         short_id = str(run.id)[:8]
-        self.assertTrue(msg.content.startswith(f"[Sub-agent result: {short_id}]"))
+        self.assertTrue(msg.content.startswith(f"[Sub-agent result: {short_id} — finished"))
         self.assertIn("Research findings here.", msg.content)
         self.assertTrue(msg.is_hidden_from_user)
         self.assertEqual(msg.metadata["source"], "subagent")
@@ -1515,7 +1397,7 @@ class RunSubagentServiceTests(TestCase):
         ))
         self.assertEqual(len(msgs), 1)
         short_id = str(run.id)[:8]
-        self.assertTrue(msgs[0].content.startswith(f"[Sub-agent failed: {short_id}]"))
+        self.assertTrue(msgs[0].content.startswith(f"[Sub-agent failed: {short_id}"))
         self.assertIn("no text output", msgs[0].content)
         self.assertTrue(msgs[0].is_hidden_from_user)
 
@@ -1625,7 +1507,7 @@ class RunSubagentServiceTests(TestCase):
 
         msgs = list(self._outcome_messages(run))
         self.assertEqual(len(msgs), 1)
-        self.assertTrue(msgs[0].content.startswith(f"[Sub-agent failed: {str(run.id)[:8]}]"))
+        self.assertTrue(msgs[0].content.startswith(f"[Sub-agent failed: {str(run.id)[:8]}"))
         self.assertIn("Provider exploded", msgs[0].content)
         self.assertTrue(msgs[0].is_hidden_from_user)
         mock_notify.assert_called_once_with(str(run.id), str(self.thread.id))
@@ -1656,7 +1538,7 @@ class RunSubagentServiceTests(TestCase):
 
         msgs = list(self._outcome_messages(run))
         self.assertEqual(len(msgs), 1)
-        self.assertTrue(msgs[0].content.startswith(f"[Sub-agent result: {str(run.id)[:8]}]"))
+        self.assertTrue(msgs[0].content.startswith(f"[Sub-agent result: {str(run.id)[:8]} — finished"))
         self.assertIn("Partial work", msgs[0].content)
         self.assertEqual(status_at_notify, [SubAgentRun.Status.FAILED])
 
@@ -2403,7 +2285,7 @@ class SubagentFailureMessageTests(TestCase):
         msgs = list(self._failure_messages(run))
         self.assertEqual(len(msgs), 1)
         short_id = str(run.id)[:8]
-        self.assertTrue(msgs[0].content.startswith(f"[Sub-agent failed: {short_id}]"))
+        self.assertTrue(msgs[0].content.startswith(f"[Sub-agent failed: {short_id}"))
         self.assertIn("Provider exploded", msgs[0].content)
         self.assertEqual(msgs[0].role, "user")
         self.assertTrue(msgs[0].is_hidden_from_user)

@@ -91,7 +91,10 @@ def active_subagent_runs_payload(thread_id) -> dict:
             status__in=[SubAgentRun.Status.PENDING, SubAgentRun.Status.RUNNING],
         )
         .order_by("created_at")
-        .values("id", "status", "reason", "prompt", "created_at", "dispatched_at", "started_at")
+        .values(
+            "id", "status", "reason", "prompt", "created_at", "dispatched_at",
+            "started_at", "chain_depth",
+        )
     )
     runs = []
     for r in qs:
@@ -112,6 +115,8 @@ def active_subagent_runs_payload(thread_id) -> dict:
                 else (r["started_at"] or r["dispatched_at"] or r["created_at"]).isoformat()
             ),
             "created_at": r["created_at"].isoformat(),
+            # >0 for a chat_subagent_continue run: the panel marks it "continued".
+            "continuation": r["chain_depth"],
         })
     return {"runs": runs, "server_now": timezone.now().isoformat()}
 
@@ -279,6 +284,50 @@ def _subagent_result_message_exists(run) -> bool:
     ).exists()
 
 
+def _format_elapsed(run) -> str:
+    """``m:ss`` (or ``h:mm:ss``) from start to finish, ``""`` when unknown."""
+    if not run.started_at or not run.completed_at:
+        return ""
+    s = max(0, int((run.completed_at - run.started_at).total_seconds()))
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    return f"{h}:{m:02d}:{sec:02d}" if h else f"{m}:{sec:02d}"
+
+
+def run_progress(run) -> str:
+    """How far the run got, e.g. ``"9/15 rounds (standard), 4:12"``."""
+    budget = round_budget_rounds(run.round_budget)
+    used = min(run.rounds_used or 0, budget)
+    parts = [f"{used}/{budget} rounds ({run.round_budget})"] if run.rounds_used else []
+    elapsed = _format_elapsed(run)
+    if elapsed:
+        parts.append(elapsed)
+    return ", ".join(parts)
+
+
+def result_header(run) -> str:
+    """The header of a sub-agent's result message.
+
+    Says how the run went (rounds used of its budget, time taken) and how to
+    continue it. A run whose budget ran out — its tool-less final reply was
+    forced — is marked PARTIAL.
+    """
+    short_id = str(run.id)[:8]
+    progress = run_progress(run)
+    continuation = f" (continuation {run.chain_depth})" if run.chain_depth else ""
+    if run.budget_exhausted:
+        return (
+            f"[Sub-agent result: {short_id}{continuation} — PARTIAL: round budget used up"
+            f"{f' ({progress})' if progress else ''}. See its \"Not covered\" list; continue "
+            f'it with chat_subagent_continue(run_id="{short_id}") if more is needed.]'
+        )
+    return (
+        f"[Sub-agent result: {short_id}{continuation} — finished"
+        f"{f' ({progress})' if progress else ''}. If more is needed, continue it with "
+        f'chat_subagent_continue(run_id="{short_id}").]'
+    )
+
+
 def _create_subagent_result_message(run) -> None:
     """Persist the sub-agent's result (+ working canvas) as a hidden ChatMessage.
 
@@ -290,12 +339,12 @@ def _create_subagent_result_message(run) -> None:
     from chat.models import ChatMessage
     from core.tokens import count_tokens
 
-    short_id = str(run.id)[:8]
+    header = result_header(run)
     if run.result:
-        wrapped = f"[Sub-agent result: {short_id}]\n{run.result}"
+        wrapped = f"{header}\n{run.result}"
     else:
         wrapped = (
-            f"[Sub-agent result: {short_id}]\n"
+            f"{header}\n"
             "The sub-agent produced no final message, but left the following working canvas."
         )
     wrapped += render_canvas_block(run)
@@ -327,8 +376,9 @@ def _create_subagent_failure_message(run) -> None:
     if _subagent_result_message_exists(run):
         return
     short_id = str(run.id)[:8]
+    progress = run_progress(run)
     wrapped = (
-        f"[Sub-agent failed: {short_id}]\n"
+        f"[Sub-agent failed: {short_id}{f' ({progress})' if progress else ''}]\n"
         f"The sub-agent did not complete its task. Error: {run.error or 'unknown'}\n"
         "Decide how to proceed: retry with a new sub-agent, do the work "
         "yourself, or tell the user what happened."
@@ -341,6 +391,32 @@ def _create_subagent_failure_message(run) -> None:
         token_count=count_tokens(wrapped),
         is_hidden_from_user=True,
     )
+
+
+def continuation_brief(run) -> str:
+    """The block appended to a continuation's task: how the previous run went,
+    its final reply ("Not covered" list included) and the orchestrator's extra
+    direction. The canvas and scratchpad themselves were carried over on the row.
+    Empty for an original run."""
+    previous = run.continued_from
+    if previous is None:
+        return ""
+    outcome = "ran out of rounds (its reply was forced)" if previous.budget_exhausted else "finished"
+    progress = run_progress(previous)
+    lines = [
+        "",
+        "",
+        "# Continuing earlier work",
+        f"This is continuation {run.chain_depth} of the task above. The previous sub-agent "
+        f"run {outcome}{f' after {progress}' if progress else ''}. Your working canvas and "
+        "your scratchpad are carried over from it. Continue where it left off: build on the "
+        "canvas and do not redo work that is already done.",
+    ]
+    if previous.result:
+        lines += ["", "## Its final reply", previous.result.strip()]
+    if run.continuation_instructions:
+        lines += ["", "## Direction from the orchestrator", run.continuation_instructions]
+    return "\n".join(lines)
 
 
 def run_subagent(run_id: uuid.UUID) -> None:
@@ -366,12 +442,14 @@ def run_subagent(run_id: uuid.UUID) -> None:
         # NOT be resurrected — a retry triggered by a transient error AFTER
         # completion (e.g. persisting the result message) would otherwise flip it
         # back to RUNNING and re-run the whole LLM job. FAILED is cancelled/terminal.
+        started_at = timezone.now()
         started = SubAgentRun.objects.filter(pk=run_id).exclude(
             status__in=[SubAgentRun.Status.FAILED, SubAgentRun.Status.COMPLETED],
-        ).update(status=SubAgentRun.Status.RUNNING, started_at=timezone.now())
+        ).update(status=SubAgentRun.Status.RUNNING, started_at=started_at)
         if not started:
             logger.info("Sub-agent run %s already terminal; skipping re-entry", run_id)
             return
+        run.status, run.started_at = SubAgentRun.Status.RUNNING, started_at
         # The user's sub-agent panel flips this row from "Queued" to a live timer.
         from chat.tasks import notify_subagent_status
 
@@ -398,7 +476,9 @@ def run_subagent(run_id: uuid.UUID) -> None:
         # Auto-load the first template (name-ordered, matching the prompt's
         # bullet list) into the working canvas as a starting point. Persisted
         # immediately so the canvas is durable from the very start of the run.
-        if specialization_skill is not None:
+        # A canvas that already has content — carried over by a continuation,
+        # or written before a Celery retry — is kept.
+        if specialization_skill is not None and not run.canvas:
             first_tmpl = specialization_skill.templates.all().first()
             if first_tmpl is not None:
                 from chat.services import CANVAS_MAX_CHARS
@@ -513,7 +593,7 @@ def run_subagent(run_id: uuid.UUID) -> None:
         request = ChatRequest(
             messages=[
                 Message(role="system", content=system_prompt),
-                Message(role="user", content=run.prompt),
+                Message(role="user", content=run.prompt + continuation_brief(run)),
             ],
             model=model,
             stream=True,

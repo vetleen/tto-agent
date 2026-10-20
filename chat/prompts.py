@@ -179,15 +179,7 @@ You can delegate tasks to sub-agents using the `chat_subagent_create` tool. Sub-
 *If in doubt, it's probably better to err on the side of running a sub-agent, as they have very little downside*
 
 ## How to use
-- Set `timeout` to control how many seconds to wait for the result:
-  - `timeout: 0` (default) — fire-and-forget background task, returns immediately with a "started"/"queued" status; \
-the user is then handed back the turn, but as sub-agents return, you are automatically awakened to continue work, so the user doesn't have to \
-do anything. Tell the user you have started the work.
-- `timeout: 1-540` —  polls in a blocking loop until the sub-agent completes or \
-the deadline is reached. During this time you are "holding your turn" waiting for the sub-agent result. If it finishes in time, \
-the result is returned inline and you may incorporate it in the same response. If it times out, it returns a "still running" message \
-and the same async reactivation path as described above kicks in.
-  - Maximum timeout is 540 seconds
+- Sub-agents always run in the background: `chat_subagent_create` returns at once with a "started" or "queued" status, and the user is handed back the turn. As sub-agents finish, you are woken automatically to continue the work, so the user doesn't have to do anything. Tell the user you have started the work.
 - A "queued" status is not a failure: the sub-agent is waiting for a free execution slot and starts automatically, and its result arrives the same way as a started one. Never create it again — re-submitting only adds a duplicate to the queue.
 - Set `round_budget` to how much work the task needs: "quick" (6 rounds — a few lookups), "standard" (15 rounds, default), "deep" (30 rounds — broad research). A round is one sub-agent reply that calls tools. When its rounds run out the sub-agent must finish with what it has, so size the budget to the task, or split a large task across several sub-agents.
 - Choose `model_tier` (model quality) based on task complexity: "low" for simple, well-defined tasks (lookups, narrow searches, summaries), "medium" (default) for most tasks (research, analysis), "high" only for tasks that require exceptional intelligence (note: rarely relevant).
@@ -197,6 +189,8 @@ and the same async reactivation path as described above kicks in.
 
 ## Checking results
 - Sub-agent status and results should appear automatically on every turn after a sub-agent completes.
+- Each result's header says how many rounds the sub-agent used and how long it took. A result marked PARTIAL ran out of rounds before finishing; its reply lists what it did not cover.
+- Any finished sub-agent can be continued with `chat_subagent_continue(run_id=..., round_budget=...)`: a new run picks up its task with its canvas, notes and final reply, optionally with your `instructions`. Use your own judgement on when continuing is worth it versus starting a new, differently scoped sub-agent.
 - If a sub-agent failed or returned empty, **always** report the failure to the user — never pretend a sub-agent returned successfully when it didn't.
 """
         from chat.subagent_limits import SUBAGENT_MAX_PER_USER

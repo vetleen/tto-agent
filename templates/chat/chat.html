@@ -122,6 +122,7 @@
   .subagent-run.is-queued::before { background: transparent; border: 1px solid currentColor; }
   .subagent-run-reason { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-style: italic; }
   .subagent-run-time { flex-shrink: 0; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .subagent-run-badge { flex-shrink: 0; font-size: 0.75em; padding: 0 5px; border: 1px solid currentColor; border-radius: 9999px; opacity: 0.75; }
 
   /* ===== Chat redesign v2 (ledger) — token aliases + components ===== */
   /* Aliases point at project color tokens so dark mode flips automatically.
@@ -2993,6 +2994,7 @@
   function subagentRows() {
     var rows = subagentRuns.map(function(r) {
       return { reason: r.reason || "Sub-agent", queued: r.state === "queued",
+               continuation: r.continuation || 0,
                startMs: r.started_at ? Date.parse(r.started_at) + subagentClockOffset : null };
     });
     Object.keys(subagentPending).forEach(function(k) {
@@ -3027,7 +3029,8 @@
       var time = (r.queued || r.startMs === null || isNaN(r.startMs))
         ? '<span class="subagent-run-time">Queued</span>'
         : '<span class="subagent-run-time" data-start="' + r.startMs + '"></span>';
-      return '<li class="subagent-run' + (r.queued ? ' is-queued' : '') + '"><span class="subagent-run-reason" title="' + escapeHtml(r.reason).replace(/"/g, "&quot;") + '">' + escapeHtml(r.reason) + '</span>' + time + '</li>';
+      var badge = r.continuation ? '<span class="subagent-run-badge">continued' + (r.continuation > 1 ? ' #' + r.continuation : '') + '</span>' : '';
+      return '<li class="subagent-run' + (r.queued ? ' is-queued' : '') + '"><span class="subagent-run-reason" title="' + escapeHtml(r.reason).replace(/"/g, "&quot;") + '">' + escapeHtml(r.reason) + '</span>' + badge + time + '</li>';
     }).join("");
     tickSubagentTimers();
     if (!subagentTimer) subagentTimer = setInterval(tickSubagentTimers, 1000);
@@ -3712,7 +3715,7 @@
         const displayText = (data.data && data.data.display_label) || "Working...";
         card.setAttribute("data-label", displayText);
         const toolArgs = (data.data && data.data.arguments) || {}; const reasonText = (typeof toolArgs === "object" && toolArgs.reason) ? ' <span class="italic">(' + escapeHtml(toolArgs.reason) + ')</span>' : '';
-        if (toolName === "chat_subagent_create" && toolId) addPendingSubagentRow(toolId, (typeof toolArgs === "object" && toolArgs.reason) || "");
+        if ((toolName === "chat_subagent_create" || toolName === "chat_subagent_continue") && toolId) addPendingSubagentRow(toolId, (typeof toolArgs === "object" && toolArgs.reason) || "");
         card.innerHTML = TOOL_SPINNER_SVG + '<span class="tool-card-text">' + escapeHtml(displayText) + reasonText + '</span>';
         group.querySelector(".tool-group-list").appendChild(card);
         updateToolGroup(group);
@@ -3725,7 +3728,7 @@
       const resultStr = (data.data && data.data.result) || "";
       // The panel row itself comes from the server's run list (pushed when the
       // run is created/started); the optimistic "Starting…" row is done here.
-      if (toolName === "chat_subagent_create") removePendingSubagentRow(toolId);
+      if (toolName === "chat_subagent_create" || toolName === "chat_subagent_continue") removePendingSubagentRow(toolId);
       if (currentStreamingElement) {
         const card = currentStreamingElement.querySelector('.tool-card[data-tool-id="' + toolId + '"]');
         if (card) {
@@ -3733,7 +3736,7 @@
           // Sub-agent UI behavior (status bar + active icon) keys on the
           // structured result status, not the label text.
           var subagentStatus = null;
-          if (toolName === "chat_subagent_create") {
+          if (toolName === "chat_subagent_create" || toolName === "chat_subagent_continue") {
             try { subagentStatus = (JSON.parse(resultStr) || {}).status || null; } catch (e) {}
           }
           var isSubagentActive = (subagentStatus === "queued" || subagentStatus === "started");
