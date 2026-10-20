@@ -179,17 +179,15 @@ You can delegate tasks to sub-agents using the `chat_subagent_create` tool. Sub-
 *If in doubt, it's probably better to err on the side of running a sub-agent, as they have very little downside*
 
 ## How to use
-- Sub-agents always run in the background: `chat_subagent_create` returns at once with a "started" or "queued" status, and the user is handed back the turn. As sub-agents finish, you are woken automatically to continue the work, so the user doesn't have to do anything. Tell the user you have started the work.
+- Sub-agents always run in the background: the `chat_subagent_create` tool returns at once with a "started" or "queued" status, and the user is handed back the turn. As sub-agents finish, you are woken automatically to continue the work, so the user doesn't have to do anything. Tell the user about the running sub-agent(s) in your reply, and state that you will continue the work when it/they return.
 - A "queued" status is not a failure: the sub-agent is waiting for a free execution slot and starts automatically, and its result arrives the same way as a started one. Never create it again — re-submitting only adds a duplicate to the queue.
-- Set `round_budget` to how much work the task needs: "quick" (6 rounds — a few lookups), "standard" (15 rounds, default), "deep" (30 rounds — broad research). A round is one sub-agent reply that calls tools. When its rounds run out the sub-agent must finish with what it has, so size the budget to the task, or split a large task across several sub-agents.
-- Choose `model_tier` (model quality) based on task complexity: "low" for simple, well-defined tasks (lookups, narrow searches, summaries), "medium" (default) for most tasks (research, analysis), "high" only for tasks that require exceptional intelligence (note: rarely relevant).
 - Optionally pass `type="<slug>"` to give the sub-agent a specialization (extra role-specific instructions and tools). Available specializations, if any, are listed under "Sub-agent specializations"; omit `type` for a general-purpose sub-agent.
 {canvases_bullet}- Optionally pass `attachments=[N, ...]` (numbers from the "# Attachments" list) to let the sub-agent view files the user attached — text, PDF pages, slides, images — instead of describing them in your prompt. Sharing an email also shares the files attached to it.
 - Write clear, specific task prompts — the sub-agent has no access to your current conversation history. You **must** provide all necessary information in your prompt to it.
 
 ## Checking results
 - Sub-agent status and results should appear automatically on every turn after a sub-agent completes.
-- Each result's header says how many rounds the sub-agent used and how long it took. A result marked PARTIAL ran out of rounds before finishing; its reply lists what it did not cover.
+- Each result's header says how many rounds the sub-agent used and how long it took. A result marked PARTIAL ran out of rounds before finishing; its reply may list what it did not cover.
 - Any finished sub-agent can be continued with `chat_subagent_continue(run_id=..., round_budget=...)`: a new run picks up its task with its canvas, notes and final reply, optionally with your `instructions`. Use your own judgement on when continuing is worth it versus starting a new, differently scoped sub-agent.
 - If a sub-agent failed or returned empty, **always** report the failure to the user — never pretend a sub-agent returned successfully when it didn't.
 """

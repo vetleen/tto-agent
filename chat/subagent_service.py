@@ -318,13 +318,13 @@ def result_header(run) -> str:
     if run.budget_exhausted:
         return (
             f"[Sub-agent result: {short_id}{continuation} — PARTIAL: round budget used up"
-            f"{f' ({progress})' if progress else ''}. See its \"Not covered\" list; continue "
-            f'it with chat_subagent_continue(run_id="{short_id}") if more is needed.]'
+            f"{f' ({progress})' if progress else ''}. See its \"Not covered\" list; if more "
+            f'work is needed, you may continue it with chat_subagent_continue(run_id="{short_id}").]'
         )
     return (
         f"[Sub-agent result: {short_id}{continuation} — finished"
-        f"{f' ({progress})' if progress else ''}. If more is needed, continue it with "
-        f'chat_subagent_continue(run_id="{short_id}").]'
+        f"{f' ({progress})' if progress else ''}. If more work is needed, you may continue "
+        f'it with chat_subagent_continue(run_id="{short_id}").]'
     )
 
 
@@ -432,24 +432,25 @@ def _heartbeat(run_id):
     return beat
 
 
-def continuation_brief(run) -> str:
-    """The block appended to a continuation's task: how the previous run went,
-    its final reply ("Not covered" list included) and the orchestrator's extra
-    direction. The canvas and scratchpad themselves were carried over on the row.
-    Empty for an original run."""
+def task_message(run) -> str:
+    """The sub-agent's task message. For a continuation, the original task is
+    kept under its own heading and followed by a separate block on the earlier
+    run: how it went, its final reply ("Not covered" list included) and the
+    orchestrator's direction for this continuation. The canvas and scratchpad
+    themselves were carried over on the row."""
     previous = run.continued_from
     if previous is None:
-        return ""
+        return run.prompt
     outcome = "ran out of rounds (its reply was forced)" if previous.budget_exhausted else "finished"
     progress = run_progress(previous)
     lines = [
-        "",
+        "# Original task",
+        run.prompt,
         "",
         "# Continuing earlier work",
-        f"This is continuation {run.chain_depth} of the task above. The previous sub-agent "
-        f"run {outcome}{f' after {progress}' if progress else ''}. Your working canvas and "
-        "your scratchpad are carried over from it. Continue where it left off: build on the "
-        "canvas and do not redo work that is already done.",
+        f"This is a continuation of the original task above. A previous sub-agent {outcome}"
+        f"{f' after {progress}' if progress else ''}. Its working canvas and scratchpad were "
+        "carried over to you as a starting point. Continue where it left off.",
     ]
     if previous.result:
         lines += ["", "## Its final reply", previous.result.strip()]
@@ -637,7 +638,7 @@ def run_subagent(run_id: uuid.UUID) -> None:
         request = ChatRequest(
             messages=[
                 Message(role="system", content=system_prompt),
-                Message(role="user", content=run.prompt + continuation_brief(run)),
+                Message(role="user", content=task_message(run)),
             ],
             model=model,
             stream=True,

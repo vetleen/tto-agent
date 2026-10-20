@@ -42,9 +42,8 @@ def _round_stage_line(rounds_left: int, budget: int) -> str:
     """
     if rounds_left <= 1:
         return (
-            f"Your next round ({budget}/{budget}) is your final round with tools: finish "
-            "your canvas and write your final reply. Do not repeat what is in the canvas "
-            "in your reply."
+            "This is your final round: finish your canvas and write your final reply. "
+            "Do not repeat what is in the canvas in your reply."
         )
     if rounds_left <= max(2, math.ceil(0.2 * budget)):
         return "Your rounds are almost up: finish your canvas report soon."
@@ -78,9 +77,9 @@ def _iteration_notice(
 
     if agent_kind == "subagent":
         return Message(role="user", content=(
-            f"[Round budget: {remaining} rounds left (round {finished}/{max_iterations} done). "
-            "When the budget runs out, tools are switched off and you get one final reply. "
-            "Your canvas is returned as it is at that point.] "
+            f"[Round budget: {remaining} {'round' if remaining == 1 else 'rounds'} left "
+            f"(round {finished}/{max_iterations} done). Complete your task and report your "
+            f"findings within round {max_iterations}/{max_iterations}.] "
             + _round_stage_line(remaining, max_iterations)
         ))
 
@@ -153,7 +152,7 @@ def _timeout_result(tool_name: str, timeout_s: float) -> str:
         "message": (
             f"This {tool_name} call timed out after {timeout_s:.0f} s and was not "
             "completed. If it returns later, its result will be delivered to you. "
-            "Retry it, narrow it, or move on."
+            "You may retry, narrow, or move on."
         ),
         "timeout_s": round(timeout_s),
     })
@@ -165,7 +164,7 @@ def _not_started_result(tool_name: str) -> str:
         "error": _TOOL_TIMEOUT_ERROR,
         "message": (
             f"This {tool_name} call was not run: other calls in this round timed out "
-            "and held every worker. Call it again if you still need it."
+            "and blocked it. Call it again if you still need it."
         ),
     })
 

@@ -36,7 +36,7 @@ threads that together cover the main research goal.
 search queries before launching workers. Include synonyms, alternative \
 phrasings, acronyms, entity names, regional variants, and comparison terms \
 where relevant.
-5. Launch parallel sub-agents (`model_tier="low"`) aggressively so they do \
+5. Launch parallel sub-agents (`model_tier="medium"`) aggressively so they do \
 the actual searching, reading, and evidence collection for those subquestions.
 6. In every sub-agent prompt, require that every substantive claim be tied \
 to a source.
@@ -96,7 +96,7 @@ sub-agents so the orchestrator's context stays lean — reserved for planning, \
 reviewing structured results, and synthesizing.
 
 Use `chat_subagent_create` proactively for breadth. Prefer multiple focused \
-sub-agents over one broad worker. Use `model_tier="low"`.
+sub-agents over one broad worker. Use `model_tier="medium"`.
 
 The orchestrator should scope the work, define subquestions, launch workers, \
 review returned evidence, update the plan, and synthesize. You can even use sub-agents to do direct \
@@ -168,7 +168,7 @@ Before finishing, check:
 - missing evidence is disclosed
 - the report answers the user's actual question
 
-**Note: ** If verification requires searching the web or fetching pages, delegate it to a sub-agent (`model_tier="low"`) to avoid cluttering your context, or taking uneccessary rounds for multiple tool calls with your entire context.
+**Note: ** If verification requires searching the web or fetching pages, delegate it to a sub-agent (`model_tier="medium"`) to avoid cluttering your context, or taking uneccessary rounds for multiple tool calls with your entire context.
 
 ## Do not-list
 - Do not present unsourced claims as facts

@@ -1334,7 +1334,7 @@ class IterationNoticeTests(TestCase):
             return "converge"
         if line.startswith("Your rounds are almost up"):
             return "wrap"
-        self.assertIn("final round with tools", line)
+        self.assertIn("This is your final round", line)
         return "final"
 
     def test_main_no_notice_far_from_limit(self):
@@ -1356,15 +1356,14 @@ class IterationNoticeTests(TestCase):
         notice = self._notice(5, 15, "subagent")  # round 6 of 15 done -> 9 left
         self.assertEqual(notice.role, "user")
         self.assertTrue(notice.content.startswith(
-            "[Round budget: 9 rounds left (round 6/15 done). When the budget runs out, "
-            "tools are switched off and you get one final reply. Your canvas is "
-            "returned as it is at that point.] "
+            "[Round budget: 9 rounds left (round 6/15 done). Complete your task and "
+            "report your findings within round 15/15.] "
         ))
 
     def test_subagent_final_round_notice(self):
         notice = self._notice(13, 15, "subagent")  # round 14 done -> 1 left
-        self.assertIn("1 rounds left (round 14/15 done)", notice.content)
-        self.assertIn("Your next round (15/15) is your final round with tools", notice.content)
+        self.assertIn("1 round left (round 14/15 done)", notice.content)
+        self.assertIn("This is your final round: finish your canvas", notice.content)
         self.assertIn("Do not repeat what is in the canvas", notice.content)
 
     def _stages_after_each_round(self, budget):

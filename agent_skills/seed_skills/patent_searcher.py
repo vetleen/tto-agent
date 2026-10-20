@@ -52,8 +52,7 @@ operating principles:
 
 *Be mindful of your round budget: finish your report before it runs out. Stopping early
 is fine — just be clear about what you did, what you found, and what you would have done
-next. The orchestrator can continue your run where you left off (with your canvas and
-scratchpad), or launch a new sub-agent.*
+next, if anything.*
 
 ## 1. Stick to the task
 The brief should give you all the information you need and a specific ask. If something

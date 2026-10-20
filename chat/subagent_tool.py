@@ -137,14 +137,16 @@ def _valid_round_budget(name) -> str:
 # --- Input schemas ---
 
 _ROUND_BUDGET_DESCRIPTION = (
-    'How many tool rounds the sub-agent gets: "quick" (6 rounds — a few lookups), '
-    '"standard" (15 rounds, default), "deep" (30 rounds — broad research). A round '
-    "is one reply that calls tools (parallel calls count once)."
+    'How much work the task needs: "quick" (6 rounds), "standard" (15 rounds, default), '
+    '"deep" (30 rounds). A round is one sub-agent reply that calls tools (parallel calls '
+    "count once). When its rounds run out the sub-agent must finish with what it has, so "
+    "size the budget to the task, or split a large task across several sub-agents."
 )
 _MODEL_TIER_DESCRIPTION = (
-    'Model quality: "low" for simple, well-defined tasks (lookups, narrow searches, '
-    'summaries); "medium" (default) for most tasks; "high" only for tasks that '
-    "require exceptional intelligence (rarely relevant)."
+    'Model quality, chosen by task complexity: "low" for especially simple, well-defined '
+    'tasks (lookups, narrow searches, simple summaries); "medium" (default) for most '
+    'tasks (research, analysis); "high" only for tasks that require exceptional '
+    "intelligence (note: rarely relevant)."
 )
 
 
@@ -458,7 +460,7 @@ class ContinueSubagentTool(ContextAwareTool):
         'result is PARTIAL (its round budget ran out) or its "Not covered" list matters. '
         "A new sub-agent run starts with the same task, specialization, data rooms and "
         "shared files, plus the previous run's working canvas, private notes and final "
-        "reply, and picks up where it left off. Its result arrives in the conversation "
+        "reply, and essentially picks up where it left off. Its result arrives in the conversation "
         "automatically, like any sub-agent's."
     )
     args_schema: type[BaseModel] = ContinueSubagentInput

@@ -165,9 +165,8 @@ def _render_scratchpad_guidance() -> str:
         "facts, figures, quotes, and source URLs you'll need *as you find them*, "
         "not all at once at the end. It is private working memory: unlike your "
         "working canvas it is NOT returned to the orchestrator, and the user never "
-        "sees it — but if the orchestrator continues your task in a new run, that "
-        "run starts with your scratchpad. Keep the canvas for your deliverable; "
-        "keep the scratchpad for rough notes you don't want to lose.\n"
+        "sees it. Keep the canvas for your deliverable; keep the scratchpad for "
+        "rough notes you don't want to lose.\n"
     )
 
 
@@ -180,12 +179,9 @@ def _render_round_budget(rounds: int | None) -> str:
         f"You have a budget of {rounds} rounds. A round is one reply of yours that "
         "calls tools; calling several tools in parallel in one round is encouraged "
         "and still counts as one round. After every round you are told how many "
-        "rounds are left, with advice for the stage you are in: explore first, then "
-        "converge (start no new lines of inquiry), then finish your canvas report. "
-        f"Round {rounds}/{rounds} is your final round with tools: use it to finish the "
-        "canvas and write your final reply. If you still call tools after that, the "
-        "tools are switched off and you get one last reply; your canvas is returned "
-        "as it is at that point. Finishing before the budget is used up is fine.\n"
+        f"rounds are left. Round {rounds}/{rounds} is your final round with tools: use it "
+        "to finish the canvas and write your final reply. Finishing before the budget is "
+        "used up is fine.\n"
     )
 
 
@@ -220,7 +216,7 @@ You have been given a specific task. Complete it thoroughly and return your find
 - Structure your response clearly with headings if appropriate. You may use markdown.
 - Never use LaTeX or `$…$` math notation — it does not render and shows up as raw code. Write formulas, units and simple equations in plain text with Unicode sub/superscripts and symbols (Li₂Sₓ, Li⁺, CO₂, m², ≤, ×, →). Put a genuinely complex equation in a code block.
 - If you cannot complete the task with the tools available, explain what's missing.
-- IMPORTANT: Deliver your findings in your working canvas (see "Working canvas" below) — it is returned to the orchestrator as it is when your run ends. Keep your final message short: a brief summary and a "Not covered" list of anything you did not get to. Never repeat what is in the canvas in your final message. (For a very short answer with no canvas, the final message alone is fine.)
+- IMPORTANT: Deliver your findings in your working canvas — it is returned to the orchestrator as it is when your run ends. Keep your final message short: a brief summary and a "Not covered" list of anything you did not get to. Never repeat what is in the canvas in your final message. (For a very short answer with no canvas, the final message alone is fine.)
 - You may be as exhaustive as you like in the canvas. Make sure you don't exclude any important findings.
 - Make sure you cite and source in such way that it is unambigously clear where each fact came from. 
   - For websites provie the concrete URL where you sourced the data.

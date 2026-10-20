@@ -295,6 +295,7 @@ class BuildSubagentSystemPromptTests(TestCase):
         prompt = build_subagent_system_prompt(round_budget=6)
         self.assertIn("# Round budget\nYou have a budget of 6 rounds.", prompt)
         self.assertIn("Round 6/6 is your final round with tools", prompt)
+        self.assertNotIn("Working canvas\" below", prompt)
 
     def test_includes_data_rooms(self):
         rooms = [{"name": "Room A", "description": "Patent docs"}]
@@ -770,7 +771,7 @@ class ResultHeaderTests(TestCase):
         self.assertEqual(
             result_header(run),
             f"[Sub-agent result: {short} — finished (9/15 rounds (standard), 4:12). If more "
-            f'is needed, continue it with chat_subagent_continue(run_id="{short}").]',
+            f'work is needed, you may continue it with chat_subagent_continue(run_id="{short}").]',
         )
 
     def test_partial_header_when_budget_ran_out(self):
@@ -782,19 +783,25 @@ class ResultHeaderTests(TestCase):
         self.assertIn('"Not covered" list', header)
 
     def test_continuation_header_and_brief(self):
-        from chat.subagent_service import continuation_brief, result_header
+        from chat.subagent_service import result_header, task_message
 
         previous = self._run(round_budget="quick", rounds_used=7, budget_exhausted=True,
                              result="Summary. Not covered: Y.")
         run = self._run(round_budget="standard", rounds_used=3, continued_from=previous,
                         chain_depth=1, continuation_instructions="Focus on Y.")
         self.assertIn("(continuation 1) — finished", result_header(run))
-        brief = continuation_brief(run)
-        self.assertIn("# Continuing earlier work", brief)
-        self.assertIn("ran out of rounds (its reply was forced) after 6/6 rounds (quick)", brief)
-        self.assertIn("Summary. Not covered: Y.", brief)
-        self.assertIn("## Direction from the orchestrator\nFocus on Y.", brief)
-        self.assertEqual(continuation_brief(previous), "")
+        message = task_message(run)
+        # The original task and the continuation brief are separate sections.
+        self.assertTrue(message.startswith("# Original task\nt\n\n# Continuing earlier work\n"))
+        self.assertIn(
+            "A previous sub-agent ran out of rounds (its reply was forced) after 6/6 rounds "
+            "(quick), 4:12. Its working canvas and scratchpad were carried over to you as a "
+            "starting point. Continue where it left off.",
+            message,
+        )
+        self.assertIn("## Its final reply\nSummary. Not covered: Y.", message)
+        self.assertIn("## Direction from the orchestrator\nFocus on Y.", message)
+        self.assertEqual(task_message(previous), "t")
 
     @patch("llm.get_llm_service")
     @patch("core.preferences.get_preferences")
@@ -823,7 +830,8 @@ class ResultHeaderTests(TestCase):
         run.refresh_from_db()
         self.assertEqual(run.canvas, "# Report\nold work")
         _, request = mock_svc.return_value.run_via_stream.call_args[0]
-        self.assertTrue(request.messages[1].content.startswith("task\n\n# Continuing earlier work"))
+        self.assertTrue(request.messages[1].content.startswith(
+            "# Original task\ntask\n\n# Continuing earlier work"))
 
 
 class CreateSubagentToolSpecializationTests(TestCase):
