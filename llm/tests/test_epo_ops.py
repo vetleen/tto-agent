@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 from django.contrib.auth import get_user_model
 from django.test import SimpleTestCase, TestCase, override_settings
 
+from llm.tools._throttle import SlidingWindowScheduler as _SlidingWindowScheduler
 from llm.tools.epo_ops import (
     PatentEpoOpsClassificationTool,
     _ServiceThrottle,
@@ -512,6 +513,15 @@ class OpsRequestTests(TestCase):
         data = _ops_request("published-data/search/biblio", {"q": "x"}, tool_name="patent_epoops_search")
         self.assertEqual(data, {"ok": 1})
         self.assertEqual(OpsUsageLog.objects.filter(tool_name="patent_epoops_search").count(), 1)
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_throttle_wait_is_logged(self, mock_get):
+        from llm.models import OpsUsageLog
+
+        self.limiter.acquire.return_value = 1.25
+        mock_get.return_value = _mock_ok({"ok": 1})
+        _ops_request("published-data/search", {"q": "x"}, tool_name="patent_epoops_search")
+        self.assertEqual(OpsUsageLog.objects.get().throttle_wait_ms, 1250)
 
     @patch("llm.tools.epo_ops.requests.get")
     def test_throttle_header_observed_on_success_and_error(self, mock_get):
@@ -1708,6 +1718,17 @@ class SearchToolPagingTests(TestCase):
         self.assertTrue(out.startswith("0 results (patent families) match."))
 
     @patch("llm.tools.epo_ops.requests.get")
+    def test_count_after_a_listing_costs_no_request(self, mock_get):
+        mock_get.return_value = _mock_ok(FAMILY_PAGE)
+        tool = self._tool()
+        listed = tool.invoke({"keywords": "tablet"})
+        self.assertEqual(mock_get.call_count, 1)
+        out = tool.invoke({"keywords": "tablet", "count_only": True})
+        self.assertEqual(mock_get.call_count, 1)  # answered from the listing's total
+        self.assertEqual(out, '150 results (patent families) match. Query: ta="tablet"')
+        self.assertIn(out.split(" ", 1)[0], listed)
+
+    @patch("llm.tools.epo_ops.requests.get")
     def test_publication_membership_check(self, mock_get):
         # Each row shows one family member; pn= finds the family of a known number.
         mock_get.return_value = _mock_ok({"ops:world-patent-data": {"ops:biblio-search": {"@total-result-count": "1"}}})
@@ -2033,31 +2054,44 @@ class ServiceThrottleTests(SimpleTestCase):
         "overloaded": "overloaded (retrieval=green:50, search=green:5, inpadoc=green:30, images=green:50, other=green:1000)",
     }
 
+    def _throttle(self, ceiling=200):
+        return _ServiceThrottle(ceiling, scheduler=_SlidingWindowScheduler("t", window=61.0))
+
     def test_adapts_to_the_guide_examples(self):
-        t = _ServiceThrottle(30)
-        self.assertEqual(t.snapshot(), {"state": "", "rpm": {"retrieval": 30, "search": 30, "inpadoc": 30, "other": 30}})
-        for state, search_rpm, inpadoc_rpm in (("idle", 18, 30), ("busy", 9, 27), ("overloaded", 3, 18)):
+        t = self._throttle()
+        # Before any header: search at the lowest allowance seen, the rest modest.
+        self.assertEqual(t.snapshot(), {"state": "", "rpm": {"retrieval": 30, "search": 5, "inpadoc": 30, "other": 30}})
+        for state, search, inpadoc, retrieval in (
+            ("idle", 30, 60, 200), ("busy", 15, 45, 100), ("overloaded", 5, 30, 50),
+        ):
             t.observe({"X-Throttling-Control": self.GUIDE[state]})
             snap = t.snapshot()
             self.assertEqual(snap["state"], state)
-            self.assertEqual(snap["rpm"]["search"], search_rpm, state)   # 60 % of 30 / 15 / 5
-            self.assertEqual(snap["rpm"]["inpadoc"], inpadoc_rpm, state)  # 60 % of 60 / 45 / 30, capped
-            self.assertEqual(snap["rpm"]["retrieval"], 30)  # never above the ceiling
-        self.assertAlmostEqual(t._buckets["search"]._rps, 3 / 60)
+            # The full allowance, no headroom.
+            self.assertEqual(snap["rpm"]["search"], search, state)
+            self.assertEqual(snap["rpm"]["inpadoc"], inpadoc, state)
+            self.assertEqual(snap["rpm"]["retrieval"], retrieval, state)
+            self.assertEqual(snap["rpm"]["other"], 200, state)  # 1000 allowed, capped by the ceiling
+
+    def test_ceiling_caps_the_allowance(self):
+        t = self._throttle(ceiling=30)
+        t.observe({"X-Throttling-Control": self.GUIDE["idle"]})
+        self.assertEqual(t.snapshot()["rpm"]["retrieval"], 30)
+        self.assertEqual(t.snapshot()["rpm"]["search"], 30)
 
     def test_black_suspends_to_one_per_minute_with_a_warning(self):
-        t = _ServiceThrottle(30)
+        t = self._throttle()
         with self.assertLogs("llm.tools.epo_ops", level="WARNING") as cm:
             t.observe({"X-Throttling-Control": "overloaded (search=black:0, inpadoc=red:30)"})
         self.assertEqual(t.snapshot()["rpm"]["search"], 1)
-        self.assertEqual(t.snapshot()["rpm"]["inpadoc"], 18)
+        self.assertEqual(t.snapshot()["rpm"]["inpadoc"], 30)
         self.assertEqual(len([r for r in cm.records if r.levelno >= logging.WARNING]), 1)
         # Repeating the same header is silent (no change).
         with self.assertNoLogs("llm.tools.epo_ops", level="WARNING"):
             t.observe({"X-Throttling-Control": "overloaded (search=black:0, inpadoc=red:30)"})
 
     def test_garbage_or_missing_header_is_ignored(self):
-        t = _ServiceThrottle(30)
+        t = self._throttle()
         before = t.snapshot()
         for headers in ({}, None, {"X-Throttling-Control": "???"}, {"X-Throttling-Control": ""}, "nope"):
             t.observe(headers)
@@ -2071,11 +2105,30 @@ class ServiceThrottleTests(SimpleTestCase):
         self.assertEqual(_service_for_path("classification/cpc/A61B8/06"), "other")
         self.assertEqual(_service_for_path(""), "other")
 
-    def test_acquire_uses_the_service_bucket(self):
-        t = _ServiceThrottle(30)
-        with patch.object(t._buckets["inpadoc"], "acquire") as acq:
-            t.acquire("family/publication/docdb/EP.1.A1/legal")
-        acq.assert_called_once()
+    def test_acquire_reserves_the_service_slot_at_its_limit(self):
+        t = self._throttle()
+        t.observe({"X-Throttling-Control": self.GUIDE["busy"]})
+        with patch.object(t._scheduler, "reserve", return_value=0.0) as res:
+            self.assertEqual(t.acquire("family/publication/docdb/EP.1.A1/legal"), 0.0)
+        res.assert_called_once_with("inpadoc", 45)
+
+    def test_acquire_sleeps_the_reserved_wait_once(self):
+        t = self._throttle()
+        with patch.object(t._scheduler, "reserve", return_value=2.5),                 patch("llm.tools.epo_ops.time.sleep") as sleep:
+            self.assertEqual(t.acquire("published-data/search"), 2.5)
+        sleep.assert_called_once_with(2.5)
+
+    def test_a_burst_up_to_the_allowance_goes_out_at_once(self):
+        t = self._throttle()
+        t.observe({"X-Throttling-Control": self.GUIDE["overloaded"]})  # search 5/min
+        with patch("llm.tools.epo_ops.time.sleep") as sleep:
+            waits = [t.acquire("published-data/search") for _ in range(5)]
+        self.assertEqual(waits, [0.0] * 5)
+        sleep.assert_not_called()
+        with patch("llm.tools.epo_ops.time.sleep") as sleep:
+            sixth = t.acquire("published-data/search")
+        self.assertGreater(sixth, 59.0)  # waits for the first start to leave the 61 s window
+        sleep.assert_called_once()
 
 
 class MixedContentTextTests(TestCase):

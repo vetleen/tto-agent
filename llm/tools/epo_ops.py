@@ -40,7 +40,7 @@ from llm.tools._throttle import (
     BACKOFF_BASE as _BACKOFF_BASE,
     MAX_RETRIES as _MAX_RETRIES,
     RATE_LIMIT_BACKOFF_SCHEDULE as _RATE_LIMIT_BACKOFF_SCHEDULE,
-    TokenBucketRateLimiter as _TokenBucketRateLimiter,
+    SlidingWindowScheduler as _SlidingWindowScheduler,
     deadline_capped_wait as _deadline_capped_wait,
 )
 
@@ -57,14 +57,17 @@ _CACHE_LARGE_BYTES = 200_000  # compressed; above this use _CACHE_LARGE_TTL
 _CACHE_LARGE_TTL = 900
 
 
+_DEFAULT_RPM = 200
+
+
 def _rpm() -> int:
     from django.conf import settings
 
     try:
-        rpm = int(getattr(settings, "EPO_OPS_RPM", 30))
+        rpm = int(getattr(settings, "EPO_OPS_RPM", _DEFAULT_RPM))
     except (TypeError, ValueError):
-        return 30
-    return rpm if rpm > 0 else 30
+        return _DEFAULT_RPM
+    return rpm if rpm > 0 else _DEFAULT_RPM
 
 
 # OPS reports, with every response, how many requests per 60 s window this
@@ -72,12 +75,26 @@ def _rpm() -> int:
 # §2.3.3, header ``X-Throttling-Control: idle (retrieval=green:200,
 # search=yellow:20, inpadoc=red:30, images=green:200, other=green:1000)``).
 # Green = <50 % of that limit used, yellow 50-75 %, red >75 %, black =
-# suspended. Instances don't share counters, so it is advisory.
+# suspended. The allowance follows EPO's load (search: ~30 idle, 15 busy, 5
+# overloaded) and we use all of it: in 14 days at 60 % (2026-10) OPS never
+# refused a request, while searches queued 20 s each behind our own throttle.
 _THROTTLE_HEADER = "X-Throttling-Control"
 _THROTTLE_RE = re.compile(r"(\w+)=(\w+):(\d+)")
-# Steady rate as a share of the allowance: red starts at 75 % used, so 60 %
-# keeps us yellow at worst even when two instances disagree.
-_THROTTLE_HEADROOM = 0.6
+# Per-service limit before the first header of a process: search at the lowest
+# allowance seen (overloaded), the rest at a modest rate.
+_INITIAL_LIMITS = {"search": 5}
+_INITIAL_LIMIT = 30
+# The window a limit counts over: OPS's 60 s plus a second against skew between
+# our clock and EPO's.
+_THROTTLE_WINDOW = 61.0
+
+
+def _shared_redis():
+    """The Django cache's Redis client (shared by web and worker), or None."""
+    from django.core.cache import cache
+
+    getter = getattr(getattr(cache, "_cache", None), "get_client", None)
+    return getter(write=True) if callable(getter) else None
 
 
 def _service_for_path(path: str) -> str:
@@ -93,27 +110,36 @@ def _service_for_path(path: str) -> str:
 
 
 class _ServiceThrottle:
-    """One token bucket per OPS service, adapted to ``X-Throttling-Control``.
+    """Per-OPS-service request limit, set from ``X-Throttling-Control``.
 
-    Every bucket starts at the configured ceiling (``EPO_OPS_RPM``) and is
-    lowered to a share of whatever OPS says it allows right now — this is what
-    keeps a busy sub-agent out of ``CLIENT.RobotDetected``.
+    Each service may start at most its current allowance of requests per
+    ``_THROTTLE_WINDOW`` (capped by ``EPO_OPS_RPM``). Starts are booked in a
+    sliding window shared through Redis by every process (web + worker), FIFO,
+    so a round's parallel calls go out together while the window has room and
+    queue in order once it is full — this keeps a busy sub-agent out of
+    ``CLIENT.RobotDetected`` without leaving quota unused.
     """
 
     SERVICES = ("retrieval", "search", "inpadoc", "other")
 
-    def __init__(self, ceiling_rpm: int):
+    def __init__(self, ceiling_rpm: int, *, scheduler: _SlidingWindowScheduler | None = None):
         self.ceiling_rpm = ceiling_rpm
-        self._rpm = {s: ceiling_rpm for s in self.SERVICES}
-        self._buckets = {
-            s: _TokenBucketRateLimiter(requests_per_second=ceiling_rpm / 60.0, burst=1)
-            for s in self.SERVICES
-        }
+        self._rpm = {s: min(ceiling_rpm, _INITIAL_LIMITS.get(s, _INITIAL_LIMIT)) for s in self.SERVICES}
+        self._scheduler = scheduler or _SlidingWindowScheduler(
+            "epo_ops_slots:v1", window=_THROTTLE_WINDOW, redis_client=_shared_redis,
+        )
         self._state = ""
         self._lock = threading.Lock()
 
-    def acquire(self, path: str = "") -> None:
-        self._buckets[_service_for_path(path)].acquire()
+    def acquire(self, path: str = "") -> float:
+        """Wait for a start slot for ``path``'s service; return the seconds waited."""
+        service = _service_for_path(path)
+        with self._lock:
+            limit = self._rpm[service]
+        wait = self._scheduler.reserve(service, limit)
+        if wait > 0:
+            time.sleep(wait)
+        return wait
 
     def observe(self, headers) -> None:
         """Apply the throttling header of a response (any response; never raises)."""
@@ -128,11 +154,11 @@ class _ServiceThrottle:
         with self._lock:
             self._state = state
             for name, colour, limit in pairs:
-                if name not in self._buckets:
+                if name not in self._rpm:
                     continue
                 limit = int(limit)
                 suspended = colour.lower() == "black" or limit <= 0
-                rpm = 1 if suspended else min(self.ceiling_rpm, max(1, int(limit * _THROTTLE_HEADROOM)))
+                rpm = 1 if suspended else min(self.ceiling_rpm, limit)
                 if rpm == self._rpm[name]:
                     continue
                 if suspended:
@@ -144,7 +170,6 @@ class _ServiceThrottle:
                         name, rpm, state, colour, limit,
                     )
                 self._rpm[name] = rpm
-                self._buckets[name].set_rate(rpm / 60.0)
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -353,6 +378,12 @@ def _parse_ops_fault(response) -> tuple[str, str, str]:
     )
 
 
+def _acquire_slot(path: str) -> float:
+    """Wait for this path's rate-limit slot; return the seconds spent waiting."""
+    waited = _ops_rate_limiter.acquire(path)
+    return float(waited) if isinstance(waited, (int, float)) else 0.0
+
+
 def _probe_ops_health(service: str, context=None) -> str:
     """One known-good OPS request for ``service``: "up", "down" or "unknown".
 
@@ -368,8 +399,9 @@ def _probe_ops_health(service: str, context=None) -> str:
     status = None
     code = ""
     message = ""
+    waited = 0.0
     try:
-        _ops_rate_limiter.acquire(path)
+        waited = _acquire_slot(path)
         response = requests.get(
             f"{_base_url()}/{_REST_PREFIX}/{path}",
             headers={"Authorization": f"Bearer {token}", "Accept": accept},
@@ -397,6 +429,7 @@ def _probe_ops_health(service: str, context=None) -> str:
         request_path=path,
         query=str(params.get("q", "")),
         duration_ms=int((time.monotonic() - started) * 1000),
+        throttle_wait_ms=int(waited * 1000),
     )
     return result
 
@@ -493,6 +526,7 @@ def _ops_request(
     url = f"{_base_url()}/{_REST_PREFIX}/{path.lstrip('/')}"
     started = time.monotonic()
     attempts = 0
+    waited = 0.0
 
     def _done(result: dict, outcome: str, *, http_status=None, error_code="", error_message="",
               response_bytes=0) -> dict:
@@ -508,6 +542,7 @@ def _ops_request(
             query=str((params or {}).get("q", "")),
             attempts=max(attempts, 1),
             duration_ms=int((time.monotonic() - started) * 1000),
+            throttle_wait_ms=int(waited * 1000),
         )
         return result
 
@@ -528,7 +563,7 @@ def _ops_request(
 
         attempts += 1
         try:
-            _ops_rate_limiter.acquire(path)
+            waited += _acquire_slot(path)
             response = requests.get(
                 url,
                 headers={
@@ -724,6 +759,7 @@ def _log_ops_usage(
     query: str = "",
     attempts: int = 1,
     duration_ms: int = 0,
+    throttle_wait_ms: int = 0,
 ) -> None:
     """Best-effort per-org usage/outcome log. Never raises into the tool."""
     try:
@@ -752,6 +788,7 @@ def _log_ops_usage(
             query=(query or "")[:1000],
             attempts=min(max(int(attempts), 1), 32767),
             duration_ms=max(int(duration_ms), 0),
+            throttle_wait_ms=max(int(throttle_wait_ms), 0),
         )
     except Exception:
         logger.debug("EPO OPS: usage log write failed (non-fatal)")
@@ -2128,8 +2165,11 @@ class PatentEpoOpsSearchInput(ReasonBaseModel):
     count_only: bool = Field(
         default=False,
         description=(
-            "Only return how many results (patent families) match — cheap. Use it to size a "
-            "search before listing it, and to record what each strategy contributes."
+            "Only return how many results (patent families) match. Small output, but it costs "
+            "one EPO search request, the same as a listing (and searches are the scarcest EPO "
+            "quota). Use it for strategies you will not list and for membership checks; a "
+            "search you will list anyway, list directly — the listing reports the total. A "
+            "count of a query you already listed is free."
         ),
     )
     view: Literal["abstracts", "list"] = Field(
@@ -2157,6 +2197,10 @@ class PatentEpoOpsSearchInput(ReasonBaseModel):
         return _split_cpc(value)
 
 
+def _count_cache_key(cql: str) -> str:
+    return "epo_ops_count_v1:" + hashlib.sha256(cql.encode()).hexdigest()
+
+
 class PatentEpoOpsSearchTool(ContextAwareTool):
     """Search EPO/Espacenet published patent data."""
 
@@ -2175,8 +2219,9 @@ class PatentEpoOpsSearchTool(ContextAwareTool):
         "- mixed: C1 {cpc} AND C2 {keywords}, and C1 {keywords} AND C2 {cpc}\n"
         "- keywords only: C1 {keywords} AND C2 {keywords}\n"
         "- union of all four in one search: give each concept both its keywords and its codes.\n"
-        "Run the separate strategies with count_only=true to see what each contributes; list "
-        "the union to screen the documents.\n"
+        "To see what each strategy contributes, count the ones you will not list "
+        "(count_only=true) and list the union to screen the documents — every call, count or "
+        "listing, is one EPO search request, and a listing already reports its total.\n"
         "Keywords match in title+abstract by default; set keyword_field, or a concept's own "
         "field, to title / abstract / full_text (no claims-only field exists). Two words that "
         "must sit together: a phrase ('zero order') or NEAR ('zero NEAR/3 order'). Two words "
@@ -2330,12 +2375,18 @@ class PatentEpoOpsSearchTool(ContextAwareTool):
             ],
         }
         cache_set_json(cache, cache_key, page, ttl=900, max_bytes=_CACHE_MAX_BYTES)
+        # The listing knows the total: a later count_only of this query costs no
+        # EPO search request.
+        try:
+            cache.set(_count_cache_key(cql), page["total"], timeout=900)
+        except Exception:
+            logger.debug("epo_ops search: count cache write failed, continuing")
         return page
 
     def _count(self, cql: str) -> str:
         from django.core.cache import cache
 
-        cache_key = "epo_ops_count_v1:" + hashlib.sha256(cql.encode()).hexdigest()
+        cache_key = _count_cache_key(cql)
         try:
             total = cache.get(cache_key)
         except Exception:

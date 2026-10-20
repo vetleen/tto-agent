@@ -154,6 +154,9 @@ class OpsUsageLog(models.Model):
     query = models.CharField(max_length=1000, blank=True, default="")
     attempts = models.PositiveSmallIntegerField(default=1)
     duration_ms = models.PositiveIntegerField(default=0)
+    # Part of duration_ms spent queued in our own rate limiter (all attempts),
+    # i.e. not waiting on EPO.
+    throttle_wait_ms = models.PositiveIntegerField(default=0)
 
     class Meta:
         ordering = ["-created_at"]

@@ -1,15 +1,21 @@
 """Shared client-side throttling utilities for outbound-API tools.
 
 ``brave_search`` and ``epo_ops`` each call a third-party API under its own rate
-limit and retry/backoff policy. The *mechanism* (token bucket, backoff schedule,
-env parsing) is identical, so it lives here; each tool keeps its own module-level
+limit and retry/backoff policy. The *mechanism* (token bucket, sliding window,
+backoff schedule, env parsing) lives here; each tool keeps its own module-level
 limiter instance so throttling stays independent per API.
 """
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
+import uuid
+from collections import deque
+from typing import Callable
+
+logger = logging.getLogger(__name__)
 
 # Retry/backoff knobs shared by the outbound-API tools.
 MAX_RETRIES = 3
@@ -97,3 +103,110 @@ class TokenBucketRateLimiter:
                     return
                 wait = (1.0 - self._tokens) / self._rps
             time.sleep(wait)
+
+
+# Reserve the next start slot in a sliding window, atomically, on Redis's clock
+# (so the web and worker dynos share one window and one clock). KEYS[1] = ZSET of
+# reserved start times; ARGV = limit, window seconds, unique member. Returns the
+# wait in seconds as a string (Lua numbers would be truncated to integers).
+_RESERVE_LUA = """
+if redis.replicate_commands then pcall(redis.replicate_commands) end
+local key = KEYS[1]
+local limit = tonumber(ARGV[1])
+local window = tonumber(ARGV[2])
+local t = redis.call('TIME')
+local now = tonumber(t[1]) + tonumber(t[2]) / 1000000
+redis.call('ZREMRANGEBYSCORE', key, '-inf', now - window)
+local n = redis.call('ZCARD', key)
+local slot = now
+if n >= limit then
+  local kth = redis.call('ZRANGE', key, n - limit, n - limit, 'WITHSCORES')
+  slot = math.max(slot, tonumber(kth[2]) + window)
+end
+if n > 0 then
+  local last = redis.call('ZRANGE', key, -1, -1, 'WITHSCORES')
+  slot = math.max(slot, tonumber(last[2]))
+end
+redis.call('ZADD', key, slot, ARGV[3])
+redis.call('PEXPIRE', key, math.ceil((slot - now + 2 * window) * 1000))
+return tostring(slot - now)
+"""
+
+
+class SlidingWindowScheduler:
+    """At most ``limit`` request starts per ``window`` seconds, served FIFO.
+
+    For APIs whose quota is "N requests per minute" (EPO OPS): a burst up to the
+    quota goes out at once, the next request waits until the oldest start in the
+    window has aged out. ``reserve`` books the caller's start slot atomically and
+    returns how long to wait for it, so waiters never race (a later caller never
+    gets an earlier slot) and each sleeps exactly once.
+
+    Slots live in Redis when ``redis_client`` yields a client, shared by every
+    process using the same key; on any Redis error (or without Redis) an
+    in-process window with the same algorithm takes over.
+    """
+
+    def __init__(
+        self,
+        key_prefix: str,
+        window: float = 61.0,
+        *,
+        redis_client: Callable[[], object | None] | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ):
+        self.key_prefix = key_prefix
+        self.window = float(window)
+        self._redis_client = redis_client
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._slots: dict[str, deque[float]] = {}
+        self._scripts: dict[int, object] = {}
+        self._degraded = False
+
+    def reserve(self, key: str, limit: int) -> float:
+        """Book the next start slot for ``key``; return seconds to wait (>= 0)."""
+        limit = max(1, int(limit))
+        wait = self._reserve_redis(key, limit)
+        if wait is None:
+            wait = self._reserve_local(key, limit)
+        return max(0.0, wait)
+
+    def _reserve_redis(self, key: str, limit: int) -> float | None:
+        if self._redis_client is None:
+            return None
+        try:
+            client = self._redis_client()
+            if client is None:
+                return None
+            script = self._scripts.get(id(client))
+            if script is None:
+                script = client.register_script(_RESERVE_LUA)
+                self._scripts[id(client)] = script
+            raw = script(keys=[f"{self.key_prefix}:{key}"], args=[limit, self.window, uuid.uuid4().hex])
+            wait = float(raw.decode() if isinstance(raw, bytes) else raw)
+        except Exception as e:
+            if not self._degraded:
+                # INFO: a Redis blip is tolerated (the local window takes over).
+                logger.info("%s: shared rate window unavailable (%s); using the in-process one",
+                            self.key_prefix, type(e).__name__)
+                self._degraded = True
+            return None
+        if self._degraded:
+            logger.info("%s: shared rate window back", self.key_prefix)
+            self._degraded = False
+        return wait
+
+    def _reserve_local(self, key: str, limit: int) -> float:
+        with self._lock:
+            now = self._clock()
+            slots = self._slots.setdefault(key, deque())
+            while slots and slots[0] <= now - self.window:
+                slots.popleft()
+            slot = now
+            if len(slots) >= limit:
+                slot = max(slot, slots[len(slots) - limit] + self.window)
+            if slots:
+                slot = max(slot, slots[-1])
+            slots.append(slot)
+            return slot - now

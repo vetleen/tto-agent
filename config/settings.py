@@ -910,7 +910,9 @@ JINA_API_KEY = os.environ.get("JINA_API_KEY", "")
 EPO_OPS_KEY = os.environ.get("EPO_OPS_KEY", "")
 EPO_OPS_SECRET = os.environ.get("EPO_OPS_SECRET", "")
 EPO_OPS_BASE_URL = os.environ.get("EPO_OPS_BASE_URL", "https://ops.epo.org/3.2")
-EPO_OPS_RPM = _env_int("EPO_OPS_RPM", "30")  # OPS fair-use throttle
+# Hard ceiling per OPS service (requests/min); OPS's X-Throttling-Control header
+# sets the actual limit below it (llm/tools/epo_ops.py:_ServiceThrottle).
+EPO_OPS_RPM = _env_int("EPO_OPS_RPM", "200")
 # Jina Reader endpoint. The former EU endpoint (eu.r.jina.ai) no longer
 # resolves (2026-06); override here if Jina ships a new regional endpoint.
 JINA_READER_BASE_URL = os.environ.get("JINA_READER_BASE_URL", "https://r.jina.ai")
