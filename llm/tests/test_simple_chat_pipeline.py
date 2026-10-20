@@ -592,6 +592,47 @@ class SimpleChatPipelineTests(TestCase):
         self.assertEqual(len(tokens), 1)
         self.assertEqual(tokens[0].data["text"], "The result is 3.")
 
+    def test_stream_beats_the_heartbeat_on_every_chunk(self):
+        """Each streamed chunk signals progress (RunContext.note_activity), so
+        a long live generation never looks hung to the sub-agent sweeper."""
+        mock_tool = self._make_mock_tool("document_search")
+        mock_tool._return_value = '{"result": 3}'
+        ctx = RunContext.create()
+        ctx.agent_kind = "subagent"
+        beats = []
+        ctx.on_activity = lambda: beats.append(1)
+        request = ChatRequest(
+            messages=[Message(role="user", content="Add 1 and 2")],
+            stream=True,
+            model="gpt-4o-mini",
+            tools=["document_search"],
+            context=ctx,
+        )
+
+        def fake_tool_stream(req):
+            yield StreamEvent(event_type="message_start", data={"model": "gpt-4o-mini"}, sequence=1, run_id="")
+            yield StreamEvent(event_type="message_end", data={
+                "content": "",
+                "tool_calls": [{"id": "s1", "name": "document_search", "arguments": {"a": 1}}],
+            }, sequence=2, run_id="")
+
+        def fake_final_stream(req):
+            yield StreamEvent(event_type="message_start", data={"model": "gpt-4o-mini"}, sequence=1, run_id="")
+            for i in range(5):
+                yield StreamEvent(event_type="token", data={"text": f"t{i}"}, sequence=2 + i, run_id="")
+            yield StreamEvent(event_type="message_end", data={"content": "t0t1t2t3t4"}, sequence=8, run_id="")
+
+        fake_model = MagicMock()
+        fake_model.stream.side_effect = [fake_tool_stream(None), fake_final_stream(None)]
+
+        with patch("llm.pipelines.simple_chat.create_chat_model") as mock_create, \
+             self._patch_tool_registry(mock_tool):
+            mock_create.return_value = fake_model
+            list(SimpleChatPipeline().stream(request))
+
+        # 2 + 7 streamed events, plus the round starts and the tool call's end.
+        self.assertGreaterEqual(len(beats), 9)
+
     def test_stream_ships_display_label_from_tool(self):
         """tool_start/tool_end carry display_label from the tool's metadata;
         end_label_for_result drives the completion label, falling back to
@@ -1365,6 +1406,13 @@ class IterationNoticeTests(TestCase):
         self.assertIn("1 round left (round 14/15 done)", notice.content)
         self.assertIn("This is your final round: finish your canvas", notice.content)
         self.assertIn("Do not repeat what is in the canvas", notice.content)
+
+    def test_subagent_no_notice_after_the_last_round(self):
+        """After the last budgeted round the only message is _final_request's
+        "budget used up, tools are off" — a countdown promising a final round
+        with tools would contradict it."""
+        self.assertIsNone(self._notice(14, 15, "subagent"))  # round 15 done -> 0 left
+        self.assertIsNone(self._notice(15, 15, "subagent"))
 
     def _stages_after_each_round(self, budget):
         """Stage shown after rounds 1..budget-1 (no notice is needed after the last)."""

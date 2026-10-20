@@ -89,8 +89,9 @@ class LLMCallLog(models.Model):
     tool_rounds = models.PositiveIntegerField(null=True, blank=True)
     # Why the tool loop ended: "answered", "budget" (round budget used up →
     # forced final call), "truncation" (cut-off rounds → forced final call) or
-    # "cancelled". Blank outside a loop.
-    loop_stop = models.CharField(max_length=16, blank=True, default="")
+    # "cancelled". Blank outside a loop. (db_default: the old code still serving
+    # during a rolling deploy inserts rows without this column.)
+    loop_stop = models.CharField(max_length=16, blank=True, default="", db_default="")
     # Sub-agent tool calls cut by their per-tool timeout this turn, for
     # calibrating ContextAwareTool.timeout_seconds: count, and one entry per
     # timeout {"tool", "timeout_s", "round", "late_after_s"} (late_after_s =
@@ -162,8 +163,8 @@ class OpsUsageLog(models.Model):
     attempts = models.PositiveSmallIntegerField(default=1)
     duration_ms = models.PositiveIntegerField(default=0)
     # Part of duration_ms spent queued in our own rate limiter (all attempts),
-    # i.e. not waiting on EPO.
-    throttle_wait_ms = models.PositiveIntegerField(default=0)
+    # i.e. not waiting on EPO. (db_default: see LLMCallLog.loop_stop.)
+    throttle_wait_ms = models.PositiveIntegerField(default=0, db_default=0)
 
     class Meta:
         ordering = ["-created_at"]

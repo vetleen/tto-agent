@@ -719,11 +719,17 @@ class SubAgentRun(models.Model):
     model_used = models.CharField(max_length=128, blank=True)
     # Round budget the orchestrator picked ("quick" / "standard" / "deep",
     # chat.subagent_service.ROUND_BUDGETS) and how it went: model calls made
-    # (the forced final call included) and whether the budget ran out, which
-    # forces a tool-less final reply and marks the result PARTIAL.
-    round_budget = models.CharField(max_length=10, default="standard")
+    # (the forced final call included), whether the budget ran out, which
+    # forces a tool-less final reply and marks the result PARTIAL, and why the
+    # tool loop stopped (``answered`` / ``budget`` / ``truncation`` /
+    # ``cancelled``, the pipeline's ``loop_stop``) — a truncation stop also
+    # forces the final reply and is marked PARTIAL.
+    # NOT NULL columns added after 2026-10-20 carry a db_default so the old
+    # code still serving during a rolling deploy can insert rows.
+    round_budget = models.CharField(max_length=10, default="standard", db_default="standard")
     rounds_used = models.PositiveIntegerField(null=True, blank=True)
-    budget_exhausted = models.BooleanField(default=False)
+    budget_exhausted = models.BooleanField(default=False, db_default=False)
+    stop_reason = models.CharField(max_length=16, blank=True, default="", db_default="")
     # Continuation (chat_subagent_continue): a new run that picks up a finished
     # run's task with its canvas, scratchpad and final reply. chain_depth counts
     # the continuations before this run (0 = the original); the orchestrator's
@@ -732,8 +738,8 @@ class SubAgentRun(models.Model):
     continued_from = models.ForeignKey(
         "self", null=True, blank=True, on_delete=models.SET_NULL, related_name="continuations",
     )
-    chain_depth = models.PositiveSmallIntegerField(default=0)
-    continuation_instructions = models.TextField(blank=True, default="")
+    chain_depth = models.PositiveSmallIntegerField(default=0, db_default=0)
+    continuation_instructions = models.TextField(blank=True, default="", db_default="")
     # Heartbeat: bumped (throttled) while the run makes progress — a round
     # starts, a tool call finishes. The stale-run sweeper fails a RUNNING run
     # only after it has been silent longer than a model call or tool call could

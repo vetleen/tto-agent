@@ -2,8 +2,9 @@
 
 ``brave_search`` and ``epo_ops`` each call a third-party API under its own rate
 limit and retry/backoff policy. The *mechanism* (token bucket, sliding window,
-backoff schedule, env parsing) lives here; each tool keeps its own module-level
-limiter instance so throttling stays independent per API.
+backoff schedule, env parsing, deadline-capped waits) lives here; each tool
+keeps its own module-level limiter instance so throttling stays independent
+per API.
 """
 
 from __future__ import annotations
@@ -23,23 +24,62 @@ BACKOFF_BASE = 0.5
 RATE_LIMIT_BACKOFF_SCHEDULE: list[float] = [5.0, 15.0, 30.0, 60.0]
 
 
-def deadline_capped_wait(seconds: float, context=None) -> tuple[float, bool]:
-    """Compute a retry-backoff wait that never runs past the run deadline.
+# The deadline of the tool call running on the current thread (a monotonic
+# instant), set by the sub-agent tool loop before it runs a call. Tool threads
+# cannot be cancelled: when the loop stops waiting for a call (its per-tool
+# timeout) the thread runs on — this is how its retry backoffs and rate-window
+# waits learn to stop at that timeout instead of sleeping and firing requests
+# for a round that has moved on.
+_call_deadline = threading.local()
 
-    Tool retry loops execute on worker threads with no cancel signal, so the run
-    deadline (``RunContext.remaining_seconds()``) is the only way to interrupt a
-    long rate-limit backoff. Returns ``(sleep_seconds, may_retry)``: how long to
-    sleep (never past the deadline) and whether the caller may retry afterward
-    (False once the deadline is reached — the caller should surface a terminal
-    "temporarily unavailable" result). The caller performs the actual
-    ``time.sleep`` so it stays observable/patchable in the tool module.
-    ``context`` is duck-typed: any object exposing ``remaining_seconds()`` works;
-    None means no deadline.
+
+def set_call_deadline(seconds: float | None) -> None:
+    """Bound the current thread's tool call to ``seconds`` from now (None clears).
+
+    Set by ``llm.pipelines.simple_chat._run_round_with_timeouts`` on the worker
+    thread around each sub-agent tool call. The main agent sets none: its calls
+    wait as long as a tool takes.
     """
-    remaining = None
+    _call_deadline.at = (time.monotonic() + seconds) if seconds is not None else None
+
+
+def call_deadline_remaining() -> float | None:
+    """Seconds left on the current thread's tool call, or None without one."""
+    at = getattr(_call_deadline, "at", None)
+    return None if at is None else at - time.monotonic()
+
+
+def wait_budget(context=None) -> float | None:
+    """Seconds a wait on this thread may still take, or None when unbounded.
+
+    The lesser of the run deadline (``context.remaining_seconds()``, duck-typed;
+    None means no deadline) and the current tool call's deadline.
+    """
+    budgets = []
     fn = getattr(context, "remaining_seconds", None)
     if callable(fn):
         remaining = fn()
+        if remaining is not None:
+            budgets.append(remaining)
+    call_remaining = call_deadline_remaining()
+    if call_remaining is not None:
+        budgets.append(call_remaining)
+    return min(budgets) if budgets else None
+
+
+def deadline_capped_wait(seconds: float, context=None) -> tuple[float, bool]:
+    """Compute a retry-backoff wait that never runs past the deadline.
+
+    Tool retry loops execute on worker threads with no cancel signal, so the
+    deadline (``wait_budget``: the run deadline and/or the per-call timeout) is
+    the only way to interrupt a long rate-limit backoff. Returns
+    ``(sleep_seconds, may_retry)``: how long to sleep (never past the deadline)
+    and whether the caller may retry afterward (False once the deadline is
+    reached — the caller should surface a terminal "temporarily unavailable"
+    result). The caller performs the actual ``time.sleep`` so it stays
+    observable/patchable in the tool module.
+    """
+    remaining = wait_budget(context)
     if remaining is None:
         return seconds, True
     if remaining <= 0:
@@ -161,29 +201,45 @@ class SlidingWindowScheduler:
         self._clock = clock
         self._lock = threading.Lock()
         self._slots: dict[str, deque[float]] = {}
-        self._scripts: dict[int, object] = {}
+        # The reserve script, registered once; each call names its client.
+        self._script: object | None = None
         self._degraded = False
 
-    def reserve(self, key: str, limit: int) -> float:
-        """Book the next start slot for ``key``; return seconds to wait (>= 0)."""
+    def reserve(self, key: str, limit: int, *, max_wait: float | None = None) -> float | None:
+        """Book the next start slot for ``key``; return seconds to wait (>= 0).
+
+        With ``max_wait``, a slot further away than that is not kept: the
+        booking is released and None is returned, so a caller bounded by a
+        deadline neither sleeps past it nor leaves a dead slot queued in the
+        window for everyone behind it.
+        """
         limit = max(1, int(limit))
-        wait = self._reserve_redis(key, limit)
-        if wait is None:
-            wait = self._reserve_local(key, limit)
+        booked = self._reserve_redis(key, limit)
+        if booked is None:
+            booked = self._reserve_local(key, limit)
+        wait, release = booked
+        if max_wait is not None and wait > max_wait:
+            release()
+            return None
         return max(0.0, wait)
 
-    def _reserve_redis(self, key: str, limit: int) -> float | None:
+    def _reserve_redis(self, key: str, limit: int) -> tuple[float, Callable[[], None]] | None:
         if self._redis_client is None:
             return None
         try:
             client = self._redis_client()
             if client is None:
                 return None
-            script = self._scripts.get(id(client))
+            script = self._script
             if script is None:
-                script = client.register_script(_RESERVE_LUA)
-                self._scripts[id(client)] = script
-            raw = script(keys=[f"{self.key_prefix}:{key}"], args=[limit, self.window, uuid.uuid4().hex])
+                # Registered once, then run against whichever client the call
+                # has: the Django cache hands out a NEW redis.Redis per
+                # get_client(), so a per-client registry would pin every one of
+                # them (a Script holds its client) for the life of the process.
+                script = self._script = client.register_script(_RESERVE_LUA)
+            full_key = f"{self.key_prefix}:{key}"
+            member = uuid.uuid4().hex
+            raw = script(keys=[full_key], args=[limit, self.window, member], client=client)
             wait = float(raw.decode() if isinstance(raw, bytes) else raw)
         except Exception as e:
             if not self._degraded:
@@ -195,9 +251,16 @@ class SlidingWindowScheduler:
         if self._degraded:
             logger.info("%s: shared rate window back", self.key_prefix)
             self._degraded = False
-        return wait
 
-    def _reserve_local(self, key: str, limit: int) -> float:
+        def release() -> None:
+            try:
+                client.zrem(full_key, member)
+            except Exception:
+                pass  # the booking ages out of the window on its own
+
+        return wait, release
+
+    def _reserve_local(self, key: str, limit: int) -> tuple[float, Callable[[], None]]:
         with self._lock:
             now = self._clock()
             slots = self._slots.setdefault(key, deque())
@@ -209,4 +272,12 @@ class SlidingWindowScheduler:
             if slots:
                 slot = max(slot, slots[-1])
             slots.append(slot)
-            return slot - now
+
+        def release() -> None:
+            with self._lock:
+                try:
+                    slots.remove(slot)
+                except ValueError:
+                    pass
+
+        return slot - now, release

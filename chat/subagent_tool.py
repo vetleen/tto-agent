@@ -9,6 +9,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from chat.subagent_service import DEFAULT_ROUND_BUDGET, ROUND_BUDGETS, round_budget_rounds
 from core.preferences import DEFAULT_SUBAGENT_TIER, SUBAGENT_TIERS
 from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
 
@@ -129,18 +130,27 @@ def _resolve_shared_attachments(thread_id, numbers: list[int]) -> tuple[list[dic
 
 def _valid_round_budget(name) -> str:
     """The round budget name to store; anything unknown becomes the default."""
-    from chat.subagent_service import DEFAULT_ROUND_BUDGET, ROUND_BUDGETS
-
     return name if name in ROUND_BUDGETS else DEFAULT_ROUND_BUDGET
+
+
+def _round_budget_options() -> str:
+    """``"quick" (6 rounds), "standard" (15 rounds, default), "deep" (30 rounds)`` —
+    rendered from ROUND_BUDGETS so the schema can never promise a budget the
+    loop does not enforce."""
+    return ", ".join(
+        f'"{name}" ({round_budget_rounds(name)} rounds'
+        f'{", default" if name == DEFAULT_ROUND_BUDGET else ""})'
+        for name in ROUND_BUDGETS
+    )
 
 
 # --- Input schemas ---
 
 _ROUND_BUDGET_DESCRIPTION = (
-    'How much work the task needs: "quick" (6 rounds), "standard" (15 rounds, default), '
-    '"deep" (30 rounds). A round is one sub-agent reply that calls tools (parallel calls '
-    "count once). When its rounds run out the sub-agent must finish with what it has, so "
-    "size the budget to the task, or split a large task across several sub-agents."
+    f"How much work the task needs: {_round_budget_options()}. A round is one sub-agent "
+    "reply that calls tools (parallel calls count once). When its rounds run out the "
+    "sub-agent must finish with what it has, so size the budget to the task, or split a "
+    "large task across several sub-agents."
 )
 _MODEL_TIER_DESCRIPTION = (
     'Model quality, chosen by task complexity: "low" for especially simple, well-defined '

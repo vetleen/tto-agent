@@ -782,6 +782,27 @@ class ResultHeaderTests(TestCase):
         self.assertIn("— PARTIAL: round budget used up (6/6 rounds (quick), 4:12)", header)
         self.assertIn('"Not covered" list', header)
 
+    def test_partial_header_and_brief_when_output_was_cut_off(self):
+        """A truncation stop (two cut-off rounds) also forced the final reply:
+        PARTIAL, but it must not be blamed on the round budget."""
+        from chat.subagent_service import result_header, task_message
+
+        previous = self._run(round_budget="standard", rounds_used=3, stop_reason="truncation",
+                             result="Summary. Not covered: Z.")
+        header = result_header(previous)
+        self.assertIn(
+            "— PARTIAL: its output was cut off repeatedly, so its final reply was forced "
+            "(3/15 rounds (standard), 4:12)",
+            header,
+        )
+        self.assertNotIn("budget", header)
+        run = self._run(round_budget="standard", continued_from=previous, chain_depth=1)
+        self.assertIn(
+            "A previous sub-agent had its output cut off repeatedly (its reply was forced) "
+            "after 3/15 rounds (standard), 4:12.",
+            task_message(run),
+        )
+
     def test_continuation_header_and_brief(self):
         from chat.subagent_service import result_header, task_message
 
@@ -1719,6 +1740,32 @@ class RunSubagentServiceTests(TestCase):
         self.assertEqual(run.status, SubAgentRun.Status.COMPLETED)
         self.assertEqual(run.rounds_used, 31)
         self.assertTrue(run.budget_exhausted)
+        self.assertEqual(run.stop_reason, "budget")
+
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
+    def test_truncation_stop_is_recorded_without_exhausting_the_budget(self, mock_prefs, mock_svc):
+        mock_prefs.return_value = _prefs()
+
+        def _run_via_stream(pipeline_id, request):
+            request.context.observability["rounds"] = 3
+            request.context.observability["loop_stop"] = "truncation"
+            response = MagicMock()
+            response.message.content = "Summary. Not covered: X."
+            response.usage.total_tokens = 10
+            response.usage.cost_usd = 0.0
+            return response
+
+        mock_svc.return_value.run_via_stream.side_effect = _run_via_stream
+        run = SubAgentRun.objects.create(thread=self.thread, user=self.user, prompt="task")
+
+        from chat.subagent_service import run_subagent
+        run_subagent(run.id)
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, SubAgentRun.Status.COMPLETED)
+        self.assertEqual(run.stop_reason, "truncation")
+        self.assertFalse(run.budget_exhausted)
 
     @patch("chat.tasks.notify_subagent_status")
     @patch("chat.tasks.run_subagent_task")

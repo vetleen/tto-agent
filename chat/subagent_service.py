@@ -305,19 +305,31 @@ def run_progress(run) -> str:
     return ", ".join(parts)
 
 
+def forced_reply_reason(run) -> str:
+    """Why the run's tool-less final reply was forced, or "" when it answered
+    on its own: its round budget ran out, or its output was cut off (output
+    cap / repetition guard) twice in a row so the loop gave up on tools."""
+    if run.budget_exhausted:
+        return "round budget used up"
+    if run.stop_reason == "truncation":
+        return "its output was cut off repeatedly, so its final reply was forced"
+    return ""
+
+
 def result_header(run) -> str:
     """The header of a sub-agent's result message.
 
     Says how the run went (rounds used of its budget, time taken) and how to
-    continue it. A run whose budget ran out — its tool-less final reply was
-    forced — is marked PARTIAL.
+    continue it. A run whose tool-less final reply was forced (budget ran out,
+    or repeatedly cut-off output — ``forced_reply_reason``) is marked PARTIAL.
     """
     short_id = str(run.id)[:8]
     progress = run_progress(run)
     continuation = f" (continuation {run.chain_depth})" if run.chain_depth else ""
-    if run.budget_exhausted:
+    forced = forced_reply_reason(run)
+    if forced:
         return (
-            f"[Sub-agent result: {short_id}{continuation} — PARTIAL: round budget used up"
+            f"[Sub-agent result: {short_id}{continuation} — PARTIAL: {forced}"
             f"{f' ({progress})' if progress else ''}. See its \"Not covered\" list; if more "
             f'work is needed, you may continue it with chat_subagent_continue(run_id="{short_id}").]'
         )
@@ -441,7 +453,12 @@ def task_message(run) -> str:
     previous = run.continued_from
     if previous is None:
         return run.prompt
-    outcome = "ran out of rounds (its reply was forced)" if previous.budget_exhausted else "finished"
+    if previous.budget_exhausted:
+        outcome = "ran out of rounds (its reply was forced)"
+    elif previous.stop_reason == "truncation":
+        outcome = "had its output cut off repeatedly (its reply was forced)"
+    else:
+        outcome = "finished"
     progress = run_progress(previous)
     lines = [
         "# Original task",
@@ -665,7 +682,8 @@ def run_subagent(run_id: uuid.UUID) -> None:
             run.cost_usd = response.usage.cost_usd or 0.0
         obs = context.observability
         run.rounds_used = obs.get("rounds")
-        run.budget_exhausted = obs.get("loop_stop") == "budget"
+        run.stop_reason = obs.get("loop_stop") or ""
+        run.budget_exhausted = run.stop_reason == "budget"
         # A populated canvas is a deliverable in its own right, so a run that
         # built one but emitted no final text still counts as completed — but
         # not the specialization's template the sub-agent never touched.
@@ -696,6 +714,7 @@ def run_subagent(run_id: uuid.UUID) -> None:
             tokens_used=run.tokens_used,
             cost_usd=run.cost_usd,
             rounds_used=run.rounds_used,
+            stop_reason=run.stop_reason,
             budget_exhausted=run.budget_exhausted,
             status=run.status,
             error=run.error,

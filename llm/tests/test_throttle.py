@@ -5,7 +5,14 @@ import uuid
 from unittest import TestCase, skipUnless
 from unittest.mock import MagicMock
 
-from llm.tools._throttle import SlidingWindowScheduler, TokenBucketRateLimiter, deadline_capped_wait
+from llm.tools._throttle import (
+    SlidingWindowScheduler,
+    TokenBucketRateLimiter,
+    call_deadline_remaining,
+    deadline_capped_wait,
+    set_call_deadline,
+    wait_budget,
+)
 from llm.types.context import RunContext
 
 
@@ -52,6 +59,38 @@ class DeadlineCappedWaitTests(TestCase):
 
     def test_deadline_already_passed_no_sleep_and_stops(self):
         self.assertEqual(deadline_capped_wait(30.0, _Ctx(-1.0)), (0.0, False))
+
+
+class CallDeadlineTests(TestCase):
+    """The per-tool-call deadline a sub-agent round sets on the worker thread."""
+
+    def setUp(self):
+        self.addCleanup(set_call_deadline, None)
+
+    def test_no_call_deadline_by_default(self):
+        set_call_deadline(None)
+        self.assertIsNone(call_deadline_remaining())
+        self.assertIsNone(wait_budget(None))
+        self.assertIsNone(wait_budget(RunContext.create()))
+
+    def test_call_deadline_caps_waits_without_a_run_deadline(self):
+        set_call_deadline(10.0)
+        remaining = call_deadline_remaining()
+        self.assertGreater(remaining, 9.0)
+        self.assertLessEqual(remaining, 10.0)
+        nap, may_retry = deadline_capped_wait(30.0, RunContext.create())
+        self.assertAlmostEqual(nap, 10.0, delta=0.5)
+        self.assertFalse(may_retry)
+        self.assertEqual(deadline_capped_wait(5.0, None), (5.0, True))
+
+    def test_wait_budget_is_the_lesser_of_run_and_call_deadlines(self):
+        set_call_deadline(10.0)
+        self.assertAlmostEqual(wait_budget(_Ctx(100.0)), 10.0, delta=0.5)
+        self.assertAlmostEqual(wait_budget(_Ctx(3.0)), 3.0, delta=0.5)
+
+    def test_expired_call_deadline_stops_retrying(self):
+        set_call_deadline(0.0)
+        self.assertEqual(deadline_capped_wait(30.0, None), (0.0, False))
 
 
 class _Clock:
@@ -108,6 +147,15 @@ class SlidingWindowSchedulerTests(TestCase):
         self.assertEqual(s.reserve("retrieval", 1), 0.0)
         self.assertEqual(s.reserve("search", 1), 60.0)
 
+    def test_max_wait_releases_a_slot_too_far_away(self):
+        s, _ = self._sched()
+        self.assertEqual(s.reserve("search", 1), 0.0)
+        # The next slot is 60 s out; a caller with 10 s left gets None and its
+        # booking is dropped, so the one after it is not queued behind a ghost.
+        self.assertIsNone(s.reserve("search", 1, max_wait=10.0))
+        self.assertEqual(len(s._slots["search"]), 1)
+        self.assertEqual(s.reserve("search", 1, max_wait=100.0), 60.0)
+
     def test_concurrent_callers_never_share_a_slot_beyond_the_limit(self):
         import threading
 
@@ -155,8 +203,34 @@ class SlidingWindowRedisTests(TestCase):
         kwargs = script.call_args.kwargs
         self.assertEqual(kwargs["keys"], ["p:search"])
         self.assertEqual(kwargs["args"][:2], [5, 61.0])
+        self.assertIs(kwargs["client"], client)
         s.reserve("search", 5)
-        client.register_script.assert_called_once()  # registered once per client
+        client.register_script.assert_called_once()  # registered once per scheduler
+
+    def test_script_registered_once_across_clients(self):
+        """The Django cache hands out a new redis.Redis per get_client(): the
+        script must be registered once and run with each call's client, not
+        registered (and pinned) per client object."""
+        clients = [MagicMock() for _ in range(3)]
+        for c in clients:
+            c.register_script.return_value = MagicMock(return_value=b"0")
+        it = iter(clients)
+        s = SlidingWindowScheduler("p", window=61.0, redis_client=lambda: next(it))
+        for _ in clients:
+            s.reserve("search", 5)
+        registered = [c for c in clients if c.register_script.called]
+        self.assertEqual(len(registered), 1)
+        script = registered[0].register_script.return_value
+        self.assertEqual([call.kwargs["client"] for call in script.call_args_list], clients)
+
+    def test_max_wait_releases_the_redis_booking(self):
+        client = MagicMock()
+        client.register_script.return_value = MagicMock(return_value=b"45")
+        s = SlidingWindowScheduler("p", window=61.0, redis_client=lambda: client)
+        self.assertIsNone(s.reserve("search", 5, max_wait=10.0))
+        member = client.register_script.return_value.call_args.kwargs["args"][2]
+        client.zrem.assert_called_once_with("p:search", member)
+        self.assertEqual(s.reserve("search", 5, max_wait=50.0), 45.0)
 
 
 def _local_redis():

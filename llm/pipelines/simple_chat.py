@@ -22,6 +22,7 @@ from llm.types.context import RunContext
 from llm.tools.display import parse_tool_result, tool_end_display
 from llm.tools.interfaces import ContextAwareTool, find_echoed_marker
 from llm.tools.registry import get_tool_registry
+from llm.tools._throttle import set_call_deadline
 
 logger = logging.getLogger(__name__)
 
@@ -65,9 +66,10 @@ def _iteration_notice(
 ) -> Message | None:
     """The user message appended after an iteration's tool results, or None.
 
-    Sub-agents get a round-budget countdown EVERY round, plus one line of pacing
-    advice for the stage they are in (``_round_stage_line``), so they pace
-    themselves across the whole budget instead of hitting the cliff. Main-chat
+    Sub-agents get a round-budget countdown after every round but the last (the
+    forced final call carries its own notice), plus one line of pacing advice
+    for the stage they are in (``_round_stage_line``), so they pace themselves
+    across the whole budget instead of hitting the cliff. Main-chat
     behavior is unchanged: a warning only at <=2 remaining. Cache-safe either
     way — the message is appended after the tool results, never edited into
     earlier history.
@@ -76,6 +78,11 @@ def _iteration_notice(
     remaining = max_iterations - finished
 
     if agent_kind == "subagent":
+        if remaining <= 0:
+            # Budget used up: the loop's next call is the forced, tool-less
+            # final one and _final_request says so. A countdown here would
+            # promise a "final round with tools" that cannot happen.
+            return None
         return Message(role="user", content=(
             f"[Round budget: {remaining} {'round' if remaining == 1 else 'rounds'} left "
             f"(round {finished}/{max_iterations} done). Complete your task and report your "
@@ -199,9 +206,15 @@ def _run_round_with_timeouts(tool_calls, tool_by_name, run_one, context) -> list
 
     def _wrapped(index, tc):
         started_at[index] = time.monotonic()
+        # The call's retry backoffs and rate-window waits stop at its timeout
+        # (llm.tools._throttle.wait_budget), so an abandoned thread winds down
+        # instead of sleeping on and firing requests for a round that has
+        # moved on.
+        set_call_deadline(timeouts[index])
         try:
             return run_one(tc)
         finally:
+            set_call_deadline(None)
             context.note_activity()
 
     futures = [pool.submit(_wrapped, i, tc) for i, tc in enumerate(tool_calls)]
@@ -808,12 +821,24 @@ class SimpleChatPipeline(BasePipeline):
         """
         agent_kind = getattr(req.context, "agent_kind", "main") if req.context else "main"
         if agent_kind == "subagent":
-            text = (
-                f"[Round {max_iterations + 1}/{max_iterations}: your round budget is used up. "
-                "Tools are off.] Write your final reply now: a short summary of your findings "
-                'and a "Not covered" list of what you did not get to. Your canvas is returned '
-                "as it is — do not repeat it in your reply."
-            )
+            stop = (getattr(req.context, "observability", None) or {}).get("loop_stop")
+            if stop == "truncation":
+                # Rounds may well be left; what ran out is the loop's patience
+                # with cut-off output. Saying "budget used up" here made the
+                # sub-agent report a budget problem it did not have.
+                text = (
+                    "[Your last replies were cut off before they were complete, so tools "
+                    "are off.] Write your final reply now, short and plain: a summary of "
+                    'your findings and a "Not covered" list of what you did not get to. '
+                    "Your canvas is returned as it is — do not repeat it in your reply."
+                )
+            else:
+                text = (
+                    f"[Round {max_iterations + 1}/{max_iterations}: your round budget is used "
+                    "up. Tools are off.] Write your final reply now: a short summary of your "
+                    'findings and a "Not covered" list of what you did not get to. Your canvas '
+                    "is returned as it is — do not repeat it in your reply."
+                )
         else:
             text = (
                 "You have reached the tool-use limit. Do NOT call any more tools. "
@@ -1058,7 +1083,13 @@ class SimpleChatPipeline(BasePipeline):
             ``(end_data, sequence, saw_error)``."""
             end_data = {}
             saw_error = False
+            # Every streamed chunk is progress for the sub-agent heartbeat (a
+            # throttled DB stamp; a no-op for the main agent), so a long but
+            # live generation is never mistaken for a hung run.
+            note_activity = getattr(ctx, "note_activity", None)
             for event in chat_model.stream(req):
+                if note_activity is not None:
+                    note_activity()
                 if event.event_type == "message_end":
                     end_data = dict(event.data)
                 else:

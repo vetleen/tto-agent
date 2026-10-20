@@ -454,13 +454,26 @@ def _is_cancelled(cancel_event, cancel_check) -> bool:
     return False
 
 
-def _wait_before_retry(wait: float, *, cancel_event=None, cancel_check=None, deadline_dt=None) -> bool:
+def _activity_hook(request: ChatRequest):
+    """The run's heartbeat (``RunContext.note_activity``), or None.
+
+    A retry backoff is progress the sub-agent stale-run sweeper must see, not
+    silence: without this a run sitting out 30/60/120 s waits looks hung.
+    """
+    fn = getattr(request.context, "note_activity", None)
+    return fn if callable(fn) else None
+
+
+def _wait_before_retry(
+    wait: float, *, cancel_event=None, cancel_check=None, deadline_dt=None, on_tick=None,
+) -> bool:
     """Sleep *wait* seconds before a retry, honouring cancellation and deadlines.
 
     Returns False when the retry should be abandoned instead: the run was
     cancelled, or the deadline would pass before the wait completes (in which
     case it doesn't sleep at all). With no cancel mechanism and no deadline
-    this is a single ``time.sleep(wait)``.
+    this is a single ``time.sleep(wait)``; otherwise ``on_tick`` (if given) is
+    called on every ~1 s slice of the wait.
     """
     if deadline_dt is not None and datetime.now(timezone.utc) + timedelta(seconds=wait) >= deadline_dt:
         return False
@@ -473,6 +486,8 @@ def _wait_before_retry(wait: float, *, cancel_event=None, cancel_check=None, dea
     while remaining > 0:
         if _is_cancelled(cancel_event, cancel_check):
             return False
+        if on_tick is not None:
+            on_tick()
         step = min(1.0, remaining)
         time.sleep(step)
         remaining -= step
@@ -817,6 +832,7 @@ class BaseLangChainChatModel(ChatModel):
                         cancel_event=cancel_event,
                         cancel_check=cancel_check,
                         deadline_dt=deadline_dt,
+                        on_tick=_activity_hook(request),
                     ):
                         # Cancelled or deadline too close to wait out the
                         # backoff — treat as retries exhausted.
@@ -1096,6 +1112,7 @@ class BaseLangChainChatModel(ChatModel):
                         cancel_event=cancel_event,
                         cancel_check=cancel_check,
                         deadline_dt=deadline_dt,
+                        on_tick=_activity_hook(request),
                     ):
                         if _is_cancelled(cancel_event, cancel_check):
                             # User cancelled — end the stream quietly; the

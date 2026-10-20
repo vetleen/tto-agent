@@ -524,12 +524,31 @@ class OpsRequestTests(TestCase):
         self.assertEqual(OpsUsageLog.objects.get().throttle_wait_ms, 1250)
 
     @patch("llm.tools.epo_ops.requests.get")
+    def test_slot_beyond_call_deadline_is_not_requested(self, mock_get):
+        """The window is booked up past the calling tool's deadline: no request
+        goes out, the model gets a "busy" error and the usage row says why."""
+        from llm.models import OpsUsageLog
+        from llm.tools._throttle import set_call_deadline
+
+        self.limiter.acquire.return_value = None
+        set_call_deadline(20.0)
+        self.addCleanup(set_call_deadline, None)
+        data = _ops_request("published-data/search", {"q": "x"}, tool_name="patent_epoops_search")
+        self.assertIn("EPO OPS is busy", data["error"])
+        mock_get.assert_not_called()
+        kwargs = self.limiter.acquire.call_args.kwargs
+        self.assertAlmostEqual(kwargs["max_wait"], 20.0, delta=1.0)
+        row = OpsUsageLog.objects.get()
+        self.assertEqual(row.outcome, "error")
+        self.assertEqual(row.error_code, "ThrottleDeadline")
+
+    @patch("llm.tools.epo_ops.requests.get")
     def test_throttle_header_observed_on_success_and_error(self, mock_get):
         ok = _mock_ok({"ok": 1})
         ok.headers = {"X-Throttling-Control": "idle (search=green:30)"}
         mock_get.return_value = ok
         _ops_request("published-data/search/biblio", {"q": "x"}, tool_name="patent_epoops_search")
-        self.limiter.acquire.assert_called_with("published-data/search/biblio")
+        self.limiter.acquire.assert_called_with("published-data/search/biblio", max_wait=None)
         self.limiter.observe.assert_called_with(ok.headers)
 
         err = _mock_http_error(404, headers={"X-Throttling-Control": "busy (search=yellow:15)"})
@@ -2110,7 +2129,7 @@ class ServiceThrottleTests(SimpleTestCase):
         t.observe({"X-Throttling-Control": self.GUIDE["busy"]})
         with patch.object(t._scheduler, "reserve", return_value=0.0) as res:
             self.assertEqual(t.acquire("family/publication/docdb/EP.1.A1/legal"), 0.0)
-        res.assert_called_once_with("inpadoc", 45)
+        res.assert_called_once_with("inpadoc", 45, max_wait=None)
 
     def test_acquire_sleeps_the_reserved_wait_once(self):
         t = self._throttle()

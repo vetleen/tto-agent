@@ -42,6 +42,7 @@ from llm.tools._throttle import (
     RATE_LIMIT_BACKOFF_SCHEDULE as _RATE_LIMIT_BACKOFF_SCHEDULE,
     SlidingWindowScheduler as _SlidingWindowScheduler,
     deadline_capped_wait as _deadline_capped_wait,
+    wait_budget as _wait_budget,
 )
 
 logger = logging.getLogger(__name__)
@@ -131,12 +132,20 @@ class _ServiceThrottle:
         self._state = ""
         self._lock = threading.Lock()
 
-    def acquire(self, path: str = "") -> float:
-        """Wait for a start slot for ``path``'s service; return the seconds waited."""
+    def acquire(self, path: str = "", *, max_wait: float | None = None) -> float | None:
+        """Wait for a start slot for ``path``'s service; return the seconds waited.
+
+        With ``max_wait`` (the calling tool's remaining deadline), a slot further
+        away than that is given up instead: nothing is booked and None is
+        returned, so an abandoned call never sleeps on and fires a request after
+        its round has moved on.
+        """
         service = _service_for_path(path)
         with self._lock:
             limit = self._rpm[service]
-        wait = self._scheduler.reserve(service, limit)
+        wait = self._scheduler.reserve(service, limit, max_wait=max_wait)
+        if wait is None:
+            return None
         if wait > 0:
             time.sleep(wait)
         return wait
@@ -378,9 +387,15 @@ def _parse_ops_fault(response) -> tuple[str, str, str]:
     )
 
 
-def _acquire_slot(path: str) -> float:
-    """Wait for this path's rate-limit slot; return the seconds spent waiting."""
-    waited = _ops_rate_limiter.acquire(path)
+def _acquire_slot(path: str, context=None) -> float | None:
+    """Wait for this path's rate-limit slot; return the seconds spent waiting.
+
+    None when the next slot lies beyond the call's deadline (``_wait_budget``):
+    nothing was booked and the request must not be sent.
+    """
+    waited = _ops_rate_limiter.acquire(path, max_wait=_wait_budget(context))
+    if waited is None:
+        return None
     return float(waited) if isinstance(waited, (int, float)) else 0.0
 
 
@@ -563,7 +578,23 @@ def _ops_request(
 
         attempts += 1
         try:
-            waited += _acquire_slot(path)
+            slot_wait = _acquire_slot(path, context)
+            if slot_wait is None:
+                # The service's window is booked up past this call's deadline
+                # (a sub-agent's per-tool timeout): don't queue a request the
+                # round will never see.
+                logger.info("EPO OPS window full beyond the call deadline path=%s", path)
+                return _done(
+                    {"error": (
+                        "EPO OPS is busy: other patent requests are queued ahead of this "
+                        "one for longer than this call may wait. Try again in a minute, "
+                        "or narrow the search so fewer calls are needed."
+                    )},
+                    "error",
+                    error_code="ThrottleDeadline",
+                    error_message="next window slot beyond the call deadline",
+                )
+            waited += slot_wait
             response = requests.get(
                 url,
                 headers={
@@ -633,8 +664,7 @@ def _ops_request(
                         time.sleep(nap)
                     if can_retry:
                         continue
-                remaining_fn = getattr(context, "remaining_seconds", None)
-                remaining = remaining_fn() if callable(remaining_fn) else None
+                remaining = _wait_budget(context)
                 can_probe = remaining is None or remaining > 0
                 result, diagnosis = _domain_access_error(
                     path, context, can_probe, has_query=bool((params or {}).get("q")),

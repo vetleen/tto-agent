@@ -175,6 +175,26 @@ class TruncatedRoundTests(TestCase):
         self.assertEqual(request.context.observability["rounds"], 3)
         self.assertEqual(CALLS, [])
 
+    def test_subagent_truncation_final_request_names_the_cut_off_not_the_budget(self):
+        """A sub-agent stopped for truncation has rounds left: its forced final
+        call must not claim the round budget is used up."""
+        request = self._request(stream=True, agent_kind="subagent")
+        _events, seen = self._run_stream(request, [
+            {"content": "", "output_truncated": True, "stop_reason": "repetition",
+             "tool_calls": [_call(1)]},
+            {"content": "", "output_truncated": True, "stop_reason": "repetition",
+             "tool_calls": [_call(2)]},
+            {"content": "final", "input_tokens": 1, "output_tokens": 1},
+        ])
+        self.assertEqual(len(seen), 3)
+        self.assertEqual(seen[2].params.get("_tool_choice"), "none")
+        last = seen[2].messages[-1]
+        self.assertEqual(last.role, "user")
+        self.assertIn("cut off before they were complete, so tools are off", last.content)
+        self.assertIn('"Not covered" list', last.content)
+        self.assertNotIn("budget", last.content)
+        self.assertEqual(request.context.observability["loop_stop"], "truncation")
+
     def test_normal_round_resets_the_streak(self):
         request = self._request(stream=True)
         _events, seen = self._run_stream(request, [

@@ -105,6 +105,29 @@ class RoundWithTimeoutsTests(SimpleTestCase):
         self.assertEqual([json.loads(r)["ok"] for _, r in results], ["slow_tool", "slow_tool"])
         self.assertEqual(_observability_fields(ctx)["tool_timeout_count"], None)
 
+    def test_subagent_call_runs_under_its_timeout_as_the_call_deadline(self):
+        """The tool's retry/throttle waits see the per-tool timeout as their
+        deadline on the worker thread; the main agent's calls see none."""
+        from llm.tools._throttle import call_deadline_remaining
+
+        seen = []
+
+        class _Peek(_SleepyTool):
+            def _run(self) -> str:
+                seen.append(call_deadline_remaining())
+                return json.dumps({"ok": self.name})
+
+        tool = _Peek(timeout_seconds=7)
+        SimpleChatPipeline._execute_tool_calls([_call("1", "slow_tool")], {"slow_tool": tool}, _ctx())
+        self.assertIsNotNone(seen[0])
+        self.assertGreater(seen[0], 6.0)
+        self.assertLessEqual(seen[0], 7.0)
+        SimpleChatPipeline._execute_tool_calls(
+            [_call("1", "slow_tool")], {"slow_tool": tool}, _ctx("main"),
+        )
+        self.assertIsNone(seen[1])
+        self.assertIsNone(call_deadline_remaining())  # never leaks onto this thread
+
 
 class LateResultDeliveryTests(SimpleTestCase):
     def test_late_result_is_delivered_on_a_later_round(self):
