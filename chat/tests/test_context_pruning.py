@@ -79,10 +79,19 @@ class ToolCallMetaMapTests(TestCase):
 
 
 class LoadHistoryStubbingTests(TransactionTestCase):
+    """Between-turn stubbing/trimming is the OVER-BUDGET safety net only: a
+    history that fits is replayed raw (append-only, see
+    CheckpointedHistoryTests). Each test starts with an oldest filler message
+    whose token count alone exceeds the budget, so the sliding-window fallback
+    runs (and drops the filler)."""
+
     def setUp(self):
         self.user = User.objects.create_user(email="stub@example.com", password="pass")
         self.thread = ChatThread.objects.create(created_by=self.user)
         self.consumer = ChatConsumer()
+        ChatMessage.objects.create(
+            thread=self.thread, role="user", content="FILLER", token_count=10_000_000,
+        )
 
     @database_sync_to_async
     def _msg(self, content, role="user", tool_call_id=None, tool_calls=None):
@@ -331,9 +340,7 @@ class SummariseExcludesToolNoiseTests(TransactionTestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="sum@example.com", password="pass")
         self.thread = ChatThread.objects.create(created_by=self.user)
-        self.consumer = ChatConsumer()
 
-    @database_sync_to_async
     def _msg(self, content, role="user", tool_call_id=None, tool_calls=None, hidden=False):
         metadata = {"tool_calls": tool_calls} if tool_calls else {}
         return ChatMessage.objects.create(
@@ -346,29 +353,22 @@ class SummariseExcludesToolNoiseTests(TransactionTestCase):
             token_count=count_tokens(content),
         )
 
-    async def test_tool_messages_excluded_from_summary(self):
-        # A large narrative pushes older messages out of the budget window so
-        # they become summarisation candidates; the tool noise among them must
-        # be filtered out of the returned list.
-        big = "word " * 6000
-        await self._msg("narrative one " + big, role="user")
-        await self._msg(
+    def test_tool_messages_excluded_from_summary(self):
+        # A checkpoint folds everything before the last 2 user rounds; the tool
+        # noise among it is not summarised, but the cutoff still moves past it.
+        from chat.history_checkpoint import plan_checkpoint
+
+        self._msg("narrative one", role="user")
+        self._msg(
             "", role="assistant", hidden=True,
             tool_calls=[{"id": "c1", "name": "web_search", "arguments": {"query": "x"}}],
         )
-        await self._msg("TOOL_NOISE_RESULT", role="tool", tool_call_id="c1")
-        await self._msg("narrative two " + big, role="assistant")
-        for i in range(4):
-            await self._msg(f"filler {i} " + big, role="user")
+        self._msg("TOOL_NOISE_RESULT", role="tool", tool_call_id="c1")
+        last_folded = self._msg("narrative two", role="assistant")
+        for i in range(2):
+            self._msg(f"round {i}", role="user")
 
-        to_summarise = await self.consumer._get_messages_to_summarise(
-            self.thread, model="gpt-5.4",
-        )
-        roles = [m.role for m in to_summarise]
-        self.assertNotIn("tool", roles)
-        # The hidden tool-call assistant message is excluded too.
-        for m in to_summarise:
-            if m.role == "assistant":
-                self.assertFalse(
-                    m.is_hidden_from_user and (m.metadata or {}).get("tool_calls")
-                )
+        plan = plan_checkpoint(self.thread, keep_rounds=2, force_summary=True)
+        self.assertEqual([m.content for m in plan.to_summarise], ["narrative one", "narrative two"])
+        self.assertEqual(plan.folded_count, 4)
+        self.assertEqual(plan.new_cutoff_id, last_folded.id)

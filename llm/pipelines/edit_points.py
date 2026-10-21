@@ -362,6 +362,93 @@ def trim_old_tool_results(
     return out, len(decided)
 
 
+def is_stub(content) -> bool:
+    """A result body that pruning replaced with a re-read stub."""
+    return isinstance(content, str) and content.startswith(_STUB_PREFIX)
+
+
+def drop_stub_groups(
+    messages: List[Message], *, cap: int, drop_fraction: float, eligible_call_ids: set,
+) -> tuple[List[Message], int]:
+    """Past ``cap`` tokens of stubbed results, remove the oldest stubbed tool
+    calls entirely until the stubs are back under ``(1 − drop_fraction) × cap``.
+
+    The unit is an assistant tool-call message together with all its results,
+    and only when every one of its results is a stub and every call is in
+    ``eligible_call_ids`` — so call/result pairing and role alternation stay
+    valid on every provider. Returns ``(messages, dropped_call_count)``; the
+    original list when nothing was dropped."""
+    from core.tokens import count_tokens
+
+    if cap <= 0:
+        return messages, 0
+    results = {
+        m.tool_call_id: m for m in messages
+        if getattr(m, "role", "") == "tool" and m.tool_call_id
+    }
+    total = sum(count_tokens(m.content) for m in results.values() if is_stub(m.content))
+    if total <= cap:
+        return messages, 0
+    target = int(cap * (1 - drop_fraction))
+    drop_ids: set = set()
+    for m in messages:
+        if total <= target:
+            break
+        if getattr(m, "role", "") != "assistant" or not m.tool_calls:
+            continue
+        ids = [tc.id for tc in m.tool_calls]
+        if not all(cid in eligible_call_ids and cid in results and is_stub(results[cid].content)
+                   for cid in ids):
+            continue
+        drop_ids.update(ids)
+        total -= sum(count_tokens(results[cid].content) for cid in ids)
+    if not drop_ids:
+        return messages, 0
+    out = [
+        m for m in messages
+        if not (getattr(m, "role", "") == "tool" and m.tool_call_id in drop_ids)
+        and not (
+            getattr(m, "role", "") == "assistant" and m.tool_calls
+            and all(tc.id in drop_ids for tc in m.tool_calls)
+        )
+    ]
+    return out, len(drop_ids)
+
+
+def diff_context_edits(before: List[Message], after: List[Message]) -> dict | None:
+    """What a round rewrote, keyed by ``tool_call_id``: ``results`` (new body of a
+    tool result), ``calls`` (new arguments of a call) and ``dropped`` (calls
+    removed with their results). The consumer saves this on the stored rows so
+    the next turn replays exactly what this one sent (``chat/consumers.py``
+    ``_persist_context_edits``). None when nothing changed."""
+    def _tool_bodies(msgs):
+        return {
+            m.tool_call_id: m.content for m in msgs
+            if getattr(m, "role", "") == "tool" and m.tool_call_id
+        }
+
+    def _call_args(msgs):
+        return {
+            tc.id: tc.arguments for m in msgs if getattr(m, "role", "") == "assistant"
+            for tc in (m.tool_calls or []) if isinstance(tc, ToolCall) and tc.id
+        }
+
+    old_bodies, new_bodies = _tool_bodies(before), _tool_bodies(after)
+    old_args, new_args = _call_args(before), _call_args(after)
+    results = {
+        cid: body for cid, body in new_bodies.items()
+        if cid in old_bodies and old_bodies[cid] != body
+    }
+    calls = {
+        cid: args for cid, args in new_args.items()
+        if cid in old_args and old_args[cid] != args
+    }
+    dropped = sorted(cid for cid in old_args if cid not in new_args)
+    if not (results or calls or dropped):
+        return None
+    return {"results": results, "calls": calls, "dropped": dropped}
+
+
 def _provider_view(messages: List[Message]) -> list:
     """What a provider sees of ``messages`` (metadata excluded) — to tell whether
     an edit point changed anything."""
@@ -413,6 +500,17 @@ class EditPointManager:
         # Round numbers (0-based) that were edit points — for tests/diagnostics.
         self.edit_rounds: list[int] = []
         self._round = -1
+        # What the last finish_round / finish_final rewrote in earlier messages
+        # (``diff_context_edits``), for the caller to save so later turns replay
+        # the same bytes. None when nothing changed.
+        self.last_edit: dict | None = None
+        # Calls that came in with the history (earlier turns): the only ones the
+        # stub cap may drop — the current turn's calls may carry reasoning or
+        # signatures bound to them.
+        self._history_call_ids = {
+            tc.id for m in req.messages if getattr(m, "role", "") == "assistant"
+            for tc in (m.tool_calls or []) if isinstance(tc, ToolCall) and tc.id
+        }
 
     # -- public -----------------------------------------------------------
 
@@ -432,6 +530,7 @@ class EditPointManager:
         from chat.dedup import redact_new_duplicates
 
         self._round += 1
+        before_round = new_messages
         new_messages = redact_new_duplicates(new_messages, prior_len)
         if notice is not None:
             new_messages.append(notice)
@@ -446,7 +545,9 @@ class EditPointManager:
             kinds.append(EDIT_KIND_TOOLS)
         tools = grown
 
-        projected = self._projected_tokens(new_messages, prior_len, real_input_tokens)
+        projected = self._projected_tokens(
+            new_messages, prior_len, real_input_tokens, model=req.model,
+        )
         ceiling = self.pipeline._midturn_ceiling(req)
         if ceiling and projected > ceiling:
             kinds.append(EDIT_KIND_PRUNE)
@@ -464,6 +565,7 @@ class EditPointManager:
             )
         self._append_seed_scratchpad(new_messages, req)  # no-op once shown
         self._maybe_nudge(new_messages, req, projected, ceiling)
+        self.last_edit = diff_context_edits(before_round, new_messages)
         return new_messages, tools
 
     def finish_final(self, final_messages: List[Message], req: ChatRequest) -> List[Message]:
@@ -472,18 +574,21 @@ class EditPointManager:
         for a current round — there is none)."""
         from core.tokens import estimate_chat_request_tokens
 
+        self.last_edit = None
         ceiling = self.pipeline._midturn_ceiling(req)
         estimate = estimate_chat_request_tokens(final_messages)
         if not ceiling or estimate <= ceiling:
             return final_messages
         self._round += 1
         native_total, native_ceiling = self._native_state(final_messages, req)
-        return self._edit_point(
+        edited = self._edit_point(
             final_messages, req, [EDIT_KIND_PRUNE],
             projected=estimate, ceiling=ceiling,
             native_total=native_total, native_ceiling=native_ceiling,
             protect_call_ids=set(), protect_msg_indices=set(),
         )
+        self.last_edit = diff_context_edits(final_messages, edited)
+        return edited
 
     # -- edit point -------------------------------------------------------
 
@@ -537,9 +642,19 @@ class EditPointManager:
         if EDIT_KIND_PRUNE in kinds or (ceiling and projected > frac * ceiling):
             messages, pruned = _prune_tool_messages_midturn(
                 messages, keep_recent=keep_recent, protect_call_ids=set(protect_call_ids),
+                tool_lookup=self._lookup,
             )
             if pruned and ctx is not None:
                 ctx.bump_stat("prunes", 1)
+
+        # 3a. Stub cap: past CONTEXT_STUB_CAP_FRACTION of the ceiling, the oldest
+        #     stubbed calls from earlier turns go entirely (call + results).
+        messages, dropped = drop_stub_groups(
+            messages,
+            cap=int(_setting("CONTEXT_STUB_CAP_FRACTION", 0.05) * (ceiling or 0)),
+            drop_fraction=_setting("CONTEXT_STUB_DROP_FRACTION", 0.75),
+            eligible_call_ids=self._history_call_ids - current_ids,
+        )
 
         # 3b. Trimmed calls' notes go onto their results, after result trimming
         #     (JSON hooks parse those bodies) and after pruning (a stub replaces
@@ -589,9 +704,10 @@ class EditPointManager:
                 # Not an ``edit_point:*`` key — the logger maps those to trigger kinds.
                 ctx.bump_stat("deck_block_refreshes", 1)
         logger.info(
-            "Tool-loop edit point (%s): pruned=%d trimmed_args=%d trimmed_results=%d "
-            "evicted_native=%d deck_block=%s (projected ~%d / ceiling %d, model %s, agent %s)",
-            ",".join(kinds), pruned, trimmed, trimmed_results, evicted, deck_block,
+            "Tool-loop edit point (%s): pruned=%d dropped_stub_calls=%d trimmed_args=%d "
+            "trimmed_results=%d evicted_native=%d deck_block=%s (projected ~%d / ceiling %d, "
+            "model %s, agent %s)",
+            ",".join(kinds), pruned, dropped, trimmed, trimmed_results, evicted, deck_block,
             projected, ceiling or 0, req.model, self.agent_kind,
         )
         return messages
@@ -703,12 +819,19 @@ class EditPointManager:
         return self.tool_by_name.get(name) or default_tool_lookup(name)
 
     @staticmethod
-    def _projected_tokens(messages, prior_len: int, real_input_tokens: int) -> int:
+    def _projected_tokens(
+        messages, prior_len: int, real_input_tokens: int, *, model: str | None = None,
+    ) -> int:
+        """Next request's size in ESTIMATE units (the ceiling's units): the
+        provider's real count of the last request is converted back with the
+        model's token_estimate_factor so it isn't corrected twice."""
         from core.tokens import estimate_chat_request_tokens
+        from llm.context_budget import token_estimate_factor
 
         appended = messages[prior_len:]
         if real_input_tokens:
-            return int(real_input_tokens) + estimate_chat_request_tokens(appended)
+            real_as_estimate = int(int(real_input_tokens) / token_estimate_factor(model))
+            return real_as_estimate + estimate_chat_request_tokens(appended)
         return estimate_chat_request_tokens(messages)
 
     @staticmethod
@@ -729,6 +852,9 @@ __all__ = [
     "RESULT_NOTE_FIELD",
     "TRIMMED_RESULT_KEY",
     "attach_trim_notes",
+    "diff_context_edits",
+    "drop_stub_groups",
+    "is_stub",
     "record_thinking_drops",
     "with_trim_note",
     "trim_history_call_args",

@@ -353,7 +353,7 @@ def _pipeline_call_meta(messages: List[Message]) -> dict:
 
 
 def _prune_tool_messages_midturn(
-    messages: List[Message], *, keep_recent: int, protect_call_ids: set
+    messages: List[Message], *, keep_recent: int, protect_call_ids: set, tool_lookup=None,
 ) -> Tuple[List[Message], int]:
     """Collapse old ``tool``-role messages to a re-read stub so a growing tool
     loop stops replaying full results every round (the mid-turn half of context
@@ -371,7 +371,20 @@ def _prune_tool_messages_midturn(
     tool_indices = [i for i, m in enumerate(messages) if getattr(m, "role", "") == "tool"]
     if not tool_indices:
         return messages, 0
+    call_meta = _pipeline_call_meta(messages)
     protected = set(tool_indices[-keep_recent:]) if keep_recent > 0 else set()
+    if tool_lookup is not None:
+        # Cheap re-readers (canvas/report reads) opt out of recency protection:
+        # their results are the largest and a re-read is a local query.
+        def _opts_out(i: int) -> bool:
+            name = call_meta.get(getattr(messages[i], "tool_call_id", None), ("", None))[0]
+            try:
+                tool = tool_lookup(name) if name else None
+            except Exception:
+                tool = None
+            return bool(getattr(tool, "stub_despite_recency", False))
+
+        protected = {i for i in protected if not _opts_out(i)}
     protected |= {
         i for i in tool_indices
         if getattr(messages[i], "tool_call_id", None) in protect_call_ids
@@ -385,7 +398,6 @@ def _prune_tool_messages_midturn(
     if not eligible:
         return messages, 0
 
-    call_meta = _pipeline_call_meta(messages)
     out = list(messages)
     for i in eligible:
         name, args = call_meta.get(getattr(out[i], "tool_call_id", None), ("", None))
@@ -1089,6 +1101,16 @@ class SimpleChatPipeline(BasePipeline):
                 run_id=run_id,
             )
 
+        def _context_edit_event():
+            """The last round's rewrites of earlier messages, for the consumer to
+            save (server-side only; see diff_context_edits)."""
+            if not edits.last_edit:
+                return None
+            return StreamEvent(
+                event_type="context_edit", data=edits.last_edit,
+                sequence=sequence, run_id=run_id,
+            )
+
         truncated_streak = 0
         for i in range(max_iterations):
             if _is_cancelled():
@@ -1221,6 +1243,10 @@ class SimpleChatPipeline(BasePipeline):
                         notice=notice,
                     )
                     req = req.model_copy(update={"messages": new_messages, "tool_schemas": tools})
+                    edit_event = _context_edit_event()
+                    if edit_event is not None:
+                        yield edit_event
+                        sequence += 1
                     if truncated_streak >= _MAX_CONSECUTIVE_TRUNCATED_ROUNDS:
                         logger.warning(
                             "Streaming tool loop hit %d consecutive truncated rounds at "
@@ -1337,6 +1363,10 @@ class SimpleChatPipeline(BasePipeline):
                 notice=notice,
             )
             req = req.model_copy(update={"messages": new_messages, "tool_schemas": tools})
+            edit_event = _context_edit_event()
+            if edit_event is not None:
+                yield edit_event
+                sequence += 1
         else:
             logger.warning(
                 "Streaming tool loop exhausted %d iterations; disabling tools for final stream",
@@ -1346,6 +1376,10 @@ class SimpleChatPipeline(BasePipeline):
 
         _count_round(ctx)
         final_req = self._final_request(req, edits, max_iterations)
+        edit_event = _context_edit_event()
+        if edit_event is not None:
+            yield edit_event
+            sequence += 1
         self._record_outbound_estimate(final_req.context, final_req)
         saw_error = False
         for item in _do_stream_iteration(final_req, sequence):

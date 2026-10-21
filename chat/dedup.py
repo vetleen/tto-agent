@@ -6,11 +6,14 @@ document, the same chunk content can appear multiple times. Two passes:
 - ``deduplicate_tool_results`` (keep-newest) redacts duplicate content from
   *older* tool results and descriptions already present in the dynamic context.
   It edits earlier history, so the tool loop only runs it at edit points
-  (``normalize_keep_newest``) and between turns.
+  (``normalize_keep_newest``).
 - ``redact_new_duplicates`` (append-only) redacts duplicate content from the
   results a tool-loop round just appended, before they are ever sent, and never
   touches earlier messages — keeping the request prefix byte-stable (prompt
-  cache, Anthropic preserved thinking) between edit points.
+  cache, Anthropic preserved thinking) between edit points. Between turns the
+  consumer runs it over the whole history (``new_start=0``): keep-oldest, so a
+  message's form depends only on what precedes it and the history stays a
+  stable prefix between checkpoints (``chat/history_checkpoint.py``).
 
 Each redaction stashes the original content in ``metadata["wf_original_content"]``
 (in-memory only) so ``normalize_keep_newest`` can restore and re-decide.

@@ -641,6 +641,36 @@ class TrimNoteTests(TestCase):
         self.assertEqual(w1.content.count("[Omitted from this transcript"), 1)
 
 
+class ProjectedTokensTests(SimpleTestCase):
+    """The projection is compared against a ceiling in estimate units, so the
+    provider's real count of the previous request is converted back."""
+
+    def test_real_count_divided_by_model_factor(self):
+        from core.tokens import estimate_chat_request_tokens
+
+        msgs = [Message(role="user", content="hello"), Message(role="assistant", content="hi")]
+        appended = estimate_chat_request_tokens(msgs[1:])
+        self.assertEqual(
+            EditPointManager._projected_tokens(
+                msgs, 1, 145_000, model="anthropic/claude-sonnet-5-5",
+            ),
+            100_000 + appended,
+        )
+        self.assertEqual(
+            EditPointManager._projected_tokens(msgs, 1, 145_000, model="openai/gpt-6-luna"),
+            145_000 + appended,
+        )
+
+    def test_no_real_count_estimates_everything(self):
+        from core.tokens import estimate_chat_request_tokens
+
+        msgs = [Message(role="user", content="hello")]
+        self.assertEqual(
+            EditPointManager._projected_tokens(msgs, 0, 0, model="anthropic/claude-sonnet-5-5"),
+            estimate_chat_request_tokens(msgs),
+        )
+
+
 class NativeEvictionPlanTests(SimpleTestCase):
     def _img(self, size, pathway="dataroom"):
         return {"type": "image", "source": {"type": "base64", "data": "a" * size}, "_wf_pathway": pathway}
@@ -1162,7 +1192,7 @@ class PrefixInvariantTests(TestCase):
              self.settings(CONTEXT_MIDTURN_KEEP_TOOL_RESULTS=keep_recent):
             pipe = SimpleChatPipeline(max_tool_iterations=self.ROUNDS + 1)
             if stream:
-                list(pipe.stream(request))
+                self._events = list(pipe.stream(request))
             else:
                 pipe.run(request)
         return seen, ctx
@@ -1245,6 +1275,102 @@ class PrefixInvariantTests(TestCase):
                 after = seen[3][1]
                 trimmed_notes = [m for m in after if "[trimmed]" in m[3]]
                 self.assertEqual(len(trimmed_notes), 2)  # n0 (old) and n1 (recent, flagged)
+
+    def test_context_edits_rebuild_what_the_model_last_saw(self):
+        """tool_start/tool_end carry the raw calls and results; applying every
+        context_edit on top must give exactly the bodies and arguments of the
+        last request — what the consumer saves, so the next turn replays it."""
+        seen, _ctx = self._run(stream=True, agent_kind="main", pressure_round=2, flagged_note=True)
+        bodies, args = {}, {}
+        edits = 0
+        for ev in self._events:
+            if ev.event_type == "tool_start":
+                args[ev.data["tool_call_id"]] = ev.data["arguments"]
+            elif ev.event_type == "tool_end":
+                bodies[ev.data["tool_call_id"]] = ev.data["result"]
+            elif ev.event_type == "context_edit":
+                edits += 1
+                bodies.update(ev.data["results"])
+                args.update(ev.data["calls"])
+                for cid in ev.data["dropped"]:
+                    bodies.pop(cid, None)
+                    args.pop(cid, None)
+        self.assertGreaterEqual(edits, 2)  # the edit point and the dedup rounds
+        _tools, last = seen[-1]
+        sent_bodies = {m[2]: json.loads(m[1]) for m in last if m[0] == "tool"}
+        sent_args = {tc["id"]: tc["arguments"] for m in last for tc in json.loads(m[3])}
+        self.assertEqual(bodies, sent_bodies)
+        self.assertEqual(args, sent_args)
+
+    def test_quiet_round_without_duplicates_emits_no_context_edit(self):
+        base = [Message(role="user", content="q"), _asst("c1", "web_search", {"q": 1}), _tool("c1", "R1")]
+        ctx = RunContext.create(user_id="1")
+        req = ChatRequest(messages=base, model="gpt-5.4", context=ctx,
+                          params={"max_context_tokens": 50_000, "thinking_level": "low"})
+        mgr = EditPointManager(SimpleChatPipeline(), req, {})
+        mgr.finish_round(base + [_asst("c2", "web_search", {"q": 2}), _tool("c2", "R2")], req, [],
+                         prior_len=len(base), real_input_tokens=500, round_call_ids={"c2"}, notice=None)
+        self.assertIsNone(mgr.last_edit)
+
+
+class ContextEditHelperTests(SimpleTestCase):
+
+    def test_diff_context_edits(self):
+        from llm.pipelines.edit_points import diff_context_edits
+
+        before = [Message(role="user", content="q"), _asst("a", "t", {"x": "big"}), _tool("a", "RAW"),
+                  _asst("b", "t", {}), _tool("b", "B")]
+        after = [Message(role="user", content="q"), _asst("a", "t", {}), _tool("a", "STUB")]
+        self.assertEqual(diff_context_edits(before, after), {
+            "results": {"a": "STUB"}, "calls": {"a": {}}, "dropped": ["b"],
+        })
+        self.assertIsNone(diff_context_edits(before, list(before)))
+
+    def _stubbed(self, n):
+        out = [Message(role="user", content="q")]
+        for i in range(n):
+            out += [_asst(f"c{i}", "web_search", {"q": i}),
+                    _tool(f"c{i}", f"[Earlier result of web_search(q={i}) was cleared. Call it again.]")]
+        return out
+
+    def test_drop_stub_groups_oldest_first_down_to_the_low_mark(self):
+        from core.tokens import count_tokens
+        from llm.pipelines.edit_points import drop_stub_groups
+
+        msgs = self._stubbed(10)
+        each = count_tokens(msgs[2].content)
+        out, dropped = drop_stub_groups(
+            msgs, cap=each * 8, drop_fraction=0.75, eligible_call_ids={f"c{i}" for i in range(10)},
+        )
+        # 10 stubs > cap of 8 → down to ≤ 2 stubs' worth: the oldest 8 calls go.
+        self.assertEqual(dropped, 8)
+        self.assertEqual([m.tool_call_id for m in out if m.role == "tool"], ["c8", "c9"])
+        self.assertEqual([tc.id for m in out for tc in (m.tool_calls or [])], ["c8", "c9"])
+
+    def test_drop_stub_groups_spares_ineligible_and_raw(self):
+        from llm.pipelines.edit_points import drop_stub_groups
+
+        msgs = self._stubbed(4) + [_asst("r", "web_search", {}), _tool("r", "RAW")]
+        out, dropped = drop_stub_groups(msgs, cap=1, drop_fraction=0.75, eligible_call_ids={"c2", "c3", "r"})
+        self.assertEqual(dropped, 2)
+        self.assertEqual([m.tool_call_id for m in out if m.role == "tool"], ["c0", "c1", "r"])
+        self.assertEqual(drop_stub_groups(msgs, cap=0, drop_fraction=0.75, eligible_call_ids=set())[1], 0)
+
+    def test_stub_despite_recency_tools_are_stubbed_among_the_recent(self):
+        from llm.pipelines.simple_chat import _prune_tool_messages_midturn
+
+        msgs = [Message(role="user", content="q"),
+                _asst("r1", "canvas_read", {}), _tool("r1", "CANVAS"),
+                _asst("s1", "web_search", {}), _tool("s1", "SEARCH"),
+                _asst("s2", "web_search", {}), _tool("s2", "NOW")]
+        lookup = {"canvas_read": SimpleNamespace(stub_despite_recency=True),
+                  "web_search": SimpleNamespace(stub_despite_recency=False)}.get
+        out, pruned = _prune_tool_messages_midturn(
+            msgs, keep_recent=6, protect_call_ids={"s2"}, tool_lookup=lookup,
+        )
+        self.assertEqual(pruned, 1)
+        self.assertTrue(out[2].content.startswith("[Earlier result of canvas_read"))
+        self.assertEqual(out[4].content, "SEARCH")
 
 
 # ---------------------------------------------------------------------------

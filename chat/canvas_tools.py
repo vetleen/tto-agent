@@ -446,6 +446,7 @@ class ReadCanvasTool(ContextAwareTool):
 
     name: str = "canvas_read"
     audience: str = "main"
+    stub_despite_recency: bool = True  # big, and a re-read is a local query
     section: str = "skills"
     start_label: str = "Reading canvas..."
     end_label: str = "Read canvas"

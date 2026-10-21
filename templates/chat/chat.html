@@ -3434,6 +3434,13 @@
         : "Waiting for a free slot…";
       return;
     }
+    if (et === "turn.condensing_history") {
+      // The history no longer fits: the server folds older rounds into the
+      // conversation summary before the turn starts. Same spinner retitle.
+      var condensingLabel = currentStreamingElement && currentStreamingElement.querySelector(".waiting-indicator span");
+      if (condensingLabel) condensingLabel.textContent = "Condensing earlier conversation…";
+      return;
+    }
     if (et === "turn.waiting_for_attachments") {
       // The server holds the turn until the worker has processed this
       // message's attachments (text extraction, picture descriptions, slide

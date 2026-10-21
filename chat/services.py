@@ -967,7 +967,6 @@ def save_canvas_to_data_room(canvas, data_room, user, *, enqueue=True):
 
 
 CANVAS_MAX_IMAGES = 25
-SUMMARY_TARGET_TOKENS = 2_000
 
 # Derived from the unified capability table (core/file_types.py). Chat accepts
 # image/pdf/docx/pptx/text/email kinds (no audio, no spreadsheets). Uses the
@@ -1233,15 +1232,17 @@ async def generate_summary(
     user_id: int,
     conversation_id,
     model: str | None = None,
+    target_tokens: int = 5_000,
 ) -> str:
-    """Summarise *messages* into a concise rolling summary.
+    """Summarise *messages* into a rolling summary of about *target_tokens*.
 
     When *existing_summary* is provided it is folded into the new summary
     so that the LLM produces a single coherent summary covering all prior
-    history.
+    history. The prompt lives in ``chat/summary_prompt.py``.
     """
     from django.conf import settings as django_settings
 
+    from chat.summary_prompt import build_summary_prompt
     from llm import get_llm_service
     from llm.types import ChatRequest, Message, RunContext
 
@@ -1263,13 +1264,7 @@ async def generate_summary(
 
     user_prompt = "\n".join(parts)
 
-    system_prompt = (
-        "Produce a concise summary for an LLM chatbot "
-        f"of its conversation with a user. Target ~{SUMMARY_TARGET_TOKENS} tokens. "
-        "Preserve key facts, decisions, important points as well as "
-        "any context the assistant would need to continue the conversation "
-        "coherently. Do NOT include any preamble — output only the summary."
-    )
+    system_prompt = build_summary_prompt(target_tokens)
 
     context = RunContext.create(
         user_id=user_id,

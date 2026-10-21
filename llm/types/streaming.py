@@ -14,6 +14,10 @@ StreamEventType = Literal[
     "tool_end",
     "error",
     "meta",
+    # Server-side only: what an edit point / round rewrote in earlier messages
+    # (tool results, call arguments, dropped calls), so the consumer can save it
+    # and later turns replay the same bytes. Never forwarded to the client.
+    "context_edit",
 ]
 
 

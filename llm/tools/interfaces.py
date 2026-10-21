@@ -96,6 +96,10 @@ class ContextAwareTool(BaseTool):
     # when a consolidated copy of the payload is always in the context (the slide
     # tools: the current-deck block / Active Slide Deck section).
     trim_despite_recency: bool = False
+    # When True, a prune stubs this tool's results even among the most recent
+    # CONTEXT_MIDTURN_KEEP_TOOL_RESULTS (the current round is still protected).
+    # For cheap local re-readers with big results (canvas / report reads).
+    stub_despite_recency: bool = False
     # Results shorter than this are never passed to trim_result_at_edit_point.
     trim_result_min_chars: int = 2000
 

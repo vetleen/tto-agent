@@ -59,3 +59,22 @@ class GenerateSummaryTests(TransactionTestCase):
         request = call_args[0][1]
         user_msg = [m for m in request.messages if m.role == "user"][0]
         self.assertIn("Old summary text.", user_msg.content)
+
+    @patch("llm.get_llm_service")
+    async def test_target_tokens_reach_the_prompt(self, mock_get_service):
+        from chat.services import generate_summary
+
+        mock_response = MagicMock()
+        mock_response.message.content = "S"
+        mock_service = MagicMock()
+        mock_service.arun = AsyncMock(return_value=mock_response)
+        mock_get_service.return_value = mock_service
+
+        await generate_summary(
+            [MagicMock(role="user", content="x")], user_id=1, conversation_id="c",
+            target_tokens=12_000,
+        )
+        request = mock_service.arun.call_args[0][1]
+        system = [m for m in request.messages if m.role == "system"][0].content
+        self.assertIn("12,000 tokens", system)
+        self.assertIn("9,000 words", system)

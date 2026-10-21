@@ -919,6 +919,7 @@ class ViewTemplateTool(ContextAwareTool):
 
     name: str = "skill_resource_view"
     audience: str = "main"
+    stub_despite_recency: bool = True  # big, and a re-read is a local query
     start_label: str = "Loading resource..."
     end_label: str = "Viewed resource"
     description: str = (

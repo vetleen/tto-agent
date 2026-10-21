@@ -535,6 +535,61 @@ class ConsumerMessageTests(TransactionTestCase):
         await communicator.disconnect()
 
     @patch("llm.get_llm_service")
+    async def test_context_edit_is_saved_not_forwarded(self, mock_get_service):
+        """A context_edit (what the tool loop rewrote) stays server-side and is
+        saved on the rows it touches — here this round's own result, edited
+        before the row exists — so the next turn replays the same bytes."""
+        from chat.history_checkpoint import CTX_BODY, CTX_CALLS
+        from llm.types.streaming import StreamEvent
+
+        events = [
+            StreamEvent(event_type="message_start", data={}, sequence=0, run_id="r1"),
+            StreamEvent(event_type="tool_start", data={"tool_call_id": "c1", "tool_name": "web_search", "arguments": {"q": "x" * 50}}, sequence=1, run_id="r1"),
+            StreamEvent(event_type="tool_end", data={"tool_call_id": "c1", "tool_name": "web_search", "result": "RAW"}, sequence=2, run_id="r1"),
+            StreamEvent(event_type="context_edit", data={"results": {"c1": "PLACEHOLDER"}, "calls": {"c1": {"q": ""}}, "dropped": []}, sequence=3, run_id="r1"),
+            StreamEvent(event_type="message_start", data={}, sequence=4, run_id="r1"),
+            StreamEvent(event_type="token", data={"text": "Done."}, sequence=5, run_id="r1"),
+            StreamEvent(event_type="message_end", data={}, sequence=6, run_id="r1"),
+        ]
+        mock_service = MagicMock()
+
+        async def mock_astream(*args, **kwargs):
+            for e in events:
+                yield e
+
+        mock_service.astream = mock_astream
+        mock_get_service.return_value = mock_service
+
+        communicator = await self._connect()
+        await communicator.send_json_to({"type": "chat.message", "content": "Search"})
+        seen = []
+        for _ in range(30):
+            resp = await communicator.receive_json_from(timeout=10)
+            seen.append(resp.get("event_type"))
+            if resp.get("event_type") == "message_end":
+                break
+        self.assertNotIn("context_edit", seen)
+
+        import asyncio
+
+        @database_sync_to_async
+        def rows():
+            return list(ChatMessage.objects.order_by("created_at"))
+
+        for _ in range(20):
+            msgs = await rows()
+            if len(msgs) >= 4:
+                break
+            await asyncio.sleep(0.1)
+        tool_row = next(m for m in msgs if m.role == "tool")
+        self.assertEqual(tool_row.content, "RAW")  # the UI still reads the raw result
+        self.assertEqual(tool_row.metadata[CTX_BODY], "PLACEHOLDER")
+        call_row = next(m for m in msgs if m.role == "assistant" and m.metadata.get("tool_calls"))
+        self.assertEqual(call_row.metadata[CTX_CALLS][0]["arguments"], {"q": ""})
+        self.assertEqual(call_row.metadata["tool_calls"][0]["arguments"], {"q": "x" * 50})
+        await communicator.disconnect()
+
+    @patch("llm.get_llm_service")
     async def test_text_before_thinking_stays_text(self, mock_get_service):
         """Interleaved thinking: prose streamed BEFORE a thinking event in the same
         round is user-facing text, not leaked reasoning — it must persist as the

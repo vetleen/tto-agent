@@ -150,6 +150,13 @@ SLIDES_UPDATED_TOOLS = (
 MAX_HISTORY_TOKENS = 20_000  # legacy default; overridden by dynamic budget when model is known
 OVERLAP_TOKENS = 2_000  # legacy default; overridden by dynamic budget when model is known
 
+# Follows the [Attached: #N …] markers on the message that carried the files
+# (pointer-only attachments, ChatConsumer._enrich_with_attachments).
+ATTACHMENT_POINTER_NOTE = (
+    "(The user attached the file(s) above to this message. Their content is not "
+    "included here: view each with chat_attachment_view (by number) before you answer.)"
+)
+
 # Max characters accepted in a single user chat message. Generous (~18-19k tokens);
 # bounds the per-message cost of the guardrail heuristic/classifier and the LLM call.
 # Enforced authoritatively here in the consumer and also client-side in chat.html.
@@ -286,10 +293,14 @@ def _messages_with_turn_context(
     if runtime_stats:
         # Tokenize the full request (history + tool schemas) once; the preamble
         # is not yet spliced in, so add its own token count to get the footprint.
+        from llm.context_budget import as_provider_tokens
+
         base_tokens = estimate_chat_request_tokens(messages, tool_schemas)
         provisional_preamble = _preamble(runtime_stats)
-        runtime_stats["estimated_input_tokens"] = (
-            base_tokens + count_tokens(provisional_preamble)
+        # Shown next to the configured context (provider tokens), so convert.
+        runtime_stats["estimated_input_tokens"] = as_provider_tokens(
+            base_tokens + count_tokens(provisional_preamble),
+            runtime_stats.get("model_id"),
         )
         preamble = _preamble(runtime_stats)
     else:
@@ -322,6 +333,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
         self._stopped: bool = False
         self._stream_task: asyncio.Task | None = None
         self._subagent_watch_task: asyncio.Task | None = None
+        # History checkpoint scheduled after a turn; its own task so a new
+        # message (which cancels _stream_task) can't lose it.
+        self._checkpoint_task: asyncio.Task | None = None
 
         # Output sink for turn streaming. Interactive chat delivers events over
         # this WebSocket; headless loop turns swap in a BroadcastSink/NullSink.
@@ -2494,12 +2508,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
             if not self._stopped and not seed_mode and not thread.title:
                 await self._generate_thread_title(thread, content)
 
-            if meta.get("needs_summary"):
-                await self._trigger_summarization(
-                    thread, model=resolved_model, max_context_tokens=max_context_tokens,
-                    effort=meta.get("effort"),
-                    reserved_tokens=meta.get("reserved_overhead_tokens"),
-                )
+            # Checkpointed history (not fresh/scoped passes): fold the older
+            # rounds into the summary once this turn pushed it past the fraction.
+            if "over_budget" in meta and not meta.get("scoped"):
+                self._schedule_checkpoint(thread, meta.get("budgets"))
 
         except turn_gate.TurnQueueTimeout:
             logger.warning(
@@ -2832,21 +2844,35 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "effort": thinking_level,
             }
         else:
-            history_result = await self._load_history(
-                thread, model=model, max_context_tokens=max_context_tokens,
+            load_kwargs = dict(
+                model=model, max_context_tokens=max_context_tokens,
                 scope_to_current_pass=(history_mode == "loop_pass"),
                 effort=thinking_level, reserved_tokens=reserved_overhead,
             )
-            history = history_result["messages"]
+            # A checkpoint scheduled after the previous turn rewrites the
+            # history this turn would load: let it land first (bounded).
+            await self._await_pending_checkpoint()
+            history_result = await self._load_history(thread, **load_kwargs)
             meta = history_result["meta"]
+            if meta.get("over_budget") and history_mode == "conversational":
+                # The window no longer fits: checkpoint now rather than take
+                # the sliding-window fallback (which breaks the cache every turn).
+                if await self._checkpoint_now(thread, meta.get("budgets")):
+                    history_result = await self._load_history(thread, **load_kwargs)
+                    meta = history_result["meta"]
+            history = history_result["messages"]
 
         # -- 4. Build the FINAL runtime_stats + dynamic_context_data with the real
         #       history numbers. --
+        #       Token numbers are converted from estimate units to the provider's
+        #       tokens: the model reads them next to its configured context.
+        from llm.context_budget import as_provider_tokens
+
         runtime_stats = {
             "configured_context_tokens": max_context_tokens,
-            "history_budget_tokens": meta.get("history_budget_tokens"),
-            "included_history_tokens": meta.get("included_history_tokens"),
-            "summary_tokens": meta.get("summary_tokens", 0),
+            "history_budget_tokens": as_provider_tokens(meta.get("history_budget_tokens"), model),
+            "included_history_tokens": as_provider_tokens(meta.get("included_history_tokens"), model),
+            "summary_tokens": as_provider_tokens(meta.get("summary_tokens", 0), model),
             "history_summarized": bool(meta.get("has_summary")),
             "history_truncated": bool(meta.get("history_truncated")),
             **model_runtime,
@@ -2919,12 +2945,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             tools=tools, selected_tool_schemas=selected_tool_schemas,
         )
 
-        if history_mode == "conversational" and meta.get("needs_summary"):
-            await self._trigger_summarization(
-                thread, model=model, max_context_tokens=max_context_tokens,
-                effort=meta.get("effort"),
-                reserved_tokens=meta.get("reserved_overhead_tokens"),
-            )
+        if history_mode == "conversational" and "over_budget" in meta and not meta.get("scoped"):
+            await self._checkpoint_if_due(thread, meta.get("budgets"))
 
     async def _resolve_selected_tools(self, *, is_loop_turn: bool, thread_id=None):
         """Resolve ``(tool_names, tool_schema_objects)`` for this turn.
@@ -3067,11 +3089,17 @@ class ChatConsumer(AsyncWebsocketConsumer):
         await self._enrich_with_attachments(
             messages, history, resolved_model, context, thread_id=str(thread.id),
             not_ready_ids=getattr(turn, "attachments_not_ready", None),
+            pointer_only="chat_attachment_view" in (tools or ()),
         )
 
-        # Deduplicate tool results from prior turns to reduce token waste
-        from chat.dedup import deduplicate_tool_results
-        messages = deduplicate_tool_results(messages, dynamic_context=dynamic_context)
+        # Deduplicate tool results from prior turns to reduce token waste —
+        # keep-oldest (a result is redacted when an EARLIER one covers it), so
+        # each message's form depends only on what precedes it and the history
+        # stays a byte-stable prefix between checkpoints. Keep-newest (and
+        # redacting against this turn's retrieved documents) rewrote earlier
+        # messages every turn.
+        from chat.dedup import redact_new_duplicates
+        messages = redact_new_duplicates(messages, 0)
 
         prefs = self.resolved_prefs
 
@@ -3173,6 +3201,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
         stream = service.astream("simple_chat", request, cancel_event=turn.cancel_event)
         try:
             async for event in stream:
+                if event.event_type == "context_edit":
+                    # Server-side only: save what the loop rewrote so later
+                    # turns replay the same bytes (a stub stays a stub).
+                    await self._apply_context_edit(
+                        thread, event.data, pending_tool_calls, pending_tool_results,
+                    )
+                    continue
                 event_data = event.model_dump()
                 if event.event_type == "message_end":
                     # Internal replay state: keep it server-side.
@@ -3545,154 +3580,82 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     # -- Summarization helpers --
 
-    async def _trigger_summarization(self, thread, model=None, max_context_tokens=None,
-                                     effort=None, reserved_tokens=None):
-        """Summarise messages outside the token window and save to thread."""
+    # -- History checkpoints (chat/history_checkpoint.py) --
+
+    def _summary_model(self):
+        prefs = self.resolved_prefs
+        return prefs.feature_models.get("message_summary", prefs.mid_model) if prefs else None
+
+    def _schedule_checkpoint(self, thread, budgets):
+        """After a turn: run a checkpoint if one is due (summarise only on a
+        conversation overflow; stub / drop tool output otherwise). Its own task —
+        a new message cancels ``_stream_task``, which used to lose the summary."""
+        if not budgets:
+            return
+        running = getattr(self, "_checkpoint_task", None)
+        if running is not None and not running.done():
+            return
+        self._checkpoint_task = asyncio.create_task(
+            self._checkpoint_if_due(thread, budgets),
+        )
+
+    async def _checkpoint_if_due(self, thread, budgets):
+        from chat.history_checkpoint import needs_checkpoint, run_checkpoint
+
+        if not budgets:
+            return
         try:
-            from chat.services import generate_summary
-
-            thread_data = await self._get_thread_summary_data(thread)
-            messages_to_summarise = await self._get_messages_to_summarise(
-                thread, model=model, max_context_tokens=max_context_tokens,
-                effort=effort, reserved_tokens=reserved_tokens,
-            )
-
-            if not messages_to_summarise:
+            if not await database_sync_to_async(needs_checkpoint)(thread, budgets):
                 return
-
-            prefs = self.resolved_prefs
-            summary_model = prefs.feature_models.get("message_summary", prefs.mid_model) if prefs else None
-            summary_text = await generate_summary(
-                messages_to_summarise,
-                existing_summary=thread_data["summary"],
-                user_id=self.user.pk,
-                conversation_id=str(thread.id),
-                model=summary_model,
+            await run_checkpoint(
+                thread, user_id=self.user.pk, model=self._summary_model(),
+                budgets=budgets, reason="threshold",
             )
-
-            last_msg = messages_to_summarise[-1]
-            new_count = thread_data["summary_message_count"] + len(messages_to_summarise)
-            saved = await self._save_summary(
-                thread, summary_text, last_msg.id, new_count,
-                expected_cutoff_id=thread_data["summary_up_to_message_id"],
-            )
-            if not saved:
-                logger.info(
-                    "Summarization skipped for thread %s — concurrent update detected",
-                    thread.id,
-                )
+        except asyncio.CancelledError:
+            raise
         except Exception:
-            logger.exception("Failed to generate conversation summary")
+            logger.exception("History checkpoint failed for thread %s", thread.id)
 
-    @database_sync_to_async
-    def _get_thread_summary_data(self, thread):
-        thread.refresh_from_db(fields=[
-            "summary", "summary_token_count",
-            "summary_up_to_message_id", "summary_message_count",
-        ])
-        return {
-            "summary": thread.summary,
-            "summary_token_count": thread.summary_token_count,
-            "summary_up_to_message_id": thread.summary_up_to_message_id,
-            "summary_message_count": thread.summary_message_count,
-        }
+    async def _await_pending_checkpoint(self):
+        """Let a checkpoint still running from the previous turn land before
+        this turn loads its history (bounded; it keeps running past the wait)."""
+        from django.conf import settings
 
-    @database_sync_to_async
-    def _get_messages_to_summarise(self, thread, model=None, max_context_tokens=None,
-                                   effort=None, reserved_tokens=None):
-        """Return unsummarised messages that fall outside the token budget window.
-
-        The overlap window is always preserved as raw context and is never summarised.
-        ``effort``/``reserved_tokens`` must match what ``_load_history`` used for
-        this turn so the summarise boundary aligns with the live-window boundary
-        (else messages in the gap are neither summarised nor kept).
-        """
-        from chat.models import ChatMessage
-        from llm.model_info import get_history_budget
-
-        max_history_tokens = (
-            get_history_budget(
-                model, max_context_tokens=max_context_tokens,
-                effort=effort, reserved_tokens=reserved_tokens,
+        task = getattr(self, "_checkpoint_task", None)
+        if task is None or task.done():
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(task),
+                timeout=getattr(settings, "CONTEXT_CHECKPOINT_WAIT_SECONDS", 60),
             )
-            if model else MAX_HISTORY_TOKENS
+        except asyncio.TimeoutError:
+            logger.info("History checkpoint still running; turn proceeds without it")
+        except Exception:
+            pass  # logged by the task itself
+
+    async def _checkpoint_now(self, thread, budgets) -> bool:
+        """Synchronous checkpoint at turn start, when the history no longer fits.
+        Retitles the waiting spinner and keeps the socket alive meanwhile."""
+        from chat.history_checkpoint import run_checkpoint
+
+        await self._sink.send_event({"event_type": "turn.condensing_history", "data": {}})
+        hb = (
+            asyncio.create_task(self._send_heartbeats())
+            if getattr(self._sink, "wants_heartbeats", False) else None
         )
-        overlap_tokens = min(4_000, max_history_tokens // 10)
-
-        thread.refresh_from_db(fields=["summary_up_to_message_id", "summary_token_count"])
-
-        # All unsummarised messages, newest first (exclude redacted)
-        qs = ChatMessage.objects.filter(thread=thread).exclude(is_redacted=True).order_by("-created_at")
-        if thread.summary_up_to_message_id:
-            cutoff_msg = ChatMessage.objects.filter(
-                id=thread.summary_up_to_message_id,
-            ).first()
-            if cutoff_msg:
-                qs = qs.filter(created_at__gt=cutoff_msg.created_at)
-
-        all_msgs = list(qs)
-
-        # Reserve the overlap window — never summarise those messages
-        overlap_used = 0
-        overlap_count = 0
-        for msg in all_msgs:
-            overlap_used += msg.token_count
-            overlap_count += 1
-            if overlap_used >= overlap_tokens:
-                break
-
-        # Candidates for summarisation: everything beyond the overlap window
-        non_overlap = all_msgs[overlap_count:]
-
-        # Of those, keep what fits in the remaining budget
-        remaining_budget = max(0, max_history_tokens - thread.summary_token_count - overlap_used)
-        keep_count = 0
-        used = 0
-        for msg in non_overlap:
-            used += msg.token_count
-            if used > remaining_budget:
-                break
-            keep_count += 1
-
-        to_summarise = non_overlap[keep_count:]
-        to_summarise.reverse()  # chronological order
-
-        # Tool results and the hidden assistant messages that request them are
-        # reproducible noise — they're stubbed in the live window, not summarised.
-        # The rolling summary covers the user/assistant narrative only, which is
-        # cheaper to generate and far less lossy.
-        def _is_tool_noise(msg):
-            if msg.role == "tool":
-                return True
-            meta = msg.metadata or {}
-            return (
-                msg.role == "assistant"
-                and getattr(msg, "is_hidden_from_user", False)
-                and bool(meta.get("tool_calls"))
+        try:
+            result = await run_checkpoint(
+                thread, user_id=self.user.pk, model=self._summary_model(),
+                budgets=budgets, reason="over_budget",
             )
-
-        return [m for m in to_summarise if not _is_tool_noise(m)]
-
-    @database_sync_to_async
-    def _save_summary(self, thread, text, last_msg_id, count, expected_cutoff_id=None):
-        from chat.models import ChatThread
-        from core.tokens import count_tokens
-
-        # Optimistic lock: only update if summary_up_to_message_id hasn't
-        # changed since we read it, preventing concurrent summarizations
-        # from overwriting each other.
-        qs = ChatThread.objects.filter(pk=thread.pk)
-        if expected_cutoff_id is not None:
-            qs = qs.filter(summary_up_to_message_id=expected_cutoff_id)
-        else:
-            qs = qs.filter(summary_up_to_message_id__isnull=True)
-        rows = qs.update(
-            summary=text,
-            summary_token_count=count_tokens(text),
-            summary_up_to_message_id=last_msg_id,
-            summary_message_count=count,
-        )
-        return rows > 0
+            return result.saved
+        except Exception:
+            logger.exception("Synchronous history checkpoint failed for thread %s", thread.id)
+            return False
+        finally:
+            if hb is not None:
+                hb.cancel()
 
     # -- Document context helpers --
 
@@ -3916,7 +3879,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         from chat.models import SubAgentRun
         # canvas_chars, not the canvas itself: the status section only needs to
-        # know a report exists (up to 20 runs � a 225k-char canvas otherwise).
+        # know a report exists (up to 20 runs × a 225k-char canvas otherwise).
         return list(
             SubAgentRun.objects.filter(thread_id=thread_id)
             .annotate(canvas_chars=Length("canvas"))
@@ -4746,9 +4709,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     async def _enrich_with_attachments(
         self, messages, history, model, context=None, *, thread_id=None, not_ready_ids=None,
+        pointer_only=False,
     ):
         """Mark user messages that carried attachments, and send the files of
         the CURRENT turn only.
+
+        ``pointer_only`` (the turn has ``chat_attachment_view``): the current turn
+        gets the markers plus ``ATTACHMENT_POINTER_NOTE`` instead of the files —
+        the model views them with the tool, so their content lives in a tool
+        result that is saved, stubbed and pruned like any other, rather than in a
+        user message that changes form on the next turn.
 
         ``not_ready_ids``: attachments whose worker-side processing had not
         finished when the hold timed out; their markers say "still processing".
@@ -4864,6 +4834,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 # An earlier turn: the files were shown on their own turn; now
                 # only the markers remain (the agent can re-view by number).
                 message_obj.content = header
+                continue
+            if pointer_only:
+                message_obj.content = f"{header}\n\n{ATTACHMENT_POINTER_NOTE}"
                 continue
 
             content_blocks = [{"type": "text", "text": header}]
@@ -5195,7 +5168,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
         reasoning — both are preserved so the LLM keeps its own words in
         history and the chat view can surface them in the turn's activity
         timeline on reload.
+
+        A ``context_edit`` that already rewrote this round (``ctx_body`` /
+        ``ctx_arguments``, see ``_apply_context_edit``) is saved alongside the
+        raw content, so later turns replay what the model last saw.
         """
+        from chat.history_checkpoint import CTX_BODY, CTX_CALLS, CTX_REASON, CTX_TOKENS
+        from core.tokens import count_tokens
+
         # 1. Assistant message requesting tools (narration in body, tool_calls in metadata)
         tc_data = [
             {
@@ -5206,6 +5186,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
             for tc in tool_calls
         ]
         metadata = {"tool_calls": tc_data}
+        if any("ctx_arguments" in tc for tc in tool_calls):
+            metadata[CTX_CALLS] = [
+                {**d, "arguments": tc["ctx_arguments"]} if "ctx_arguments" in tc else d
+                for d, tc in zip(tc_data, tool_calls)
+            ]
         if thinking:
             metadata["thinking"] = thinking
         await self._create_message(
@@ -5214,11 +5199,43 @@ class ChatConsumer(AsyncWebsocketConsumer):
         )
         # 2. Tool result messages
         for tr in tool_results:
+            result_meta = None
+            if "ctx_body" in tr:
+                result_meta = {
+                    CTX_BODY: tr["ctx_body"],
+                    CTX_TOKENS: count_tokens(tr["ctx_body"]),
+                    CTX_REASON: "midturn",
+                }
             await self._create_message(
                 thread, "tool", tr.get("result", ""),
                 tool_call_id=tr.get("tool_call_id", ""),
+                metadata=result_meta,
                 is_hidden_from_user=True,
             )
+
+    async def _apply_context_edit(self, thread, edit, pending_tool_calls, pending_tool_results):
+        """Save a tool-loop ``context_edit``: rewrites of this round's not-yet-
+        persisted calls/results ride on the pending entries; the rest go to the
+        stored rows. Best effort — a failure only costs a cache miss later."""
+        from chat.history_checkpoint import persist_context_edit
+
+        results = dict(edit.get("results") or {})
+        calls = dict(edit.get("calls") or {})
+        for tr in pending_tool_results:
+            cid = tr.get("tool_call_id")
+            if cid in results:
+                tr["ctx_body"] = results.pop(cid)
+        for tc in pending_tool_calls:
+            cid = tc.get("tool_call_id")
+            if cid in calls:
+                tc["ctx_arguments"] = calls.pop(cid)
+        rest = {"results": results, "calls": calls, "dropped": edit.get("dropped") or []}
+        if not (results or calls or rest["dropped"]):
+            return
+        try:
+            await database_sync_to_async(persist_context_edit)(thread.id, rest)
+        except Exception:
+            logger.exception("Failed to save context edit for thread %s", thread.id)
 
     async def _generate_thread_title(self, thread, first_user_message):
         """Generate a short title for a new thread using a cheap LLM call."""
@@ -5266,15 +5283,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def _load_history(self, thread, model=None, max_context_tokens=None, scope_to_current_pass=False,
                       effort=None, reserved_tokens=None):
-        """Load token-aware conversation history with a recency overlap window.
+        """Load the conversation history: the rolling summary plus every message
+        after its cutoff, raw (``chat/history_checkpoint.py``).
 
-        The most recent *overlap_tokens* worth of messages are always included as
-        raw messages (even if they are already covered by the summary).  Any
-        remaining budget is filled with older unsummarised messages.
+        Between checkpoints this is append-only, so consecutive turns share a
+        byte-identical prefix (prompt cache). ``meta["needs_summary"]`` says a
+        checkpoint is due (past ``CONTEXT_CHECKPOINT_FRACTION`` of the budget).
+        Only when the window no longer fits (``meta["over_budget"]``) does it fall
+        back to the old sliding window: a recency overlap, older messages up to
+        the budget, and stubbing/trimming of old tool output.
 
-        When *model* is provided the token budget scales with the model's context
-        window (up to 150k).  Falls back to the legacy ``MAX_HISTORY_TOKENS``
-        constant when unknown.
+        When *model* is provided the token budget comes from
+        ``get_history_budget`` (aim, window, effort, measured overhead). Falls
+        back to the legacy ``MAX_HISTORY_TOKENS`` constant when unknown.
 
         When *scope_to_current_pass* is True, history is restricted to messages at
         or after the latest ``loop_run`` marker (the current fresh-loop pass) and
@@ -5292,16 +5313,27 @@ class ChatConsumer(AsyncWebsocketConsumer):
         """
         from django.conf import settings
 
-        from chat.models import ChatMessage
-        from llm.model_info import get_history_budget
-
-        max_history_tokens = (
-            get_history_budget(
-                model, max_context_tokens=max_context_tokens,
-                effort=effort, reserved_tokens=reserved_tokens,
-            )
-            if model else MAX_HISTORY_TOKENS
+        from chat.history_checkpoint import (
+            checkpoint_due,
+            effective_tokens,
+            history_usage,
+            is_dropped,
+            replayed_body,
+            replayed_calls,
         )
+        from chat.models import ChatMessage
+        from llm.context_budget import HistoryBudgets, history_budgets
+
+        if model:
+            budgets = history_budgets(
+                model, max_context_tokens, effort=effort, reserved_tokens=reserved_tokens,
+            )
+        else:
+            budgets = HistoryBudgets(
+                history=MAX_HISTORY_TOKENS, conversation=MAX_HISTORY_TOKENS // 6,
+                summary_target=MAX_HISTORY_TOKENS // 20, stub_cap=MAX_HISTORY_TOKENS // 20,
+            )
+        max_history_tokens = budgets.history
         overlap_tokens = min(4_000, max_history_tokens // 10)
 
         # Refresh summary fields which may have been updated by a background task
@@ -5353,7 +5385,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
         )
         if pass_scope is not None:
             msgs_qs = msgs_qs.filter(pass_scope)
-        all_msgs = list(msgs_qs.order_by("-created_at"))
+        # Calls the stub cap dropped (with their results) are never replayed.
+        all_msgs, dropped_call_ids = [], set()
+        for m in msgs_qs.order_by("-created_at"):
+            if not is_dropped(m):
+                all_msgs.append(m)
+            elif m.role == "tool" and m.tool_call_id:
+                dropped_call_ids.add(m.tool_call_id)
         total_messages = len(all_msgs)
 
         if not all_msgs:
@@ -5364,6 +5402,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     "included_messages": 0,
                     "has_summary": False,
                     "needs_summary": False,
+                    "over_budget": False,
+                    "scoped": scoped,
                     "history_budget_tokens": max_history_tokens,
                     "included_history_tokens": 0,
                     "summary_tokens": 0,
@@ -5372,52 +5412,71 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     "has_subagent_results": bool(pending_run_ids),
                     "reserved_overhead_tokens": reserved_tokens,
                     "effort": effort,
+                    "budgets": budgets.as_dict(),
                 },
             }
 
-        # 1. Build overlap window: newest messages up to overlap_tokens.
-        #    Always includes at least one message regardless of size.
-        overlap: list = []
-        overlap_tokens_used = 0
-        for msg in all_msgs:
-            overlap_tokens_used += msg.token_count
-            overlap.append(msg)
-            if overlap_tokens_used >= overlap_tokens:
-                break
-        # overlap is newest-first; oldest_overlap is the boundary
-        oldest_overlap = overlap[-1]
+        # 1. The checkpointed window: every message after the summary cutoff,
+        #    replayed as last sent (saved stubs / trimmed calls, else raw) —
+        #    append-only between checkpoints, so each turn's request extends the
+        #    previous one byte for byte (prompt cache). A pending sub-agent
+        #    outcome is shown even if a checkpoint folded it. A scoped loop pass
+        #    has no summary, so no cutoff either.
+        cutoff_at = None
+        if thread.summary_up_to_message_id and not scoped:
+            cutoff_msg = ChatMessage.objects.filter(id=thread.summary_up_to_message_id).first()
+            if cutoff_msg is not None:
+                cutoff_at = cutoff_msg.created_at
+        pending_set = set(pending_msg_ids or ())
+        window = [
+            m for m in all_msgs
+            if cutoff_at is None or m.created_at > cutoff_at or m.pk in pending_set
+        ]
+        window_tokens = sum(effective_tokens(m) for m in window)
+        over_budget = summary_token_count + window_tokens > max_history_tokens
 
-        # 2. Fill remaining budget with unsummarised messages between the
-        #    summary cutoff and the start of the overlap window.
-        remaining_budget = max(
-            0, max_history_tokens - summary_token_count - overlap_tokens_used
-        )
-        add_qs = ChatMessage.objects.filter(
-            thread=thread,
-            created_at__lt=oldest_overlap.created_at,
-        ).exclude(is_redacted=True).exclude(metadata__has_key="ui_only").order_by("-created_at")
-        if pass_scope is not None:
-            add_qs = add_qs.filter(pass_scope)
-        if thread.summary_up_to_message_id:
-            cutoff_msg = ChatMessage.objects.filter(
-                id=thread.summary_up_to_message_id,
-            ).first()
-            if cutoff_msg:
-                add_qs = add_qs.filter(created_at__gt=cutoff_msg.created_at)
-
-        add_msgs = list(add_qs)
-        additional: list = []
-        used = 0
-        for msg in add_msgs:
-            used += msg.token_count
-            if used > remaining_budget:
-                break
-            additional.append(msg)
-
-        needs_summary = len(additional) < len(add_msgs)
-
-        # 3. Combine into chronological order: additional + overlap (both reversed)
-        included = list(reversed(additional)) + list(reversed(overlap))
+        if not over_budget:
+            included = list(reversed(window))
+            # A checkpoint is due (conversation over its budget, tool pressure,
+            # or too many stubs); the consumer runs it after this turn.
+            usage = history_usage(thread, window)
+            if scoped:
+                usage.history -= thread.summary_token_count or 0
+                usage.conversation -= thread.summary_token_count or 0
+            needs_summary = checkpoint_due(usage, budgets)
+        else:
+            # Safety net — the window no longer fits (a checkpoint that hasn't
+            # landed, or the kept rounds alone are too big): the old sliding
+            # window. Breaks the prompt cache; the consumer runs a checkpoint
+            # before falling back here, so this is rare.
+            logger.info(
+                "History over budget for thread %s (%d + %d > %d tokens); sliding-window fallback",
+                thread.id, summary_token_count, window_tokens, max_history_tokens,
+            )
+            # 1a. Overlap window: newest messages up to overlap_tokens.
+            #     Always includes at least one message regardless of size.
+            overlap: list = []
+            overlap_tokens_used = 0
+            for msg in window:
+                overlap_tokens_used += effective_tokens(msg)
+                overlap.append(msg)
+                if overlap_tokens_used >= overlap_tokens:
+                    break
+            # 1b. Fill the remaining budget with the older window messages.
+            remaining_budget = max(
+                0, max_history_tokens - summary_token_count - overlap_tokens_used
+            )
+            add_msgs = window[len(overlap):]
+            additional: list = []
+            used = 0
+            for msg in add_msgs:
+                used += effective_tokens(msg)
+                if used > remaining_budget:
+                    break
+                additional.append(msg)
+            needs_summary = True
+            # Chronological order: additional + overlap (both reversed)
+            included = list(reversed(additional)) + list(reversed(overlap))
 
         # 3a. Undelivered sub-agent outcomes go last. One that landed while the
         #     previous turn was still streaming is timestamped before that turn's
@@ -5436,24 +5495,30 @@ class ChatConsumer(AsyncWebsocketConsumer):
             )
 
         included_history_tokens = summary_token_count + sum(
-            msg.token_count for msg in included
+            effective_tokens(msg) for msg in included
         )
 
-        # 3b. Stub old tool results. Tool output is reproducible, so once it falls
-        #     outside the most recent N user turns we collapse it to a short "call
-        #     the tool again" placeholder (preserving tool_call_id + the matching
-        #     assistant tool_calls entry) — the between-turn half of context
-        #     pruning. Recent tool output stays raw so ongoing reasoning isn't cut.
-        raw_tool_turns = getattr(settings, "CONTEXT_RAW_TOOL_TURNS", 2)
-        stub_before_idx = _tool_stub_boundary(included, raw_tool_turns)
+        # 3b. Safety net only: stub old tool results. Tool output is
+        #     reproducible, so outside the most recent N user turns it collapses
+        #     to a short "call the tool again" placeholder (preserving
+        #     tool_call_id + the matching assistant tool_calls entry), and big
+        #     call arguments are trimmed (4b-4d). The boundary moves every turn,
+        #     rewriting mid-history, so a history that fits stays raw instead
+        #     (append-only; the checkpoint is what bounds it).
         call_meta = _tool_call_meta_map(included)
-        # -1 (or None) switches between-turn editing off entirely — including the
-        # recency opt-out below (_tool_stub_boundary returns 0 for "disabled" AND
-        # "too few turns", so test the setting, not the boundary).
-        try:
-            between_turn_trim = raw_tool_turns is not None and int(raw_tool_turns) >= 0
-        except (TypeError, ValueError):
-            between_turn_trim = True
+        if over_budget:
+            raw_tool_turns = getattr(settings, "CONTEXT_RAW_TOOL_TURNS", 2)
+            stub_before_idx = _tool_stub_boundary(included, raw_tool_turns)
+            # -1 (or None) switches between-turn editing off entirely — including
+            # the recency opt-out below (_tool_stub_boundary returns 0 for
+            # "disabled" AND "too few turns", so test the setting, not the boundary).
+            try:
+                between_turn_trim = raw_tool_turns is not None and int(raw_tool_turns) >= 0
+            except (TypeError, ValueError):
+                between_turn_trim = True
+        else:
+            stub_before_idx = 0
+            between_turn_trim = False
 
         # 4. Build message list
         messages: list[dict] = []
@@ -5469,7 +5534,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "content": f"Summary of earlier conversation:\n{thread.summary}",
             })
         for idx, m in enumerate(included):
-            content = m.content or ""
+            content = (replayed_body(m) if m.role == "tool" else m.content) or ""
             if m.role == "tool" and idx < stub_before_idx:
                 from chat.tool_stub import build_tool_result_stub
 
@@ -5486,8 +5551,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "tool_call_id": m.tool_call_id,
             }
             if m.metadata and m.metadata.get("tool_calls"):
-                msg_dict["tool_calls"] = m.metadata["tool_calls"]
-                ids = [tc.get("id") for tc in m.metadata["tool_calls"] if tc.get("id")]
+                calls = [tc for tc in replayed_calls(m) if tc.get("id") not in dropped_call_ids]
+                if not calls and not content.strip():
+                    continue  # every call dropped by the stub cap
+                if calls:
+                    msg_dict["tool_calls"] = calls
+                ids = [tc.get("id") for tc in calls if tc.get("id")]
                 if idx < stub_before_idx:
                     trim_eligible_ids.update(ids)
                 elif between_turn_trim:
@@ -5605,8 +5674,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 # trigger summarization (it would summarize a partial pass onto
                 # the loop thread), so both flags are forced False when scoped.
                 "has_summary": bool(thread.summary) and not scoped,
+                # A checkpoint is due (history past CONTEXT_CHECKPOINT_FRACTION).
                 "needs_summary": needs_summary and not scoped,
+                # The window didn't fit: this history is the sliding-window
+                # fallback (the caller runs a checkpoint first and reloads).
+                "over_budget": over_budget,
                 "history_budget_tokens": max_history_tokens,
+                # Conversation / summary / stub shares (estimate units) for the
+                # checkpoint (chat/history_checkpoint.py).
+                "budgets": budgets.as_dict(),
                 "included_history_tokens": included_history_tokens,
                 "summary_tokens": summary_token_count,
                 "history_truncated": total_messages > len(included),
@@ -5617,11 +5693,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 # duplicate seeded turn) without swallowing a later arrival.
                 "subagent_run_ids": pending_run_ids,
                 "has_subagent_results": bool(pending_run_ids),
-                # Stashed so _trigger_summarization can reserve the SAME measured
-                # overhead as this turn's live window (keeps the summarise boundary
-                # aligned with the live-window boundary).
                 "reserved_overhead_tokens": reserved_tokens,
                 "effort": effort,
+                "scoped": scoped,
             },
         }
 
@@ -5886,36 +5960,35 @@ class ChatConsumer(AsyncWebsocketConsumer):
             return
 
         try:
-            from chat.services import generate_summary
-            from core.tokens import count_tokens
+            from chat.history_checkpoint import run_checkpoint
+            from llm.context_budget import history_budgets
 
-            thread_data = await self._get_thread_summary_data(thread)
-            messages = await self._get_all_unsummarised_messages(thread)
-
-            if not messages:
+            # A forced checkpoint that keeps no rounds: everything so far goes
+            # into the summary (same selection, lock and cutoff as automatic ones).
+            prefs = self.resolved_prefs
+            chat_model = thread.model or (prefs.top_model if prefs else None)
+            budgets = history_budgets(
+                chat_model, prefs.max_context_tokens if prefs else None,
+            ) if chat_model else None
+            result = await run_checkpoint(
+                thread, user_id=self.user.pk, model=self._summary_model(),
+                budgets=budgets, keep_rounds=0, force_summary=True, reason="compact",
+            )
+            if not result.folded_count:
                 await self._send_command_result(
                     "/compact", "ok", "Nothing to compact — all messages already summarised.",
                 )
                 return
-
-            prefs = self.resolved_prefs
-            compact_model = prefs.feature_models.get("message_summary", prefs.mid_model) if prefs else None
-            summary_text = await generate_summary(
-                messages,
-                existing_summary=thread_data["summary"],
-                user_id=self.user.pk,
-                conversation_id=str(thread.id),
-                model=compact_model,
-            )
-
-            last_msg = messages[-1]
-            new_count = thread_data["summary_message_count"] + len(messages)
-            await self._save_summary(thread, summary_text, last_msg.id, new_count)
-
-            token_count = count_tokens(summary_text)
+            if not result.saved:
+                await self._send_command_result(
+                    "/compact", "error",
+                    "The conversation was being summarised at the same time — try again.",
+                )
+                return
             await self._send_command_result(
                 "/compact", "ok",
-                f"Compacted {len(messages)} messages into {token_count}-token summary.",
+                f"Compacted {result.folded_count} messages into a "
+                f"{result.summary_tokens}-token summary.",
             )
         except Exception:
             logger.exception("Failed to compact thread")
@@ -5938,17 +6011,3 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         ChatThread.objects.filter(pk=thread_id).update(emoji=emoji)
 
-    @database_sync_to_async
-    def _get_all_unsummarised_messages(self, thread):
-        """Return ALL unsummarised messages (for /compact)."""
-        from chat.models import ChatMessage, ChatThread
-
-        t = ChatThread.objects.get(pk=thread.pk)
-        qs = ChatMessage.objects.filter(thread=thread).order_by("created_at")
-        if t.summary_up_to_message_id:
-            cutoff_msg = ChatMessage.objects.filter(
-                id=t.summary_up_to_message_id,
-            ).first()
-            if cutoff_msg:
-                qs = qs.filter(created_at__gt=cutoff_msg.created_at)
-        return list(qs)

@@ -44,9 +44,10 @@ _OUT = 32_000  # default output reservation (no effort given)
 class GetHistoryBudgetTests(TestCase):
 
     def test_reserves_output_and_overhead_no_cap(self):
-        # No max_context_tokens → aim is the full window (1M): 1M − 32k − 8k − 24k.
+        # No max_context_tokens → aim is the full window: window − 32k − 8k − 24k.
+        window = get_context_window("gemini/gemini-4-argon")
         self.assertEqual(
-            get_history_budget("claude-sonnet-4-6"), 1_000_000 - _OUT - 8_000 - 24_000
+            get_history_budget("gemini/gemini-4-argon"), window - _OUT - 8_000 - 24_000
         )
 
     def test_setting_is_the_aim(self):
@@ -58,8 +59,32 @@ class GetHistoryBudgetTests(TestCase):
     def test_no_150k_cap_anymore(self):
         # A 300k aim now yields 236k history (old code capped this at 150k).
         self.assertEqual(
-            get_history_budget("claude-sonnet-4-6", max_context_tokens=300_000), 236_000
+            get_history_budget("gpt-5.4", max_context_tokens=300_000), 236_000
         )
+
+    def test_claude_ceiling_in_estimate_units(self):
+        # Claude bills ~1.45x our tiktoken estimate (Sonnet 5.5): the provider
+        # room (300k − 32k − 8k = 260k) is divided by the factor BEFORE the
+        # measured overhead (already in estimate units) is subtracted.
+        from llm.context_budget import request_input_ceiling, token_estimate_factor
+
+        self.assertEqual(token_estimate_factor("anthropic/claude-sonnet-5-5"), 1.45)
+        self.assertEqual(token_estimate_factor("openai/gpt-6-luna"), 1.0)
+        self.assertEqual(token_estimate_factor("unknown-model-xyz"), 1.0)
+        self.assertEqual(token_estimate_factor(None), 1.0)
+        ceiling = request_input_ceiling("anthropic/claude-sonnet-5-5", 300_000)
+        self.assertEqual(ceiling, int(260_000 / 1.45))
+        self.assertEqual(
+            get_history_budget("anthropic/claude-sonnet-5-5", max_context_tokens=300_000),
+            ceiling - 24_000,
+        )
+
+    def test_as_provider_tokens(self):
+        from llm.context_budget import as_provider_tokens
+
+        self.assertEqual(as_provider_tokens(100_000, "anthropic/claude-sonnet-5-5"), 145_000)
+        self.assertEqual(as_provider_tokens(100_000, "openai/gpt-6-luna"), 100_000)
+        self.assertIsNone(as_provider_tokens(None, "anthropic/claude-sonnet-5-5"))
 
     def test_small_setting(self):
         # 120k aim: the 32k reservation is capped at 25% of the aim (30k).

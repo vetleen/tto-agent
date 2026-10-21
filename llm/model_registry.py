@@ -77,6 +77,13 @@ class ModelInfo:
     # degrades (reasoning dropped) instead of failing with a 400. False for every
     # current model: our pre-2026-08-31 account isn't enforced on them.
     binds_thinking_to_prefix: bool = False
+    # Provider-billed input tokens ÷ our tiktoken (cl100k_base) estimate. Budget
+    # ceilings are divided by it (llm.context_budget.request_input_ceiling) so
+    # every decision made in estimate units matches what the provider counts.
+    # Measured from prod LLMCallLog (sum estimated_input_tokens / sum
+    # input_tokens, 21 days to 2026-10-20): Claude 5-family tokenizes ~40-45%
+    # more than cl100k; OpenAI and Gemini are within ~15% (left at 1.0).
+    token_estimate_factor: float = 1.0
     uses_responses_api: bool = False
     input_modalities: tuple[str, ...] = ("text",)
     output_modalities: tuple[str, ...] = ("text",)
@@ -280,6 +287,7 @@ _MODELS: dict[str, ModelInfo] = {
         api_model="claude-fable-5-1", stars=5, flagship=True,
         reasoning_levels=("low", "medium", "high", "xhigh", "max"),
         default_reasoning_level="high", thinking_mode="adaptive",
+        token_estimate_factor=1.4,  # unmeasured; same tokenizer family
         input_modalities=_MULTIMODAL, context_window=1_000_000,
         max_output_tokens=128_000, input_price=Decimal("10.00"),
         # Anthropic prices Fable 5.1 cache reads at 0.025x, not the usual 0.1x.
@@ -291,6 +299,7 @@ _MODELS: dict[str, ModelInfo] = {
         stars=5, flagship=True,
         reasoning_levels=("low", "medium", "high", "xhigh", "max"),
         default_reasoning_level="high", thinking_mode="adaptive",
+        token_estimate_factor=1.4,  # unmeasured; same tokenizer family
         input_modalities=_MULTIMODAL, context_window=1_000_000,
         max_output_tokens=128_000, input_price=Decimal("10.00"),
         cached_input_price=Decimal("1.00"), cache_write_price=Decimal("12.50"),
@@ -302,6 +311,7 @@ _MODELS: dict[str, ModelInfo] = {
         # Thinking is always on (no "off"); provider default effort is medium.
         reasoning_levels=("low", "medium", "high", "xhigh", "max"),
         default_reasoning_level="medium", thinking_mode="adaptive",
+        token_estimate_factor=1.39,  # prod est/actual 0.72
         input_modalities=_MULTIMODAL, context_window=1_000_000,
         max_output_tokens=128_000, input_price=Decimal("4.00"),
         # Cache reads are 0.05x input, not the usual 0.1x.
@@ -315,6 +325,7 @@ _MODELS: dict[str, ModelInfo] = {
         # "between_tools", which we don't use). Provider default effort is high.
         reasoning_levels=("low", "medium", "high", "xhigh", "max"),
         default_reasoning_level="high", thinking_mode="adaptive",
+        token_estimate_factor=1.45,  # prod est/actual 0.69
         input_modalities=_MULTIMODAL, context_window=1_000_000,
         max_output_tokens=128_000, input_price=Decimal("2.00"),
         # Cache reads are 0.05x input, not the usual 0.1x.
@@ -326,6 +337,7 @@ _MODELS: dict[str, ModelInfo] = {
         stars=3,
         reasoning_levels=("off", "low", "medium", "high", "xhigh", "max"),
         default_reasoning_level="high", thinking_mode="adaptive",
+        token_estimate_factor=1.4,  # unmeasured; same tokenizer family
         input_modalities=_MULTIMODAL, context_window=1_000_000,
         max_output_tokens=128_000, input_price=Decimal("2.00"),
         cached_input_price=Decimal("0.20"), cache_write_price=Decimal("2.50"),
@@ -338,6 +350,7 @@ _MODELS: dict[str, ModelInfo] = {
         # no effort (provider default medium), so it is always valid.
         reasoning_levels=("off", "low", "medium", "high", "xhigh", "max"),
         default_reasoning_level="medium", thinking_mode="adaptive",
+        token_estimate_factor=1.4,  # unmeasured; same tokenizer family
         # Released 2026-10-07: preserved thinking is enforced on it.
         binds_thinking_to_prefix=True,
         input_modalities=_MULTIMODAL, context_window=1_000_000,

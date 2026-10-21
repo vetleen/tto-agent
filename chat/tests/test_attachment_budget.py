@@ -78,6 +78,34 @@ class EnrichAttachmentBudgetTests(TransactionTestCase):
         # Budget was consumed on the attachment pathway.
         self.assertGreater(ctx._b64_used_by_pathway.get("attachment", 0), 0)
 
+    async def test_pointer_only_sends_markers_and_the_note_not_the_files(self):
+        """With chat_attachment_view on the turn, the upload turn gets the
+        markers plus a pointer: the model views each file with the tool, so the
+        content lives in a tool result rather than in the user message."""
+        from chat.consumers import ATTACHMENT_POINTER_NOTE
+
+        for data, ct, name in (
+            (b"x" * 500, "image/png", "pic.png"),
+            (b"%PDF-1.4 fake", _PDF_MIME, "doc.pdf"),
+            (b"plain text body", "text/plain", "notes.txt"),
+        ):
+            with self.subTest(ct=ct):
+                att = await self._make_att(data, ct, name)
+                messages, history = self._msgs_and_history(att)
+                ctx = RunContext.create()
+                with patch("llm.display.supports_modality", return_value=True):
+                    await self._consumer()._enrich_with_attachments(
+                        messages, history, "test-model", ctx,
+                        thread_id=str(self.thread.id), pointer_only=True,
+                    )
+                content = messages[1].content
+                self.assertIsInstance(content, str)
+                self.assertIn(f"[Attached: #", content)
+                self.assertIn(name, content)
+                self.assertTrue(content.endswith(ATTACHMENT_POINTER_NOTE))
+                self.assertNotIn("plain text body", content)
+                self.assertEqual(ctx._b64_used_by_pathway.get("attachment", 0), 0)
+
     @override_settings(NATIVE_ASSET_BUDGET_B64_BYTES=10)
     async def test_image_over_budget_degrades_to_note(self):
         att = await self._make_att(b"x" * 5000, "image/png", "big.png")

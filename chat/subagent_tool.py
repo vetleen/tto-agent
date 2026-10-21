@@ -573,6 +573,7 @@ class ReadSubagentReportTool(ContextAwareTool):
 
     name: str = "chat_subagent_report_read"
     audience: str = "main"
+    stub_despite_recency: bool = True  # big, and a re-read is a local query
     start_label: str = "Reading sub-agent report..."
     end_label: str = "Read sub-agent report"
     description: str = (

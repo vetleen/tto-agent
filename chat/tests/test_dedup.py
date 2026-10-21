@@ -632,6 +632,26 @@ class AppendOnlyDedupTests(SimpleTestCase):
         out = redact_new_duplicates(msgs, len(history))
         self.assertIs(out[-1], msgs[-1])
 
+    def test_between_turn_keep_oldest_is_prefix_stable(self):
+        """The consumer runs redact_new_duplicates(history, 0) between turns: a
+        later turn repeating a read redacts the NEW copy, so the earlier turns
+        come out byte-identical (the prompt-cache prefix holds)."""
+        from chat.dedup import _EARLIER_PLACEHOLDER, redact_new_duplicates
+
+        read = json.dumps({"documents": [
+            {"doc_index": 2, "chunk_range": "0-1", "total_chunks": 5, "content": "SAME TEXT"},
+        ]})
+        turn1 = [_user_msg("q1"), _assistant_msg([("r1", "document_read")]), _tool_msg("r1", read)]
+        turn2 = [_user_msg("q2"), _assistant_msg([("r2", "document_read")]), _tool_msg("r2", read)]
+
+        first = redact_new_duplicates(turn1, 0)
+        second = redact_new_duplicates(turn1 + turn2, 0)
+        self.assertEqual(
+            [m.content for m in second[:len(first)]], [m.content for m in first],
+        )
+        self.assertIn("SAME TEXT", second[2].content)
+        self.assertEqual(json.loads(second[-1].content)["documents"][0]["content"], _EARLIER_PLACEHOLDER)
+
     def test_redacted_copies_do_not_count_as_coverage(self):
         from chat.dedup import redact_new_duplicates
 

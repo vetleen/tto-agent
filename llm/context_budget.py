@@ -18,6 +18,8 @@ Two facts drive this (verified against the model registry + provider docs):
 
 from __future__ import annotations
 
+from dataclasses import asdict, dataclass
+
 from django.conf import settings
 
 from llm.model_info import get_context_window
@@ -100,15 +102,36 @@ def _margin() -> int:
     return int(getattr(settings, "CONTEXT_SAFETY_MARGIN_TOKENS", 8_000))
 
 
+def token_estimate_factor(model: str | None) -> float:
+    """Provider-billed tokens per token of our ``core.tokens`` estimate (registry
+    ``ModelInfo.token_estimate_factor``; 1.0 when unknown)."""
+    info = get_model_info(model) if model else None
+    factor = getattr(info, "token_estimate_factor", 1.0) if info else 1.0
+    return factor if factor and factor > 0 else 1.0
+
+
+def as_provider_tokens(tokens: int | None, model: str | None) -> int | None:
+    """An estimate-unit count expressed in the provider's tokens (for numbers the
+    model is shown next to its configured context, which is in provider tokens)."""
+    if tokens is None:
+        return None
+    return int(tokens * token_estimate_factor(model))
+
+
 def request_input_ceiling(
     model: str | None, max_context_tokens: int | None = None, effort: str | None = None
 ) -> int:
     """Max INPUT tokens for one request: ``min(aim, model window)`` minus the
-    output reservation and a safety margin. Never exceeds the model's window."""
+    output reservation and a safety margin. Never exceeds the model's window.
+
+    Returned in ESTIMATE units (what ``core.tokens`` counts), the units every
+    caller compares against: the provider-token room is divided by the model's
+    ``token_estimate_factor``, so a Claude request sized to the ceiling really
+    lands at the aim on the wire."""
     window = get_context_window(model)
     aim = min(window, max_context_tokens) if max_context_tokens else window
     ceiling = aim - output_reservation(model, effort, aim) - _margin()
-    return max(ceiling, 1_000)
+    return max(int(ceiling / token_estimate_factor(model)), 1_000)
 
 
 def history_budget(
@@ -132,6 +155,71 @@ def history_budget(
     )
     floor = int(getattr(settings, "MIN_HISTORY_BUDGET_TOKENS", 4_000))
     return max(ceiling - overhead, floor)
+
+
+def _clamp(value: float, low: float, high: float) -> int:
+    return int(max(low, min(high, value)))
+
+
+@dataclass(frozen=True)
+class HistoryBudgets:
+    """The between-turn history budget and its reserved shares, in ESTIMATE units.
+
+    - ``conversation``: what the narrative (summary + user/assistant messages) may
+      use before it is summarised. It has first claim on the history budget; tool
+      output gets whatever it leaves.
+    - ``summary_target``: the size the summariser aims for.
+    - ``stub_cap``: tool-result stubs beyond this are dropped (oldest first).
+    """
+    history: int
+    conversation: int
+    summary_target: int
+    stub_cap: int
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+def history_budgets(
+    model: str | None,
+    max_context_tokens: int | None = None,
+    *,
+    effort: str | None = None,
+    reserved_tokens: int | None = None,
+) -> HistoryBudgets:
+    """``history_budget`` plus the conversation / summary / stub shares.
+
+    The floors and roofs are in the model's own (billed) tokens and are divided
+    by ``token_estimate_factor``, like every other budget here, so a 5k floor is
+    5k Claude tokens on Claude. The summary never takes more than
+    ``CONTEXT_SUMMARY_MAX_SHARE_OF_CONVERSATION`` of the conversation budget, or
+    the kept rounds would overflow it straight after a checkpoint.
+    """
+    s = settings
+    factor = token_estimate_factor(model)
+    history = history_budget(
+        model, max_context_tokens, effort=effort, reserved_tokens=reserved_tokens,
+    )
+    conversation = _clamp(
+        float(getattr(s, "CONTEXT_CONVERSATION_FRACTION", 0.15)) * history,
+        int(getattr(s, "CONTEXT_CONVERSATION_MIN_TOKENS", 5_000)) / factor,
+        int(getattr(s, "CONTEXT_CONVERSATION_MAX_TOKENS", 25_000)) / factor,
+    )
+    window = get_context_window(model)
+    aim = min(window, max_context_tokens) if max_context_tokens else window
+    summary_target = min(
+        _clamp(
+            float(getattr(s, "CONTEXT_SUMMARY_FRACTION", 0.05)) * aim / factor,
+            int(getattr(s, "CONTEXT_SUMMARY_MIN_TOKENS", 5_000)) / factor,
+            int(getattr(s, "CONTEXT_SUMMARY_MAX_TOKENS", 20_000)) / factor,
+        ),
+        int(float(getattr(s, "CONTEXT_SUMMARY_MAX_SHARE_OF_CONVERSATION", 0.6)) * conversation),
+    )
+    stub_cap = int(float(getattr(s, "CONTEXT_STUB_CAP_FRACTION", 0.05)) * history)
+    return HistoryBudgets(
+        history=history, conversation=conversation,
+        summary_target=summary_target, stub_cap=stub_cap,
+    )
 
 
 # Page size for canvas_read / subagent_canvas_read: at most this share of the
@@ -160,6 +248,10 @@ __all__ = [
     "output_reservation",
     "output_token_cap",
     "request_input_ceiling",
+    "token_estimate_factor",
+    "as_provider_tokens",
     "history_budget",
+    "HistoryBudgets",
+    "history_budgets",
     "canvas_read_token_cap",
 ]

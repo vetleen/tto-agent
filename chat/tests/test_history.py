@@ -138,8 +138,9 @@ class LoadHistoryTests(TransactionTestCase):
         contents = [m["content"] for m in result["messages"]]
         self.assertEqual(contents, ["First", "Second", "Third"])
 
-    async def test_overlap_includes_summarised_msgs_within_2k_tokens(self):
-        """Small summarised messages still appear raw because they fit in the overlap window."""
+    async def test_summarised_msgs_not_replayed(self):
+        """History is the summary + the messages after its cutoff: a summarised
+        message is never replayed raw, however small (no overlap window)."""
         m1 = await self._make_msg("Short old message")
         await self._make_msg("Short new message")
 
@@ -152,12 +153,8 @@ class LoadHistoryTests(TransactionTestCase):
         )
 
         result = await self.consumer._load_history(self.thread)
-        # Both messages are tiny (<<2k tokens), so both appear in the overlap window
-        non_system = [m for m in result["messages"] if m["role"] != "system"]
-        self.assertEqual(len(non_system), 2)
-        contents = [m["content"] for m in non_system]
-        self.assertIn("Short old message", contents)
-        self.assertIn("Short new message", contents)
+        non_system = [m["content"] for m in result["messages"] if m["role"] != "system"]
+        self.assertEqual(non_system, ["Short new message"])
 
     async def test_tool_messages_included_in_history(self):
         """Tool and assistant-with-tool-calls messages are loaded from history."""
@@ -207,8 +204,9 @@ class LoadHistoryTests(TransactionTestCase):
 
     async def test_summarisation_excludes_redacted_messages(self):
         """Redacted (guardrail-blocked) messages must not leak into summaries."""
-        big_content = "word " * 5000
-        await self._make_msg(big_content)  # older, will be outside overlap
+        from chat.history_checkpoint import plan_checkpoint
+
+        await self._make_msg("older message")
 
         @database_sync_to_async
         def _make_redacted():
@@ -221,9 +219,15 @@ class LoadHistoryTests(TransactionTestCase):
             )
 
         await _make_redacted()
-        await self._make_msg(big_content)  # newest, in overlap
+        await self._make_msg("newest message")
 
-        to_summarise = await self.consumer._get_messages_to_summarise(self.thread)
+        plan = await database_sync_to_async(plan_checkpoint)(
+            self.thread, keep_rounds=0, force_summary=True,
+        )
+        self.assertEqual(
+            [m.content for m in plan.to_summarise], ["older message", "newest message"],
+        )
+        to_summarise = plan.to_summarise
         for msg in to_summarise:
             self.assertFalse(
                 msg.is_redacted,
@@ -426,8 +430,10 @@ class LoadHistoryTests(TransactionTestCase):
         self.assertIn("Findings", messages[-1]["content"])
         self.assertIn("More findings", messages[-1]["content"])
 
-    async def test_moved_outcome_keeps_previous_turn_tool_results_raw(self):
-        # An older turn so the default raw window (2 user turns) actually stubs.
+    async def test_moved_outcome_keeps_tool_results_raw(self):
+        # A history that fits is replayed raw: no tool result is stubbed, even
+        # one older than CONTEXT_RAW_TOOL_TURNS (stubbing is the over-budget
+        # safety net only — it would rewrite mid-history every turn).
         await self._make_msg("Earlier request")
         await self._make_tool_call_msg([{"id": "call_0", "name": "canvas_read", "arguments": {}}])
         await self._make_msg('{"old": "result"}', role="tool", tool_call_id="call_0")
@@ -439,7 +445,7 @@ class LoadHistoryTests(TransactionTestCase):
 
         tools = {m["tool_call_id"]: m["content"] for m in messages if m["role"] == "tool"}
         self.assertEqual(tools["call_1"], '{"status": "ok"}')
-        self.assertNotEqual(tools["call_0"], '{"old": "result"}')
+        self.assertEqual(tools["call_0"], '{"old": "result"}')
 
 
 class EnsureTurnStartsOnUserTests(SimpleTestCase):

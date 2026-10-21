@@ -145,19 +145,59 @@ blind fraction — see `llm/context_budget.py`:
 
 - `output_reservation(model, effort, aim)` — tokens reserved for the response (output counts
   against the window on every provider); capped at 25% of the aim so a small aim (50k floor)
-  with high effort still leaves room for input. `request_input_ceiling = min(aim, window) − output
-  − CONTEXT_SAFETY_MARGIN_TOKENS`. `history_budget = ceiling − system/tool/message overhead`.
+  with high effort still leaves room for input. `request_input_ceiling = (min(aim, window) − output
+  − CONTEXT_SAFETY_MARGIN_TOKENS) / token_estimate_factor(model)`. `history_budget = ceiling −
+  system/tool/message overhead`.
+- **Estimate units.** `core/tokens.py` counts with tiktoken `cl100k_base`; Claude 5-family
+  bills ~1.4–1.45× that (prod est/actual 0.69 Sonnet 5.5, 0.72 Opus 5.5, 2026-10).
+  `ModelInfo.token_estimate_factor` (1.0 unless measured) converts: the ceiling is divided by
+  it, so every budget comparison is estimate vs estimate; the provider's real
+  `input_tokens` is divided back in `EditPointManager._projected_tokens`. Numbers shown to
+  the model (Runtime block) are converted to provider tokens (`as_provider_tokens`).
+  `LLMCallLog.estimated_input_tokens` stays raw so the factor can be recalibrated.
 - Native assets (image/PDF) are counted at their real provider cost in `core/tokens.py`
   (`_wf_est_tokens` markers), never by stringifying base64.
 
 **Pruning is by priority, and tool results are reproducible** so they're the first thing
 dropped (the model can always call the tool again):
 
-- **Between turns** (`chat/consumers.py:_load_history`): tool results older than
-  `CONTEXT_RAW_TOOL_TURNS` (2) user turns collapse to a re-read stub
-  (`chat/tool_stub.py:build_tool_result_stub`) that names the tool + args; `tool_call_id` is
-  preserved so provider pairing holds. User/assistant narrative is instead rolled into the
-  summary (`_get_messages_to_summarise` excludes tool noise).
+- **Between turns: checkpointed, conversation-first history** (`chat/history_checkpoint.py`,
+  `chat/consumers.py:_load_history`). History = the rolling summary (a second `system`
+  message) + every message after `ChatThread.summary_up_to_message_id`, replayed **as last
+  sent** — append-only between checkpoints, so each turn's request extends the previous one
+  (prompt cache). **Saved edits:** whatever the tool loop rewrote in earlier messages (stub,
+  dedup placeholder, trimmed call args, a dropped call) comes back as a server-side
+  `context_edit` stream event (`edit_points.diff_context_edits`, never forwarded to the
+  client) and is saved on the rows' metadata (`wf_ctx_body`/`wf_ctx_tokens`/
+  `wf_ctx_tool_calls`/`wf_ctx_dropped`; `content` stays raw for the UI) by
+  `_apply_context_edit` / `persist_context_edit`, so a stub stays a stub. Token accounting
+  uses `effective_tokens`. **Budgets** (`llm/context_budget.py:history_budgets`, estimate
+  units; floors/roofs in the model's own tokens): the **conversation** (summary + every
+  non-tool-noise message) has first claim on 15% of the history budget (5k–25k); the
+  **summary** targets 5% of the aim (5k–20k, ≤ 60% of the conversation budget); **stubs** may
+  use 5%. A **checkpoint** has three independent actions: *summarise* only when the
+  conversation overflows its budget (or `/compact`) — folds everything before the last
+  `CONTEXT_CHECKPOINT_KEEP_ROUNDS` (2) user rounds (hidden notices don't start rounds) and
+  lists the folded calls under the summary (`TOOL_INDEX_HEADER`, last 20); *stub* every
+  older tool result when history passes `CONTEXT_CHECKPOINT_FRACTION` (0.7) — narrative stays
+  raw, no LLM call; *drop* the oldest fully-stubbed calls past the stub cap (down to 25% of
+  it). The summariser prompt is `chat/summary_prompt.py` (hand-editable). It runs after a turn
+  (`_schedule_checkpoint`, its own task — a new message must not cancel it; the next turn
+  waits up to `CONTEXT_CHECKPOINT_WAIT_SECONDS`), and synchronously at turn start when the
+  history no longer fits (`_checkpoint_now`, client event `turn.condensing_history`). Only a
+  history still over budget after that takes the old **sliding-window fallback**
+  (`meta["over_budget"]`: recency overlap, older messages up to the budget,
+  `CONTEXT_RAW_TOOL_TURNS` re-read stubs, between-turn arg/result trimming) — it breaks the
+  cache every turn, so it must stay rare. Between-turn dedup is keep-oldest
+  (`redact_new_duplicates(messages, 0)`) for the same reason. **Never add a between-turn pass
+  that rewrites earlier messages outside a checkpoint** (`chat/tests/test_history_checkpoint.py`
+  pins the prefix). Remaining per-turn break: the preamble on the previous user message.
+- **Attachments are pointer-only** when the turn has `chat_attachment_view`: the upload
+  turn carries the `[Attached: #N …]` markers plus `ATTACHMENT_POINTER_NOTE`, and the model
+  views each file with the tool (a normal, stubbable tool result). Without the tool the
+  old inline expansion (`_enrich_with_attachments`) still applies.
+- The Anthropic adapter keeps the 1h breakpoint on the FIRST system message (the static
+  prompt); the summary system message follows it (`llm/core/langchain_utils.py`).
 - **Mid-turn** (`llm/pipelines/edit_points.py`, driven from `simple_chat.py`): the tool loop
   is **append-only between edit points** — every provider, main agent and sub-agents alike.
   Each request must extend the previous one byte-for-byte (prompt cache; Anthropic
@@ -171,7 +211,10 @@ dropped (the model can always call the tool again):
   consolidated scratchpad block. Between edit points: dedup only redacts the NEW duplicate
   (`chat/dedup.py:redact_new_duplicates`), notices/files/skill instructions are appended,
   nothing is removed. Pruning keeps `CONTEXT_MIDTURN_KEEP_TOOL_RESULTS`=6 recent results +
-  the current round. The final tool-less call keeps its tools bound with
+  the current round (tools with `stub_despite_recency` — `canvas_read`,
+  `subagent_canvas_read`, `chat_subagent_report_read`, `skill_resource_view` — only the
+  current round), and past `CONTEXT_STUB_CAP_FRACTION` of the ceiling drops the oldest
+  fully-stubbed calls from earlier turns (`drop_stub_groups`). The final tool-less call keeps its tools bound with
   `params["_tool_choice"]="none"` (each provider adapter maps it; `_tool_choice_kwargs`).
   **New code in the loop must not edit earlier messages outside an edit point**
   (`llm/tests/test_edit_points.py::PrefixInvariantTests` enforces it). The consumer wires
@@ -198,6 +241,14 @@ dropped (the model can always call the tool again):
   send beta `thinking-binding-controls-2026-08-01` + `block_binding.prefix_mismatch_behavior:
   "drop_block"`, so an edit point drops replayed reasoning instead of 400ing;
   `WilfredChatAnthropic` keeps the stream's `input_transformations`.
+
+**Sub-agent results are pointers** (`chat/subagent_service.py:build_result_notice`): the
+hidden `[Sub-agent result: <id> …]` user message carries the header, `Report: canvas "<title>"
+(~N tokens, L lines)` and the sub-agent's final message (capped at
+`SUBAGENT_RESULT_INLINE_MAX_TOKENS`=2k) — never the report. The orchestrator reads the report
+(the run's working canvas, or its final message when there is none — `report_source`) with
+`chat_subagent_report_read` (main-only, paged like `canvas_read`), so reports live in tool
+results that age into re-read stubs instead of user messages nothing can prune.
 
 **Scratchpad** (`chat/scratchpad_tools.py`, `ChatThread.scratchpad`): an agent-only,
 append-only note store (`scratchpad_append` tool, `SCRATCHPAD_MAX_CHARS`=20k). It is injected

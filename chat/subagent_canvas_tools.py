@@ -292,6 +292,7 @@ class SubagentCanvasReadTool(ContextAwareTool):
 
     name: str = "subagent_canvas_read"
     audience: str = "subagent"
+    stub_despite_recency: bool = True  # big, and a re-read is a local query
     start_label: str = "Reading canvas..."
     end_label: str = "Read canvas"
     description: str = (

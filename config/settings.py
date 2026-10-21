@@ -741,6 +741,42 @@ SCRATCHPAD_MAX_CHARS = _env_int("SCRATCHPAD_MAX_CHARS", "20_000")
 # — both between turns (_load_history) and mid-turn (the pipeline pruner). The
 # window keeps recent tool output raw so ongoing reasoning isn't disrupted.
 CONTEXT_RAW_TOOL_TURNS = _env_int("CONTEXT_RAW_TOOL_TURNS", "2")
+# History checkpoints (chat/history_checkpoint.py): between turns the history is
+# append-only (prompt-cache stable). Past this fraction of the history budget a
+# checkpoint stubs every tool result before the last KEEP_ROUNDS user rounds (tool
+# pressure; the conversation is only summarised when it overflows its own budget,
+# below). CONTEXT_RAW_TOOL_TURNS stubbing now only runs as the over-budget safety
+# net. A new turn waits up to WAIT_SECONDS for a checkpoint still running from the
+# previous turn.
+CONTEXT_CHECKPOINT_FRACTION = float(os.environ.get("CONTEXT_CHECKPOINT_FRACTION", "0.7"))
+# Conversation-first budgets (llm/context_budget.py:history_budgets). The
+# conversation (summary + user/assistant messages) has first claim on this share
+# of the history budget; only when it overflows is anything summarised. Tool
+# output above CONTEXT_CHECKPOINT_FRACTION is stubbed, never summarised. Floors
+# and roofs are in the model's own tokens (divided by token_estimate_factor).
+CONTEXT_CONVERSATION_FRACTION = float(os.environ.get("CONTEXT_CONVERSATION_FRACTION", "0.15"))
+CONTEXT_CONVERSATION_MIN_TOKENS = _env_int("CONTEXT_CONVERSATION_MIN_TOKENS", "5_000")
+CONTEXT_CONVERSATION_MAX_TOKENS = _env_int("CONTEXT_CONVERSATION_MAX_TOKENS", "25_000")
+# Summary size target: this share of the context aim, clamped, and never more than
+# MAX_SHARE_OF_CONVERSATION of the conversation budget (the kept rounds must fit).
+CONTEXT_SUMMARY_FRACTION = float(os.environ.get("CONTEXT_SUMMARY_FRACTION", "0.05"))
+CONTEXT_SUMMARY_MIN_TOKENS = _env_int("CONTEXT_SUMMARY_MIN_TOKENS", "5_000")
+CONTEXT_SUMMARY_MAX_TOKENS = _env_int("CONTEXT_SUMMARY_MAX_TOKENS", "20_000")
+CONTEXT_SUMMARY_MAX_SHARE_OF_CONVERSATION = float(
+    os.environ.get("CONTEXT_SUMMARY_MAX_SHARE_OF_CONVERSATION", "0.6")
+)
+# Tool-result stubs (saved once made) may use this share of the history budget;
+# past it the oldest DROP_FRACTION of them are removed with their calls.
+CONTEXT_STUB_CAP_FRACTION = float(os.environ.get("CONTEXT_STUB_CAP_FRACTION", "0.05"))
+CONTEXT_STUB_DROP_FRACTION = float(os.environ.get("CONTEXT_STUB_DROP_FRACTION", "0.75"))
+# Folded tool calls listed under the summary (tool + arguments, "call again").
+CONTEXT_TOOL_INDEX_MAX_ENTRIES = _env_int("CONTEXT_TOOL_INDEX_MAX_ENTRIES", "20")
+CONTEXT_CHECKPOINT_KEEP_ROUNDS = _env_int("CONTEXT_CHECKPOINT_KEEP_ROUNDS", "2")
+CONTEXT_CHECKPOINT_WAIT_SECONDS = _env_int("CONTEXT_CHECKPOINT_WAIT_SECONDS", "60")
+# A finished sub-agent's result message is a pointer to its report (read with
+# chat_subagent_report_read), carrying its final message inline up to this many
+# tokens. Keeps reports out of the history, where nothing could prune them.
+SUBAGENT_RESULT_INLINE_MAX_TOKENS = _env_int("SUBAGENT_RESULT_INLINE_MAX_TOKENS", "2_000")
 # Mid-turn (in the tool loop), when the next request would exceed the model's
 # input ceiling, keep this many of the most recent tool results raw and stub the
 # rest — bounds the loop growth that drives the 500k–5.9M-token production turns.
