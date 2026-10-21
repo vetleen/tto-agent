@@ -189,7 +189,8 @@ class CreateChatModelTests(SimpleTestCase):
 
 class RequestTimeoutTests(SimpleTestCase):
     """google-genai sends the client timeout as X-Server-Timeout (Google's
-    deadline for the whole generation), so Gemini gets a long one (WILFRED-9M)."""
+    deadline for the whole generation), so each Gemini model gets its own
+    (ModelInfo.request_timeout_seconds), with the provider value as fallback."""
 
     def setUp(self):
         clear_client_cache()
@@ -198,15 +199,27 @@ class RequestTimeoutTests(SimpleTestCase):
         clear_client_cache()
 
     @patch("llm.core.model_factory.init_chat_model")
-    def test_gemini_client_gets_long_timeout(self, mock_init):
+    def test_gemini_client_gets_its_registry_timeout(self, mock_init):
         from llm.core.model_factory import create_chat_model
 
-        mock_init.return_value = MagicMock()
+        mock_init.side_effect = lambda *a, **kw: MagicMock()
         create_chat_model("gemini-3.1-pro-preview")
-        self.assertEqual(mock_init.call_args[1]["timeout"], 600)
+        self.assertEqual(mock_init.call_args[1]["timeout"], 300)
+        create_chat_model("gemini/gemini-4-argon")
+        self.assertEqual(mock_init.call_args[1]["timeout"], 300)
+        create_chat_model("gemini/gemini-3.8-flash")
+        self.assertEqual(mock_init.call_args[1]["timeout"], 120)
 
     @patch("llm.core.model_factory.init_chat_model")
-    def test_gemini_thinking_variant_gets_long_timeout(self, mock_init):
+    def test_unregistered_gemini_falls_back_to_provider_timeout(self, mock_init):
+        from llm.core.model_factory import GEMINI_REQUEST_TIMEOUT_SECONDS, create_chat_model
+
+        mock_init.return_value = MagicMock()
+        create_chat_model("gemini-9-unknown")
+        self.assertEqual(mock_init.call_args[1]["timeout"], GEMINI_REQUEST_TIMEOUT_SECONDS)
+
+    @patch("llm.core.model_factory.init_chat_model")
+    def test_gemini_thinking_variant_gets_its_registry_timeout(self, mock_init):
         from llm.core.model_factory import create_variant_client
 
         mock_init.return_value = MagicMock()
@@ -214,7 +227,30 @@ class RequestTimeoutTests(SimpleTestCase):
             "gemini-3.1-pro-preview", "google_genai",
             thinking_level="high", include_thoughts=True,
         )
-        self.assertEqual(mock_init.call_args[1]["timeout"], 600)
+        self.assertEqual(mock_init.call_args[1]["timeout"], 300)
+
+    @patch("llm.core.model_factory.init_chat_model")
+    def test_gemini_gets_one_retry(self, mock_init):
+        """langchain-google-genai passes max_retries as the SDK's attempts
+        (first request included): 2 = one retry."""
+        from llm.core.model_factory import create_chat_model, create_variant_client
+
+        mock_init.side_effect = lambda *a, **kw: MagicMock()
+        create_chat_model("gemini/gemini-4-argon")
+        self.assertEqual(mock_init.call_args[1]["max_retries"], 2)
+        create_variant_client("gemini-4-argon", "google_genai", thinking_level="high")
+        self.assertEqual(mock_init.call_args[1]["max_retries"], 2)
+        create_chat_model("gpt-5-mini")
+        self.assertEqual(mock_init.call_args[1]["max_retries"], 3)
+
+    def test_request_timeout_for_model(self):
+        from llm.core.model_factory import request_timeout_for_model
+
+        self.assertEqual(request_timeout_for_model("gemini/gemini-4-argon"), 300)
+        self.assertEqual(request_timeout_for_model("gemini/gemini-3.8-flash"), 120)
+        self.assertEqual(request_timeout_for_model("gemini/gemini-3.7-flash"), 120)  # retired → 3.8
+        self.assertEqual(request_timeout_for_model("openai/gpt-6-luna"), 120)
+        self.assertEqual(request_timeout_for_model(""), 120)
 
     @patch("llm.core.model_factory.init_chat_model")
     def test_other_providers_keep_default_timeout(self, mock_init):

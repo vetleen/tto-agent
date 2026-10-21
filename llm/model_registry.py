@@ -84,6 +84,11 @@ class ModelInfo:
     # input_tokens, 21 days to 2026-10-20): Claude 5-family tokenizes ~40-45%
     # more than cl100k; OpenAI and Gemini are within ~15% (left at 1.0).
     token_estimate_factor: float = 1.0
+    # Per-request timeout (s); None = the provider default
+    # (llm.core.model_factory). On Gemini it is also Google's deadline for the
+    # WHOLE generation (X-Server-Timeout), so it must cover the slowest
+    # legitimate request, not just the wait for the first byte.
+    request_timeout_seconds: int | None = None
     uses_responses_api: bool = False
     input_modalities: tuple[str, ...] = ("text",)
     output_modalities: tuple[str, ...] = ("text",)
@@ -377,6 +382,9 @@ _MODELS: dict[str, ModelInfo] = {
         reasoning_levels=("low", "medium", "high"), default_reasoning_level="medium",
         input_modalities=_MULTIMODAL, context_window=1_048_576,
         max_output_tokens=65_536,
+        # Prod 30 days to 2026-10-21: single-request turns max 136 s (~67 tok/s);
+        # ~2x headroom. Long turns are long tool loops, not one request.
+        request_timeout_seconds=300,
         # Introductory pricing through 2026-11-30; no long-context band.
         input_price=Decimal("2.00"), cached_input_price=Decimal("0.10"),
         output_price=Decimal("10.00"),
@@ -391,6 +399,7 @@ _MODELS: dict[str, ModelInfo] = {
         api_model="gemini-3.1-pro-preview", stars=3,
         reasoning_levels=("low", "medium", "high"), default_reasoning_level="high",
         input_modalities=_MULTIMODAL, context_window=1_048_576,
+        request_timeout_seconds=300,
         max_output_tokens=65_536, input_price=Decimal("2.00"),
         cached_input_price=Decimal("0.20"), output_price=Decimal("12.00"),
         long_context_threshold=200_000,
@@ -403,6 +412,9 @@ _MODELS: dict[str, ModelInfo] = {
         api_model="gemini-3.8-flash", stars=2,
         reasoning_levels=("low", "medium", "high"), default_reasoning_level="medium",
         input_modalities=_MULTIMODAL, context_window=1_048_576,
+        # Fast when it answers; on tool loops it sometimes sends nothing at all
+        # (2026-10-21), so fail fast instead of waiting out a long deadline.
+        request_timeout_seconds=120,
         max_output_tokens=65_536, input_price=Decimal("0.75"),
         cached_input_price=Decimal("0.075"), output_price=Decimal("3.75"),
         price_changes=(PriceChange(
@@ -416,6 +428,7 @@ _MODELS: dict[str, ModelInfo] = {
         api_model="gemini-3.5-flash-lite", stars=1,
         reasoning_levels=("minimal", "low", "medium", "high"),
         default_reasoning_level="minimal", input_modalities=_MULTIMODAL,
+        request_timeout_seconds=120,
         context_window=1_048_576, max_output_tokens=65_536,
         input_price=Decimal("0.30"), cached_input_price=Decimal("0.03"),
         output_price=Decimal("2.50"),

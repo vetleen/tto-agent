@@ -605,12 +605,12 @@ class StaleRunExpirationTests(TestCase):
         from llm.core.model_factory import request_timeout_for_model
 
         longest_tool = _longest_tool_timeout()
-        for model in ("openai/gpt-6-luna", "gemini/gemini-3.8-flash"):
+        for model in ("openai/gpt-6-luna", "gemini/gemini-4-argon"):
             expected = max(request_timeout_for_model(model), longest_tool) + STALE_SILENCE_MARGIN_SECONDS
             self.assertEqual(running_silence_limit(model), expected)
             self.assertEqual(running_silence_limit(model, longest_tool), expected)
-        self.assertEqual(running_silence_limit("gemini/gemini-3.8-flash", 30.0), 600 + 120)
-        self.assertLessEqual(running_silence_limit("gemini/gemini-3.8-flash"), 15 * 60)
+        self.assertEqual(running_silence_limit("gemini/gemini-4-argon", 30.0), 300 + 120)
+        self.assertLessEqual(running_silence_limit("gemini/gemini-4-argon"), 15 * 60)
 
     def test_sweep_scans_the_tool_registry_once(self):
         from chat import subagent_limits
@@ -631,14 +631,14 @@ class StaleRunExpirationTests(TestCase):
         self.assertEqual(scan.call_count, 1)
 
     def test_silence_limit_follows_the_model_request_timeout(self):
-        """A Gemini run (600 s request timeout) may sit silent far longer than an
+        """An Argon run (300 s request timeout) may sit silent far longer than an
         OpenAI one (120 s) before it counts as stale."""
         openai_limit = running_silence_limit("openai/gpt-6-luna")
-        gemini_limit = running_silence_limit("gemini/gemini-3.8-flash")
+        gemini_limit = running_silence_limit("gemini/gemini-4-argon")
         self.assertGreater(gemini_limit, openai_limit)
-        quiet = timedelta(seconds=openai_limit + 60)
+        quiet = timedelta(seconds=(openai_limit + gemini_limit) / 2)
         runs = {}
-        for model in ("openai/gpt-6-luna", "gemini/gemini-3.8-flash"):
+        for model in ("openai/gpt-6-luna", "gemini/gemini-4-argon"):
             runs[model] = SubAgentRun.objects.create(
                 thread=self.thread, user=self.user, prompt="x", model_used=model,
                 status=SubAgentRun.Status.RUNNING,
@@ -649,9 +649,9 @@ class StaleRunExpirationTests(TestCase):
             )
         self.assertEqual(_expire_stale_runs(), 1)
         runs["openai/gpt-6-luna"].refresh_from_db()
-        runs["gemini/gemini-3.8-flash"].refresh_from_db()
+        runs["gemini/gemini-4-argon"].refresh_from_db()
         self.assertEqual(runs["openai/gpt-6-luna"].status, SubAgentRun.Status.FAILED)
-        self.assertEqual(runs["gemini/gemini-3.8-flash"].status, SubAgentRun.Status.RUNNING)
+        self.assertEqual(runs["gemini/gemini-4-argon"].status, SubAgentRun.Status.RUNNING)
 
     def test_heartbeat_is_throttled_and_stamps_running_rows(self):
         from chat import subagent_service

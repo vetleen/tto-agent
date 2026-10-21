@@ -161,13 +161,18 @@ def _get_provider_kwargs(provider: str, api_model: str) -> dict[str, Any]:
 # per-operation limit, so a long stream that keeps producing tokens is fine. The
 # google-genai SDK also sends it as ``X-Server-Timeout``, making it Google's
 # deadline for the WHOLE generation: Gemini 4 Argon's long thinking on big tool
-# loops hit 120 s (504 "Deadline expired", WILFRED-9M). Runaway generations are
-# bounded by the output cap and repetition guard, not by this.
+# loops hit 120 s (504 "Deadline expired", WILFRED-9M). Registered models set
+# their own deadline (ModelInfo.request_timeout_seconds); the provider value is
+# the fallback. Runaway generations are bounded by the output cap and
+# repetition guard, not by this.
 _DEFAULT_REQUEST_TIMEOUT_SECONDS = 120
 GEMINI_REQUEST_TIMEOUT_SECONDS = int(os.environ.get("GEMINI_REQUEST_TIMEOUT_SECONDS", "600"))
 
 
-def _request_timeout(provider: str) -> int:
+def _request_timeout(provider: str, api_model: str | None = None) -> int:
+    info = get_model_info(api_model) if api_model else None
+    if info is not None and info.request_timeout_seconds:
+        return info.request_timeout_seconds
     if provider == "google_genai":
         return GEMINI_REQUEST_TIMEOUT_SECONDS
     return _DEFAULT_REQUEST_TIMEOUT_SECONDS
@@ -175,12 +180,29 @@ def _request_timeout(provider: str) -> int:
 
 # Attempts per model call: the first plus the SDK's ``max_retries`` (below).
 REQUEST_ATTEMPTS = 1 + 3
+# Gemini gets one retry: a hung request already waited a whole deadline, and the
+# SDK retries timeouts. langchain-google-genai hands ``max_retries`` to the SDK
+# as HttpRetryOptions(attempts=…), i.e. it counts the first request too.
+GEMINI_REQUEST_ATTEMPTS = 1 + 1
+
+
+def _max_retries_kwarg(provider: str) -> int:
+    if provider == "google_genai":
+        return GEMINI_REQUEST_ATTEMPTS
+    return REQUEST_ATTEMPTS - 1
 
 
 def request_timeout_for_model(model: str) -> int:
     """The per-request timeout (seconds) a call to *model* runs under; the
-    default for an unknown model. A call can take up to REQUEST_ATTEMPTS of these."""
-    return _request_timeout(detect_provider(model or ""))
+    provider default for an unknown model. A call can take up to
+    REQUEST_ATTEMPTS (Gemini: GEMINI_REQUEST_ATTEMPTS) of these."""
+    model = model or ""
+    provider = detect_provider(model)
+    try:
+        api_model = _parse_provider(model)[1]
+    except LLMConfigurationError:
+        api_model = None
+    return _request_timeout(provider, api_model)
 
 
 # Shared per-provider rate limiters (thread-safe singletons)
@@ -248,8 +270,8 @@ def _build_client(provider: str, api_model: str, provider_kwargs: dict[str, Any]
 
             client = WilfredChatAnthropic(
                 model=api_model,
-                max_retries=REQUEST_ATTEMPTS - 1,
-                timeout=_request_timeout(provider),
+                max_retries=_max_retries_kwarg(provider),
+                timeout=_request_timeout(provider, api_model),
                 **({"rate_limiter": rate_limiter} if rate_limiter else {}),
                 **provider_kwargs,
             )
@@ -258,8 +280,8 @@ def _build_client(provider: str, api_model: str, provider_kwargs: dict[str, Any]
             client = init_chat_model(
                 api_model,
                 model_provider=provider,
-                max_retries=REQUEST_ATTEMPTS - 1,
-                timeout=_request_timeout(provider),
+                max_retries=_max_retries_kwarg(provider),
+                timeout=_request_timeout(provider, api_model),
                 **({"rate_limiter": rate_limiter} if rate_limiter else {}),
                 **provider_kwargs,
             )

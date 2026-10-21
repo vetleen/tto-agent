@@ -58,8 +58,9 @@ Caveat: a worker restart mid-load leaves RUNNING ghosts that hold their slots un
 expires them. A run is stale once its heartbeat (`SubAgentRun.last_activity_at`, bumped on every
 streamed chunk, provider retry wait, round start and tool-call end) has been silent longer than one
 step could take: the longer of the model's request timeout and the slowest sub-agent tool timeout,
-+ 2 min (~6.5 min on OpenAI/Anthropic, ~12 min on Gemini, whose 600 s timeout is the
-whole-generation deadline; `chat.subagent_limits.running_silence_limit`). There is no wall-clock
++ 2 min (~6.5 min on OpenAI/Anthropic and Gemini Flash, ~7 min on Argon/3.1 Pro, whose 300 s
+timeout is the whole-generation deadline — per model, `ModelInfo.request_timeout_seconds`;
+`chat.subagent_limits.running_silence_limit`). There is no wall-clock
 limit: a run is bounded by its round budget (quick 10 / standard 20 / deep 40 rounds), and each
 sub-agent tool call by its `timeout_seconds` (a timed-out call is abandoned and logged at WARNING;
 its thread's retry and rate-window waits stop at that deadline, and a result that still arrives

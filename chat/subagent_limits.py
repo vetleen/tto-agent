@@ -55,7 +55,7 @@ def running_silence_limit(model_used: str, longest_tool: float | None = None) ->
 
     Since the heartbeat beats on every chunk and retry wait, silence means one
     step is stuck: a model request producing nothing (bounded by its request
-    timeout — Gemini's is the whole-generation deadline, 600 s) or one tool
+    timeout — on Gemini the whole-generation deadline, per model) or one tool
     call (the slowest sub-agent tool timeout). They never overlap, so the
     limit is the longer of the two plus a margin. The SDK's own silent retries
     of a dead connection are deliberately not counted: a provider that sends
