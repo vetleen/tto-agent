@@ -104,7 +104,12 @@ def to_langchain_messages(messages: List[Message], *, provider: str | None = Non
     system_content = None
     for m in messages:
         if m.role == "system":
-            system_content = m.content
+            # Only the FIRST system message is the static prompt that carries the
+            # 1h breakpoint. Later ones (the conversation summary) must not
+            # replace it: langchain-anthropic merges consecutive system messages,
+            # so keeping the last one here sent [summary, summary] and no prompt.
+            if system_content is None:
+                system_content = m.content
             lc_messages.append(SystemMessage(content=m.content))
         elif m.role == "assistant":
             tool_calls_lc = None

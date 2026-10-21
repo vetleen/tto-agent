@@ -256,3 +256,22 @@ class AnthropicCacheControlTests(TestCase):
         self.assertEqual(len(result[0].content), 1)
         self.assertEqual(result[0].content[0]["text"], "Static instructions only")
         self.assertEqual(result[0].content[0]["cache_control"], {"type": "ephemeral", "ttl": "1h"})
+
+    def test_summary_system_message_does_not_replace_static_prompt(self):
+        """A second system message (the conversation summary) is sent AFTER the
+        static prompt; the 1h breakpoint stays on the static prompt only."""
+        from langchain_anthropic.chat_models import _format_messages
+
+        messages = [
+            Message(role="system", content="Static instructions"),
+            Message(role="system", content="Summary of earlier conversation:\nS"),
+            Message(role="user", content="Hello"),
+        ]
+        result = to_langchain_messages(messages, provider="anthropic")
+        system, _formatted = _format_messages(result)
+        self.assertEqual(
+            [b["text"] for b in system],
+            ["Static instructions", "Summary of earlier conversation:\nS"],
+        )
+        self.assertEqual(system[0]["cache_control"], {"type": "ephemeral", "ttl": "1h"})
+        self.assertNotIn("cache_control", system[1])
