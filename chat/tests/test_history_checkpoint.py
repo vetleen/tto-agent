@@ -275,6 +275,18 @@ class PlanCheckpointTests(_ThreadMixin, TransactionTestCase):
             plan = plan_checkpoint(self.thread, BUDGETS, keep_rounds=2, force_summary=True)
         self.assertEqual(plan.index_lines[0], "- older(x=1)")
 
+    def test_tool_index_is_one_line_per_call(self):
+        self._msg("Q0")
+        self._msg("", "assistant", hidden=True, tool_calls=[
+            {"id": "w", "name": "canvas_write", "arguments": {"content": "# Title\n\nBody\nmore"}},
+        ])
+        self._msg("ok", "tool", tool_call_id="w")
+        self._msg("A0", "assistant")
+        self._turn(1)
+        self._turn(2)
+        plan = plan_checkpoint(self.thread, BUDGETS, keep_rounds=2, force_summary=True)
+        self.assertEqual(plan.index_lines, ["- canvas_write(content=# Title Body more)"])
+
     def test_hidden_user_rows_do_not_start_rounds(self):
         self._turn(0)
         self._turn(1)

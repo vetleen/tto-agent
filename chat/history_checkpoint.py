@@ -259,7 +259,8 @@ def _index_lines(rows) -> list[str]:
         if m.role != "assistant" or is_dropped(m):
             continue
         for c in (m.metadata or {}).get("tool_calls") or []:
-            args = _summarise_args(c.get("arguments"))
+            # One line per call: argument values (canvas text …) may hold newlines.
+            args = " ".join(_summarise_args(c.get("arguments")).split())
             name = c.get("name") or "tool"
             lines.append(f"- {name}({args})" if args else f"- {name}")
     return lines
