@@ -207,18 +207,24 @@ def _prepend_preamble_to_last_user_message(messages, preamble: str) -> None:
     """
     if not preamble:
         return
+    from llm.core.langchain_utils import TURN_ANCHOR_KEY
+
     for i in range(len(messages) - 1, 0, -1):
         if messages[i].role == "user":
             original = messages[i].content
+            # The anchor flag lets the Anthropic adapter place its history
+            # cache breakpoints just before this message (whose form changes
+            # next turn, when the preamble is gone).
+            metadata = {**(messages[i].metadata or {}), TURN_ANCHOR_KEY: True}
             if isinstance(original, str):
                 messages[i] = messages[i].model_copy(
-                    update={"content": preamble + "\n" + original}
+                    update={"content": preamble + "\n" + original, "metadata": metadata}
                 )
             elif isinstance(original, list):
                 # Multimodal content (images): prepend a text block
                 context_block = {"type": "text", "text": preamble}
                 messages[i] = messages[i].model_copy(
-                    update={"content": [context_block] + list(original)}
+                    update={"content": [context_block] + list(original), "metadata": metadata}
                 )
             break
 

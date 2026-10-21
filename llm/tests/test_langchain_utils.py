@@ -275,3 +275,77 @@ class AnthropicCacheControlTests(TestCase):
         )
         self.assertEqual(system[0]["cache_control"], {"type": "ephemeral", "ttl": "1h"})
         self.assertNotIn("cache_control", system[1])
+
+
+class AnthropicHistoryBreakpointTests(TestCase):
+    """Turn N writes a cache entry just before its anchor (the user message
+    carrying the per-turn preamble); turn N+1 reads exactly there."""
+
+    @staticmethod
+    def _breakpoints(lc):
+        out = []
+        for i, m in enumerate(lc):
+            if isinstance(m.content, list):
+                for b in m.content:
+                    if isinstance(b, dict) and "cache_control" in b:
+                        out.append((i, b.get("text", "")[:20]))
+        return out
+
+    def _turn(self, history, user_text):
+        from llm.core.langchain_utils import TURN_ANCHOR_KEY
+
+        anchor = Message(role="user", content="PREAMBLE\n" + user_text,
+                         metadata={TURN_ANCHOR_KEY: True})
+        return [Message(role="system", content="STATIC")] + history + [anchor]
+
+    def test_no_anchor_no_history_breakpoints(self):
+        msgs = [Message(role="system", content="S"), Message(role="user", content="q"),
+                Message(role="assistant", content="a"), Message(role="user", content="q2")]
+        lc = to_langchain_messages(msgs, provider="anthropic")
+        self.assertEqual([i for i, _ in self._breakpoints(lc)], [0])
+
+    def test_write_then_read_at_the_same_block(self):
+        from llm.types.messages import ToolCall
+
+        turn1 = [Message(role="user", content="Q1"), Message(role="assistant", content="A1")]
+        # Turn 2's request: write before its anchor (A1); no previous turn to read.
+        lc2 = to_langchain_messages(self._turn(turn1, "Q2"), provider="anthropic")
+        self.assertEqual(self._breakpoints(lc2), [(0, "STATIC"), (2, "A1")])
+
+        # Turn 2 ran tools (more than 20 blocks would defeat the lookback).
+        loop = []
+        for n in range(15):
+            loop += [Message(role="assistant", content="", tool_calls=[ToolCall(id=f"t{n}", name="x", arguments={})]),
+                     Message(role="tool", content=f"R{n}", tool_call_id=f"t{n}")]
+        turn2 = turn1 + [Message(role="user", content="Q2")] + loop + [Message(role="assistant", content="A2")]
+        lc3 = to_langchain_messages(self._turn(turn2, "Q3"), provider="anthropic")
+        # Read where turn 2 wrote (A1, index 2), write before the new anchor (A2).
+        self.assertEqual(self._breakpoints(lc3), [(0, "STATIC"), (2, "A1"), (len(turn2), "A2")])
+        # The prefix up to and including the read breakpoint is identical.
+        self.assertEqual(lc3[:3], lc2[:3])
+
+    def test_tool_results_and_call_only_turns_are_skipped(self):
+        from llm.types.messages import ToolCall
+
+        history = [Message(role="user", content="Q1"),
+                   Message(role="assistant", content="", tool_calls=[ToolCall(id="t", name="x", arguments={})]),
+                   Message(role="tool", content="R", tool_call_id="t")]
+        lc = to_langchain_messages(self._turn(history, "Q2"), provider="anthropic")
+        # Nothing between Q1 and the anchor can carry a breakpoint → Q1 does.
+        self.assertEqual(self._breakpoints(lc), [(0, "STATIC"), (1, "Q1")])
+
+    def test_never_more_than_three_explicit_breakpoints(self):
+        """With langchain-anthropic's automatic end breakpoint that is four,
+        Anthropic's maximum."""
+        history = []
+        for n in range(6):
+            history += [Message(role="user", content=f"Q{n}"), Message(role="assistant", content=f"A{n}")]
+        history.insert(1, Message(role="system", content="Summary of earlier conversation:\nS"))
+        lc = to_langchain_messages(self._turn(history, "Q9"), provider="anthropic")
+        self.assertLessEqual(len(self._breakpoints(lc)), 3)
+
+    def test_other_providers_untouched(self):
+        lc = to_langchain_messages(self._turn([Message(role="user", content="Q1"),
+                                               Message(role="assistant", content="A1")], "Q2"),
+                                   provider="openai")
+        self.assertEqual(self._breakpoints(lc), [])

@@ -51,6 +51,92 @@ def parse_tool_calls_from_ai_message(ai_message: object) -> list[ToolCall] | Non
     return [_normalize_tool_call(tc) for tc in raw]
 
 
+# Message.metadata flag on the user message that carries this turn's per-turn
+# context preamble (set by the chat consumer). The preamble is gone from that
+# message on the next turn, so the request's tail is never a reusable cache
+# entry; the history breakpoints are placed relative to it instead.
+TURN_ANCHOR_KEY = "wf_turn_anchor"
+_HISTORY_BREAKPOINT = {"type": "ephemeral"}
+
+
+def _with_cache_breakpoint(msg):
+    """``msg`` with a cache_control breakpoint on its last text block, or None
+    when it has no text block that can carry one (tool results and
+    tool-call-only turns are skipped: the caller walks further back)."""
+    if isinstance(msg, ToolMessage):
+        return None
+    content = msg.content
+    if isinstance(content, str):
+        if not content.strip():
+            return None
+        blocks = [{"type": "text", "text": content, "cache_control": _HISTORY_BREAKPOINT}]
+        return msg.model_copy(update={"content": blocks})
+    if isinstance(content, list):
+        for i in range(len(content) - 1, -1, -1):
+            blk = content[i]
+            if isinstance(blk, dict) and blk.get("type") == "text" and str(blk.get("text") or "").strip():
+                new = list(content)
+                new[i] = {**blk, "cache_control": _HISTORY_BREAKPOINT}
+                return msg.model_copy(update={"content": new})
+    return None
+
+
+def _mark_before(lc_messages: list, index: int) -> None:
+    """Put a history breakpoint on the nearest message before ``index`` that
+    can carry one (deterministic, so the turn that writes an entry and the
+    turn that reads it pick the same block)."""
+    for i in range(index - 1, 0, -1):
+        if isinstance(lc_messages[i], SystemMessage):
+            return
+        marked = _with_cache_breakpoint(lc_messages[i])
+        if marked is not None:
+            lc_messages[i] = marked
+            return
+
+
+def _apply_history_breakpoints(lc_messages: list, messages: List[Message]) -> list:
+    """Two explicit breakpoints so consecutive turns share cached history.
+
+    The automatic breakpoint sits at the end of each request, which includes
+    the turn's user message with its per-turn context preamble; the next turn
+    sends that message without the preamble, so nothing written there is ever
+    read again. Instead:
+
+    - *write*: the end of the stable history, just before this turn's anchor
+      message — the next turn sends exactly this prefix again;
+    - *read*: the same spot one turn back (before the previous turn's anchor,
+      found as the user message that opened the previous assistant turn) — an
+      exact hit even when the previous turn's tool loop is longer than
+      Anthropic's 20-block lookback.
+
+    With the system prompt's 1h breakpoint and the automatic one at the end
+    that makes four, Anthropic's maximum. Requests without an anchor (sub-
+    agents, one-off calls) are left as they were.
+    """
+    anchor = next(
+        (i for i in range(len(messages) - 1, -1, -1)
+         if messages[i].role == "user" and (messages[i].metadata or {}).get(TURN_ANCHOR_KEY)),
+        None,
+    )
+    if anchor is None:
+        return lc_messages
+    out = list(lc_messages)
+    # The previous turn: the last assistant message before the anchor, then the
+    # user message that opened it.
+    prev_anchor = None
+    i = anchor - 1
+    while i > 0 and messages[i].role != "assistant":
+        i -= 1
+    while i > 0 and messages[i].role != "user":
+        i -= 1
+    if i > 0 and messages[i].role == "user":
+        prev_anchor = i
+    _mark_before(out, anchor)
+    if prev_anchor is not None:
+        _mark_before(out, prev_anchor)
+    return out
+
+
 def _apply_anthropic_cache_control(lc_messages: list, system_content: str | None) -> list:
     """Add an explicit cache_control breakpoint to the system message.
 
@@ -143,6 +229,7 @@ def to_langchain_messages(messages: List[Message], *, provider: str | None = Non
             lc_messages.append(HumanMessage(content=_sanitize_content(m.content)))
 
     if provider == "anthropic":
+        lc_messages = _apply_history_breakpoints(lc_messages, messages)
         lc_messages = _apply_anthropic_cache_control(lc_messages, system_content)
 
     return lc_messages
