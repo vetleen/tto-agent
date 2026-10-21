@@ -427,7 +427,7 @@ class CreateSubagentTool(ContextAwareTool):
 MAX_CHAIN_LENGTH = 10
 
 
-def _resolve_run_for_continuation(thread_id, run_id: str):
+def _resolve_thread_run(thread_id, run_id: str):
     """``(run, None)`` or ``(None, error_message)`` for an id within the thread."""
     from django.core.exceptions import ValidationError
 
@@ -435,7 +435,7 @@ def _resolve_run_for_continuation(thread_id, run_id: str):
 
     ref = (run_id or "").strip().strip("[]").lower()
     if not ref:
-        return None, "Give the id of the sub-agent run to continue."
+        return None, "Give the id of the sub-agent run."
     runs = SubAgentRun.objects.filter(thread_id=thread_id)
     try:
         if len(ref) == 36:
@@ -485,7 +485,7 @@ class ContinueSubagentTool(ContextAwareTool):
             return err
         thread_id = context.conversation_id
 
-        previous, err_msg = _resolve_run_for_continuation(thread_id, run_id)
+        previous, err_msg = _resolve_thread_run(thread_id, run_id)
         if err_msg:
             return json.dumps({"status": "error", "message": err_msg})
         if previous.status not in (SubAgentRun.Status.COMPLETED, SubAgentRun.Status.FAILED):
@@ -533,7 +533,107 @@ class ContinueSubagentTool(ContextAwareTool):
         )
 
 
+class ReadSubagentReportInput(ReasonBaseModel):
+    run_id: str = Field(
+        description=(
+            "The id of the sub-agent run whose report to read — the short id from its "
+            '"[Sub-agent result: <id> …]" header (or the full id).'
+        ),
+    )
+    start_line: int = Field(
+        default=1, ge=1,
+        description="First line to return (1-based, inclusive). Default 1.",
+    )
+    end_line: int | None = Field(
+        default=None, ge=1,
+        description=(
+            "Last line to return (inclusive). Omit for 'to the end'. The result tells "
+            "you total_lines and, for a long report, an outline of headings with their "
+            "line ranges."
+        ),
+    )
+    max_tokens: int | None = Field(
+        default=None, ge=500,
+        description=(
+            "Page size in tokens. Defaults to the per-read cap for this conversation "
+            "(the result states it); a larger value is clamped to that cap. When the "
+            "requested lines don't fit, you get the first page cut at a line boundary "
+            "plus next_start_line."
+        ),
+    )
+
+
+class ReadSubagentReportTool(ContextAwareTool):
+    """Read a finished sub-agent's report (its working canvas), ranged by line
+    and paged by tokens exactly like ``canvas_read``.
+
+    The result message only points at the report, so the report lives in this
+    tool's results — which collapse to a re-read stub as they age, like any
+    tool output — instead of sitting in the history in full."""
+
+    name: str = "chat_subagent_report_read"
+    audience: str = "main"
+    start_label: str = "Reading sub-agent report..."
+    end_label: str = "Read sub-agent report"
+    description: str = (
+        "Read a finished sub-agent's report — the working canvas it delivered (or its "
+        "final message when it left no canvas). The whole report when it fits the "
+        "per-read cap, otherwise a page of lines plus an outline (headings with line "
+        "ranges) and next_start_line, so you can continue or jump with "
+        "start_line/end_line. A sub-agent's result message only points at its report: "
+        "read the report in full before you rely on, summarise or quote its findings."
+    )
+    args_schema: type[BaseModel] = ReadSubagentReportInput
+
+    def end_label_for_result(self, result: dict) -> str | None:
+        if result.get("status") != "ok":
+            return "Couldn't read sub-agent report"
+        total = result.get("total_lines")
+        if not total:
+            return None
+        return f"Read sub-agent report (lines {result.get('start_line')}–{result.get('end_line')} of {total})"
+
+    def _run(self, run_id: str, start_line: int = 1, end_line: int | None = None,
+             max_tokens: int | None = None, **kwargs) -> str:
+        from chat.canvas_tools import _read_canvas_result
+        from chat.models import SubAgentRun
+        from chat.subagent_service import report_source
+
+        thread_id = self.context.conversation_id if self.context else None
+        if not thread_id:
+            return json.dumps({"status": "error", "message": "No thread context available."})
+        run, err_msg = _resolve_thread_run(thread_id, run_id)
+        if err_msg:
+            return json.dumps({"status": "error", "message": err_msg})
+        if run.status not in (SubAgentRun.Status.COMPLETED, SubAgentRun.Status.FAILED):
+            return json.dumps({
+                "status": "error",
+                "message": f"Sub-agent {str(run.id)[:8]} is still {run.status}; its report arrives when it finishes.",
+            })
+        text, source = report_source(run)
+        if not text:
+            return json.dumps({
+                "status": "error",
+                "message": f"Sub-agent {str(run.id)[:8]} left no report and no final message.",
+            })
+        view, _cap = _read_canvas_result(
+            text, context=self.context,
+            start_line=start_line, end_line=end_line, max_tokens=max_tokens,
+        )
+        if view.get("status") == "error":
+            return json.dumps(view)
+        title = (run.canvas_title or "Working document") if source == "canvas" else "Final message"
+        result = {"status": "ok", "run_id": str(run.id)[:8], "title": title, "source": source, **view}
+        logger.info(
+            "chat_subagent_report_read: run=%s source=%s lines=%d-%d/%d returned_tokens=%d",
+            run.pk, source, result["start_line"], result["end_line"], result["total_lines"],
+            result["tokens"],
+        )
+        return json.dumps(result)
+
+
 # Register on import
 registry = get_tool_registry()
 registry.register_tool(CreateSubagentTool())
 registry.register_tool(ContinueSubagentTool())
+registry.register_tool(ReadSubagentReportTool())

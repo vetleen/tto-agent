@@ -2,7 +2,7 @@
 
 Covers the three ``subagent_canvas_*`` tools, the audience wiring that makes them
 available to sub-agents (and not the main agent), template auto-load, the
-delimited canvas returned to the orchestrator, failure durability, the broadened
+canvas pointer returned to the orchestrator, failure durability, the broadened
 claim path, and the prompt changes.
 """
 
@@ -317,7 +317,10 @@ class SubagentCanvasRunTests(TestCase):
 
     @patch("llm.get_llm_service")
     @patch("core.preferences.get_preferences")
-    def test_canvas_returned_to_orchestrator_delimited(self, mock_prefs, mock_svc):
+    def test_canvas_pointed_to_not_pasted(self, mock_prefs, mock_svc):
+        """The result message points at the canvas (read with
+        chat_subagent_report_read) and carries the final message; the canvas
+        body itself stays out of the history."""
         mock_prefs.return_value = _prefs()
         _mock_llm(mock_svc, content="Final answer")
         run = SubAgentRun.objects.create(
@@ -329,9 +332,10 @@ class SubagentCanvasRunTests(TestCase):
 
         msg = self._subagent_message()
         self.assertIsNotNone(msg)
-        self.assertIn("=== SUBAGENT CANVAS: My Doc ===", msg.content)
-        self.assertIn("CANVAS BODY", msg.content)
-        self.assertIn("Final answer", msg.content)
+        self.assertIn('Report: canvas "My Doc"', msg.content)
+        self.assertIn(f'chat_subagent_report_read(run_id="{str(run.id)[:8]}")', msg.content)
+        self.assertIn("Accompanying message:\nFinal answer", msg.content)
+        self.assertNotIn("CANVAS BODY", msg.content)
 
     @patch("llm.get_llm_service")
     @patch("core.preferences.get_preferences")
@@ -349,8 +353,9 @@ class SubagentCanvasRunTests(TestCase):
         self.assertEqual(run.status, SubAgentRun.Status.COMPLETED)
         msg = self._subagent_message()
         self.assertIsNotNone(msg)
-        self.assertIn("PARTIAL WORK", msg.content)
-        self.assertIn("no final message", msg.content)
+        self.assertIn('Report: canvas "Draft"', msg.content)
+        self.assertIn("no accompanying message", msg.content)
+        self.assertNotIn("PARTIAL WORK", msg.content)
 
 
 # ---------------------------------------------------------------------------

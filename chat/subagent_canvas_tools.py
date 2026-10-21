@@ -9,9 +9,10 @@ by line range, paged by the run's per-read token cap, exactly like the main
 agent's ``canvas_read``. These tools are ``audience="subagent"`` so they reach
 every sub-agent and never the main agent.
 
-Every write is persisted immediately (durability), and the canvas is returned to
-the orchestrator alongside the sub-agent's final message — see
-``chat/subagent_service.py`` (``render_canvas_block`` and ``run_subagent``).
+Every write is persisted immediately (durability). When the run ends the
+orchestrator gets a pointer to the canvas plus the sub-agent's final message and
+reads the canvas with ``chat_subagent_report_read`` — see
+``chat/subagent_service.py`` (``build_result_notice`` and ``run_subagent``).
 """
 
 from __future__ import annotations

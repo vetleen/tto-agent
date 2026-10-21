@@ -261,20 +261,33 @@ def _is_untouched_template(run) -> bool:
     return run.canvas == (first.content or "")[:CANVAS_MAX_CHARS]
 
 
-def render_canvas_block(run, *, untouched: bool | None = None) -> str:
-    """The delimited working-canvas block appended to a sub-agent's return.
+def report_source(run, *, untouched: bool | None = None) -> tuple[str, str]:
+    """``(text, source)`` of a run's deliverable: its working canvas
+    (``"canvas"``), or its final message (``"final_message"``) when it left no
+    canvas or only the untouched specialization template. ``untouched`` is the
+    result of ``_is_untouched_template(run)`` when the caller already has it (two
+    queries a finishing run would otherwise repeat); None computes it here."""
+    if run.canvas:
+        if untouched is None:
+            untouched = _is_untouched_template(run)
+        if not untouched:
+            return run.canvas, "canvas"
+    return run.result or "", "final_message"
 
-    Empty string when the run has no canvas, or only the untouched template, so
-    callers can append it unconditionally. ``untouched`` is the result of
-    ``_is_untouched_template(run)`` when the caller already has it (two queries
-    a finishing run would otherwise repeat); None computes it here.
-    """
-    if untouched is None:
-        untouched = _is_untouched_template(run)
-    if not run.canvas or untouched:
-        return ""
-    title = run.canvas_title or "Working document"
-    return f"\n\n=== SUBAGENT CANVAS: {title} ===\n{run.canvas}"
+
+def _cap_tokens(text: str, max_tokens: int) -> tuple[str, bool]:
+    """``(text, was_cut)``: *text* cut to about *max_tokens*, at a line or word
+    boundary when one is near."""
+    from core.tokens import count_tokens
+
+    tokens = count_tokens(text)
+    if tokens <= max_tokens:
+        return text, False
+    cut = text[: max(1, int(len(text) * max_tokens / tokens))]
+    boundary = max(cut.rfind("\n"), cut.rfind(" "))
+    if boundary > len(cut) * 0.8:
+        cut = cut[:boundary]
+    return cut.rstrip(), True
 
 
 def _subagent_result_message_exists(run) -> bool:
@@ -345,27 +358,69 @@ def result_header(run) -> str:
     )
 
 
+def build_result_notice(run, *, untouched: bool | None = None) -> str:
+    """The orchestrator-facing result message: a pointer to the report, never
+    the report itself.
+
+    The report (working canvas) is read with ``chat_subagent_report_read``, so
+    it lives in tool results that age into re-read stubs instead of staying in
+    the history in full (where nothing prunes a user message). The sub-agent's
+    final message rides along inline, capped at
+    ``SUBAGENT_RESULT_INLINE_MAX_TOKENS``; a longer one is read in full with
+    the same tool when there is no canvas."""
+    from django.conf import settings
+
+    from core.tokens import count_tokens
+
+    short_id = str(run.id)[:8]
+    read_call = f'chat_subagent_report_read(run_id="{short_id}")'
+    cap = int(getattr(settings, "SUBAGENT_RESULT_INLINE_MAX_TOKENS", 2_000))
+    text, source = report_source(run, untouched=untouched)
+    final = (run.result or "").strip()
+
+    lines = [result_header(run)]
+    if source == "canvas":
+        title = run.canvas_title or "Working document"
+        line_count = text.count("\n") + 1  # read_canvas_range's line numbering
+        lines.append(
+            f'Report: canvas "{title}" (~{count_tokens(text):,} tokens, '
+            f"{line_count:,} lines). Read it in full with {read_call} "
+            "before you rely on its findings."
+        )
+        if final:
+            shown, cut = _cap_tokens(final, cap)
+            lines.append(f"Accompanying message:\n{shown}")
+            if cut:
+                lines.append(
+                    f"[Accompanying message cut at ~{cap:,} tokens; the report holds the findings.]"
+                )
+        else:
+            lines.append("The sub-agent left no accompanying message.")
+    elif final:
+        shown, cut = _cap_tokens(final, cap)
+        lines.append(shown)
+        if cut:
+            lines.append(
+                f"[Final message cut at ~{cap:,} tokens of ~{count_tokens(final):,}; "
+                f"read it in full with {read_call}.]"
+            )
+    else:
+        lines.append("The sub-agent left no final message and no report.")
+    return "\n".join(lines)
+
+
 def _create_subagent_result_message(run, *, untouched: bool | None = None) -> None:
-    """Persist the sub-agent's result (+ working canvas) as a hidden ChatMessage.
+    """Persist the sub-agent's result notice as a hidden ChatMessage.
 
     Hidden, ``role="user"`` (not ``"tool"``, to avoid orphan tool_call_ids that
-    OpenAI rejects). The canvas is appended clearly delimited so the orchestrator
-    sees it automatically on its next turn (``_load_history`` replays the content
-    verbatim). Survives reconnects and failed LLM streams. ``untouched`` is
-    passed through to ``render_canvas_block``.
+    OpenAI rejects). Content is ``build_result_notice``: a pointer to the report
+    plus the capped final message. Survives reconnects and failed LLM streams.
+    ``untouched`` is passed through to ``report_source``.
     """
     from chat.models import ChatMessage
     from core.tokens import count_tokens
 
-    header = result_header(run)
-    if run.result:
-        wrapped = f"{header}\n{run.result}"
-    else:
-        wrapped = (
-            f"{header}\n"
-            "The sub-agent produced no final message, but left the following working canvas."
-        )
-    wrapped += render_canvas_block(run, untouched=untouched)
+    wrapped = build_result_notice(run, untouched=untouched)
     ChatMessage.objects.create(
         thread_id=run.thread_id,
         role="user",

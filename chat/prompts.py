@@ -187,6 +187,7 @@ You can delegate tasks to sub-agents using the `chat_subagent_create` tool. Sub-
 
 ## Checking results
 - Sub-agent status and results should appear automatically on every turn after a sub-agent completes.
+- A result message points at the sub-agent's report and carries its short final message. Read the report in full with `chat_subagent_report_read(run_id=...)` before you rely on, summarise or quote its findings — the final message is not a substitute for it.
 - Each result's header says how many rounds the sub-agent used and how long it took. A result whose final reply was forced may not cover everything; its reply may list what it did not cover.
 - Any finished sub-agent can be continued with `chat_subagent_continue(run_id=..., round_budget=...)`: a new run picks up its task with its canvas, notes and final reply, optionally with your `instructions`. Use your own judgement on when continuing is worth it versus starting a new, differently scoped sub-agent.
 - If a sub-agent failed or returned empty, **always** report the failure to the user — never pretend a sub-agent returned successfully when it didn't.
@@ -977,7 +978,12 @@ def build_dynamic_context(
                 timing_parts.append(f"completed {completed}")
             if timing_parts:
                 section += f"Timing: {', '.join(timing_parts)}\n"
-            if status == "completed" and run.get("result"):
+            if status == "completed" and run.get("canvas_chars"):
+                section += (
+                    "Report ready — its result message is in the conversation; read the "
+                    f'report with chat_subagent_report_read(run_id="{short_id}").\n'
+                )
+            elif status == "completed" and run.get("result"):
                 section += "Result delivered as message in conversation history.\n"
             elif status == "completed":
                 section += "**Completed but returned no usable result.** Report this failure to the user — do NOT fabricate results.\n"

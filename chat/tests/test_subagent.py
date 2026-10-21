@@ -1694,7 +1694,8 @@ class RunSubagentServiceTests(TestCase):
         msgs = list(self._outcome_messages(run))
         self.assertEqual(len(msgs), 1)
         self.assertTrue(msgs[0].content.startswith(f"[Sub-agent result: {str(run.id)[:8]} — finished"))
-        self.assertIn("Partial work", msgs[0].content)
+        self.assertIn('Report: canvas "Working document"', msgs[0].content)
+        self.assertIn("chat_subagent_report_read", msgs[0].content)
         self.assertEqual(status_at_notify, [SubAgentRun.Status.FAILED])
 
     @patch("chat.tasks._notify_consumer")
@@ -1876,7 +1877,7 @@ class RunSubagentServiceTests(TestCase):
         message = ChatMessage.objects.get(
             thread=self.thread, metadata__subagent_run_id=str(run.id),
         )
-        self.assertIn("=== SUBAGENT CANVAS: Report ===", message.content)
+        self.assertIn('Report: canvas "Report"', message.content)
 
     @patch("chat.tasks.notify_subagent_status")
     @patch("chat.tasks.run_subagent_task")
@@ -1900,19 +1901,22 @@ class UntouchedTemplateTests(TestCase):
         skill.templates.all.return_value.first.return_value = MagicMock(content=content)
         return skill
 
-    def test_untouched_template_is_not_rendered(self):
-        from chat.subagent_service import render_canvas_block
+    def test_untouched_template_is_not_the_report(self):
+        from chat.subagent_service import build_result_notice, report_source
 
         run = SubAgentRun.objects.create(
             thread=self.thread, user=self.user, prompt="t", skill_slug="web-researcher",
-            canvas="# Template", canvas_title="Report",
+            canvas="# Template", canvas_title="Report", result="Short answer.",
         )
         with patch("chat.subagent_service.get_run_specialization_skill",
                    return_value=self._skill("# Template")):
-            self.assertEqual(render_canvas_block(run), "")
+            self.assertEqual(report_source(run), ("Short answer.", "final_message"))
+            notice = build_result_notice(run)
+        self.assertNotIn("Report: canvas", notice)
+        self.assertIn("Short answer.", notice)
 
-    def test_edited_template_is_rendered(self):
-        from chat.subagent_service import render_canvas_block
+    def test_edited_template_is_the_report(self):
+        from chat.subagent_service import build_result_notice, report_source
 
         run = SubAgentRun.objects.create(
             thread=self.thread, user=self.user, prompt="t", skill_slug="web-researcher",
@@ -1920,7 +1924,140 @@ class UntouchedTemplateTests(TestCase):
         )
         with patch("chat.subagent_service.get_run_specialization_skill",
                    return_value=self._skill("# Template")):
-            self.assertIn("=== SUBAGENT CANVAS: Report ===", render_canvas_block(run))
+            self.assertEqual(report_source(run), ("# Template\nFindings", "canvas"))
+            notice = build_result_notice(run)
+        self.assertIn('Report: canvas "Report" (~', notice)
+        self.assertIn("2 lines", notice)
+
+
+class ResultNoticeTests(TestCase):
+    """The result message is a pointer to the report plus the capped final
+    message — never the report itself."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="notice@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+
+    def _run(self, **kw):
+        return SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="t",
+            status=SubAgentRun.Status.COMPLETED, **kw,
+        )
+
+    def test_canvas_report_is_a_pointer(self):
+        from chat.subagent_service import build_result_notice
+
+        run = self._run(canvas="# Findings\n" + "detail line\n" * 50, canvas_title="Prior art",
+                        result="Done. Not covered: X.")
+        notice = build_result_notice(run)
+        short = str(run.id)[:8]
+        self.assertTrue(notice.startswith(f"[Sub-agent result: {short}"))
+        self.assertIn('Report: canvas "Prior art" (~', notice)
+        self.assertIn("52 lines", notice)
+        self.assertIn(f'chat_subagent_report_read(run_id="{short}")', notice)
+        self.assertIn("Accompanying message:\nDone. Not covered: X.", notice)
+        self.assertNotIn("detail line", notice)
+
+    @override_settings(SUBAGENT_RESULT_INLINE_MAX_TOKENS=50)
+    def test_accompanying_message_is_capped(self):
+        from chat.subagent_service import build_result_notice
+
+        run = self._run(canvas="report", canvas_title="R", result="word " * 400)
+        notice = build_result_notice(run)
+        self.assertIn("Accompanying message cut at ~50 tokens", notice)
+        self.assertLess(notice.count("word"), 100)
+
+    @override_settings(SUBAGENT_RESULT_INLINE_MAX_TOKENS=50)
+    def test_no_canvas_final_message_inline_and_capped(self):
+        from chat.subagent_service import build_result_notice
+
+        run = self._run(result="word " * 400)
+        notice = build_result_notice(run)
+        self.assertNotIn("Report: canvas", notice)
+        self.assertIn("Final message cut at ~50 tokens", notice)
+        self.assertIn("chat_subagent_report_read", notice)
+
+    def test_short_final_message_without_canvas_is_inline(self):
+        from chat.subagent_service import build_result_notice
+
+        notice = build_result_notice(self._run(result="The answer is 42."))
+        self.assertIn("The answer is 42.", notice)
+        self.assertNotIn("cut at", notice)
+        self.assertNotIn("chat_subagent_report_read", notice)
+
+
+class ReadSubagentReportToolTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(email="report@test.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+        self.ctx = _ctx(self.user.pk, self.thread.id)
+
+    def _read(self, args):
+        from chat.subagent_tool import ReadSubagentReportTool
+
+        return _invoke(ReadSubagentReportTool, args, self.ctx)
+
+    def test_main_audience_only(self):
+        from chat.subagent_tool import ReadSubagentReportTool
+
+        self.assertEqual(ReadSubagentReportTool().audience, "main")
+
+    def test_reads_canvas_by_short_id(self):
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="t", status=SubAgentRun.Status.COMPLETED,
+            canvas="line one\nline two\nline three", canvas_title="Report", result="fin",
+        )
+        out = self._read({"run_id": str(run.id)[:8]})
+        self.assertEqual(out["status"], "ok")
+        self.assertEqual(out["source"], "canvas")
+        self.assertEqual(out["title"], "Report")
+        self.assertEqual(out["content"], "line one\nline two\nline three")
+        out = self._read({"run_id": str(run.id), "start_line": 2, "end_line": 2})
+        self.assertEqual(out["content"], "line two")
+        self.assertEqual(out["total_lines"], 3)
+
+    def test_falls_back_to_final_message(self):
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="t", status=SubAgentRun.Status.COMPLETED,
+            result="Only a final message.",
+        )
+        out = self._read({"run_id": str(run.id)[:8]})
+        self.assertEqual(out["source"], "final_message")
+        self.assertEqual(out["content"], "Only a final message.")
+
+    def test_failed_run_with_canvas_is_readable(self):
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="t", status=SubAgentRun.Status.FAILED,
+            canvas="partial", canvas_title="Draft",
+        )
+        self.assertEqual(self._read({"run_id": str(run.id)[:8]})["content"], "partial")
+
+    def test_running_run_is_refused(self):
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="t", status=SubAgentRun.Status.RUNNING,
+            canvas="draft",
+        )
+        out = self._read({"run_id": str(run.id)[:8]})
+        self.assertEqual(out["status"], "error")
+        self.assertIn("still running", out["message"])
+
+    def test_other_threads_run_is_not_found(self):
+        other = ChatThread.objects.create(created_by=self.user)
+        run = SubAgentRun.objects.create(
+            thread=other, user=self.user, prompt="t", status=SubAgentRun.Status.COMPLETED,
+            canvas="secret",
+        )
+        out = self._read({"run_id": str(run.id)})
+        self.assertEqual(out["status"], "error")
+        self.assertIn("No sub-agent run", out["message"])
+
+    def test_empty_run_is_an_error(self):
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="t", status=SubAgentRun.Status.COMPLETED,
+        )
+        out = self._read({"run_id": str(run.id)[:8]})
+        self.assertEqual(out["status"], "error")
+        self.assertIn("no report", out["message"])
 
 
 # ---------------------------------------------------------------------------

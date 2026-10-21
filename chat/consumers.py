@@ -3912,12 +3912,18 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _get_subagent_runs(self, thread_id):
+        from django.db.models.functions import Length
+
         from chat.models import SubAgentRun
+        # canvas_chars, not the canvas itself: the status section only needs to
+        # know a report exists (up to 20 runs × a 225k-char canvas otherwise).
         return list(
             SubAgentRun.objects.filter(thread_id=thread_id)
+            .annotate(canvas_chars=Length("canvas"))
             .order_by("-created_at")[:20]
             .values("id", "status", "prompt", "model_tier", "result", "error",
-                    "created_at", "dispatched_at", "started_at", "completed_at")
+                    "created_at", "dispatched_at", "started_at", "completed_at",
+                    "canvas_chars")
         )
 
     @database_sync_to_async

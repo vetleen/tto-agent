@@ -54,8 +54,8 @@ def _render_working_canvas(
     block = (
         "\n# Working canvas\n"
         "You have a single working canvas — a durable document you build with the "
-        "`subagent_canvas_*` tools. It is your **deliverable**: it is returned to "
-        "the orchestrator exactly as it is when your run ends, alongside your short "
+        "`subagent_canvas_*` tools. It is your **deliverable**: the orchestrator "
+        "reads it in full, exactly as it is when your run ends, alongside your short "
         "final message. Build your report there as you go — a draft of every section "
         "early, refined later — so it is useful even if your rounds run out. "
         "You can re-read it at any time with `subagent_canvas_read` (leave "
@@ -216,7 +216,7 @@ You have been given a specific task. Complete it thoroughly and return your find
 - Structure your response clearly with headings if appropriate. You may use markdown.
 - Never use LaTeX or `$…$` math notation — it does not render and shows up as raw code. Write formulas, units and simple equations in plain text with Unicode sub/superscripts and symbols (Li₂Sₓ, Li⁺, CO₂, m², ≤, ×, →). Put a genuinely complex equation in a code block.
 - If you cannot complete the task with the tools available, explain what's missing.
-- IMPORTANT: Deliver your findings in your working canvas — it is returned to the orchestrator as it is when your run ends. Keep your final message short: a brief summary and a "Not covered" list of anything you did not get to. Never repeat what is in the canvas in your final message. (For a very short answer with no canvas, the final message alone is fine.)
+- IMPORTANT: Deliver your findings in your working canvas — the orchestrator reads it in full, as it is when your run ends. Keep your final message short: a brief summary and a "Not covered" list of anything you did not get to. Never repeat what is in the canvas in your final message. (For a very short answer with no canvas, the final message alone is fine.)
 - You may be as exhaustive as you like in the canvas. Make sure you don't exclude any important findings.
 - Make sure you cite and source in such way that it is unambigously clear where each fact came from. 
   - For websites provie the concrete URL where you sourced the data.
