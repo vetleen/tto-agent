@@ -76,6 +76,16 @@ warnings.filterwarnings(
     category=UserWarning,
 )
 
+# Silence openpyxl's workbook-parsing UserWarnings (unsupported print areas,
+# data-validation / conditional-formatting extensions, header/footer parsing).
+# openpyxl just skips the feature; we only read cell values, so these reach
+# Sentry via py.warnings as noise (WILFRED-9Z). Scoped to openpyxl's modules.
+warnings.filterwarnings(
+    "ignore",
+    category=UserWarning,
+    module=r"openpyxl\.",
+)
+
 # ---------------------------------------------------------------------------
 # Sentry — error tracking & performance monitoring
 # ---------------------------------------------------------------------------
