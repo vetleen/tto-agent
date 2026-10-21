@@ -113,6 +113,30 @@ class ChatEndToEndTests(TransactionTestCase):
         self._patcher = patch("llm.pipelines.simple_chat.create_chat_model", self._mock_create)
         self._patcher.start()
 
+        # The guardrail classifier runs alongside the turn through the
+        # structured_output pipeline, which the create_chat_model patch above
+        # doesn't cover: unstubbed it calls the real provider and its call-log
+        # write races the turn's writes ("database table is locked" on SQLite).
+        from guardrails.service import GuardrailVerdict
+
+        for target, verdict in (
+            ("guardrails.service.check_heuristics",
+             GuardrailVerdict(action="allow", heuristic_result=MagicMock(is_suspicious=False))),
+            ("guardrails.service.run_classifier_pipeline", GuardrailVerdict(action="allow")),
+        ):
+            p = patch(target, new_callable=AsyncMock, return_value=verdict)
+            p.start()
+            self.addCleanup(p.stop)
+
+        # The stream's LLMCallLog row is written from the pipeline's producer
+        # thread while the consumer persists the tool round. Postgres takes both;
+        # SQLite's shared-cache test DB allows one writer and fails the other
+        # with "database table is locked". Call logging isn't under test here.
+        for target in ("llm.service.llm_service.log_stream", "llm.service.llm_service.log_call"):
+            p = patch(target)
+            p.start()
+            self.addCleanup(p.stop)
+
     def tearDown(self):
         self._patcher.stop()
 
@@ -138,11 +162,11 @@ class ChatEndToEndTests(TransactionTestCase):
     # create_chat_model, so no real API is called.
     @patch.dict(
         os.environ,
-        {"LLM_ALLOWED_MODELS": "gpt-5.4", "DEFAULT_LLM_MODEL": "gpt-5.4"},
+        {"LLM_ALLOWED_MODELS": "openai/gpt-5.6-terra", "DEFAULT_LLM_MODEL": "openai/gpt-5.6-terra"},
         clear=False,
     )
     async def test_user_message_to_llm_tokens_to_persisted_assistant(self):
-        fake = _FakeChatModel(model_name="gpt-5.4", tokens="Hello")
+        fake = _FakeChatModel(model_name="openai/gpt-5.6-terra", tokens="Hello")
         self._register_fake_model(fake)
 
         communicator = await self._connect()
@@ -187,18 +211,18 @@ class ChatEndToEndTests(TransactionTestCase):
         # User message has semi-static/dynamic context prepended for caching;
         # the original user text should still be present at the end.
         self.assertIn("Hi", req.messages[-1].content)
-        self.assertEqual(req.model, "gpt-5.4")
+        self.assertEqual(req.model, "openai/gpt-5.6-terra")
 
     @patch.dict(
         os.environ,
-        {"LLM_ALLOWED_MODELS": "gpt-5.4", "DEFAULT_LLM_MODEL": "gpt-5.4"},
+        {"LLM_ALLOWED_MODELS": "openai/gpt-5.6-terra", "DEFAULT_LLM_MODEL": "openai/gpt-5.6-terra"},
         clear=False,
     )
     async def test_first_message_canvas_injected_into_turn_one(self):
         # A canvas pasted before the thread existed (carried on the first
         # chat.message) must be persisted + activated BEFORE turn 1 assembles its
         # context — so the model sees it on the first message, not only the second.
-        fake = _FakeChatModel(model_name="gpt-5.4", tokens="Done")
+        fake = _FakeChatModel(model_name="openai/gpt-5.6-terra", tokens="Done")
         self._register_fake_model(fake)
 
         communicator = await self._connect()
@@ -241,15 +265,22 @@ class ChatEndToEndTests(TransactionTestCase):
 
     @patch.dict(
         os.environ,
-        {"LLM_ALLOWED_MODELS": "gpt-5.4", "DEFAULT_LLM_MODEL": "gpt-5.4"},
+        {"LLM_ALLOWED_MODELS": "openai/gpt-5.6-terra", "DEFAULT_LLM_MODEL": "openai/gpt-5.6-terra"},
         clear=False,
     )
     @patch("documents.services.retrieval.similarity_search_chunks")
     async def test_tool_events_emitted_and_tool_called(self, mock_search):
         mock_search.return_value = []
+        # document_search is skills-gated for the main agent (data_room_tools skill);
+        # ungate it here so the test exercises the event flow, not skill activation.
+        from llm.tools.registry import get_tool_registry
+        doc_search = get_tool_registry().list_tools()["document_search"]
+        section_patch = patch.object(doc_search, "section", "chat")
+        section_patch.start()
+        self.addCleanup(section_patch.stop)
 
         fake = _FakeChatModel(
-            model_name="gpt-5.4",
+            model_name="openai/gpt-5.6-terra",
             tokens="Done",
             tool_call_on_first_generate=True,
         )

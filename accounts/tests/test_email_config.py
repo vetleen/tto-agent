@@ -19,6 +19,9 @@ def _subprocess_load_settings(env_overrides: dict) -> subprocess.CompletedProces
     env = {**dict(settings._wrapped.__dict__.get("_original_settings", {}) or {}), **env_overrides}
     # Ensure minimal env so settings load doesn't fail before email validation
     env.setdefault("DJANGO_SECRET_KEY", "x" * 50)
+    # Production settings also refuse to load without an S3 bucket; these tests
+    # are about email validation, so allow local media.
+    env.setdefault("MEDIA_ALLOW_EPHEMERAL", "true")
     return subprocess.run(
         [sys.executable, "-c", "from config import settings"],
         env={**__import__("os").environ, **env},

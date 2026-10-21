@@ -165,8 +165,9 @@ class ChatPageLoadTests(TestCase):
         .markdown-content. On a thread with a pending turn the socket can deliver one
         before DOMContentLoaded, so a container-wide rule would render it invisible."""
         html = self._get().content.decode()
-        self.assertIn("message-content markdown-content", html)
-        bubble = html[html.index("message-content markdown-content"):][:120]
+        marker = "message-content wmsg__answer markdown-content"
+        self.assertIn(marker, html)
+        bubble = html[html.index(marker):][:120]
         self.assertNotIn("md-pending", bubble)
 
     # -- Design-system CSS ordering --------------------------------------------

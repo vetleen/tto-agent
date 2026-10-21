@@ -9,7 +9,7 @@ import json
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from chat.models import ChatCanvas, ChatThread
@@ -264,9 +264,14 @@ class CanvasBroadcastRegressionTests(TestCase):
         self.assertIn("chat_attachment_open_to_canvas", CANVAS_UPDATED_TOOLS)
 
 
+@override_settings(CANVAS_SYNC_SCAN_MAX_CHARS=1_000_000)
 class CanvasTruncationTests(TestCase):
     """A canvas cut to CANVAS_MAX_CHARS says so, remembers it, and can't silently
-    replace a document with the partial copy (confirm first; warn on new saves)."""
+    replace a document with the partial copy (confirm first; warn on new saves).
+
+    A full CANVAS_MAX_CHARS canvas is above the sync-scan ceiling and would queue;
+    the ceiling is lifted so these exercise the inline-verdict path (the queued
+    path is covered in test_tools)."""
 
     def setUp(self):
         from chat.services import CANVAS_MAX_CHARS

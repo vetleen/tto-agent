@@ -22,6 +22,9 @@ class TurnSentryScopeTests(SimpleTestCase):
             seen["tags"] = dict(sentry_sdk.get_isolation_scope()._tags)
 
         consumer._stream_and_finalize = fake_body
+        # Compare against the shared scope as it was: tests that call Celery task
+        # bodies directly (no Celery integration to isolate them) leave tags on it.
+        before = dict(sentry_sdk.get_isolation_scope()._tags)
         await consumer._stream_and_finalize_tagged(thread, content="hi", seed_mode=True)
 
         self.assertIs(seen["thread"], thread)
@@ -29,4 +32,4 @@ class TurnSentryScopeTests(SimpleTestCase):
         self.assertEqual(seen["tags"]["thread_id"], str(thread.id))
         self.assertEqual(seen["tags"]["agent_kind"], "main")
         # The fork is gone afterwards: nothing leaked onto the shared scope.
-        self.assertNotIn("thread_id", sentry_sdk.get_isolation_scope()._tags)
+        self.assertEqual(dict(sentry_sdk.get_isolation_scope()._tags), before)
