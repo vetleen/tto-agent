@@ -18,6 +18,10 @@ StreamEventType = Literal[
     # (tool results, call arguments, dropped calls), so the consumer can save it
     # and later turns replay the same bytes. Never forwarded to the client.
     "context_edit",
+    # Status: the provider layer is backing off before retrying a rate limit /
+    # overload ({provider, error_code, wait_seconds, attempt, max_attempts}).
+    # Forwarded to the client; the collapser and log accumulator ignore it.
+    "provider_retry",
 ]
 
 

@@ -201,6 +201,35 @@ class TestStreamErrorHandling(TestCase):
         self.assertEqual(model._client.stream.call_count, 2)
         self.assertEqual(mock_sleep.call_count, 1)
 
+    def test_stream_announces_each_backoff_to_the_client(self, mock_sleep):
+        """One provider_retry status event before each wait (so the client can
+        say why nothing is happening); it doesn't block the retry itself."""
+        model = _make_model()
+
+        chunk = MagicMock()
+        chunk.content = "hello"
+        chunk.usage_metadata = {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8}
+        chunk.response_metadata = {}
+
+        model._client.stream = MagicMock(
+            side_effect=[_rate_limit_error(), _overloaded_error(), [chunk]]
+        )
+        model._client.bind_tools = MagicMock(return_value=model._client)
+
+        events = list(model.stream(_make_request()))
+        retries = [e.data for e in events if e.event_type == "provider_retry"]
+        self.assertEqual(len(retries), 2)
+        self.assertEqual(retries[0]["error_code"], "rate_limited")
+        self.assertEqual(retries[0]["provider"], "Test")
+        self.assertEqual((retries[0]["attempt"], retries[0]["max_attempts"]), (2, 4))
+        self.assertEqual(retries[1]["error_code"], "overloaded")
+        self.assertEqual(retries[1]["attempt"], 3)
+        self.assertGreater(retries[1]["wait_seconds"], retries[0]["wait_seconds"])
+        self.assertIn("token", [e.event_type for e in events])
+        self.assertIn("message_end", [e.event_type for e in events])
+        seqs = [e.sequence for e in events]
+        self.assertEqual(seqs, sorted(set(seqs)))
+
     def test_stream_mid_stream_rate_limit_no_retry(self, mock_sleep):
         """Rate limit after tokens have been yielded should NOT retry."""
         model = _make_model()
@@ -401,6 +430,7 @@ class TestStreamErrorHandling(TestCase):
         self.assertIn("token", event_types)
         self.assertIn("message_end", event_types)
         self.assertNotIn("error", event_types)
+        self.assertNotIn("provider_retry", event_types)
         mock_sleep.assert_not_called()
 
     def test_stream_mid_stream_error_after_thinking_no_retry(self, mock_sleep):

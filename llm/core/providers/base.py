@@ -257,7 +257,10 @@ def classify_api_error(exc: Exception, provider_label: str) -> ClassifiedError:
     if status == 429 or body_error_type == "rate_limit_error":
         return ClassifiedError(
             error_code="rate_limited",
-            user_message=f"{provider_label} is rate limiting requests. Please wait a moment and try again.",
+            user_message=(
+                f"{provider_label} is rate limiting requests right now. Wait a minute and try "
+                "again, or switch to a different model."
+            ),
             log_level="warning",
         )
     if status in (503, 529) or body_error_type == "overloaded_error":
@@ -1107,6 +1110,26 @@ class BaseLangChainChatModel(ChatModel):
                         wait, run_id,
                     )
                     cancel_event, cancel_check, deadline_dt = _get_retry_controls(request)
+                    if not _is_cancelled(cancel_event, cancel_check) and (
+                        deadline_dt is None
+                        or datetime.now(timezone.utc) + timedelta(seconds=wait) < deadline_dt
+                    ):
+                        # Tell the client why nothing is happening (the backoff
+                        # can run for minutes). A status event, not content: it
+                        # leaves events_yielded alone, so the retry stays allowed.
+                        yield StreamEvent(
+                            event_type="provider_retry",
+                            data={
+                                "provider": self._provider_label,
+                                "error_code": err_code,
+                                "wait_seconds": round(wait),
+                                "attempt": attempt + 2,
+                                "max_attempts": _RATE_LIMIT_MAX_RETRIES + 1,
+                            },
+                            sequence=sequence,
+                            run_id=run_id,
+                        )
+                        sequence += 1
                     if not _wait_before_retry(
                         wait,
                         cancel_event=cancel_event,
@@ -1159,7 +1182,10 @@ class BaseLangChainChatModel(ChatModel):
         if not stream_succeeded:
             classified = classify_api_error(last_exc, self._provider_label) if last_exc else ClassifiedError(
                 error_code="rate_limited",
-                user_message=f"{self._provider_label} is rate limiting requests. Please wait a moment and try again.",
+                user_message=(
+                    f"{self._provider_label} is rate limiting requests right now. Wait a minute "
+                    "and try again, or switch to a different model."
+                ),
                 log_level="warning",
             )
             logger.error(

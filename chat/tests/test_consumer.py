@@ -1,5 +1,6 @@
 """Tests for ChatConsumer WebSocket consumer."""
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -688,6 +689,52 @@ class ConsumerMessageTests(TransactionTestCase):
                          "Anthropic is rate limiting requests. Please wait a moment and try again.")
         self.assertEqual(err["data"]["error_code"], "rate_limited")
         self.assertNotIn("details", err["data"])
+
+        await communicator.disconnect()
+
+    @patch("llm.get_llm_service")
+    async def test_provider_retry_is_forwarded_and_turn_completes(self, mock_get_service):
+        """A provider backoff status reaches the client as-is, and the turn still
+        finishes and persists its answer."""
+        from llm.types.streaming import StreamEvent
+
+        retry = {
+            "provider": "Gemini", "error_code": "rate_limited",
+            "wait_seconds": 30, "attempt": 2, "max_attempts": 4,
+        }
+        events = [
+            StreamEvent(event_type="message_start", data={}, sequence=0, run_id="r1"),
+            StreamEvent(event_type="provider_retry", data=retry, sequence=1, run_id="r1"),
+            StreamEvent(event_type="token", data={"text": "Hi there"}, sequence=2, run_id="r1"),
+            StreamEvent(event_type="message_end", data={}, sequence=3, run_id="r1"),
+        ]
+        mock_service = MagicMock()
+
+        async def mock_astream(*args, **kwargs):
+            for e in events:
+                yield e
+
+        mock_service.astream = mock_astream
+        mock_get_service.return_value = mock_service
+
+        communicator = await self._connect()
+        await communicator.send_json_to({"type": "chat.message", "content": "Hello"})
+
+        await communicator.receive_json_from(timeout=5)  # thread.created
+        await communicator.receive_json_from(timeout=5)  # message_start
+        status = await communicator.receive_json_from(timeout=5)
+        self.assertEqual(status["event_type"], "provider_retry")
+        self.assertEqual(status["data"], retry)
+
+        @database_sync_to_async
+        def _answer_saved():
+            return ChatMessage.objects.filter(role="assistant", content="Hi there").exists()
+
+        for _ in range(50):
+            if await _answer_saved():
+                break
+            await asyncio.sleep(0.1)
+        self.assertTrue(await _answer_saved())
 
         await communicator.disconnect()
 

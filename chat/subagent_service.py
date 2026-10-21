@@ -45,24 +45,20 @@ def is_retryable_subagent_error(exc: BaseException) -> bool:
     Single source of truth shared by :func:`run_subagent` (which leaves the run
     RUNNING instead of marking it FAILED for these, so a retry can re-enter
     cleanly) and ``chat.tasks.run_subagent_task`` (which calls ``self.retry``).
-    Covers transient LLM provider errors (rate-limit / overload / timeout /
-    connection) and low-level network errors. A Postgres "too many connections"
-    error is treated as terminal — retrying immediately would just hit the cap
-    again.
+    Covers transient LLM provider errors (timeout / connection) and low-level
+    network errors. Rate limits and overloads are NOT retried here: the provider
+    layer already backed off 4 times (30/60/120 s) before raising, and a whole-run
+    restart replays every paid round from scratch — the orchestrator gets a
+    failure notice instead and can pick another model. A Postgres "too many
+    connections" error is treated as terminal — retrying immediately would just
+    hit the cap again.
     """
     from django.db.utils import OperationalError
-    from llm.service.errors import (
-        LLMConnectionError,
-        LLMOverloadedError,
-        LLMRateLimitError,
-        LLMTimeoutError,
-    )
+    from llm.service.errors import LLMConnectionError, LLMTimeoutError
 
     if isinstance(exc, OperationalError):
         return "too many connections" not in str(exc).lower()
     return isinstance(exc, (
-        LLMRateLimitError,
-        LLMOverloadedError,
         LLMTimeoutError,
         LLMConnectionError,
         ConnectionError,
@@ -431,7 +427,14 @@ def _create_subagent_result_message(run, *, untouched: bool | None = None) -> No
     )
 
 
-def _create_subagent_failure_message(run) -> None:
+def is_capacity_error(exc: BaseException) -> bool:
+    """A provider rate limit / overload that outlasted the provider's retries."""
+    from llm.service.errors import LLMOverloadedError, LLMRateLimitError
+
+    return isinstance(exc, (LLMRateLimitError, LLMOverloadedError))
+
+
+def _create_subagent_failure_message(run, *, capacity: bool = False) -> None:
     """Persist a terminal sub-agent failure as a hidden ChatMessage.
 
     Mirrors :func:`_create_subagent_result_message` so the orchestrator's
@@ -448,13 +451,25 @@ def _create_subagent_failure_message(run) -> None:
 
     if _subagent_result_message_exists(run):
         return
+    from llm.model_registry import get_model_info
+
     short_id = str(run.id)[:8]
     progress = run_progress(run)
+    info = get_model_info(run.model_used) if run.model_used else None
+    model_name = info.display_name if info else (run.model_used or "unknown")
+    advice = (
+        "This is a provider capacity problem (rate limit / overload): a new "
+        "sub-agent on the same model will likely fail too. Use a different "
+        "model_tier, do the work yourself, or tell the user what happened."
+        if capacity else
+        "Decide how to proceed: retry with a new sub-agent, do the work "
+        "yourself, or tell the user what happened."
+    )
     wrapped = (
         f"[Sub-agent failed: {short_id}{f' ({progress})' if progress else ''}]\n"
         f"The sub-agent did not complete its task. Error: {run.error or 'unknown'}\n"
-        "Decide how to proceed: retry with a new sub-agent, do the work "
-        "yourself, or tell the user what happened."
+        f"Model: {model_name} ({run.model_tier or 'default'} tier)\n"
+        f"{advice}"
     )
     ChatMessage.objects.create(
         thread_id=run.thread_id,
@@ -812,7 +827,14 @@ def run_subagent(run_id: uuid.UUID) -> None:
                 run_id, type(exc).__name__,
             )
             raise
-        logger.exception("Sub-agent run %s failed", run_id)
+        capacity = is_capacity_error(exc)
+        if capacity:
+            # The provider already reported "retries exhausted" to Sentry.
+            logger.warning(
+                "Sub-agent run %s failed on provider capacity (%s)", run_id, type(exc).__name__,
+            )
+        else:
+            logger.exception("Sub-agent run %s failed", run_id)
         # Guarded: keep an earlier failure reason (e.g. "Cancelled by user.")
         # instead of clobbering it with this exception's message. The row count
         # doubles as the "we ended it, not a user cancel" test below.
@@ -841,7 +863,7 @@ def run_subagent(run_id: uuid.UUID) -> None:
                 ):
                     _create_subagent_result_message(fresh, untouched=fresh_untouched)
                 else:
-                    _create_subagent_failure_message(fresh)
+                    _create_subagent_failure_message(fresh, capacity=capacity)
                 from chat.tasks import _notify_consumer
 
                 _notify_consumer(str(fresh.id), str(fresh.thread_id))

@@ -1244,11 +1244,11 @@ class RunSubagentTaskTests(TestCase):
         """A transient LLM error triggers self.retry and leaves the run RUNNING
         (not FAILED) so the retry can re-enter it cleanly."""
         from celery.exceptions import Retry
-        from llm.service.errors import LLMOverloadedError
+        from llm.service.errors import LLMTimeoutError
 
         mock_prefs.return_value = _prefs()
-        mock_svc.return_value.run_via_stream.side_effect = LLMOverloadedError(
-            "overloaded", error_code="overloaded",
+        mock_svc.return_value.run_via_stream.side_effect = LLMTimeoutError(
+            "timed out", error_code="timeout",
         )
 
         run = SubAgentRun.objects.create(
@@ -1265,6 +1265,31 @@ class RunSubagentTaskTests(TestCase):
         self.assertEqual(run.status, SubAgentRun.Status.RUNNING)
         self.assertEqual(run.error, "")
         self.assertIsNone(run.completed_at)
+
+    @patch("chat.tasks._notify_consumer")
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
+    def test_task_does_not_restart_the_run_on_overload(self, mock_prefs, mock_svc, mock_notify):
+        """The provider already backed off before raising an overload / rate
+        limit: no whole-run self.retry, the run ends FAILED."""
+        from llm.service.errors import LLMOverloadedError
+
+        mock_prefs.return_value = _prefs()
+        mock_svc.return_value.run_via_stream.side_effect = LLMOverloadedError(
+            "overloaded", error_code="overloaded",
+        )
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="Do research",
+        )
+
+        from chat.tasks import run_subagent_task
+        with patch.object(run_subagent_task, "retry") as mock_retry:
+            with self.assertRaises(LLMOverloadedError):
+                run_subagent_task(str(run.id))
+        mock_retry.assert_not_called()
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, SubAgentRun.Status.FAILED)
 
 
 # ---------------------------------------------------------------------------
@@ -1664,6 +1689,8 @@ class RunSubagentServiceTests(TestCase):
         self.assertEqual(len(msgs), 1)
         self.assertTrue(msgs[0].content.startswith(f"[Sub-agent failed: {str(run.id)[:8]}"))
         self.assertIn("Provider exploded", msgs[0].content)
+        self.assertIn("Model: ", msgs[0].content)
+        self.assertNotIn("provider capacity problem", msgs[0].content)
         self.assertTrue(msgs[0].is_hidden_from_user)
         mock_notify.assert_called_once_with(str(run.id), str(self.thread.id))
 
@@ -1735,11 +1762,11 @@ class RunSubagentServiceTests(TestCase):
         """A transient LLM error must NOT be recorded as FAILED — the run is left
         RUNNING so a Celery retry re-enters it. (Writing FAILED would make the
         retry a no-op via the RUNNING-transition guard.)"""
-        from llm.service.errors import LLMRateLimitError
+        from llm.service.errors import LLMTimeoutError
 
         mock_prefs.return_value = _prefs()
-        mock_svc.return_value.run_via_stream.side_effect = LLMRateLimitError(
-            "rate limited", error_code="rate_limited",
+        mock_svc.return_value.run_via_stream.side_effect = LLMTimeoutError(
+            "timed out", error_code="timeout",
         )
 
         run = SubAgentRun.objects.create(
@@ -1747,13 +1774,49 @@ class RunSubagentServiceTests(TestCase):
         )
 
         from chat.subagent_service import run_subagent
-        with self.assertRaises(LLMRateLimitError):
+        with self.assertRaises(LLMTimeoutError):
             run_subagent(run.id)
 
         run.refresh_from_db()
         self.assertEqual(run.status, SubAgentRun.Status.RUNNING)
         self.assertEqual(run.error, "")
         self.assertIsNone(run.completed_at)
+
+    @patch("chat.tasks._notify_consumer")
+    @patch("llm.get_llm_service")
+    @patch("core.preferences.get_preferences")
+    def test_rate_limit_fails_the_run_once_with_model_and_capacity_hint(
+        self, mock_prefs, mock_svc, mock_notify,
+    ):
+        """A rate limit that outlasted the provider's own backoff ends the run
+        (no whole-run Celery restart), and the orchestrator's notice names the
+        model and says a same-model retry will likely fail too."""
+        from llm.service.errors import LLMRateLimitError
+
+        mock_prefs.return_value = _prefs()
+        mock_svc.return_value.run_via_stream.side_effect = LLMRateLimitError(
+            "Gemini is rate limiting requests right now.", error_code="rate_limited",
+        )
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="task",
+            model_used="gemini/gemini-3.8-flash", model_tier="low",
+        )
+
+        from chat.subagent_service import run_subagent
+        with self.assertRaises(LLMRateLimitError):
+            run_subagent(run.id)
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, SubAgentRun.Status.FAILED)
+        self.assertIn("rate limiting", run.error)
+        msgs = list(self._outcome_messages(run))
+        self.assertEqual(len(msgs), 1)
+        content = msgs[0].content
+        self.assertTrue(content.startswith(f"[Sub-agent failed: {str(run.id)[:8]}"))
+        self.assertIn("Model: ", content)
+        self.assertIn("provider capacity problem", content)
+        self.assertIn("different model_tier", content)
+        mock_notify.assert_called_once_with(str(run.id), str(self.thread.id))
 
     @patch("llm.get_llm_service")
     @patch("core.preferences.get_preferences")
@@ -2067,11 +2130,8 @@ class ReadSubagentReportToolTests(TestCase):
 class IsRetryableSubagentErrorTests(TestCase):
     def test_transient_errors_are_retryable(self):
         from chat.subagent_service import is_retryable_subagent_error
-        from llm.service.errors import (
-            LLMConnectionError, LLMOverloadedError, LLMRateLimitError, LLMTimeoutError,
-        )
+        from llm.service.errors import LLMConnectionError, LLMTimeoutError
         for exc in (
-            LLMRateLimitError("x"), LLMOverloadedError("x"),
             LLMTimeoutError("x"), LLMConnectionError("x"),
             ConnectionError("x"), TimeoutError("x"), OSError("x"),
         ):
@@ -2080,13 +2140,17 @@ class IsRetryableSubagentErrorTests(TestCase):
             )
 
     def test_terminal_errors_are_not_retryable(self):
+        """Rate limits / overloads are terminal for the run: the provider layer
+        already backed off 4 times, and a whole-run restart replays paid rounds."""
         from chat.subagent_service import is_retryable_subagent_error
         from llm.service.errors import (
-            LLMAuthError, LLMProviderError, LLMRequestTooLargeError,
+            LLMAuthError, LLMOverloadedError, LLMProviderError, LLMRateLimitError,
+            LLMRequestTooLargeError,
         )
         for exc in (
             RuntimeError("x"), ValueError("x"),
             LLMAuthError("x"), LLMRequestTooLargeError("x"), LLMProviderError("x"),
+            LLMRateLimitError("x"), LLMOverloadedError("x"),
         ):
             self.assertFalse(
                 is_retryable_subagent_error(exc), type(exc).__name__,

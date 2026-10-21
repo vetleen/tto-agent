@@ -60,6 +60,7 @@ class TestClassifyApiError(TestCase):
         self.assertEqual(result.error_code, "rate_limited")
         self.assertIn("rate limiting", result.user_message)
         self.assertIn("Anthropic", result.user_message)
+        self.assertIn("switch to a different model", result.user_message)
         self.assertEqual(result.log_level, "warning")
 
     def test_503_maps_to_overloaded(self):

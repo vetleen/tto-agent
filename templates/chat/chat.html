@@ -3434,6 +3434,7 @@
         : "Waiting for a free slot…";
       return;
     }
+    if (et === "provider_retry") { showProviderRetry(data.data || {}); return; }
     if (et === "turn.condensing_history") {
       // The history no longer fits: the server folds older rounds into the
       // conversation summary before the turn starts. Same spinner retitle.
@@ -3858,11 +3859,50 @@
   }
   function startStreamingTimeout() { clearTimeout(streamingTimeout); streamingTimeout = setTimeout(function() { finishStreaming("{{ assistant_name|escapejs }} took too long to respond. Please try again."); enableInput(); }, STREAM_TIMEOUT_MS); }
 
+  const WAITING_INDICATOR_HTML = `<div class="waiting-indicator flex items-center gap-1.5 text-xs text-body/70 mt-1"><svg class="w-3 h-3 animate-spin shrink-0" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><span>Thinking...</span></div>`;
+
   function createAssistantBubble() {
     const div = document.createElement("div"); div.className = "wmsg"; div.setAttribute("data-role", "assistant");
-    div.innerHTML = `<span class="wmsg__av">${escapeHtml(ASSISTANT_NAME.charAt(0).toUpperCase())}</span><div class="wmsg__body"><div class="wmsg__timeline"></div><div class="waiting-indicator flex items-center gap-1.5 text-xs text-body/70 mt-1"><svg class="w-3 h-3 animate-spin shrink-0" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><span>Thinking...</span></div><div class="text-sm text-body mt-1 message-content wmsg__answer markdown-content"></div>${COPY_BTN_HTML}</div>`;
+    div.innerHTML = `<span class="wmsg__av">${escapeHtml(ASSISTANT_NAME.charAt(0).toUpperCase())}</span><div class="wmsg__body"><div class="wmsg__timeline"></div>${WAITING_INDICATOR_HTML}<div class="text-sm text-body mt-1 message-content wmsg__answer markdown-content"></div>${COPY_BTN_HTML}</div>`;
     div._turnStart = Date.now();
     return div;
+  }
+
+  // The spinner line of the current bubble, re-created when an earlier round's
+  // first token already removed it (a later round can still sit waiting).
+  function ensureWaitingIndicator() {
+    ensureBubble();
+    var existing = currentStreamingElement.querySelector(".waiting-indicator span");
+    if (existing) return existing;
+    var content = currentStreamingElement.querySelector(".message-content");
+    if (!content) return null;
+    content.insertAdjacentHTML("beforebegin", WAITING_INDICATOR_HTML);
+    return currentStreamingElement.querySelector(".waiting-indicator span");
+  }
+
+  // provider_retry: the server is backing off before retrying a rate-limited /
+  // overloaded model request. Count down on the spinner line; the next thinking,
+  // token or tool event removes the line (hideWaitingIndicator).
+  var providerRetryTimer = null;
+  function showProviderRetry(d) {
+    var label = ensureWaitingIndicator(); if (!label) return;
+    clearInterval(providerRetryTimer);
+    var provider = d.provider || "The model";
+    var busy = (d.error_code === "rate_limited" || d.error_code === "overloaded")
+      ? provider + " is busy." : provider + " returned an error.";
+    var attempt = (d.attempt && d.max_attempts) ? " (attempt " + d.attempt + " of " + d.max_attempts + ")" : "";
+    var endsAt = Date.now() + (Number(d.wait_seconds) || 0) * 1000;
+    function render() {
+      if (!document.body.contains(label)) { clearInterval(providerRetryTimer); return; }
+      var left = Math.max(0, Math.ceil((endsAt - Date.now()) / 1000));
+      label.textContent = left > 0
+        ? busy + " Retrying in " + left + " s" + attempt + "…"
+        : busy + " Retrying" + attempt + "…";
+      if (left <= 0) clearInterval(providerRetryTimer);
+    }
+    render();
+    providerRetryTimer = setInterval(render, 1000);
+    startStreamingTimeout();
   }
 
   function appendError(msg) { const div = document.createElement("div"); div.className = "text-sm text-danger py-2"; div.textContent = msg; messagesContainer.appendChild(div); scrollToBottom(); }
