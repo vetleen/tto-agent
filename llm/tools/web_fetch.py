@@ -343,6 +343,10 @@ def _resolve_and_validate(url: str) -> tuple[str | None, str | None]:
         addr_infos = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
     except socket.gaierror:
         return None, f"DNS resolution failed for {hostname}"
+    except UnicodeError:
+        # IDNA rejects malformed hostnames (an empty label, e.g. "www..ntnu.no")
+        # before any lookup happens.
+        return None, f"Invalid hostname: {hostname}"
     if not addr_infos:
         return None, f"DNS resolution failed for {hostname}"
     validated_ip: str | None = None

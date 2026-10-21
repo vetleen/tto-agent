@@ -643,6 +643,13 @@ class SSRFProtectionTests(TestCase):
         self.assertIsNone(ip)
         self.assertIn("hostname", error.lower())
 
+    def test_resolve_and_validate_empty_label(self):
+        """IDNA raises UnicodeError for an empty label before any lookup; that is
+        an invalid URL, not a tool crash (staging 2026-10-20)."""
+        ip, error = _resolve_and_validate("https://www..ntnu.no/page")
+        self.assertIsNone(ip)
+        self.assertIn("Invalid hostname", error)
+
     @patch("llm.tools.web_fetch.socket.getaddrinfo")
     def test_resolve_and_validate_dns_failure(self, mock_dns):
         mock_dns.side_effect = socket.gaierror("nxdomain")
