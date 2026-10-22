@@ -469,6 +469,15 @@ def _probe_key_for_path(path: str) -> str:
 # EPO's fair-use detector ("recent behaviour implies you are a robot ... try
 # again later"): a 403 that is transient, not an auth problem.
 _ROBOT_FAULT = "CLIENT.RobotDetected"
+# X-Rejection-Reason of the per-minute throttle (sent with _ROBOT_FAULT). Other
+# reasons (IndividualQuotaPerHour, RegisteredQuotaPerWeek, ...) are quotas that
+# a minute's wait does not lift.
+_THROTTLE_REJECTION = "ThrottlingControlQuota"
+_THROTTLE_REFUSED_MESSAGE = (
+    "EPO OPS refused the request: its per-minute throttle is reached (ThrottlingControlQuota), "
+    "even after waiting a minute. Wait a minute before the next EPO call, run fewer searches per "
+    "round, and tell the user patent search is slowed down right now."
+)
 
 
 def _parse_ops_fault(response) -> tuple[str, str, str]:
@@ -678,6 +687,7 @@ def _ops_request(
     last_message = ""
     refreshed = False
     domain_retried = False
+    throttle_retried = False
     for attempt in range(1 + _MAX_RETRIES):
         token = _get_access_token(force_refresh=refreshed)
         if not token:
@@ -695,6 +705,14 @@ def _ops_request(
                 # (a sub-agent's per-tool timeout): don't queue a request the
                 # round will never see.
                 logger.info("EPO OPS window full beyond the call deadline path=%s", path)
+                if throttle_retried:
+                    return _done(
+                        {"error": _THROTTLE_REFUSED_MESSAGE},
+                        "error",
+                        http_status=last_status,
+                        error_code=last_code or "Rejected",
+                        error_message=f"X-Rejection-Reason: {_THROTTLE_REJECTION}; no slot before the call deadline",
+                    )
                 return _done(
                     {"error": (
                         "EPO OPS is busy: other patent requests are queued ahead of this "
@@ -732,8 +750,25 @@ def _ops_request(
             status = getattr(response, "status_code", None)
             code, message, rejection = _parse_ops_fault(response)
             last_status, last_code, last_message = status, code, message
+            if status == 403 and rejection == _THROTTLE_REJECTION:
+                # The per-minute throttle, not a quota: hold the service and send
+                # this call once more when the hold's window has room (a busy OPS
+                # can cut the allowance below what we just used).
+                _ops_rate_limiter.suspend(_service_for_path(path), rejection)
+                if not throttle_retried and attempt < _MAX_RETRIES:
+                    throttle_retried = True
+                    logger.info("EPO OPS throttle refusal, retrying after the window path=%s", path)
+                    continue
+                logger.warning("EPO OPS rejected request again after waiting (%s) path=%s", rejection, path)
+                return _done(
+                    {"error": _THROTTLE_REFUSED_MESSAGE},
+                    "error",
+                    http_status=status,
+                    error_code=code or "Rejected",
+                    error_message=f"X-Rejection-Reason: {rejection}. {message}".strip(),
+                )
             if status == 403 and rejection:
-                # Fair-use quota / throttle refusal — a fresh token won't help.
+                # Fair-use quota refusal — a fresh token won't help.
                 logger.warning("EPO OPS rejected request (%s) path=%s", rejection, path)
                 return _done(
                     {"error": (

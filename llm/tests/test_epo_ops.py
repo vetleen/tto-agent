@@ -638,6 +638,54 @@ class OpsRequestTests(TestCase):
         self.assertEqual(mock_get.call_count, 1)
         invalidate.assert_not_called()
         self.assertIn("IndividualQuotaPerHour", data["error"])
+        self.limiter.suspend.assert_not_called()  # a quota is not the per-minute throttle
+
+    def _throttle_refusal(self):
+        return _mock_http_error(
+            403,
+            text=_fault_xml("CLIENT.RobotDetected", "Recent behaviour implies you are a robot"),
+            headers={"X-Rejection-Reason": "ThrottlingControlQuota"},
+        )
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_throttle_refusal_holds_the_service_and_retries_once(self, mock_get):
+        """2026-10-22: OPS cut the search allowance below what we had just used.
+        The refused call waits for the hold's window and is sent again; the
+        model gets the result, not an error, and nothing reaches Sentry."""
+        from llm.models import OpsUsageLog
+
+        mock_get.side_effect = [self._throttle_refusal(), _mock_ok({"ok": 1})]
+        self.limiter.acquire.side_effect = [0.0, 61.0]
+        with self.assertNoLogs("llm.tools.epo_ops", level="WARNING"):
+            data = _ops_request("published-data/search/biblio", {"q": "x"}, tool_name="patent_epoops_search")
+        self.assertEqual(data, {"ok": 1})
+        self.assertEqual(mock_get.call_count, 2)
+        self.limiter.suspend.assert_called_once_with("search", "ThrottlingControlQuota")
+        row = OpsUsageLog.objects.get()
+        self.assertEqual((row.outcome, row.attempts, row.throttle_wait_ms), ("ok", 2, 61000))
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_throttle_refused_twice_returns_the_throttle_error(self, mock_get):
+        from llm.models import OpsUsageLog
+
+        mock_get.side_effect = [self._throttle_refusal(), self._throttle_refusal()]
+        self.limiter.acquire.return_value = 0.0
+        with self.assertLogs("llm.tools.epo_ops", level="WARNING") as cm:
+            data = _ops_request("published-data/search/biblio", {"q": "x"}, tool_name="patent_epoops_search")
+        self.assertEqual(mock_get.call_count, 2)
+        self.assertIn("per-minute throttle", data["error"])
+        self.assertEqual(len([r for r in cm.records if r.levelno >= logging.WARNING]), 1)
+        row = OpsUsageLog.objects.get()
+        self.assertEqual((row.outcome, row.attempts), ("error", 2))
+        self.assertIn("ThrottlingControlQuota", row.error_message)
+
+    @patch("llm.tools.epo_ops.requests.get")
+    def test_throttle_retry_beyond_the_call_deadline_is_not_sent(self, mock_get):
+        mock_get.side_effect = [self._throttle_refusal()]
+        self.limiter.acquire.side_effect = [0.0, None]
+        data = _ops_request("published-data/search/biblio", {"q": "x"}, tool_name="patent_epoops_search")
+        self.assertEqual(mock_get.call_count, 1)
+        self.assertIn("per-minute throttle", data["error"])
 
     @patch("llm.tools.epo_ops._invalidate_token")
     @patch("llm.tools.epo_ops.time.sleep")
