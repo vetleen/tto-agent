@@ -1947,9 +1947,9 @@ lxml-html-clean==0.4.5 \
     --hash=sha256:c76fcadd1e5bfb9b8bafc2200d51e4e78eb0dad67f56881c21dfb6484c7e7746 \
     --hash=sha256:e2a4c7d5beedd17cd7b484d848a0571e54baa239a4f9df5546e3acba7f990560
     # via lxml
-mammoth==1.9.0 \
-    --hash=sha256:0eea277316586f0ca65d86834aec4de5a0572c83ec54b4991f9bb520a891150f \
-    --hash=sha256:74f5dae10ca240fd9b7a0e1a6deaebe0aad23bc590633ef6f5e868aa9b7042a6
+mammoth==1.13.0 \
+    --hash=sha256:b359bee7bc00caba47dacc64286928133dd947917bab852eea01d0c8d8997296 \
+    --hash=sha256:dd7629fa9d0a5e82207b3f481a9dcb8308fb43f6206258e062f11121efba9991
     # via -r requirements.in
 markdown==3.8.2 \
     --hash=sha256:247b9a70dd12e27f67431ce62523e675b866d254f900c4fe75ce3dda62237c45 \
@@ -3071,9 +3071,9 @@ pyparsing==3.3.3 \
     --hash=sha256:928ae7e20211f3b6f3915a72f06a0cfd29ab9d24279dd6346b6b1a7146397d36 \
     --hash=sha256:ece8c00a69cf01b45d0b1dedabb469c90d8caf996d4fda40f147627a122849a4
     # via oletools
-pypdf==6.7.4 \
-    --hash=sha256:527d6da23274a6c70a9cb59d1986d93946ba8e36a6bc17f3f7cce86331492dda \
-    --hash=sha256:9edd1cd47938bb35ec87795f61225fd58a07cfaf0c5699018ae1a47d6f8ab0e3
+pypdf==6.21.1 \
+    --hash=sha256:2d62c383acd6e0dff0a96322ba8b1135229343b084d73c6f6cfd947fd291afcb \
+    --hash=sha256:553e2d42f5bb3bb2a785a7d3de8ef90bb7df74b5413eff5a7b4388007ea9254b
     # via -r requirements.in
 pypdfium2==4.30.0 \
     --hash=sha256:0dfa61421b5eb68e1188b0b2231e7ba35735aef2d867d86e48ee6cab6975195e \
