@@ -1022,9 +1022,9 @@ cssselect2==0.10.1 \
     --hash=sha256:25cc4494d55985d6a6da359be48da6ce98c28dcbafa2314c383ace3fc32ec868 \
     --hash=sha256:83b0d820ef589dabaf693289b647c2f5b410f76d285f56deba911ffa75a7b9d1
     # via weasyprint
-daphne==4.2.1 \
-    --hash=sha256:5f898e700a1fda7addf1541d7c328606415e96a7bd768405f0463c312fcb31b3 \
-    --hash=sha256:881e96b387b95b35ad85acd855f229d7f5b79073d6649089c8a33f661885e055
+daphne==4.2.3 \
+    --hash=sha256:1c458f81926b37301cadc8ec1b6316d9a5db53fba061fc4826610395fe5d5c81 \
+    --hash=sha256:34442c539a98111f4d8cac98a7204aeeb53811229bd96063e6fbe740e97078c9
     # via -r requirements.in
 dataclasses-json==0.6.7 \
     --hash=sha256:0dbf33f26c8d5305befd61b39d2b3414e8a407bedc2834dea9b8d642666fb40a \
@@ -1046,9 +1046,9 @@ dj-database-url==2.2.0 \
     --hash=sha256:3e792567b0aa9a4884860af05fe2aa4968071ad351e033b6db632f97ac6db9de \
     --hash=sha256:9f9b05058ddf888f1e6f840048b8d705ff9395e3b52a07165daa3d8b9360551b
     # via -r requirements.in
-django==6.0.1 \
-    --hash=sha256:a92a4ff14f664a896f9849009cb8afaca7abe0d6fc53325f3d1895a15253433d \
-    --hash=sha256:ed76a7af4da21551573b3d9dfc1f53e20dd2e6c7d70a3adc93eedb6338130a5f
+django==6.0.9 \
+    --hash=sha256:5c6473d05bbea9c43359cc36701b5deec3c925f5311963786e1346544c1a68c0 \
+    --hash=sha256:8ce037c971f421cfb47d38c097ca233a8f6dd42d9e9501a37e02dd7d08c5cb3f
     # via
     #   -r requirements.in
     #   channels

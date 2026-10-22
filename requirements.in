@@ -1,5 +1,5 @@
 asgiref==3.11.0
-Django==6.0.1
+Django==6.0.9
 django-appconf==1.2.0
 django-compressor==4.6.0
 django-browser-reload==1.21.0
@@ -40,7 +40,7 @@ channels-redis==4.3.0
 # the pub/sub reader is async-parser-sensitive too, so the pin stays until 8.x is
 # actually verified against it. If bumping, pass protocol=2 in CHANNEL_LAYERS first.
 redis==7.4.0
-daphne==4.2.1
+daphne==4.2.3
 whitenoise==6.11.0
 django-anymail==14.0
 django-ratelimit==4.1.0

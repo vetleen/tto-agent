@@ -19,10 +19,18 @@ Operational reference for Wilfred (tto-agent). For dev setup see README.md, for 
 
 **Procfile:**
 ```
-web:     bin/start-pgbouncer daphne -b 0.0.0.0 -p $PORT config.asgi:application
+web:     bin/start-pgbouncer daphne -b 0.0.0.0 -p $PORT --websocket-max-message-size 8388608 --websocket-max-frame-size 8388608 config.asgi:application
 worker:  bin/start-pgbouncer celery -A config worker -l info --pool=threads --concurrency=${CELERY_WORKER_CONCURRENCY:-8} -B
 release: python manage.py migrate --noinput && python manage.py collectstatic --noinput
 ```
+
+**WebSocket size limits.** daphne ≥ 4.2.2 drops any incoming WebSocket message or frame
+over 1 MiB by default (before that it had no limit — PYSEC-2026-213). Live meeting audio
+goes up as 30 s WebM/MP4 chunks (~0.5 MB at browser-default bitrates, server cap
+`MEETING_CHUNK_MAX_BYTES` 20 MB), so a high-bitrate browser could cross 1 MiB and get stuck
+re-sending the same chunk after every reconnect. The Procfile raises both limits to 8 MiB:
+still bounded, with room for audio. Chat messages (75k chars) and canvas saves stay far
+below it. The flags need daphne ≥ 4.2.2.
 
 **`bin/start-pgbouncer`** (from the pgbouncer buildpack) wraps the `web` and `worker`
 processes so their DB connections go through an in-dyno PgBouncer; `release` stays direct
