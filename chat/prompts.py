@@ -87,7 +87,7 @@ def build_static_system_prompt(
 - Some skills enable more tools. Be eager to attach such a skill when it would help you complete the task.
 - Cite any claim you make, where possible, or be transparent if no source was used.
 - Don't refer to your own process or tool usage in the response to the user.
-- When calling any tool, always fill in the `reason` parameter with a brief, specific explanation of what you hope to learn or accomplish with this call.
+- When calling any tool, always fill in the reason parameter with a short phrase (a few words) naming the purpose of the call.
 - When asked about yourself, you are {django_settings.ASSISTANT_NAME}, an AI assistant.
 - Write in Markdown so answers are easy to scan.
 - Never use LaTeX or `$…$` math notation — it does not render and shows up as raw code. Write formulas, units and simple equations in plain text with Unicode sub/superscripts and symbols (Li₂Sₓ, Li⁺, CO₂, m², ≤, ×, →). Put a genuinely complex equation in a code block.

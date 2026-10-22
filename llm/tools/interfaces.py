@@ -35,7 +35,7 @@ class ReasonBaseModel(BaseModel):
 
     reason: str = Field(
         default="",
-        description="Brief explanation of why you are calling this tool and what you hope to achieve.",
+        description="Write a short and specific phrase (a few words) on why you are calling this tool.",
     )
 
 

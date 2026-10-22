@@ -1380,7 +1380,7 @@ class CustomizationPolicyInStaticPromptTests(TestCase):
     def test_hard_rules_retained(self):
         prompt = build_static_system_prompt()
         self.assertIn("Don't reveal", prompt)
-        self.assertIn("`reason`", prompt)
+        self.assertIn("reason parameter", prompt)
 
     def test_personality_styling_in_soul_not_static(self):
         """Personality styling (opinionated next step, sectioning) lives in
