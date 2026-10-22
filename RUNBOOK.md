@@ -251,6 +251,38 @@ heroku run python manage.py showmigrations  # check if migration rollback needed
 
 If the release included a migration, rolling back the code without reversing the migration is usually safe (Django migrations are additive — nullable columns, new tables). Only reverse a migration if it removed columns or tables that the rolled-back code needs.
 
+## Dependencies
+
+`requirements.in` lists what we depend on directly (loose or exact, with comments).
+`requirements.txt` is **generated**: every package, transitive ones included, pinned with
+hashes, so a build installs exactly the reviewed versions and pip refuses any file whose hash
+differs (a re-uploaded or poisoned release). The Heroku Python buildpack installs it with plain
+`pip install -r requirements.txt`; hashes switch pip into `--require-hashes` mode automatically.
+The lock is universal (platform markers), so the same file installs on Heroku Linux and on
+Windows/macOS dev machines. Never edit `requirements.txt` by hand.
+
+Recompile after editing `requirements.in` (keeps every existing pin, only resolves what changed):
+
+```bash
+uv pip compile requirements.in --universal --python-version 3.13 --generate-hashes --no-header -o requirements.txt
+```
+
+Upgrading: name the package, and give it a cooldown so a release from the last 7 days is never
+picked (malicious releases such as litellm 1.107.0, 2026-10-21, are usually pulled within hours):
+
+```bash
+uv pip compile requirements.in --universal --python-version 3.13 --generate-hashes --no-header -o requirements.txt --upgrade-package <name> --exclude-newer-package "<name>=$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+```
+
+Use the per-package `--exclude-newer-package`, not the global `--exclude-newer`: the global one
+also applies to every existing pin and silently **downgrades** anything published inside the
+window (tried 2026-10-22: 22 pins moved back, Pillow 13 → 12.3). Review the `requirements.txt`
+diff (an upgrade can pull new transitive versions, which get no cooldown) before committing, then let staging build and verify it before promoting. `config/tests/test_requirements_lock.py`
+fails when the lock is missing hashes or a package from `requirements.in`.
+
+The resolver also produces three PyPy-only lines (`brotlicffi`, `cbor2==5.9.0`,
+`u-msgpack-python`); CPython never installs them.
+
 ## Celery Tasks
 
 | Task | App | Retries | Time Limit | Purpose |

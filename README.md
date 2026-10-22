@@ -34,6 +34,8 @@
    pip install -r requirements.txt
    npm install
    ```
+   `requirements.txt` is a hash-locked file generated from `requirements.in`; see
+   "Dependencies" in `RUNBOOK.md` to add or upgrade a package.
 
 3. **Redis** must be running.
    ``` bash

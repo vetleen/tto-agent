@@ -1,0 +1,79 @@
+asgiref==3.11.0
+Django==6.0.1
+django-appconf==1.2.0
+django-compressor==4.6.0
+django-browser-reload==1.21.0
+django-debug-toolbar==6.1.0
+django-extensions==4.1
+python-dotenv==1.2.1
+dj-database-url==2.2.0
+psycopg2-binary==2.9.10
+rcssmin==1.2.2
+rjsmin==1.2.5
+sqlparse==0.5.5
+tzdata==2025.3
+langchain==1.3.15
+langchain-openai==1.5.1
+langchain-anthropic==1.5.6
+langchain-google-genai==4.3.4
+langchain-text-splitters==1.1.1
+langchain-experimental>=0.3.0
+langchain-community==0.4.1
+langchain-postgres==0.0.17
+pgvector==0.3.6
+pydantic==2.12.5
+pypdf==6.7.4
+docx2txt==0.8
+# Spreadsheet (.xlsx/.xlsm) ingestion: streaming read-only parse; the pipeline
+# never opens the full openpyxl DOM (memory: default mode is ~30-50x file size).
+openpyxl==3.1.5
+openai==3.1.0
+google-genai==2.18.1
+tiktoken==0.12.0
+celery==5.6.2
+channels==4.3.2
+channels-redis==4.3.0
+# Pin redis-py to the RESP2-default line: redis-py 8.x defaults to RESP3. The
+# original symptom was its async parser timing out channels_redis' blocking
+# BZPOPMIN read (~5s), dropping chat WebSockets. That exact read is gone — the
+# channel layer is now pub/sub (see CHANNEL_LAYERS in config/settings.py) — but
+# the pub/sub reader is async-parser-sensitive too, so the pin stays until 8.x is
+# actually verified against it. If bumping, pass protocol=2 in CHANNEL_LAYERS first.
+redis==7.4.0
+daphne==4.2.1
+whitenoise==6.11.0
+django-anymail==14.0
+django-ratelimit==4.1.0
+django-csp==4.0
+beautifulsoup4>=4.12.0
+readability-lxml>=0.8.1
+trafilatura>=2.0.0
+playwright==1.58.0
+mammoth==1.9.0
+html2docx==1.6.0
+markdown==3.8.2
+markdownify
+weasyprint==69.0
+# Slide-deck export: JSON -> .pptx generation (no native deps). Rendering to
+# PDF happens via LibreOffice on the worker (see Aptfile); PDF -> per-slide PNG
+# uses pypdfium2 (PDFium; permissive licence, cross-platform wheels, no system
+# deps — avoids a poppler apt dependency and PyMuPDF's AGPL).
+python-pptx==1.0.2
+pypdfium2==4.30.0
+# Already in the slug transitively (tiktoken/langchain); declared because the
+# document render client (documents/services/page_render.py) imports it directly.
+requests>=2.31
+# The Pillow slide renderer builds arbitrary-angle gradient fills with numpy;
+# it's already in the slug transitively (pgvector/langchain), declared here
+# because pillow_render imports it directly. Floor pin avoids resolver fights.
+numpy>=1.26
+# fontTools ships transitively with WeasyPrint; declared explicitly because the
+# font-upload path reads OS/2 fsType embedding bits via fontTools.ttLib.
+fonttools>=4.50.0
+flashrank>=0.2.0
+chardet>=5.0.0,<6.0.0
+extract-msg>=0.48.0
+sentry-sdk[django]>=2.29.0
+Pillow>=11.0.0
+django-storages[s3]==1.14.4
+boto3>=1.35.0
