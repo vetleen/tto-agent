@@ -97,6 +97,13 @@ _THROTTLE_WINDOW = 61.0
 # response anyway.
 _SHARED_LIMIT_KEY = "epo_ops_limit:v1:{service}"
 _SHARED_LIMIT_TTL = 600
+# A suspension (a black header, or a throttle refusal) holds the service at
+# 1/min for a full window, shared by every process. Without the hold the next
+# non-black header lifted it at once: responses served in the same second
+# disagree on the colour, and on 2026-10-22 the restored allowance sent the next
+# burst straight into a second refusal (WILFRED-A2/A3). The key also marks the
+# episode, so it is one Sentry event, not one per colour flip.
+_SUSPEND_KEY = "epo_ops_suspended:v1:{service}"
 
 
 def _shared_redis():
@@ -164,6 +171,62 @@ class _ServiceThrottle:
         )
         self._state = ""
         self._lock = threading.Lock()
+        # Local mirror of the shared suspension (monotonic deadline per service),
+        # so a hold still applies in this process when the cache is down.
+        self._suspended_until: dict[str, float] = {}
+
+    def suspend(self, service: str, reason: str) -> bool:
+        """Hold ``service`` at 1/min for a window; True when this starts an episode.
+
+        A new episode is one WARNING (a Sentry event); a suspension seen while
+        one is already held only extends it, at INFO. Never raises.
+        """
+        with self._lock:
+            self._suspended_until[service] = time.monotonic() + _THROTTLE_WINDOW
+        from django.core.cache import cache
+
+        key = _SUSPEND_KEY.format(service=service)
+        try:
+            new = bool(cache.add(key, 1, _THROTTLE_WINDOW))
+            if not new:
+                cache.set(key, 1, _THROTTLE_WINDOW)
+        except Exception:
+            new = True  # can't tell without the cache: report it
+        if new:
+            # Worth a Sentry event: OPS has suspended a service for us.
+            logger.warning(
+                "EPO OPS %s service suspended (%s); holding 1/min for %.0f s",
+                service, reason, _THROTTLE_WINDOW,
+            )
+        else:
+            logger.info("EPO OPS %s still suspended (%s); hold extended", service, reason)
+        return new
+
+    def is_suspended(self, service: str) -> bool:
+        """Whether a suspension of ``service`` is held (by any process)."""
+        with self._lock:
+            if self._suspended_until.get(service, 0.0) > time.monotonic():
+                return True
+        from django.core.cache import cache
+
+        try:
+            return bool(cache.get(_SUSPEND_KEY.format(service=service)))
+        except Exception:
+            return False
+
+    def _limit_for(self, service: str) -> int:
+        """The per-window limit to book ``service`` at right now."""
+        if self.is_suspended(service):
+            return 1
+        with self._lock:
+            limit = self._rpm[service]
+        # The shared allowance is at least as fresh as this process's own (every
+        # observe() publishes it), and it is what the shared window was filled
+        # under.
+        shared = _shared_limit_get(service)
+        if shared is not None:
+            limit = min(self.ceiling_rpm, shared)
+        return limit
 
     def acquire(self, path: str = "", *, max_wait: float | None = None) -> float | None:
         """Wait for a start slot for ``path``'s service; return the seconds waited.
@@ -174,19 +237,22 @@ class _ServiceThrottle:
         its round has moved on.
         """
         service = _service_for_path(path)
-        with self._lock:
-            limit = self._rpm[service]
-        # The shared allowance is at least as fresh as this process's own (every
-        # observe() publishes it), and it is what the shared window was filled
-        # under.
-        shared = _shared_limit_get(service)
-        if shared is not None:
-            limit = min(self.ceiling_rpm, shared)
+        limit = self._limit_for(service)
         wait = self._scheduler.reserve(service, limit, max_wait=max_wait)
         if wait is None:
             return None
         if wait > 0:
             time.sleep(wait)
+            if limit > 1 and self.is_suspended(service):
+                # Suspended while this call slept on a slot booked under the old
+                # allowance: book again under the hold rather than fire into it.
+                remaining = None if max_wait is None else max_wait - wait
+                again = self._scheduler.reserve(service, 1, max_wait=remaining)
+                if again is None:
+                    return None
+                if again > 0:
+                    time.sleep(again)
+                wait += again
         return wait
 
     def observe(self, headers) -> None:
@@ -200,26 +266,28 @@ class _ServiceThrottle:
             return
         state = value.split("(", 1)[0].strip().lower()
         observed: dict[str, int] = {}
+        suspended: list[str] = []
         with self._lock:
             self._state = state
             for name, colour, limit in pairs:
                 if name not in self._rpm:
                     continue
                 limit = int(limit)
-                suspended = colour.lower() == "black" or limit <= 0
-                rpm = 1 if suspended else min(self.ceiling_rpm, limit)
+                if colour.lower() == "black" or limit <= 0:
+                    # The hold (not _rpm) carries a suspension; see _SUSPEND_KEY.
+                    suspended.append(name)
+                    continue
+                rpm = min(self.ceiling_rpm, limit)
                 observed[name] = rpm
                 if rpm == self._rpm[name]:
                     continue
-                if suspended:
-                    # Worth a Sentry event: OPS has suspended a service for us.
-                    logger.warning("EPO OPS %s service suspended (black); throttling to 1/min", name)
-                else:
-                    logger.info(
-                        "EPO OPS throttle: %s -> %d/min (state=%s, %s, %d/min allowed)",
-                        name, rpm, state, colour, limit,
-                    )
+                logger.info(
+                    "EPO OPS throttle: %s -> %d/min (state=%s, %s, %d/min allowed)",
+                    name, rpm, state, colour, limit,
+                )
                 self._rpm[name] = rpm
+        for name in suspended:
+            self.suspend(name, "black")
         if observed:
             _shared_limits_set(observed)
 

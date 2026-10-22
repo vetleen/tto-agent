@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
@@ -2148,12 +2149,84 @@ class SharedThrottleAllowanceTests(SimpleTestCase):
         t = self._throttle()
         with self.assertLogs("llm.tools.epo_ops", level="WARNING") as cm:
             t.observe({"X-Throttling-Control": "overloaded (search=black:0, inpadoc=red:30)"})
-        self.assertEqual(t.snapshot()["rpm"]["search"], 1)
+        self.assertTrue(t.is_suspended("search"))
+        self.assertEqual(self._reserved_limit(t), 1)
         self.assertEqual(t.snapshot()["rpm"]["inpadoc"], 30)
         self.assertEqual(len([r for r in cm.records if r.levelno >= logging.WARNING]), 1)
         # Repeating the same header is silent (no change).
         with self.assertNoLogs("llm.tools.epo_ops", level="WARNING"):
             t.observe({"X-Throttling-Control": "overloaded (search=black:0, inpadoc=red:30)"})
+
+    def test_a_non_black_header_does_not_lift_the_hold(self):
+        """Responses disagree on the colour within a second: a green one right
+        after a black one must not restore the allowance (2026-10-22)."""
+        t = self._throttle()
+        t.observe({"X-Throttling-Control": "overloaded (search=black:0)"})
+        t.observe({"X-Throttling-Control": self.GUIDE["busy"]})
+        self.assertEqual(t.snapshot()["rpm"]["search"], 15)  # the allowance is still tracked
+        self.assertEqual(self._reserved_limit(t), 1)  # ... but the hold applies
+
+    def test_the_observed_allowance_returns_when_the_hold_expires(self):
+        from django.core.cache import cache
+
+        t = self._throttle()
+        t.observe({"X-Throttling-Control": "overloaded (search=black:0)"})
+        t.observe({"X-Throttling-Control": self.GUIDE["busy"]})
+        cache.delete("epo_ops_suspended:v1:search")
+        later = time.monotonic() + 62
+        with patch("llm.tools.epo_ops.time.monotonic", return_value=later):
+            self.assertFalse(t.is_suspended("search"))
+            self.assertEqual(self._reserved_limit(t), 15)
+
+    def test_flapping_colours_are_one_warning(self):
+        t = self._throttle()
+        with self.assertLogs("llm.tools.epo_ops", level="INFO") as cm:
+            for _ in range(3):
+                t.observe({"X-Throttling-Control": "overloaded (search=black:0)"})
+                t.observe({"X-Throttling-Control": self.GUIDE["busy"]})
+        self.assertEqual(len([r for r in cm.records if r.levelno >= logging.WARNING]), 1)
+
+    def test_a_suspension_is_held_across_processes(self):
+        a, b = self._throttle(), self._throttle()
+        a.observe({"X-Throttling-Control": self.GUIDE["idle"]})
+        with self.assertLogs("llm.tools.epo_ops", level="WARNING"):
+            b.suspend("search", "ThrottlingControlQuota")
+        self.assertTrue(a.is_suspended("search"))
+        self.assertEqual(self._reserved_limit(a), 1)
+        # The other process sees the same episode: no second event.
+        with self.assertNoLogs("llm.tools.epo_ops", level="WARNING"):
+            a.suspend("search", "black")
+
+    def test_a_call_waiting_on_a_slot_rebooks_when_a_suspension_starts(self):
+        """Slots booked under 15/min must not fire into a suspension that began
+        while they slept: they book again under the 1/min hold."""
+        t = self._throttle()
+        t.observe({"X-Throttling-Control": self.GUIDE["busy"]})
+        reserve_calls = []
+
+        def reserve(service, limit, max_wait=None):
+            reserve_calls.append((service, limit, max_wait))
+            return 10.0 if len(reserve_calls) == 1 else 50.0
+
+        def sleep(seconds):
+            if len(reserve_calls) == 1:
+                t.suspend("search", "black")  # another call got refused meanwhile
+
+        with patch.object(t._scheduler, "reserve", side_effect=reserve), \
+                patch("llm.tools.epo_ops.time.sleep", side_effect=sleep), \
+                self.assertLogs("llm.tools.epo_ops", level="WARNING"):
+            waited = t.acquire("published-data/search", max_wait=100.0)
+        self.assertEqual(reserve_calls, [("search", 15, 100.0), ("search", 1, 90.0)])
+        self.assertEqual(waited, 60.0)
+
+    def test_a_rebooked_slot_beyond_the_deadline_gives_up(self):
+        t = self._throttle()
+        t.observe({"X-Throttling-Control": self.GUIDE["busy"]})
+        results = iter([10.0, None])
+        with patch.object(t._scheduler, "reserve", side_effect=lambda *a, **k: next(results)), \
+                patch("llm.tools.epo_ops.time.sleep", side_effect=lambda s: t.suspend("search", "black")), \
+                self.assertLogs("llm.tools.epo_ops", level="WARNING"):
+            self.assertIsNone(t.acquire("published-data/search", max_wait=30.0))
 
     def test_garbage_or_missing_header_is_ignored(self):
         t = self._throttle()
