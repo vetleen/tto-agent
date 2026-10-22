@@ -137,7 +137,7 @@ def render_band(
     """
     from chat.pdf_export import (
         _install_weasyprint_log_filter,
-        _safe_url_fetcher,
+        safe_url_fetcher,
         weasyprint_available,
     )
 
@@ -150,7 +150,7 @@ def render_band(
 
     _install_weasyprint_log_filter()
     html = build_band_html(sheet, plan, band_x, y_limit=y_limit)
-    pdf = HTML(string=html, url_fetcher=_safe_url_fetcher).write_pdf()
+    pdf = HTML(string=html, url_fetcher=safe_url_fetcher()).write_pdf()
     tiles = pdf_to_pngs(pdf, dpi=96)
 
     expected = len(band_row_groups(sheet, plan, band_x))

@@ -1212,7 +1212,7 @@ _HR_RE = re.compile(r"<hr\s*/?>")
 # data: URLs; any other <img src> (e.g. markdown ![](http://\u2026)) would make the
 # DOCX renderer (html2docx.load_external_image \u2192 urllib.urlopen) fetch a
 # remote/file URL server-side \u2014 SSRF / local-file read. Drop non-data <img> tags
-# at the shared HTML choke point. (The PDF path also has _safe_url_fetcher.)
+# at the shared HTML choke point. (The PDF path also has safe_url_fetcher.)
 _IMG_TAG_RE = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
 _IMG_SRC_RE = re.compile(r"""\bsrc\s*=\s*["']([^"']*)["']""", re.IGNORECASE)
 
@@ -1397,7 +1397,7 @@ def _resolve_pdf_css(html_content, org):
 
 def _render_pdf_in_slot(html_content, title, css):
     """WeasyPrint render. Pure CPU (the URL fetcher only allows ``data:`` URIs,
-    chat.pdf_export._safe_url_fetcher), so it runs off the request thread."""
+    chat.pdf_export.safe_url_fetcher), so it runs off the request thread."""
     from chat.pdf_export import render_canvas_pdf
 
     with _export_render_slot():

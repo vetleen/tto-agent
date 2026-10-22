@@ -44,21 +44,25 @@ def weasyprint_available() -> bool:
     return True
 
 
-def _safe_url_fetcher(url, *args, **kwargs):
-    """Block server-side fetches of remote/local URLs during canvas export.
+def safe_url_fetcher():
+    """A WeasyPrint URL fetcher that only loads inline ``data:`` URIs.
 
     Canvas content is user-controlled; the only legitimate resources are inline
-    ``data:`` URIs (images are embedded as data-URLs upstream). Refusing every
-    other scheme stops SSRF (e.g. ``http://169.254.169.254/…``) and local-file
-    reads (``file:///…``) via ``<img src>`` / CSS ``url()`` / ``@import``.
-    WeasyPrint catches the error per-resource and renders a placeholder, so the
-    PDF still produces.
-    """
-    if url.startswith("data:"):
-        from weasyprint.urls import default_url_fetcher
+    ``data:`` URIs (images, fonts and the logo are embedded as data-URLs
+    upstream). Refusing every other scheme stops SSRF (e.g.
+    ``http://169.254.169.254/…``) and local-file reads (``file:///…``) via
+    ``<img src>`` / CSS ``url()`` / ``@import``. A refused URL raises
+    ``ValueError``; WeasyPrint catches it per resource and renders a
+    placeholder, so the PDF still produces.
 
-        return default_url_fetcher(url, *args, **kwargs)
-    raise ValueError(f"Blocked non-data URL in canvas export: {url[:60]}")
+    Must be a ``URLFetcher`` instance, not a plain function: since WeasyPrint 70
+    a function fetcher crashes the whole render on its first refusal (WeasyPrint
+    reads ``url_fetcher._fail_on_errors``), and ``default_url_fetcher`` is gone.
+    Build a fresh one per render — the fetcher keeps per-request state.
+    """
+    from weasyprint.urls import URLFetcher
+
+    return URLFetcher(allowed_protocols=("data",), allow_redirects=False, fail_on_errors=False)
 
 
 def _wrap(html_body: str, title: str) -> str:
@@ -85,6 +89,6 @@ def render_canvas_pdf(html_body: str, *, title: str, css: str) -> bytes:
 
     _install_weasyprint_log_filter()
     font_config = FontConfiguration()
-    document = HTML(string=_wrap(html_body, title), url_fetcher=_safe_url_fetcher)
+    document = HTML(string=_wrap(html_body, title), url_fetcher=safe_url_fetcher())
     stylesheet = CSS(string=css, font_config=font_config)
     return document.write_pdf(stylesheets=[stylesheet], font_config=font_config)

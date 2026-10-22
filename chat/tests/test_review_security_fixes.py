@@ -10,13 +10,14 @@ Covers:
 from __future__ import annotations
 
 import json
+from unittest import skipUnless
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
 
 from chat.models import ChatThread
-from chat.pdf_export import _safe_url_fetcher
+from chat.pdf_export import safe_url_fetcher, weasyprint_available
 from chat.tools import DocumentViewNativeTool, OpenDocumentToCanvasTool
 from chat.views import _strip_remote_images
 from documents.models import DataRoom, DataRoomDocument, DataRoomDocumentVersion
@@ -53,15 +54,23 @@ class OpenToCanvasAudienceTests(TestCase):
 # A2 — SSRF guards
 # ---------------------------------------------------------------------------
 class ExportSsrfGuardTests(TestCase):
+    @skipUnless(weasyprint_available(), "WeasyPrint native libs not installed")
     def test_url_fetcher_blocks_remote_and_file(self):
+        fetcher = safe_url_fetcher()
         for url in (
             "http://169.254.169.254/latest/meta-data/",
             "https://evil.example/x.png",
             "file:///app/.env",
+            "FILE:///app/.env",
             "ftp://host/x",
         ):
             with self.assertRaises(ValueError):
-                _safe_url_fetcher(url)
+                fetcher.fetch(url)
+
+    @skipUnless(weasyprint_available(), "WeasyPrint native libs not installed")
+    def test_url_fetcher_loads_data_uris(self):
+        response = safe_url_fetcher().fetch("data:text/plain;base64,aGk=")
+        self.assertEqual(response.read(), b"hi")
 
     def test_strip_remote_images_drops_non_data_src(self):
         html = (

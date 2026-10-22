@@ -53,7 +53,7 @@ mammoth==1.13.0
 html2docx==1.6.0
 markdown==3.8.2
 markdownify
-weasyprint==69.0
+weasyprint==70.0
 # Slide-deck export: JSON -> .pptx generation (no native deps). Rendering to
 # PDF happens via LibreOffice on the worker (see Aptfile); PDF -> per-slide PNG
 # uses pypdfium2 (PDFium; permissive licence, cross-platform wheels, no system

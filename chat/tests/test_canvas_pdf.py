@@ -99,6 +99,41 @@ class CanvasPdfExportTests(TestCase):
         text = "\n".join(page.extract_text() for page in reader.pages)
         self.assertIn("NDA", text)
 
+    @skipUnless(weasyprint_available(), "WeasyPrint native libs not installed (expected on Windows)")
+    def test_real_render_survives_blocked_urls_and_loads_data_images(self):
+        # WeasyPrint 70 crashed the whole render on the first refused URL when
+        # the fetcher was a plain function, and dropped default_url_fetcher
+        # (which data: images went through). Render for real: blocked remote /
+        # file URLs become placeholders, the data: image still loads.
+        from chat.pdf_export import render_canvas_pdf
+
+        png = (
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4"
+            "nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="
+        )
+        html_body = (
+            "<h1>Blocked URLs</h1>"
+            '<img src="file:///etc/passwd">'
+            '<img src="http://169.254.169.254/latest/meta-data/">'
+            '<p style="background:url(https://evil.example/x.png)">still renders</p>'
+            f'<img src="{png}">'
+        )
+        import urllib.request
+
+        opened = []
+        real_open = urllib.request.OpenerDirector.open
+
+        def spy(director, req, *args, **kwargs):
+            opened.append(req.full_url if hasattr(req, "full_url") else req)
+            return real_open(director, req, *args, **kwargs)
+
+        with mock.patch.object(urllib.request.OpenerDirector, "open", spy):
+            pdf = render_canvas_pdf(html_body, title="t", css="body{font-family:sans-serif}")
+        self.assertTrue(pdf.startswith(b"%PDF"))
+        # The blocked URLs are refused before any urllib handler runs; only the
+        # data: image is actually opened.
+        self.assertEqual(opened, [png])
+
 
 class WeasyPrintNotdefFilterTests(TestCase):
     """WeasyPrint's '.notdef glyph rendered ...' warnings fire once per character
