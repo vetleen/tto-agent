@@ -1674,9 +1674,9 @@ langchain-anthropic==1.5.6 \
     --hash=sha256:648fdab25573fc9d29543c4b4af1d682b7b6e548d452bb46e67ebc586e195629 \
     --hash=sha256:c358ed2ca90ef75254bb73a96b0a8a8ef0efc1deabe529ea06db6ff403001a27
     # via -r requirements.in
-langchain-classic==1.0.3 \
-    --hash=sha256:168ef1dfbfb18cae5a9ff0accecc9413a5b5aa3464b53fa841561a3384b6324a \
-    --hash=sha256:26df1ec9806b1fbff19d9085a747ea7d8d82d7e3fb1d25132859979de627ef79
+langchain-classic==1.0.8 \
+    --hash=sha256:1a11ea7fbe630c4f2af2f3873d27718ceac9488cf32d0821030be7cf039a6213 \
+    --hash=sha256:ada0cc341a8a5b80fb24d73bdfaaeb849056ee2d8a41cc468355163fd3667484
     # via langchain-community
 langchain-community==0.4.1 \
     --hash=sha256:2135abb2c7748a35c84613108f7ebf30f8505b18c3c18305ffaecfc7651f6c6a \
@@ -1723,9 +1723,9 @@ langchain-protocol==0.0.20 \
     # via
     #   langchain-core
     #   langgraph-sdk
-langchain-text-splitters==1.1.1 \
-    --hash=sha256:34861abe7c07d9e49d4dc852d0129e26b32738b60a74486853ec9b6d6a8e01d2 \
-    --hash=sha256:5ed0d7bf314ba925041e7d7d17cd8b10f688300d5415fb26c29442f061e329dc
+langchain-text-splitters==1.1.3 \
+    --hash=sha256:50edeb318b3be6a6308dddd7d616ab82823a9ccbea59a9c14c58a7b91df60295 \
+    --hash=sha256:929b6c76f99d611a5b1d8f5591ef302909b86a436ceb3217034d24e4757868d8
     # via
     #   -r requirements.in
     #   langchain-classic
@@ -3106,9 +3106,9 @@ python-docx==1.2.0 \
     --hash=sha256:3fd478f3250fbbbfd3b94fe1e985955737c145627498896a8a6bf81f4baf66c7 \
     --hash=sha256:7bc9d7b7d8a69c9c02ca09216118c86552704edc23bac179283f2e38f86220ce
     # via html2docx
-python-dotenv==1.2.1 \
-    --hash=sha256:42667e897e16ab0d66954af0e60a9caa94f0fd4ecf3aaf6d2d260eec1aa36ad6 \
-    --hash=sha256:b81ee9561e9ca4004139c6cbba3a238c32b03e4894671e181b671e8cb8425d61
+python-dotenv==1.2.4 \
+    --hash=sha256:42269a8a5b3fd54ffa6f3d84b18abed50064717576b4ecf03dc4a55d8aa04fdc \
+    --hash=sha256:f0d53e69935a851c0dcc78f3ab7aaccd8cabef0b92382b576b824212902873c0
     # via
     #   -r requirements.in
     #   pydantic-settings
@@ -3625,9 +3625,9 @@ sqlalchemy==2.1.5 \
     #   langchain-classic
     #   langchain-community
     #   langchain-postgres
-sqlparse==0.5.5 \
-    --hash=sha256:12a08b3bf3eec877c519589833aed092e2444e68240a3577e8e26148acc7b1ba \
-    --hash=sha256:e20d4a9b0b8585fdf63b10d30066c7c94c5d7a7ec47c889a2d83a3caa93ff28e
+sqlparse==0.6.0 \
+    --hash=sha256:113c35c75365ab9cc9c7231d68c6428fb11c085fc8e9eb1ad659b7ddbf6cd2b9 \
+    --hash=sha256:b861c0288ce2fa56209a9a6412d2e066ac664b3873b89c26c9d8415e8e32996f
     # via
     #   -r requirements.in
     #   django
