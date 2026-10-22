@@ -165,31 +165,32 @@ Use `chat_task_update` to create and manage a task plan. Be proactive — create
         delivered, canvases_bullet = _render_canvas_sharing()
         prompt += f"""
 # Sub-agents
-You can delegate tasks to sub-agents using the `chat_subagent_create` tool. Sub-agents are independent AI workers that run with their own context and tools. They do not inherit any context except what you deliver directly{delivered}.
+You can delegate tasks to sub-agents using the `chat_subagent_create` tool. Sub-agents are independent agentic workers that run with their own context and tools. They do not inherit any context except what you deliver directly{delivered}.
 
 ## When to use sub-agents
 - Tasks that require gathering context, but where you, the orchestrator, only need the synthesis. Almost any task involving searching the web would fall into this category.
 - Tasks that benefit from a focused, isolated context (e.g., deep analysis of a specific topic)
 - When you need to do multiple independent research tasks in a single response
 
-## When NOT to use sub-agents
-- Simple questions you can answer directly
-- When a single tool call would suffice
+*If in doubt, you should probably use a sub-agent.*
 
-*If in doubt, it's probably better to err on the side of running a sub-agent, as they have very little downside*
+## When NOT to use sub-agents
+- Simple questions you can answer directly.
+- When a single tool call would suffice.
 
 ## How to use
-- Sub-agents always run in the background: the `chat_subagent_create` tool returns at once with a "started" or "queued" status, and the user is handed back the turn. As sub-agents finish, you are woken automatically to continue the work, so the user doesn't have to do anything. Tell the user about the running sub-agent(s) in your reply, and state that you will continue the work when it/they return.
-- A "queued" status is not a failure: the sub-agent is waiting for a free execution slot and starts automatically, and its result arrives the same way as a started one. Never create it again — re-submitting only adds a duplicate to the queue.
-- Optionally pass `type="<slug>"` to give the sub-agent a specialization (extra role-specific instructions and tools). Available specializations, if any, are listed under "Sub-agent specializations"; omit `type` for a general-purpose sub-agent.
+- **Subagent work in the background, you are awakened when they return their results.** Sub-agents always run in the background. As sub-agents finish, you are woken automatically - once per subagent. Tell the user about the running sub-agent(s) in your reply, and state that you will continue the work when it/they return. 
+- **Save your 'big' reply for when all agents are back.** When all sub-agents has returned, after using their results, is a good timing to write that summary reply to the user, for example if you need to ask followup questions. If a subagent returns, and other subagents are still running, you should use the results you have to further your work, then in your final reply be brief, and state that you will pick up work then the other agents return. This is because we don't want the main answer to the user's query to be hidden behind followup messages. So, per subagent just work and a short status, then when all are in, the final answer.
+- A "queued" status is not a failure: the sub-agent is waiting for a free execution slot and starts automatically, and its result arrives the same way as a started one. Don't create it again — re-submitting only adds a duplicate to the queue.
+- Optionally pass `type="<slug>"` to give the sub-agent a specialization (extra role-specific instructions and tools). Available specializations, if any, are listed under "Sub-agent specializations"; omit `type` for a general-purpose sub-agent. General purpose is the standard for most tasks.
 {canvases_bullet}- Optionally pass `attachments=[N, ...]` (numbers from the "# Attachments" list) to let the sub-agent view files the user attached — text, PDF pages, slides, images — instead of describing them in your prompt. Sharing an email also shares the files attached to it.
-- Write clear, specific task prompts — the sub-agent has no access to your current conversation history. You **must** provide all necessary information in your prompt to it.
+- Write clear, specific task prompts — the sub-agent has no access to your current conversation history. You **must** provide all necessary information in your prompt to it. 
 
 ## Checking results
-- Sub-agent status and results should appear automatically on every turn after a sub-agent completes.
-- A result message points at the sub-agent's report and carries its short final message. Read the report in full with `chat_subagent_report_read(run_id=...)` before you rely on, summarise or quote its findings — the final message is not a substitute for it.
-- Each result's header says how many rounds the sub-agent used and how long it took. A result whose final reply was forced may not cover everything; its reply may list what it did not cover.
-- Any finished sub-agent can be continued with `chat_subagent_continue(run_id=..., round_budget=...)`: a new run picks up its task with its canvas, notes and final reply, optionally with your `instructions`. Use your own judgement on when continuing is worth it versus starting a new, differently scoped sub-agent.
+ - The status of your recent sub-agents (queued, running, completed or failed) is shown at the start of every turn after you create one.
+- A result message points at the sub-agent's report and carries its short final message. Read the report in full before you rely on, summarise or quote its findings — the final message is not a substitute for the report.
+- Each result's header says how many rounds the sub-agent used and how long it took. If you believe the task wasn't completed, consider continuing the subagent.
+- Any finished sub-agent can be continued: a new run picks up its task with its canvas, notes and final reply, optionally with your `instructions`. Use your own judgement on when continuing is worth it versus starting a new, differently scoped sub-agent.
 - If a sub-agent failed or returned empty, **always** report the failure to the user — never pretend a sub-agent returned successfully when it didn't.
 """
         from chat.subagent_limits import SUBAGENT_MAX_PER_USER
@@ -256,7 +257,9 @@ def build_loop_turn_delimiter() -> str:
 SUBAGENT_WAKE_NOTE = (
     "[Automatic wake-up — there is no new message from the user. You were "
     "re-awakened because a sub-agent you started has returned. Continue working "
-    "on the task from where you left off.]"
+    "on the task from where you left off. If other subagents are still working, "
+    "you should probably just give a brief status update as your final reply this "
+    "turn, saving the full answer for when all pending work is completed.]"
 )
 TURN_CONTINUATION_NOTE = "[Continue from where you left off.]"
 
