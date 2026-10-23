@@ -572,6 +572,10 @@ def _fold_turn_activity(messages):
             thinking = (m.metadata or {}).get("thinking")
             if thinking:
                 rows.append({"kind": "thinking", "text": thinking})
+            narration = (m.metadata or {}).get("narration")
+            if narration:
+                # A progress note written before this answer in the same response.
+                rows.append({"kind": "narration", "text": narration, "snippet": _narration_snippet(narration)})
             m.activity = _build_activity(rows, start=anchor, end=m.created_at) if rows else None
             if any(getattr(p, "is_boundary", False) for p in pending):
                 m.is_boundary = True

@@ -3191,11 +3191,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
         from chat.repetition_guard import is_degenerate
         accumulated_content = ""
         accumulated_thinking = ""
+        # Progress notes of the current round: text a ``text_break`` closed (a
+        # commentary message before the answer in the same response).
+        narration_parts: list[str] = []
         pending_tool_calls = []
         pending_tool_results = []
         stream_error = False
         degenerate_stop = False
         last_guard_len = 0
+
+        def round_text() -> str:
+            # The round's whole text as the provider joined it (end_data content).
+            return "\n\n".join(p for p in [*narration_parts, accumulated_content] if p.strip())
+
         # Provider replay state for the final reply (Gemini thought-signed text
         # blocks), stored on the assistant message and sent back on later turns.
         replay_blocks = None
@@ -3272,6 +3280,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     # Text streamed before thinking in the same round stays text:
                     # interleaved-thinking models write user-facing prose, then reason.
                     accumulated_thinking += event.data.get("text", "")
+
+                # A new text message in the same response: the text so far is a
+                # progress note (the client files it as a narration row), not
+                # part of the answer.
+                elif event.event_type == "text_break":
+                    if accumulated_content.strip():
+                        narration_parts.append(accumulated_content)
+                    accumulated_content = ""
+                    last_guard_len = 0
 
                 # Track tool calls for persistence
                 elif event.event_type == "tool_start":
@@ -3421,13 +3438,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     # own history).
                     await self._persist_tool_loop_messages(
                         thread, pending_tool_calls, pending_tool_results,
-                        content=accumulated_content,
+                        content=round_text(),
                         thinking=accumulated_thinking,
                     )
                     pending_tool_calls = []
                     pending_tool_results = []
                     accumulated_content = ""
                     accumulated_thinking = ""
+                    narration_parts = []
                     last_guard_len = 0
 
             # Don't persist partial content from error-interrupted or
@@ -3437,17 +3455,27 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 if pending_tool_calls:
                     await self._persist_tool_loop_messages(
                         thread, pending_tool_calls, pending_tool_results,
-                        content=accumulated_content,
+                        content=round_text(),
                         thinking=accumulated_thinking,
                     )
                     accumulated_content = ""
                     accumulated_thinking = ""
+                    narration_parts = []
+
+                if narration_parts and not accumulated_content.strip():
+                    # Nothing followed the progress note: it is the answer.
+                    accumulated_content = round_text()
+                    narration_parts = []
 
                 # Persist final assistant message (with thinking in metadata if present)
                 if accumulated_content.strip():
                     metadata = {}
                     if accumulated_thinking:
                         metadata["thinking"] = accumulated_thinking
+                    if narration_parts:
+                        # Progress notes the model wrote before this answer in the
+                        # same response; shown in the turn's activity timeline.
+                        metadata["narration"] = "\n\n".join(narration_parts)
                     replay = build_assistant_replay(resolved_model, replay_blocks, accumulated_content)
                     if replay:
                         metadata["replay"] = replay

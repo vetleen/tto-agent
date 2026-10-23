@@ -3710,6 +3710,12 @@
       const contentEl = currentStreamingElement.querySelector(".message-content"); if (contentEl) contentEl.innerHTML = renderMarkdown(accumulatedContent);
       scrollToBottom(); return;
     }
+    if (et === "text_break") {
+      // A new message in the same response: the text so far was a progress
+      // note, filed as a narration row (the consumer stores it the same way).
+      ensureBubble(); flushNarration();
+      return;
+    }
     if (et === "tool_start") {
       const toolName = (data.data && data.data.tool_name) || "tool";
       const toolId = (data.data && data.data.tool_call_id) || "";

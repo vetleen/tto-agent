@@ -536,6 +536,115 @@ class ConsumerMessageTests(TransactionTestCase):
         await communicator.disconnect()
 
     @patch("llm.get_llm_service")
+    async def test_text_break_splits_progress_note_from_answer(self, mock_get_service):
+        """A text_break (a second message in the same response) files the text
+        before it as a progress note: joined into a tool round's narration, kept
+        out of the final answer's content and stored as its ``narration``."""
+        from llm.types.streaming import StreamEvent
+
+        events = [
+            StreamEvent(event_type="message_start", data={}, sequence=0, run_id="r1"),
+            StreamEvent(event_type="token", data={"text": "Checking."}, sequence=1, run_id="r1"),
+            StreamEvent(event_type="text_break", data={}, sequence=2, run_id="r1"),
+            StreamEvent(event_type="token", data={"text": "Searching now."}, sequence=3, run_id="r1"),
+            StreamEvent(event_type="tool_start", data={"tool_call_id": "c1", "tool_name": "web_search", "arguments": {}}, sequence=4, run_id="r1"),
+            StreamEvent(event_type="tool_end", data={"tool_call_id": "c1", "tool_name": "web_search", "result": "{}"}, sequence=5, run_id="r1"),
+            StreamEvent(event_type="message_start", data={}, sequence=6, run_id="r1"),
+            StreamEvent(event_type="token", data={"text": "Progress note."}, sequence=7, run_id="r1"),
+            StreamEvent(event_type="text_break", data={}, sequence=8, run_id="r1"),
+            StreamEvent(event_type="token", data={"text": "Final answer."}, sequence=9, run_id="r1"),
+            StreamEvent(event_type="message_end", data={}, sequence=10, run_id="r1"),
+        ]
+
+        mock_service = MagicMock()
+
+        async def mock_astream(*args, **kwargs):
+            for e in events:
+                yield e
+
+        mock_service.astream = mock_astream
+        mock_get_service.return_value = mock_service
+
+        communicator = await self._connect()
+        await communicator.send_json_to({"type": "chat.message", "content": "Search for X"})
+
+        seen = []
+        for _ in range(30):
+            resp = await communicator.receive_json_from(timeout=10)
+            seen.append(resp.get("event_type"))
+            if resp.get("event_type") == "message_end":
+                break
+        self.assertEqual(seen.count("text_break"), 2)
+
+        @database_sync_to_async
+        def get_messages():
+            return list(ChatMessage.objects.order_by("created_at"))
+
+        import asyncio
+        for _ in range(20):
+            msgs = await get_messages()
+            if len(msgs) >= 4:
+                break
+            await asyncio.sleep(0.1)
+
+        tool_loop_msg = next(
+            m for m in msgs if m.role == "assistant" and m.metadata.get("tool_calls")
+        )
+        self.assertEqual(tool_loop_msg.content, "Checking.\n\nSearching now.")
+
+        final_msg = [m for m in msgs if m.role == "assistant"][-1]
+        self.assertEqual(final_msg.content, "Final answer.")
+        self.assertEqual(final_msg.metadata.get("narration"), "Progress note.")
+        self.assertFalse(final_msg.is_hidden_from_user)
+
+        await communicator.disconnect()
+
+    @patch("llm.get_llm_service")
+    async def test_text_break_without_answer_keeps_note_as_answer(self, mock_get_service):
+        """A progress note with nothing after it is the answer, not lost."""
+        from llm.types.streaming import StreamEvent
+
+        events = [
+            StreamEvent(event_type="message_start", data={}, sequence=0, run_id="r1"),
+            StreamEvent(event_type="token", data={"text": "Only a note."}, sequence=1, run_id="r1"),
+            StreamEvent(event_type="text_break", data={}, sequence=2, run_id="r1"),
+            StreamEvent(event_type="message_end", data={}, sequence=3, run_id="r1"),
+        ]
+
+        mock_service = MagicMock()
+
+        async def mock_astream(*args, **kwargs):
+            for e in events:
+                yield e
+
+        mock_service.astream = mock_astream
+        mock_get_service.return_value = mock_service
+
+        communicator = await self._connect()
+        await communicator.send_json_to({"type": "chat.message", "content": "Hi"})
+        for _ in range(20):
+            resp = await communicator.receive_json_from(timeout=10)
+            if resp.get("event_type") == "message_end":
+                break
+
+        @database_sync_to_async
+        def get_final():
+            return ChatMessage.objects.filter(role="assistant").order_by("created_at").last()
+
+        import asyncio
+        final_msg = None
+        for _ in range(20):
+            final_msg = await get_final()
+            if final_msg is not None:
+                break
+            await asyncio.sleep(0.1)
+
+        self.assertEqual(final_msg.content, "Only a note.")
+        self.assertNotIn("narration", final_msg.metadata)
+
+        await communicator.disconnect()
+
+    @patch("llm.get_llm_service")
     async def test_context_edit_is_saved_not_forwarded(self, mock_get_service):
         """A context_edit (what the tool loop rewrote) stays server-side and is
         saved on the rows it touches — here this round's own result, edited

@@ -291,6 +291,24 @@ class TurnActivityFoldTests(TestCase):
         body = response.content.decode()
         self.assertLess(body.index("t-final"), body.index("Answer."))
 
+    def test_final_answer_progress_note_renders_after_its_thinking(self):
+        """A progress note stored on the answer (``metadata["narration"]``) is the
+        timeline's last row, after the final round's thinking, as streamed live."""
+        self._msg("user", "Q")
+        self._round(narration="Looking it up.")
+        final = self._msg(
+            "assistant", "Answer.",
+            metadata={"thinking": "t-final", "narration": "The report is drafted."},
+        )
+        response, messages = self._messages()
+        act = next(m for m in messages if m.pk == final.pk).activity
+        self.assertEqual(
+            [r["kind"] for r in act["rows"]], ["narration", "tools", "thinking", "narration"],
+        )
+        self.assertEqual(act["rows"][-1]["text"], "The report is drafted.")
+        body = response.content.decode()
+        self.assertLess(body.index("The report is drafted."), body.index("Answer."))
+
     def test_long_turn_collapses_merges_tool_batches_and_counts(self):
         self._msg("user", "Q")
         self._round(thinking="t1", tools=2, seconds=10)
