@@ -45,6 +45,9 @@ preflight's `[hidden]` rule is !important).
         {% if row.conflict_label %}
         <span class="block text-xs italic text-body-subtle mt-1 conflict-label">{{ row.conflict_label }}</span>
         {% endif %}
+        {% if row.requires_label %}
+        <span class="block text-xs text-fg-warning mt-1 requires-label" title="A toolkit this skill needs isn't available, so the skill can't be attached.">{{ row.requires_label }}</span>
+        {% endif %}
       </span>
       <span class="scan-pills block">
         <span class="scan-pill mt-1 inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full border whitespace-nowrap cursor-default text-body bg-neutral-secondary-soft border-default" data-pill="pending"{% if row.scan_pill != "pending" %} hidden{% endif %} title="The safety scan is running">

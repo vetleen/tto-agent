@@ -3,8 +3,11 @@ The three skill tiers (your / org / system) for one audience tab.
 Params:
   audience      — "main" | "subagent"; carried into create/import/copy actions
   user_rows, org_rows, system_rows — annotated rows for this audience
+  system_only   — truthy to render just the "System skills" section (the
+                  Toolkits tab: toolkits are seed-only, nothing to create)
   user_org, is_org_admin, assistant_name — as in skills_list
 {% endcomment %}
+{% if not system_only %}
 {# ---------- Your skills ---------- #}
 <section class="mb-8">
   <div class="flex items-center justify-between gap-4 mb-3">
@@ -71,6 +74,7 @@ Params:
   </div>
 </section>
 {% endif %}
+{% endif %}
 
 {# ---------- System skills ---------- #}
 <section class="mb-8">
@@ -84,7 +88,7 @@ Params:
     {% for row in system_rows %}
       {% include "agent_skills/_skill_row.html" with row=row section="system" audience=audience is_first=forloop.first is_last=forloop.last %}
     {% empty %}
-    <p class="px-5 py-6 text-body text-sm">No system skills available.</p>
+    <p class="px-5 py-6 text-body text-sm">{% if system_only %}No toolkits available.{% else %}No system skills available.{% endif %}</p>
     {% endfor %}
   </div>
 </section>

@@ -71,6 +71,81 @@ class SkillsListViewTests(TestCase):
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
+class ToolkitsTabTests(TestCase):
+    """The Toolkits tab lists the system toolkits (and only them), the main
+    tab keeps the playbooks, and a playbook whose toolkit is unavailable is
+    tagged with the reason."""
+
+    def setUp(self):
+        AgentSkill.objects.all().delete()
+        self.user = User.objects.create_user(email="tk@example.com", password="pw")
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+        self.org = Organization.objects.create(name="Acme", slug="acme")
+        Membership.objects.create(user=self.user, org=self.org, role=Membership.Role.MEMBER)
+        self.toolkit = AgentSkill.objects.create(
+            slug="canvas_tools", name="Canvas Tools", instructions="i",
+            level="system", kind="toolkit", tool_names=["canvas_write"],
+        )
+        AgentSkill.objects.create(slug="sys-x", name="Sys X", instructions="i", level="system")
+        self.dep = AgentSkill.objects.create(
+            slug="dep", name="Dep", instructions="i", level="user",
+            created_by=self.user, requires=["canvas_tools"],
+        )
+        self.org.preferences = {"skills": {"sys-x": {"enabled": True}}}
+        self.org.save(update_fields=["preferences"])
+        self.client.force_login(self.user)
+
+    def test_toolkits_tab_lists_only_toolkits(self):
+        response = self.client.get(reverse("agent_skills_list"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'id="tab-toolkit"')
+        self.assertContains(response, "give Wilfred access to extra tools")
+        self.assertEqual(
+            [r["skill"].slug for r in response.context["toolkit_rows"]], ["canvas_tools"]
+        )
+        self.assertEqual(
+            [r["skill"].slug for r in response.context["main_system_rows"]], ["sys-x"]
+        )
+        self.assertEqual(
+            [r["skill"].slug for r in response.context["main_user_rows"]], ["dep"]
+        )
+        dep_row = response.context["main_user_rows"][0]
+        self.assertEqual(dep_row["requires_label"], "")
+
+    def test_unmet_requirement_tags_the_dependent(self):
+        self.org.preferences = {
+            "skills": {"sys-x": {"enabled": True}, "canvas_tools": {"enabled": False}},
+        }
+        self.org.save(update_fields=["preferences"])
+        response = self.client.get(reverse("agent_skills_list"))
+        self.assertEqual(response.context["toolkit_rows"], [])
+        dep_row = response.context["main_user_rows"][0]
+        self.assertEqual(dep_row["requires_label"], "Requires Canvas Tools, which is disabled")
+        self.assertContains(response, "Requires Canvas Tools, which is disabled")
+
+    def test_user_disabled_toolkit_tags_the_dependent(self):
+        UserSettings.objects.update_or_create(
+            user=self.user,
+            defaults={"preferences": {"skills": {"canvas_tools": {"selected_skill_id": None}}}},
+        )
+        response = self.client.get(reverse("agent_skills_list"))
+        dep_row = response.context["main_user_rows"][0]
+        self.assertEqual(dep_row["requires_label"], "Requires Canvas Tools, which is disabled")
+        # The toolkit itself stays listed (switched off) on its tab.
+        self.assertEqual(
+            [r["skill"].slug for r in response.context["toolkit_rows"]], ["canvas_tools"]
+        )
+        self.assertFalse(response.context["toolkit_rows"][0]["is_enabled"])
+
+    def test_back_link_targets_toolkit_tab(self):
+        response = self.client.get(
+            reverse("agent_skills_detail", kwargs={"skill_id": self.toolkit.id})
+        )
+        self.assertContains(response, "?tab=toolkit")
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
 class ToolkitActionsHiddenTests(TestCase):
     """A toolkit row / detail page offers no edit-in-chat or copy actions."""
 

@@ -277,18 +277,20 @@
   // redirected here) resolve without a reload.
   pollScanStatus();
 
-  // Deep-link to a tab via ?tab=subagent (e.g. "Back to skills" from a
-  // sub-agent skill's detail page). Flowbite initializes its Tabs instance
-  // after this script runs, so poll for it, then drive its own show() API
-  // (which keeps Flowbite's internal active-tab state consistent — clicking
-  // before init, or after a later re-init, would silently revert to main).
-  if (new URLSearchParams(window.location.search).get("tab") === "subagent") {
+  // Deep-link to a tab via ?tab=subagent / ?tab=toolkit (e.g. "Back to
+  // skills" from a sub-agent skill's or a toolkit's detail page). Flowbite
+  // initializes its Tabs instance after this script runs, so poll for it, then
+  // drive its own show() API (which keeps Flowbite's internal active-tab state
+  // consistent — clicking before init, or after a later re-init, would
+  // silently revert to main).
+  var wantedTab = new URLSearchParams(window.location.search).get("tab");
+  if (wantedTab === "subagent" || wantedTab === "toolkit") {
     var tabTries = 0;
     var tabTimer = setInterval(function () {
       var inst = window.FlowbiteInstances &&
         window.FlowbiteInstances.getInstance("Tabs", "skills-tabs");
       if (inst && typeof inst.show === "function") {
-        inst.show("#panel-subagent");
+        inst.show("#panel-" + wantedTab);
         clearInterval(tabTimer);
       } else if (++tabTries > 50) {
         clearInterval(tabTimer);

@@ -404,9 +404,20 @@ class OrgSettingsAccessTests(TestCase):
         self.client.login(email=self.admin_user.email, password=self.password)
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
-        by_slug = {s["slug"]: s for s in response.context["skills_data"]}
-        self.assertTrue(by_slug["tk-demo"]["enabled"])
-        self.assertFalse(by_slug["pb-demo"]["enabled"])
+        # Toolkits are listed in their own group, playbooks in the skills group.
+        toolkits = {s["slug"]: s for s in response.context["toolkit_skills_data"]}
+        playbooks = {s["slug"]: s for s in response.context["skills_data"]}
+        self.assertTrue(toolkits["tk-demo"]["enabled"])
+        self.assertNotIn("tk-demo", playbooks)
+        self.assertFalse(playbooks["pb-demo"]["enabled"])
+        self.assertNotIn("pb-demo", toolkits)
+        self.assertContains(response, "Toolkits")
+        import json
+
+        # The JSON the page's toggles read covers all three groups.
+        json_slugs = {s["slug"] for s in json.loads(response.context["skills_data_json"])}
+        self.assertIn("tk-demo", json_slugs)
+        self.assertIn("pb-demo", json_slugs)
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])

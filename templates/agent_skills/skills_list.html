@@ -32,6 +32,11 @@
               data-tabs-target="#panel-subagent" type="button" role="tab"
               aria-controls="panel-subagent" aria-selected="false">Sub-agent specializations</button>
     </li>
+    <li class="me-2" role="presentation">
+      <button class="inline-block px-4 py-2 border-b-2 rounded-t-base" id="tab-toolkit"
+              data-tabs-target="#panel-toolkit" type="button" role="tab"
+              aria-controls="panel-toolkit" aria-selected="false">Toolkits</button>
+    </li>
   </ul>
 
   <div id="skills-tab-content">
@@ -41,6 +46,10 @@
     <div class="hidden" id="panel-subagent" role="tabpanel" aria-labelledby="tab-subagent">
       <p class="mb-4 text-sm text-body"><em>Specializations</em> {{ assistant_name }} can give a sub-agent when it delegates a task (e.g. a focused web researcher). They are never attached to your own chats.</p>
       {% include "agent_skills/_skill_tier_sections.html" with audience="subagent" user_rows=sub_user_rows org_rows=sub_org_rows system_rows=sub_system_rows %}
+    </div>
+    <div class="hidden" id="panel-toolkit" role="tabpanel" aria-labelledby="tab-toolkit">
+      <p class="mb-4 text-sm text-body"><em>Toolkits</em> give {{ assistant_name }} access to extra tools it doesn't otherwise have. You may activate or de-activate toolkits as you see fit. Note that some skills require particular toolkits to work.</p>
+      {% include "agent_skills/_skill_tier_sections.html" with audience="main" system_only=True system_rows=toolkit_rows %}
     </div>
   </div>
 

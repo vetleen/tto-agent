@@ -333,6 +333,7 @@ def org_settings_page(request):
     )
     skills_data = []
     subagent_skills_data = []
+    toolkit_skills_data = []
     for skill in sorted(visible_skills, key=lambda s: s.name):
         sp = org_skills_prefs.get(skill.slug, {})
         tool_toggles = sp.get("tools", {})
@@ -347,8 +348,10 @@ def org_settings_page(request):
         }
         if getattr(skill, "audience", "main") == "subagent":
             subagent_skills_data.append(entry)
+        elif skill.kind == AgentSkill.Kind.TOOLKIT:
+            toolkit_skills_data.append(entry)
         else:
-            # main + shared
+            # main + shared playbooks
             skills_data.append(entry)
 
     org_subagent_prefs = org_prefs.get("subagents", {})
@@ -515,7 +518,10 @@ def org_settings_page(request):
         "tool_sections": tool_sections,
         "skills_data": skills_data,
         "subagent_skills_data": subagent_skills_data,
-        "skills_data_json": json.dumps(skills_data + subagent_skills_data),
+        "toolkit_skills_data": toolkit_skills_data,
+        "skills_data_json": json.dumps(
+            skills_data + subagent_skills_data + toolkit_skills_data
+        ),
         "parallel_subagents": parallel_subagents,
         "pii_scan_enabled": pii_scan_enabled,
         "pii_quarantine_enabled": pii_quarantine_enabled,

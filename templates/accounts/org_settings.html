@@ -504,6 +504,12 @@
           <p class="mt-0.5 text-sm text-body">Specializations {{ assistant_name }} can give a sub-agent when delegating a task. Enable or disable them and their tools for all members.</p>
         </div>
         {% include "accounts/_org_skills_list.html" with skills=subagent_skills_data empty_label="No sub-agent skills available." %}
+
+        <div class="mb-3 mt-6">
+          <h2 class="text-base font-semibold text-heading">Toolkits</h2>
+          <p class="mt-0.5 text-sm text-body">Tool groups {{ assistant_name }} can attach to a chat (canvas, web research, data rooms, images, slide decks, loops). On for every organization by default — switch one off to withhold its tools from all members. Skills that require a toolkit can't be used without it.</p>
+        </div>
+        {% include "accounts/_org_skills_list.html" with skills=toolkit_skills_data empty_label="No toolkits available." %}
       </section>
 
       <!-- Styles -->

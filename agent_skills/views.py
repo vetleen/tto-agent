@@ -26,8 +26,10 @@ from agent_skills.models import (
 )
 from agent_skills.services import (
     get_accessible_skills,
+    get_available_skills,
     get_user_skill_prefs,
     shadowing_default,
+    unmet_requirements,
     approve_skill_share,
     attach_skills_closed,
     can_delete_skill,
@@ -138,24 +140,28 @@ def _annotate_skills(
     user_skill_prefs: dict,
     is_org_admin: bool,
     approval_by_id: dict | None = None,
+    unmet_by_id: dict | None = None,
 ) -> list[dict]:
     """Compute per-row metadata for the list template.
 
     Returns dicts with: skill, is_selected (the user's choice), is_approved
     (the safety-scan verdict), is_enabled (both — what the toggle shows),
     scan_state, scan_detail, scan_pill, can_edit, has_conflict, conflict_label,
-    relative_date.
+    is_toolkit, requires_label, relative_date.
 
-    ``accessible``, ``user_skill_prefs``, ``is_org_admin`` and
-    ``approval_by_id`` (``resources.bulk_skill_approval`` over the accessible
-    set) are resolved once by the caller and passed in so this helper issues no
-    per-call or per-row queries (it is invoked once per tier). ``approval_by_id``
-    is computed here when omitted.
+    ``accessible``, ``user_skill_prefs``, ``is_org_admin``, ``approval_by_id``
+    (``resources.bulk_skill_approval`` over the accessible set) and
+    ``unmet_by_id`` (``services.unmet_requirements`` over it: why a skill's
+    requirement can't be attached) are resolved once by the caller and passed
+    in so this helper issues no per-call or per-row queries (it is invoked once
+    per tier). ``approval_by_id`` is computed here when omitted; ``unmet_by_id``
+    defaults to "all met".
     """
     from agent_skills.resources import approval_info, bulk_skill_approval
 
     if approval_by_id is None:
         approval_by_id = bulk_skill_approval(user, skills)
+    unmet_by_id = unmet_by_id or {}
     # Group all accessible skills by slug for conflict detection.
     by_slug: dict[str, list[AgentSkill]] = {}
     for s in accessible:
@@ -219,6 +225,19 @@ def _annotate_skills(
             can_edit = can_delete = skill.created_by_id == user.pk
         is_pending_share = skill.level == "user" and bool(skill.share_requested_org_id)
 
+        # A toolkit this skill needs that the user can't attach (org/user-
+        # disabled, missing, or not past the safety scan): the skill is listed
+        # but can't be used, so the row says why.
+        requires_label = ""
+        unmet = unmet_by_id.get(str(skill.id)) or []
+        if unmet:
+            first = unmet[0]
+            why = (
+                "hasn't passed the safety scan"
+                if first.get("reason") == "unapproved" else "is disabled"
+            )
+            requires_label = f"Requires {first.get('name') or first.get('slug')}, which {why}"
+
         rows.append({
             "skill": skill,
             "is_selected": is_selected,
@@ -238,6 +257,7 @@ def _annotate_skills(
             "is_toolkit": skill.kind == AgentSkill.Kind.TOOLKIT,
             "has_conflict": has_conflict,
             "conflict_label": conflict_label,
+            "requires_label": requires_label,
             "relative_date": _relative_date(skill.updated_at),
         })
     return rows
@@ -282,8 +302,15 @@ def skills_list(request):
     accessible = get_accessible_skills(request.user)
     user_skill_prefs = get_user_skill_prefs(request.user)
     # One resource prefetch + one scan-config resolve for the whole page, shared
-    # by every tier (six _tier calls) instead of per row.
+    # by every tier (seven _tier calls) instead of per row.
     approval_by_id = bulk_skill_approval(request.user, accessible)
+    # Why a skill's requirement can't be attached (a toolkit the user or org
+    # disabled, or one that hasn't passed the scan), resolved once against the
+    # user's effective (shadow-resolved) skill list.
+    unmet_by_id = unmet_requirements(
+        accessible, get_available_skills(request.user),
+        approved={sid: bool(info.get("approved")) for sid, info in approval_by_id.items()},
+    )
     # Others' share requests an admin reviews. They aren't accessible to the
     # admin (still the submitter's personal skills), so they're annotated on
     # their own: no shadowing against the admin's skills, scan state shown.
@@ -296,7 +323,7 @@ def skills_list(request):
     def _is_own_pending(s):
         return s.level == "user" and bool(s.share_requested_org_id)
 
-    def _tier(level, audiences):
+    def _tier(level, audiences, kinds=("playbook",)):
         def in_tier(s):
             # The submitter sees their pending share in the org tier, flagged
             # "Needs approval" — it is no longer just a personal skill to them.
@@ -307,13 +334,15 @@ def skills_list(request):
         skills = sorted(
             [
                 s for s in accessible
-                if in_tier(s) and getattr(s, "audience", "main") in audiences
+                if in_tier(s)
+                and getattr(s, "audience", "main") in audiences
+                and s.kind in kinds
             ],
             key=lambda s: s.name,
         )
         rows = _annotate_skills(
             request.user, skills, accessible, user_skill_prefs, is_org_admin,
-            approval_by_id,
+            approval_by_id, unmet_by_id,
         )
         if level == "org":
             reviews = sorted(
@@ -327,8 +356,9 @@ def skills_list(request):
             rows.sort(key=lambda r: not r["is_pending_share"])
         return rows
 
-    # Two surfaces, partitioned by audience: the main assistant (main/shared) and
-    # sub-agent specializations (subagent/shared). Shared seeds appear in both.
+    # Three surfaces: the main assistant's playbooks (main/shared audience),
+    # sub-agent specializations (subagent/shared) and the toolkits (seed-only,
+    # main audience, kind="toolkit"). Shared seeds appear in the first two.
     main_aud = {"main", "shared"}
     sub_aud = {"subagent", "shared"}
 
@@ -342,6 +372,7 @@ def skills_list(request):
             "sub_user_rows": _tier("user", sub_aud),
             "sub_org_rows": _tier("org", sub_aud),
             "sub_system_rows": _tier("system", sub_aud),
+            "toolkit_rows": _tier("system", main_aud, kinds=("toolkit",)),
             "user_org": org,
             "is_org_admin": is_org_admin,
         },

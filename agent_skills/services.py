@@ -157,7 +157,23 @@ def unmet_requirements(skills, available, *, approved=None) -> dict[str, list[di
         memo[skill.slug] = out
         return out
 
-    return {str(s.id): visit(s, frozenset()) for s in skills}
+    result = {str(s.id): visit(s, frozenset()) for s in skills}
+
+    # A requirement nobody can see still deserves its real name when a row
+    # exists under that slug (e.g. a toolkit the org disabled): one lookup.
+    nameless = {
+        u["slug"] for lst in result.values() for u in lst if u["reason"] == "unavailable"
+    }
+    if nameless:
+        names = dict(
+            AgentSkill.objects.filter(slug__in=nameless, deleted_at__isnull=True)
+            .order_by("-level").values_list("slug", "name")
+        )
+        for lst in result.values():
+            for u in lst:
+                if u["reason"] == "unavailable" and u["slug"] in names:
+                    u["name"] = names[u["slug"]]
+    return result
 
 
 def enforce_requires_closure(skills):

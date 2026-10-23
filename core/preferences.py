@@ -462,7 +462,6 @@ def get_preferences(user) -> ResolvedPreferences:
         skill_requires,
         unmet_requirements,
     )
-    from agent_skills.models import AgentSkill
 
     org_skills_prefs = org_prefs.get("skills", {})
 
@@ -526,20 +525,7 @@ def get_preferences(user) -> ResolvedPreferences:
             unmet = unmet_requirements(
                 kept, kept, approved={e["id"]: e["approved"] for e in entries},
             )
-            # A requirement nobody can see still deserves its real name when a
-            # row exists under that slug (e.g. a toolkit the org disabled).
-            nameless = {
-                u["slug"] for lst in unmet.values() for u in lst
-                if u["reason"] == "unavailable"
-            }
-            names = dict(
-                AgentSkill.objects.filter(slug__in=nameless, deleted_at__isnull=True)
-                .order_by("-level").values_list("slug", "name")
-            ) if nameless else {}
             for sid, lst in unmet.items():
-                for u in lst:
-                    if u["reason"] == "unavailable" and u["slug"] in names:
-                        u["name"] = names[u["slug"]]
                 by_id[sid]["requires_unmet"] = lst
         return entries
 
