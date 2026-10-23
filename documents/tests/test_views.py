@@ -116,7 +116,8 @@ class DocumentViewsTests(TestCase):
         response = self.client.get(reverse("data_room_documents", kwargs={"data_room_id": self.data_room.uuid}))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Upload documents")
-        self.assertContains(response, "name=\"file\"")
+        self.assertContains(response, 'id="file-dropzone"')
+        self.assertContains(response, 'id="file_input"')
 
     @patch("core.preferences.feature_is_available", return_value=True)
     def test_upload_accept_offers_photo_picker_when_images_enabled(self, _mock):
