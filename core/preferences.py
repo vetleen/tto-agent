@@ -459,11 +459,14 @@ def get_preferences(user) -> ResolvedPreferences:
         get_available_skills,
         get_subagent_skills,
         skill_enabled_by_default,
+        skill_requires,
+        unmet_requirements,
     )
+    from agent_skills.models import AgentSkill
 
     org_skills_prefs = org_prefs.get("skills", {})
 
-    def _resolve_skill_entries(skills) -> list[dict]:
+    def _resolve_skill_entries(skills, *, with_requires: bool) -> list[dict]:
         skills = list(skills)
         # Safety-scan verdict per skill (one resource prefetch + a memoized
         # per-org config resolve). The chat catalogue and picker render from
@@ -506,11 +509,44 @@ def get_preferences(user) -> ResolvedPreferences:
                 "tool_names": filtered_tools,
                 "approved": bool(verdict["approved"]),
                 "scan_state": verdict["scan_state"],
+                # Toolkits (kind) unlock tool groups; ``requires`` names the
+                # skills (toolkits) attached automatically with this one.
+                "kind": skill.kind,
+                "requires": skill_requires(skill),
+                "requires_unmet": [],
             })
+        # Why a skill can't be attached because of what it requires — a
+        # requirement that isn't in this list (org/user-disabled, missing) or
+        # hasn't passed the safety scan. The catalogue skips such a skill, the
+        # picker greys it out with the reason, the attach paths refuse it.
+        # Sub-agent specializations never carry requirements.
+        if with_requires and entries:
+            by_id = {e["id"]: e for e in entries}
+            kept = [s for s in skills if str(s.id) in by_id]
+            unmet = unmet_requirements(
+                kept, kept, approved={e["id"]: e["approved"] for e in entries},
+            )
+            # A requirement nobody can see still deserves its real name when a
+            # row exists under that slug (e.g. a toolkit the org disabled).
+            nameless = {
+                u["slug"] for lst in unmet.values() for u in lst
+                if u["reason"] == "unavailable"
+            }
+            names = dict(
+                AgentSkill.objects.filter(slug__in=nameless, deleted_at__isnull=True)
+                .order_by("-level").values_list("slug", "name")
+            ) if nameless else {}
+            for sid, lst in unmet.items():
+                for u in lst:
+                    if u["reason"] == "unavailable" and u["slug"] in names:
+                        u["name"] = names[u["slug"]]
+                by_id[sid]["requires_unmet"] = lst
         return entries
 
-    allowed_skills = _resolve_skill_entries(get_available_skills(user))
-    allowed_specializations = _resolve_skill_entries(get_subagent_skills(user))
+    allowed_skills = _resolve_skill_entries(get_available_skills(user), with_requires=True)
+    allowed_specializations = _resolve_skill_entries(
+        get_subagent_skills(user), with_requires=False
+    )
 
     allowed_tools = base_allowed
     # chat_generate_image now lives behind the image_generation_tools skill

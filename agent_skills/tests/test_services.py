@@ -1019,3 +1019,148 @@ class SoftDeleteSkillTests(TestCase):
         slugs = {s.slug for s in get_accessible_skills(self.user)}
         self.assertIn("doomed", slugs)
         self.assertIn(self.skill.slug, slugs)
+
+
+class RequiresHelpersTests(TestCase):
+    """The pure ``requires`` helpers: closure (requirements first, transitive,
+    cycle-safe), unmet reasons, post-trim closure and required-by."""
+
+    def setUp(self):
+        AgentSkill.objects.all().delete()
+        self.user = User.objects.create_user(email="rq@example.com", password="pass")
+
+    def _skill(self, slug, requires=(), **kw):
+        kw.setdefault("level", "user")
+        kw.setdefault("created_by", self.user)
+        return AgentSkill.objects.create(
+            slug=slug, name=slug.title(), instructions="i", requires=list(requires), **kw
+        )
+
+    def test_expand_places_requirements_before_dependents(self):
+        from agent_skills.services import expand_required_skills
+
+        tk = self._skill("canvas_tools", level="system", created_by=None, kind="toolkit")
+        web = self._skill("web_research_tools", level="system", created_by=None, kind="toolkit")
+        mid = self._skill("mid", ["web_research_tools"])
+        dep = self._skill("dep", ["canvas_tools", "mid"])
+        other = self._skill("other")
+
+        closed, added, missing = expand_required_skills([dep, other], [tk, web, mid, dep, other])
+        self.assertEqual(
+            [s.slug for s in closed], ["canvas_tools", "web_research_tools", "mid", "dep", "other"]
+        )
+        self.assertEqual(added, {"dep": ["canvas_tools", "mid"], "mid": ["web_research_tools"]})
+        self.assertEqual(missing, {})
+
+        # Listing a requirement explicitly is not "added", and nothing repeats.
+        closed, added, _ = expand_required_skills([tk, dep], [tk, web, mid, dep])
+        self.assertEqual([s.slug for s in closed], ["canvas_tools", "web_research_tools", "mid", "dep"])
+        self.assertEqual(added, {"dep": ["mid"], "mid": ["web_research_tools"]})
+
+    def test_expand_reports_missing_transitively(self):
+        from agent_skills.services import expand_required_skills
+
+        mid = self._skill("mid", ["nope"])
+        dep = self._skill("dep", ["mid"])
+        closed, _, missing = expand_required_skills([dep], [mid, dep])
+        self.assertEqual([s.slug for s in closed], ["mid", "dep"])
+        self.assertEqual(missing, {"mid": ["nope"], "dep": ["mid"]})
+
+    def test_expand_terminates_on_cycles(self):
+        from agent_skills.services import expand_required_skills
+
+        a = self._skill("a", ["b"])
+        b = self._skill("b", ["a"])
+        closed, added, missing = expand_required_skills([a], [a, b])
+        self.assertEqual([s.slug for s in closed], ["b", "a"])
+        self.assertEqual(added, {"a": ["b"]})
+        self.assertEqual(missing, {})
+
+    def test_unmet_requirements_reasons(self):
+        from agent_skills.services import unmet_requirements
+
+        tk = self._skill("canvas_tools", level="system", created_by=None, kind="toolkit")
+        raw = self._skill("raw")
+        dep = self._skill("dep", ["canvas_tools"])
+        orphan = self._skill("orphan", ["nope"])
+        on_raw = self._skill("on-raw", ["raw"])
+        chain = self._skill("chain", ["on-raw"])
+        loop_a = self._skill("loop-a", ["loop-b"])
+        loop_b = self._skill("loop-b", ["loop-a"])
+        skills = [tk, raw, dep, orphan, on_raw, chain, loop_a, loop_b]
+
+        unmet = unmet_requirements(skills, skills, approved={str(raw.id): False})
+        self.assertEqual(unmet[str(dep.id)], [])
+        self.assertEqual(
+            unmet[str(orphan.id)], [{"slug": "nope", "name": "nope", "reason": "unavailable"}]
+        )
+        self.assertEqual(
+            unmet[str(on_raw.id)], [{"slug": "raw", "name": "Raw", "reason": "unapproved"}]
+        )
+        self.assertEqual(
+            unmet[str(chain.id)], [{"slug": "on-raw", "name": "On-Raw", "reason": "unapproved"}]
+        )
+        self.assertEqual(unmet[str(loop_a.id)], [])
+        self.assertEqual(unmet[str(loop_b.id)], [])
+
+    def test_enforce_requires_closure_prunes_dependents_of_trimmed(self):
+        from agent_skills.services import enforce_requires_closure
+
+        tk = self._skill("canvas_tools", level="system", created_by=None, kind="toolkit")
+        dep = self._skill("dep", ["canvas_tools"])
+        chain = self._skill("chain", ["dep"])
+        other = self._skill("other")
+
+        kept, pruned = enforce_requires_closure([tk, dep, chain, other])
+        self.assertEqual([s.slug for s in kept], ["canvas_tools", "dep", "chain", "other"])
+        self.assertEqual(pruned, [])
+
+        kept, pruned = enforce_requires_closure([dep, chain, other])  # toolkit trimmed
+        self.assertEqual([s.slug for s in kept], ["other"])
+        self.assertEqual([s.slug for s in pruned], ["dep", "chain"])
+
+    def test_required_by(self):
+        from agent_skills.services import required_by
+
+        tk = self._skill("canvas_tools", level="system", created_by=None, kind="toolkit")
+        dep = self._skill("dep", ["canvas_tools"])
+        other = self._skill("other")
+        self.assertEqual(required_by(["canvas_tools"], [dep, other]), {"canvas_tools": ["dep"]})
+        self.assertEqual(required_by(["canvas_tools"], [other]), {})
+        self.assertEqual(required_by(["dep"], [tk, other]), {})
+
+    def test_normalize_requires(self):
+        from agent_skills.models import MAX_REQUIRES
+        from agent_skills.services import normalize_requires
+
+        self.assertEqual(normalize_requires(None), [])
+        self.assertEqual(normalize_requires("canvas_tools"), [])
+        self.assertEqual(
+            normalize_requires(["Canvas_Tools", " canvas_tools ", "bad slug", 3, "", "me"], own_slug="me"),
+            ["canvas_tools"],
+        )
+        self.assertEqual(
+            len(normalize_requires([f"t{i}" for i in range(MAX_REQUIRES + 3)])), MAX_REQUIRES
+        )
+
+    def test_attach_skills_closed_tolerates_unavailable_requirement(self):
+        from agent_skills.services import attach_skills_closed
+        from chat.models import ChatThread, ChatThreadSkill
+
+        tk = self._skill("canvas_tools", level="system", created_by=None, kind="toolkit")
+        dep = self._skill("dep", ["canvas_tools"])
+        thread = ChatThread.objects.create(created_by=self.user, title="t")
+        added = attach_skills_closed(thread, [dep], self.user, attached_by="user")
+        self.assertEqual(added, [str(tk.id), str(dep.id)])
+        self.assertEqual(
+            list(ChatThreadSkill.objects.filter(thread=thread).values_list("attached_by", flat=True)),
+            ["user", "user"],
+        )
+
+        UserSettings.objects.update_or_create(
+            user=self.user,
+            defaults={"preferences": {"skills": {"canvas_tools": {"selected_skill_id": None}}}},
+        )
+        thread2 = ChatThread.objects.create(created_by=self.user, title="t2")
+        user = User.objects.get(pk=self.user.pk)  # fresh instance: prefs are memoized
+        self.assertEqual(attach_skills_closed(thread2, [dep], user), [str(dep.id)])

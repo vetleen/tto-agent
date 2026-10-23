@@ -1122,8 +1122,44 @@
   let attachedSkillsById = {};
   (JSON.parse('{{ thread_skills_json|escapejs }}') || []).forEach(function(s) {
     activeSkillIds.push(String(s.id));
-    attachedSkillsById[String(s.id)] = { id: String(s.id), name: s.name, emoji: s.emoji || "" };
+    attachedSkillsById[String(s.id)] = { id: String(s.id), name: s.name, emoji: s.emoji || "", kind: s.kind || "playbook" };
   });
+  // Toolkits (kind "toolkit") unlock tool groups and don't count toward the
+  // cap; a skill's `requires` names the toolkits that are attached with it.
+  var SKILLS_BY_ID = {};
+  var SKILL_ID_BY_SLUG = {};
+  AVAILABLE_SKILLS.forEach(function(s) {
+    SKILLS_BY_ID[String(s.id)] = s;
+    if (s.slug) SKILL_ID_BY_SLUG[s.slug] = String(s.id);
+  });
+  function skillKind(id) {
+    var s = SKILLS_BY_ID[id] || attachedSkillsById[id];
+    return (s && s.kind) || 'playbook';
+  }
+  function playbookCount(ids) {
+    var n = 0;
+    ids.forEach(function(id) { if (skillKind(id) !== 'toolkit') n++; });
+    return n;
+  }
+  // Toolkit ids the given skills require (transitively) -> names of the
+  // skills that require them. Mirrors the server's closure under `requires`.
+  function requiredToolkitIds(ids) {
+    var out = {}, seen = {}, queue = ids.slice();
+    while (queue.length) {
+      var id = String(queue.shift());
+      if (seen[id]) continue;
+      seen[id] = true;
+      var s = SKILLS_BY_ID[id];
+      if (!s) continue;
+      (s.requires || []).forEach(function(slug) {
+        var rid = SKILL_ID_BY_SLUG[slug];
+        if (!rid) return;
+        (out[rid] = out[rid] || []).push(s.name);
+        queue.push(rid);
+      });
+    }
+    return out;
+  }
 
   // -- Sub-agent panel state --
   // subagentRuns: the server's active runs ({id, reason, state, started_at});
@@ -1935,12 +1971,20 @@
   // Rebuild every attached-skill pill from activeSkillIds / attachedSkillsById.
   function renderSkillPills() {
     var html = '';
+    // A toolkit an attached skill requires can't be detached on its own (the
+    // server keeps the set closed under `requires`): no × on its pill.
+    var required = requiredToolkitIds(activeSkillIds);
     activeSkillIds.forEach(function(id) {
       var s = attachedSkillsById[id] || { id: id, name: id, emoji: '' };
-      html += '<span class="skill-pill inline-flex items-center gap-1.5 pl-2 pr-1.5 py-1 text-xs font-medium text-fg-brand bg-brand-softer border border-brand-subtle rounded-full" data-skill-id="' + escapeHtml(id) + '">' +
+      var lockedBy = required[id];
+      html += '<span class="skill-pill inline-flex items-center gap-1.5 pl-2 pr-1.5 py-1 text-xs font-medium text-fg-brand bg-brand-softer border border-brand-subtle rounded-full" data-skill-id="' + escapeHtml(id) + '"' +
+        (lockedBy ? ' title="Required by ' + escapeHtml(lockedBy.join(', ')) + '"' : '') + '>' +
         skillPillIconHtml(s.emoji) +
         escapeHtml(s.name) +
-        '<button type="button" class="detach-skill-btn ml-0.5 p-0.5 rounded-full text-fg-brand hover:bg-brand-soft" aria-label="Detach skill"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg></button></span>';
+        (lockedBy
+          ? '<span class="ml-0.5 pr-1" aria-hidden="true"></span>'
+          : '<button type="button" class="detach-skill-btn ml-0.5 p-0.5 rounded-full text-fg-brand hover:bg-brand-soft" aria-label="Detach skill"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/></svg></button>') +
+        '</span>';
     });
     attachedSkillContainer.innerHTML = html;
     updateSkillModalChecks();
@@ -1955,7 +1999,7 @@
       var id = String(s.id);
       if (activeSkillIds.indexOf(id) !== -1) return;
       activeSkillIds.push(id);
-      attachedSkillsById[id] = { id: id, name: s.name, emoji: s.emoji || '' };
+      attachedSkillsById[id] = { id: id, name: s.name, emoji: s.emoji || '', kind: s.kind || skillKind(id) };
     });
     renderSkillPills();
   }
@@ -1980,18 +2024,38 @@
   var lastSyncedSkillIds = activeSkillIds.slice();
 
   function refreshSkillSelection() {
-    var atCap = selectedSkillIds.size >= MAX_THREAD_SKILLS;
+    // The selection is kept closed under `requires`: every toolkit a selected
+    // skill needs is selected with it and locked while it is needed.
+    var required = requiredToolkitIds(Array.from(selectedSkillIds));
+    Object.keys(required).forEach(function(rid) { selectedSkillIds.add(rid); });
+    // Only playbooks count toward the cap; toolkits are always addable.
+    var atCap = playbookCount(Array.from(selectedSkillIds)) >= MAX_THREAD_SKILLS;
     document.querySelectorAll('.skill-select-btn').forEach(function(btn) {
       var id = btn.getAttribute('data-skill-id');
       var sel = selectedSkillIds.has(id);
+      var isToolkit = skillKind(id) === 'toolkit';
       btn.classList.toggle('is-selected', sel);
-      // At the cap, unselected rows can't be added — dim and disable them.
-      btn.disabled = (!sel && atCap);
-      btn.style.opacity = (!sel && atCap) ? '0.4' : '';
+      // At the cap, unselected playbooks can't be added — dim and disable them.
+      var capped = !sel && atCap && !isToolkit;
+      btn.disabled = capped;
+      btn.style.opacity = capped ? '0.4' : '';
       var tag = btn.querySelector('.skill-selected-tag');
       if (tag) tag.style.display = sel ? '' : 'none';
-      // A skill the safety scan hasn't passed stays disabled regardless of
-      // the cap (the server's skills.set gate would refuse it anyway).
+      // A toolkit a selected skill requires stays selected: say which skill.
+      var lockNote = btn.querySelector('.skill-required-note');
+      if (required[id]) {
+        btn.disabled = true;
+        btn.title = 'Required by ' + required[id].join(', ');
+        if (lockNote) { lockNote.textContent = btn.title; lockNote.style.display = ''; }
+      } else {
+        if (lockNote) lockNote.style.display = 'none';
+        if (btn.getAttribute('data-unapproved') !== '1') {
+          btn.title = btn.getAttribute('data-skill-desc') || '';
+        }
+      }
+      // A skill the safety scan hasn't passed (or whose required toolkit is
+      // unavailable) stays disabled regardless of the cap (the server's
+      // skills.set gate would refuse it anyway).
       if (btn.getAttribute('data-unapproved') === '1') {
         btn.disabled = true;
         btn.style.opacity = '0.45';
@@ -1999,11 +2063,11 @@
     });
     var statusEl = document.getElementById('skill-modal-status');
     var useBtn = document.getElementById('skill-modal-use');
-    var n = selectedSkillIds.size;
+    var n = playbookCount(Array.from(selectedSkillIds));
     if (statusEl) {
       statusEl.textContent = n === 0
-        ? 'Select up to ' + MAX_THREAD_SKILLS + ' skills to use in this thread'
-        : n + ' of ' + MAX_THREAD_SKILLS + ' selected';
+        ? 'Select up to ' + MAX_THREAD_SKILLS + ' skills to use in this thread (toolkits don’t count)'
+        : n + ' of ' + MAX_THREAD_SKILLS + ' skills selected';
     }
     if (useBtn) useBtn.disabled = false;
   }
@@ -2167,7 +2231,18 @@
       return;
     }
     skillModalEmpty.classList.add('hidden');
-    AVAILABLE_SKILLS.forEach(function(s) {
+    // Playbooks first, then the toolkits under a divider.
+    var playbooks = AVAILABLE_SKILLS.filter(function(s) { return s.kind !== 'toolkit'; });
+    var toolkits = AVAILABLE_SKILLS.filter(function(s) { return s.kind === 'toolkit'; });
+    if (playbooks.length && toolkits.length) {
+      var divider = document.createElement('li');
+      divider.className = 'skill-modal-divider';
+      divider.style.cssText = 'font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--color-body-subtle);padding:10px 12px 4px;';
+      divider.textContent = 'Toolkits';
+      toolkits.unshift(divider);
+    }
+    playbooks.concat(toolkits).forEach(function(s) {
+      if (s instanceof HTMLElement) { skillModalList.appendChild(s); return; }
       var li = document.createElement('li');
       var btn = document.createElement('button');
       btn.type = 'button';
@@ -2175,12 +2250,17 @@
       btn.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;text-align:left;padding:9px 12px;border:0;border-left:2px solid transparent;background:transparent;border-radius:5px;cursor:pointer;';
       btn.setAttribute('data-skill-id', s.id);
       btn.setAttribute('data-skill-name', s.name);
+      btn.setAttribute('data-skill-desc', s.description || '');
       if (s.description) btn.title = s.description;
       // Not yet attachable: the safety scan hasn't passed (pending / blocked /
-      // never run). Shown greyed-out with the reason; the server refuses it too.
-      var unapproved = (s.approved === false) && !activeSkillIds.includes(String(s.id));
-      var scanNote = unapproved ? skillScanNote(s.scan_state) : '';
-      if (unapproved) {
+      // never run), or a toolkit it requires isn't available. Shown greyed-out
+      // with the reason; the server refuses it too.
+      var attachedAlready = activeSkillIds.includes(String(s.id));
+      var unapproved = (s.approved === false) && !attachedAlready;
+      var unmet = (s.requires_unmet || []);
+      var scanNote = unapproved ? skillScanNote(s.scan_state)
+        : (unmet.length && !attachedAlready) ? skillUnmetNote(unmet[0]) : '';
+      if (scanNote) {
         btn.setAttribute('data-unapproved', '1');
         btn.disabled = true;
         btn.style.opacity = '0.45';
@@ -2193,7 +2273,7 @@
         : '<span class="wf-soft-panel" style="' + tileBase + 'color:var(--color-fg-brand);"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg></span>';
       var noteHtml = scanNote
         ? '<span style="display:block;font-size:11px;color:var(--color-body-subtle);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escapeHtml(scanNote) + '</span>'
-        : '';
+        : '<span class="skill-required-note" style="display:none;font-size:11px;color:var(--color-body-subtle);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></span>';
       btn.innerHTML =
         '<span style="display:flex;align-items:center;gap:11px;min-width:0;">' + iconHtml +
           '<span style="display:flex;flex-direction:column;min-width:0;">' +
@@ -2207,7 +2287,7 @@
         if (btn.getAttribute('data-unapproved') === '1') return;
         if (selectedSkillIds.has(id)) {
           selectedSkillIds.delete(id);
-        } else if (selectedSkillIds.size < MAX_THREAD_SKILLS) {
+        } else if (skillKind(id) === 'toolkit' || playbookCount(Array.from(selectedSkillIds)) < MAX_THREAD_SKILLS) {
           selectedSkillIds.add(id);
         }
         refreshSkillSelection();
@@ -2247,19 +2327,31 @@
     return 'Needs a safety scan — enable it on the Skills page';
   }
 
+  // Why a skill can't be attached because of something it requires
+  // ({slug, name, reason} from the server's requires_unmet).
+  function skillUnmetNote(u) {
+    var who = u.name || u.slug || 'a toolkit';
+    return u.reason === 'unapproved'
+      ? 'Requires ' + who + ', which hasn’t passed the safety scan'
+      : 'Requires ' + who + ', which is disabled — enable it on the Skills page';
+  }
+
   function applySkillSelection() {
     // Build the desired attached set (catalogue order) from the modal's
     // selection, then push it declaratively to the server. A skill the
     // safety scan hasn't passed is only kept if it is already attached
     // (the server applies the same "newly attached only" rule).
-    var byId = {};
-    AVAILABLE_SKILLS.forEach(function(s) { byId[String(s.id)] = s; });
+    // Closed under `requires` (the server closes it too; this keeps the pills
+    // honest before the round-trip).
+    Object.keys(requiredToolkitIds(Array.from(selectedSkillIds))).forEach(function(rid) {
+      selectedSkillIds.add(rid);
+    });
     var desired = [];
     AVAILABLE_SKILLS.forEach(function(s) {
       var id = String(s.id);
       if (!selectedSkillIds.has(id)) return;
       if (s.approved === false && !activeSkillIds.includes(id)) return;
-      desired.push({ id: id, name: s.name, emoji: s.emoji || '' });
+      desired.push({ id: id, name: s.name, emoji: s.emoji || '', kind: s.kind || 'playbook' });
     });
     // Dismissing the modal applies too, so skip the round-trip when nothing changed.
     var unchanged = desired.length === activeSkillIds.length &&

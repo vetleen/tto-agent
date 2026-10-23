@@ -60,9 +60,10 @@ class AttachSkillsToolTests(TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["skills"], [{
             "id": str(self.skill.id), "slug": "my-skill", "name": "My Skill",
-            "emoji": self.skill.emoji, "attached_by": "agent",
+            "emoji": self.skill.emoji, "kind": "playbook", "attached_by": "agent",
         }])
         self.assertEqual(result["added"], ["my-skill"])
+        self.assertEqual(result["auto_attached"], {})
         self.assertNotIn("removed", result)
         self.assertFalse(result["no_change"])
         self.assertEqual(_attached_ids(self.thread), [str(self.skill.id)])
@@ -450,3 +451,92 @@ class AttachSkillsToolTests(TestCase):
         names = get_tool_registry().list_tools()
         self.assertIn("chat_skill_attach", names)
         self.assertIn("chat_skill_detach", names)
+
+
+class RequiresAttachTests(TestCase):
+    """``requires`` closure: attaching a skill attaches the toolkits it needs
+    (before it, as agent rows); an unavailable or unapproved requirement makes
+    the whole call fail so a playbook never lands without its tools."""
+
+    def setUp(self):
+        AgentSkill.objects.all().delete()
+        self.user = User.objects.create_user(email="req@example.com", password="pass")
+        self.toolkit = AgentSkill.objects.create(
+            slug="canvas_tools", name="Canvas Tools", instructions="canvas how-to",
+            level="system", kind="toolkit", tool_names=["canvas_write"],
+        )
+        self.dep = AgentSkill.objects.create(
+            slug="dep", name="Dep", instructions="draft in the canvas",
+            level="user", created_by=self.user, requires=["canvas_tools"],
+        )
+        _approve(self.dep)
+        self.thread = ChatThread.objects.create(created_by=self.user, title="t")
+        self.tool = AttachSkillsTool()
+        self.tool.context = _ctx(self.user, self.thread)
+        self.tool.context.skill_tool_map = {"canvas_tools": ["canvas_write"], "dep": []}
+
+    def _attach(self, *slugs):
+        return json.loads(self.tool._run(skill_slugs=list(slugs)))
+
+    def test_dependent_attaches_its_toolkit_first(self):
+        result = self._attach("dep")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["added"], ["canvas_tools", "dep"])
+        self.assertEqual(result["auto_attached"], {"dep": ["canvas_tools"]})
+        self.assertEqual(
+            [(s["slug"], s["kind"], s["attached_by"]) for s in result["skills"]],
+            [("canvas_tools", "toolkit", "agent"), ("dep", "playbook", "agent")],
+        )
+        self.assertEqual(_attached_ids(self.thread), [str(self.toolkit.id), str(self.dep.id)])
+        # Same-turn effects cover the toolkit too: its tools unlock and its
+        # instructions are injected alongside the dependent's.
+        self.assertIn("canvas_write", self.tool.context.added_tool_names)
+        self.assertEqual(len(self.tool.context.pending_skill_instructions), 2)
+
+    def test_explicit_toolkit_and_dependent_attach_once(self):
+        result = self._attach("canvas_tools", "dep")
+        self.assertEqual(result["added"], ["canvas_tools", "dep"])
+        self.assertEqual(result["auto_attached"], {})
+        self.assertEqual(_attached_ids(self.thread), [str(self.toolkit.id), str(self.dep.id)])
+
+    def test_toolkit_already_attached_is_not_reported_as_auto(self):
+        ChatThreadSkill.objects.create(thread=self.thread, skill=self.toolkit)
+        result = self._attach("dep")
+        self.assertEqual(result["added"], ["dep"])
+        self.assertEqual(result["auto_attached"], {})
+
+    def test_refused_when_requirement_is_disabled_for_the_user(self):
+        from accounts.models import UserSettings
+
+        UserSettings.objects.update_or_create(
+            user=self.user,
+            defaults={"preferences": {"skills": {"canvas_tools": {"selected_skill_id": None}}}},
+        )
+        result = self._attach("dep")
+        self.assertEqual(result["status"], "error")
+        self.assertIn("requires 'canvas_tools'", result["message"])
+        self.assertIn("Skills page", result["message"])
+        self.assertEqual(_attached_ids(self.thread), [])
+
+    def test_refused_when_requirement_fails_the_scan_gate(self):
+        raw = AgentSkill.objects.create(
+            slug="raw", name="Raw", instructions="x", level="user", created_by=self.user,
+        )  # never enabled -> unscanned
+        dep2 = AgentSkill.objects.create(
+            slug="dep2", name="Dep2", instructions="x", level="user",
+            created_by=self.user, requires=["raw"],
+        )
+        _approve(dep2)
+        with patch("agent_skills.resources._scanning_configured", return_value=True):
+            result = self._attach("dep2")
+        self.assertEqual(result["status"], "error")
+        self.assertIn("raw", result["message"])
+        self.assertEqual(_attached_ids(self.thread), [])
+        self.assertFalse(ChatThreadSkill.objects.filter(skill=raw).exists())
+
+    @override_settings(SKILL_ATTACH_TOKEN_BUDGET=1)
+    def test_budget_counts_the_toolkit_and_refuses_the_whole_call(self):
+        result = self._attach("dep")
+        self.assertEqual(result["status"], "error")
+        self.assertIn("budget", result["message"])
+        self.assertEqual(_attached_ids(self.thread), [])

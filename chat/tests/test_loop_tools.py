@@ -114,6 +114,36 @@ class CreateLoopToolTests(TestCase):
         ]
         self.assertEqual(attached, [str(s1.id), str(s2.id)])
 
+    def test_create_closes_skills_under_requires(self):
+        """A loop skill that requires a toolkit gets the toolkit attached too
+        (before it); a skill whose requirement isn't available is dropped."""
+        from agent_skills.models import AgentSkill
+        from chat.models import ChatThreadSkill
+
+        AgentSkill.objects.filter(level="system").delete()  # seeded toolkits collide
+        toolkit = AgentSkill.objects.create(
+            slug="canvas_tools", name="Canvas Tools", instructions="x",
+            level="system", kind="toolkit", tool_names=["canvas_write"],
+        )
+        dep = AgentSkill.objects.create(
+            slug="loop-dep", name="Dep", instructions="x", level="user",
+            created_by=self.user, requires=["canvas_tools"],
+        )
+        orphan = AgentSkill.objects.create(
+            slug="loop-orphan", name="Orphan", instructions="x", level="user",
+            created_by=self.user, requires=["no_such_tools"],
+        )
+        result = _invoke(LoopCreateTool, {
+            "prompt": "Use skills.", "skill_ids": [str(dep.id), str(orphan.id)],
+        }, self.ctx)
+        loop = Loop.objects.get(id=result["loop_id"])
+        attached = [
+            str(sid) for sid in ChatThreadSkill.objects.filter(
+                thread=loop.thread
+            ).values_list("skill_id", flat=True)
+        ]
+        self.assertEqual(attached, [str(toolkit.id), str(dep.id)])
+
     def test_create_requires_prompt(self):
         result = _invoke(LoopCreateTool, {"prompt": "   "}, self.ctx)
         self.assertEqual(result["status"], "error")

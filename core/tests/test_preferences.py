@@ -1498,3 +1498,74 @@ class SkillApprovalInEntriesTests(TestCase):
         specs = {e["slug"]: e for e in prefs.allowed_specializations}
         self.assertFalse(specs["spec"]["approved"])
         self.assertEqual(specs["spec"]["scan_state"], "pending")
+
+
+class RequiresInEntriesTests(TestCase):
+    """allowed_skills entries carry ``kind``, ``requires`` and ``requires_unmet``
+    (why a dependent can't be attached: a requirement that isn't available or
+    hasn't passed the safety scan). Specializations never carry requirements."""
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5.4",
+        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_CHEAP_MODEL="",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_entries_carry_requires_and_unmet(self, mock_registry, mock_allowed):
+        mock_registry.return_value.list_tools.return_value = {}
+
+        from agent_skills.models import AgentSkill
+        from agent_skills.resources import compute_skill_content_hash
+
+        user = _create_user(email="requires@example.com")
+        AgentSkill.objects.all().delete()  # the seeded toolkits would collide
+        AgentSkill.objects.create(
+            slug="canvas_tools", name="Canvas Tools", instructions="i",
+            level="system", kind="toolkit",
+        )
+        for slug, requires in (
+            ("dep", ["canvas_tools"]),
+            ("orphan", ["no_such_tools"]),
+            ("on-raw", ["raw"]),
+            ("chain", ["on-raw"]),
+        ):
+            s = AgentSkill.objects.create(
+                slug=slug, name=slug.title(), instructions="i", level="user",
+                created_by=user, requires=requires,
+            )
+            s.scan_state = AgentSkill.ScanState.APPROVED
+            s.approved_content_hash = compute_skill_content_hash(s)
+            s.save(update_fields=["scan_state", "approved_content_hash"])
+        AgentSkill.objects.create(
+            slug="raw", name="Raw", instructions="i", level="user", created_by=user,
+        )
+        AgentSkill.objects.create(
+            slug="spec", name="Spec", instructions="i", level="user", created_by=user,
+            audience="subagent", requires=["canvas_tools"],
+        )
+
+        with patch("agent_skills.resources._scanning_configured", return_value=True):
+            prefs = get_preferences(user)
+
+        by_slug = {e["slug"]: e for e in prefs.allowed_skills}
+        self.assertEqual(by_slug["canvas_tools"]["kind"], "toolkit")
+        self.assertEqual(by_slug["canvas_tools"]["requires"], [])
+        self.assertEqual(by_slug["dep"]["kind"], "playbook")
+        self.assertEqual(by_slug["dep"]["requires"], ["canvas_tools"])
+        self.assertEqual(by_slug["dep"]["requires_unmet"], [])
+        self.assertEqual(
+            by_slug["orphan"]["requires_unmet"],
+            [{"slug": "no_such_tools", "name": "no_such_tools", "reason": "unavailable"}],
+        )
+        self.assertEqual(
+            by_slug["on-raw"]["requires_unmet"],
+            [{"slug": "raw", "name": "Raw", "reason": "unapproved"}],
+        )
+        # The reason propagates through a chain.
+        self.assertEqual(
+            by_slug["chain"]["requires_unmet"],
+            [{"slug": "on-raw", "name": "On-Raw", "reason": "unapproved"}],
+        )
+        specs = {e["slug"]: e for e in prefs.allowed_specializations}
+        self.assertEqual(specs["spec"]["requires_unmet"], [])

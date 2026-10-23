@@ -328,7 +328,13 @@ def trim_ids_to_budget_verbose(
     by_id = {str(s.id): s for s in AgentSkill.objects.filter(id__in=ids)}
     ordered = [by_id[i] for i in ids if i in by_id]
     kept, dropped = skills_within_budget(ordered, budget, max_context_tokens)
-    return [str(s.id) for s in kept], dropped
+    # Keep the kept set closed under ``requires``: a dependent whose required
+    # toolkit was trimmed is trimmed too (callers list requirements first, so
+    # this only bites when the toolkit itself didn't fit).
+    from agent_skills.services import enforce_requires_closure
+
+    kept, pruned = enforce_requires_closure(kept)
+    return [str(s.id) for s in kept], dropped + pruned
 
 
 def trim_ids_to_budget(

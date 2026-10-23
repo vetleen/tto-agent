@@ -885,6 +885,7 @@ def chat_home(request):
                 "id": str(r.skill_id),
                 "name": r.skill.name,
                 "emoji": r.skill.emoji,
+                "kind": r.skill.kind,
             }
             for r in ChatThreadSkill.objects.filter(
                 thread=thread, skill__is_active=True
@@ -915,6 +916,7 @@ def chat_home(request):
     skills_json = json.dumps([
         {
             "id": s["id"],
+            "slug": s["slug"],
             "name": s["name"],
             "emoji": s.get("emoji", ""),
             "description": s.get("description", ""),
@@ -922,6 +924,12 @@ def chat_home(request):
             # skills.set gate (and the agent's chat_skill_attach) would refuse.
             "approved": s.get("approved", True),
             "scan_state": s.get("scan_state", ""),
+            # Toolkits don't count toward the picker's cap; a skill's required
+            # toolkits are auto-selected and locked with it; a skill whose
+            # requirement isn't available is greyed out with the reason.
+            "kind": s.get("kind", "playbook"),
+            "requires": s.get("requires", []),
+            "requires_unmet": s.get("requires_unmet", []),
         }
         for s in prefs.allowed_skills
     ])
@@ -1922,6 +1930,8 @@ def skills_for_user(request):
                 "description": s.get("description", ""),
                 "approved": s.get("approved", True),
                 "scan_state": s.get("scan_state", ""),
+                "kind": s.get("kind", "playbook"),
+                "requires_unmet": s.get("requires_unmet", []),
             }
             for s in prefs.allowed_skills
         ]
@@ -2249,6 +2259,8 @@ def loops_list(request):
             "emoji": s.get("emoji", ""),
             "approved": s.get("approved", True),
             "scan_state": s.get("scan_state", ""),
+            "kind": s.get("kind", "playbook"),
+            "requires_unmet": s.get("requires_unmet", []),
         }
         for s in prefs.allowed_skills
     ]

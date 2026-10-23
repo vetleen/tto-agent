@@ -410,6 +410,16 @@ def _link_loop_resources(thread, user, data_room_ids, skill_ids, model=None):
         sid = str(sid)
         if sid in allowed and sid not in resolved_skill_ids:
             resolved_skill_ids.append(sid)
+    # Close the set under ``requires`` (a toolkit a skill depends on rides
+    # along, before its dependent); a skill whose requirement isn't available
+    # to this user is dropped. The budget trim below keeps the closure.
+    from agent_skills.models import AgentSkill
+    from agent_skills.services import expand_required_skills, get_available_skills
+
+    by_id = {str(s.id): s for s in AgentSkill.objects.filter(id__in=resolved_skill_ids)}
+    ordered = [by_id[i] for i in resolved_skill_ids if i in by_id]
+    closed, _, missing = expand_required_skills(ordered, get_available_skills(user))
+    resolved_skill_ids = [str(s.id) for s in closed if s.slug not in missing]
     resolved_skill_ids = trim_ids_to_budget(
         resolved_skill_ids, None, getattr(prefs, "max_context_tokens", None)
     )

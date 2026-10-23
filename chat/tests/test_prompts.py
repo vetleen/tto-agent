@@ -169,6 +169,16 @@ class BuildSystemPromptTests(TestCase):
         prompt = build_system_prompt(skills=[skill])
         self.assertIn("## Patent Drafter\nSlug: `patent-drafter`\n", prompt)
 
+    def test_skill_requires_line_rendered(self):
+        skill = self._make_skill("Patent Drafter", "Draft patents carefully.")
+        skill.requires = ["canvas_tools"]
+        prompt = build_system_prompt(skills=[skill])
+        self.assertIn(
+            "Slug: `patent-drafter`\nRequires: `canvas_tools` (attached automatically "
+            "with this skill).\n",
+            prompt,
+        )
+
     def test_skill_origin_user_marks_protected(self):
         skill = self._make_skill("Patent Drafter", "Draft patents carefully.")
         prompt = build_system_prompt(skills=[skill], skill_origins={skill.id: "user"})
@@ -1219,6 +1229,22 @@ class AvailableSkillsSectionTests(TestCase):
         self.assertIn("additive", prompt)
         self.assertIn("chat_skill_detach", prompt)
         self.assertNotIn("replaces whatever", prompt)
+
+    def test_skill_with_unmet_requirement_not_offered(self):
+        """chat_skill_attach would refuse it, so the catalogue leaves it out."""
+        prompt = build_semi_static_prompt(
+            available_skills=[
+                {"slug": "ok", "name": "Ok", "description": "fine", "requires_unmet": []},
+                {
+                    "slug": "blocked", "name": "Blocked", "description": "needs canvas",
+                    "requires_unmet": [
+                        {"slug": "canvas_tools", "name": "Canvas Tools", "reason": "unavailable"}
+                    ],
+                },
+            ],
+        )
+        self.assertIn("**ok** — Ok", prompt)
+        self.assertNotIn("**blocked**", prompt)
 
     def test_section_omitted_when_available_skills_none(self):
         prompt = build_semi_static_prompt(available_skills=None)

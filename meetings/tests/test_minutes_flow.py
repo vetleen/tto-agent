@@ -65,6 +65,32 @@ class CreateMinutesThreadTests(TestCase):
         self.assertEqual(thread.metadata.get("source_meeting_id"), str(self.meeting.uuid))
         self.assertTrue(thread.metadata.get("pending_initial_turn"))
 
+    def test_required_toolkit_rides_along(self):
+        """The summarizer drafts in the canvas: the thread gets its required
+        toolkit first. A toolkit the user disabled is simply left out."""
+        from accounts.models import UserSettings
+
+        AgentSkill.objects.filter(slug="canvas_tools").delete()  # the seeded row
+        toolkit = AgentSkill.objects.create(
+            slug="canvas_tools", name="Canvas Tools", instructions="x",
+            level="system", kind="toolkit", tool_names=["canvas_write"],
+        )
+        AgentSkill.objects.filter(pk=self.skill.pk).update(requires=["canvas_tools"])
+        self.skill.refresh_from_db()
+
+        thread, err = create_minutes_thread(self.user, self.meeting)
+        self.assertIsNone(err)
+        self.assertEqual(_thread_skill_ids(thread), [toolkit.id, self.skill.id])
+
+        UserSettings.objects.update_or_create(
+            user=self.user,
+            defaults={"preferences": {"skills": {"canvas_tools": {"selected_skill_id": None}}}},
+        )
+        # Fresh user instance: preferences are memoized per instance.
+        thread2, err = create_minutes_thread(User.objects.get(pk=self.user.pk), self.meeting)
+        self.assertIsNone(err)
+        self.assertEqual(_thread_skill_ids(thread2), [self.skill.id])
+
     def test_preloads_transcript_into_active_canvas(self):
         thread, _ = create_minutes_thread(self.user, self.meeting)
         canvases = list(ChatCanvas.objects.filter(thread=thread))

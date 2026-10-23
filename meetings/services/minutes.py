@@ -262,7 +262,7 @@ def create_minutes_thread(user, meeting, summarizer_skill=_UNSET):
     ``None`` to create the thread with **no** skill (a valid choice — the model
     drafts the minutes itself). Returns ``(thread, error_message)``.
     """
-    from chat.models import ChatCanvas, ChatMessage, ChatThread, ChatThreadSkill
+    from chat.models import ChatCanvas, ChatMessage, ChatThread
     from chat.services import (
         clip_to_canvas,
         create_canvas_checkpoint,
@@ -287,7 +287,11 @@ def create_minutes_thread(user, meeting, summarizer_skill=_UNSET):
         },
     )
     if summarizer_skill is not None:
-        ChatThreadSkill.objects.create(thread=thread, skill=summarizer_skill)
+        # Closed under ``requires``: the summarizer drafts in the canvas, so its
+        # canvas toolkit comes along (when it is available to this user).
+        from agent_skills.services import attach_skills_closed
+
+        attach_skills_closed(thread, [summarizer_skill], user, attached_by="user")
 
     # Preload the transcript into a canvas and open that tab. Nothing is injected
     # into the prompt: the seed message tells Wilfred to read it with canvas_read

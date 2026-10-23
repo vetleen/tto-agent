@@ -1835,6 +1835,95 @@ class PayloadDataRoomValidationTests(TransactionTestCase):
 
         await communicator.disconnect()
 
+    @patch("agent_skills.resources._scanning_configured", return_value=False)
+    async def test_set_skills_closes_the_set_under_requires(self, _unconfigured):
+        """A skill that requires a toolkit gets the toolkit attached too (before
+        it, as a user row), even when the picker left the toolkit unchecked;
+        the event carries kind so the pills can tell them apart."""
+        from agent_skills.models import AgentSkill
+        from chat.models import ChatThreadSkill
+
+        await database_sync_to_async(AgentSkill.objects.filter(level="system").delete)()
+        toolkit = await database_sync_to_async(AgentSkill.objects.create)(
+            name="Canvas Tools", slug="canvas_tools", level="system",
+            kind="toolkit", instructions="x", tool_names=["canvas_write"],
+        )
+        dep = await database_sync_to_async(AgentSkill.objects.create)(
+            name="Dep", slug="dep", level="user", created_by=self.user,
+            instructions="x", requires=["canvas_tools"],
+        )
+        thread = await database_sync_to_async(ChatThread.objects.create)(
+            created_by=self.user,
+        )
+
+        async def rows():
+            return await database_sync_to_async(
+                lambda: [
+                    (str(sid), who)
+                    for sid, who in ChatThreadSkill.objects.filter(thread=thread)
+                    .values_list("skill_id", "attached_by")
+                ]
+            )()
+
+        communicator = await self._connect()
+        await communicator.send_json_to({
+            "type": "chat.set_skills",
+            "skill_ids": [str(dep.pk)],
+            "thread_id": str(thread.id),
+        })
+        resp = await communicator.receive_json_from(timeout=5)
+        self.assertEqual(resp["event_type"], "skills.set")
+        self.assertEqual(
+            [(s["id"], s["kind"]) for s in resp["skills"]],
+            [(str(toolkit.pk), "toolkit"), (str(dep.pk), "playbook")],
+        )
+        self.assertEqual(resp["refused"], [])
+        self.assertEqual(
+            await rows(), [(str(toolkit.pk), "user"), (str(dep.pk), "user")]
+        )
+        await communicator.disconnect()
+
+    @patch("agent_skills.resources._scanning_configured", return_value=False)
+    async def test_set_skills_refuses_dependent_whose_toolkit_is_disabled(self, _unconfigured):
+        from accounts.models import UserSettings
+        from agent_skills.models import AgentSkill
+        from chat.models import ChatThreadSkill
+
+        await database_sync_to_async(AgentSkill.objects.filter(level="system").delete)()
+        await database_sync_to_async(AgentSkill.objects.create)(
+            name="Canvas Tools", slug="canvas_tools", level="system",
+            kind="toolkit", instructions="x",
+        )
+        dep = await database_sync_to_async(AgentSkill.objects.create)(
+            name="Dep", slug="dep", level="user", created_by=self.user,
+            instructions="x", requires=["canvas_tools"],
+        )
+        await database_sync_to_async(UserSettings.objects.update_or_create)(
+            user=self.user,
+            defaults={"preferences": {"skills": {"canvas_tools": {"selected_skill_id": None}}}},
+        )
+        thread = await database_sync_to_async(ChatThread.objects.create)(
+            created_by=self.user,
+        )
+
+        communicator = await self._connect()
+        await communicator.send_json_to({
+            "type": "chat.set_skills",
+            "skill_ids": [str(dep.pk)],
+            "thread_id": str(thread.id),
+        })
+        resp = await communicator.receive_json_from(timeout=5)
+        self.assertEqual(resp["event_type"], "skills.set")
+        self.assertEqual(resp["skills"], [])
+        self.assertEqual(len(resp["refused"]), 1)
+        self.assertEqual(resp["refused"][0]["name"], "Dep")
+        self.assertIn("requires “Canvas Tools”", resp["refused"][0]["reason"])
+        count = await database_sync_to_async(
+            ChatThreadSkill.objects.filter(thread=thread).count
+        )()
+        self.assertEqual(count, 0)
+        await communicator.disconnect()
+
     @patch("agent_skills.resources._scanning_configured", return_value=True)
     async def test_set_skills_refuses_unscanned_but_keeps_already_attached(self, _configured):
         """The picker path applies the same safety-scan gate as

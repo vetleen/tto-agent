@@ -29,6 +29,7 @@ from agent_skills.services import (
     get_user_skill_prefs,
     shadowing_default,
     approve_skill_share,
+    attach_skills_closed,
     can_delete_skill,
     can_edit_skill,
     decline_skill_share,
@@ -1017,7 +1018,7 @@ def skills_edit_in_chat(request, skill_id):
     from django.urls import reverse
 
     from agent_skills.tools import load_skill_field_into_canvas
-    from chat.models import ChatMessage, ChatThread, ChatThreadSkill
+    from chat.models import ChatMessage, ChatThread
 
     target = get_skill_for_user(request.user, str(skill_id))
     if target is None:
@@ -1046,7 +1047,9 @@ def skills_edit_in_chat(request, skill_id):
             "pending_initial_turn": True,
         },
     )
-    ChatThreadSkill.objects.create(thread=thread, skill=skill_creator)
+    # Closed under ``requires``: Skill Creator drafts in canvases, so its canvas
+    # toolkit comes along (when it is available to this user).
+    attach_skills_closed(thread, [skill_creator], request.user, attached_by="user")
 
     load_skill_field_into_canvas(thread.id, target, "description")
     # Load instructions LAST so its tab is the one the browser opens (focus_canvas

@@ -64,6 +64,148 @@ def skill_requires(skill) -> list[str]:
     )
 
 
+def _requires_pool(available) -> dict:
+    """``{slug: skill}`` from a list of skills or an existing map."""
+    if isinstance(available, dict):
+        return available
+    return {s.slug: s for s in available}
+
+
+def expand_required_skills(skills, available):
+    """Close ``skills`` under ``requires`` against ``available`` — the user's
+    shadow-resolved list (:func:`get_available_skills`) or a ``{slug: skill}``
+    map of it.
+
+    Returns ``(closed, added, missing)``:
+
+    - ``closed``: every input skill plus the skills they (transitively)
+      require, de-duplicated, each requirement placed BEFORE the skills that
+      need it and the caller's order otherwise kept.
+    - ``added``: dependent slug -> required slugs that were not in the input
+      (what the caller attached on the dependent's behalf).
+    - ``missing``: slug -> required slugs that can't be satisfied — absent from
+      ``available``, or themselves unsatisfiable. A skill listed here still
+      appears in ``closed`` (so its name is resolvable); the caller refuses or
+      drops it. A cycle counts as satisfied.
+    """
+    pool = _requires_pool(available)
+    input_slugs = {s.slug for s in skills}
+    closed: list = []
+    status: dict[str, bool] = {}
+    added: dict[str, list[str]] = {}
+    missing: dict[str, list[str]] = {}
+
+    def visit(skill, path: frozenset) -> bool:
+        if skill.slug in status:
+            return status[skill.slug]
+        path = path | {skill.slug}
+        ok = True
+        for req in skill_requires(skill):
+            if req in path:
+                continue  # cycle: counts as satisfied
+            target = pool.get(req)
+            if target is None:
+                missing.setdefault(skill.slug, []).append(req)
+                ok = False
+                continue
+            if req not in input_slugs and req not in added.get(skill.slug, []):
+                added.setdefault(skill.slug, []).append(req)
+            if not visit(target, path):
+                missing.setdefault(skill.slug, []).append(req)
+                ok = False
+        status[skill.slug] = ok
+        closed.append(skill)
+        return ok
+
+    for s in skills:
+        visit(s, frozenset())
+    return closed, added, missing
+
+
+def unmet_requirements(skills, available, *, approved=None) -> dict[str, list[dict]]:
+    """Why each of ``skills`` can't be attached because of what it requires.
+
+    Returns ``{str(skill.id): [{"slug", "name", "reason"}, ...]}`` — empty when
+    every requirement is satisfiable. ``reason`` is ``"unavailable"`` (no
+    match in ``available``) or ``"unapproved"`` (``approved[str(id)] is
+    False``: the requirement hasn't passed the safety scan); a requirement
+    that is itself unmet propagates its first reason. A cycle counts as
+    satisfied. ``name`` falls back to the slug when no skill is visible.
+    """
+    pool = _requires_pool(available)
+    approved = approved or {}
+    memo: dict[str, list[dict]] = {}
+
+    def visit(skill, path: frozenset) -> list[dict]:
+        if skill.slug in memo:
+            return memo[skill.slug]
+        path = path | {skill.slug}
+        out: list[dict] = []
+        for req in skill_requires(skill):
+            if req in path:
+                continue
+            target = pool.get(req)
+            if target is None:
+                out.append({"slug": req, "name": req, "reason": "unavailable"})
+                continue
+            if approved.get(str(target.id), True) is False:
+                out.append({"slug": req, "name": target.name, "reason": "unapproved"})
+                continue
+            inner = visit(target, path)
+            if inner:
+                out.append({"slug": req, "name": target.name, "reason": inner[0]["reason"]})
+        memo[skill.slug] = out
+        return out
+
+    return {str(s.id): visit(s, frozenset()) for s in skills}
+
+
+def enforce_requires_closure(skills):
+    """Post-trim pass: keep only skills whose requirements are all present in
+    the kept list (to a fixpoint, so a chain collapses). Returns ``(kept,
+    pruned)``; order is preserved."""
+    kept = list(skills)
+    while True:
+        present = {s.slug for s in kept}
+        still = [s for s in kept if all(r in present for r in skill_requires(s))]
+        if len(still) == len(kept):
+            break
+        kept = still
+    kept_ids = {str(s.id) for s in kept}
+    pruned = [s for s in skills if str(s.id) not in kept_ids]
+    return kept, pruned
+
+
+def required_by(target_slugs, attached) -> dict[str, list[str]]:
+    """``{target slug: [slugs of attached skills that require it]}`` — which of
+    ``target_slugs`` can't be detached while ``attached`` stay."""
+    targets = set(target_slugs)
+    out: dict[str, list[str]] = {}
+    for s in attached:
+        for req in skill_requires(s):
+            if req in targets:
+                out.setdefault(req, []).append(s.slug)
+    return out
+
+
+def attach_skills_closed(thread, skills, user, *, attached_by: str = "user") -> list[str]:
+    """Attach ``skills`` to ``thread`` together with the skills they require
+    (resolved through the user's available set), requirements first.
+
+    For code that attaches a known skill directly (edit-in-chat, meeting
+    minutes) rather than through the agent tool or the picker. A requirement
+    that isn't available is simply left out — the listed skills themselves are
+    always attached. Returns the ids actually added.
+    """
+    from chat.thread_skills import add_thread_skills
+
+    skills = list(skills)
+    wanted = {s.slug for s in skills}
+    closed, _added, missing = expand_required_skills(skills, get_available_skills(user))
+    ids = [s.id for s in closed if s.slug in wanted or s.slug not in missing]
+    return add_thread_skills(thread, ids, attached_by=attached_by)
+
+
 def skill_enabled_by_default(skill) -> bool:
     """Whether an org that has no explicit ``enabled`` entry for this skill's
     slug sees it as enabled.

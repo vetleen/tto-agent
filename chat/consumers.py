@@ -173,6 +173,22 @@ def _skill_scan_refusal_reason(scan_state: str | None) -> str:
     return "it hasn’t passed a safety scan yet. Enable it on the Skills page (that runs the scan)."
 
 
+def _skill_requires_refusal_reason(required_slug: str) -> str:
+    """User-facing reason a skill was refused because a skill it requires (a
+    toolkit, usually) isn't available to this user; same phrasing contract as
+    :func:`_skill_scan_refusal_reason`."""
+    from agent_skills.models import AgentSkill
+
+    name = (
+        AgentSkill.objects.filter(slug=required_slug, deleted_at__isnull=True)
+        .order_by("level").values_list("name", flat=True).first()
+    ) or required_slug
+    return (
+        f"it requires “{name}”, which isn’t available to you (disabled by you or "
+        "your organization). Enable it on the Skills page."
+    )
+
+
 def _resolve_reasoning_level(model: str | None, requested: object) -> str | None:
     """Apply a model's default or reject a level that its API cannot accept."""
     if not model:
@@ -4337,7 +4353,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
         from django.core.exceptions import ValidationError
 
         from agent_skills.resources import bulk_skill_approval
-        from agent_skills.services import get_skill_for_user
+        from agent_skills.services import (
+            expand_required_skills,
+            get_available_skills,
+            get_skill_for_user,
+            skill_requires,
+        )
         from chat.models import ChatThreadSkill
 
         found = []
@@ -4351,6 +4372,24 @@ class ChatConsumer(AsyncWebsocketConsumer):
             if skill is None:
                 continue
             found.append(skill)
+
+        # Close the set under ``requires`` against the user's available set: a
+        # required toolkit rides along (before its dependent, same origin); a
+        # dependent whose requirement isn't available to this user is refused
+        # with the reason, like the safety-scan gate below.
+        refused = []
+        found, _auto, missing = expand_required_skills(
+            found, get_available_skills(self.user)
+        )
+        if missing:
+            by_slug = {s.slug: s for s in found}
+            for dep_slug, reqs in missing.items():
+                dep = by_slug.get(dep_slug)
+                refused.append({
+                    "name": dep.name if dep is not None else dep_slug,
+                    "reason": _skill_requires_refusal_reason(reqs[0]),
+                })
+            found = [s for s in found if s.slug not in missing]
 
         attached: set[str] = set()
         if thread_id and found:
@@ -4366,7 +4405,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             self.user, [s for s in found if str(s.pk) not in attached]
         )
 
-        out, refused = [], []
+        out = []
+        refused_slugs: set[str] = set()
         for skill in found:
             sid = str(skill.pk)
             verdict = verdicts.get(sid)
@@ -4375,8 +4415,24 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     "name": skill.name,
                     "reason": _skill_scan_refusal_reason(verdict["scan_state"]),
                 })
+                refused_slugs.add(skill.slug)
                 continue
-            out.append({"id": sid, "name": skill.name, "emoji": skill.emoji})
+            # Requirements precede their dependents in ``found``, so a dependent
+            # of a skill the gate just refused is refused here, not stranded.
+            blocked = [r for r in skill_requires(skill) if r in refused_slugs]
+            if blocked:
+                refused.append({
+                    "name": skill.name,
+                    "reason": (
+                        f"it requires {blocked[0]}, which hasn't passed the safety scan"
+                    ),
+                })
+                refused_slugs.add(skill.slug)
+                continue
+            out.append({
+                "id": sid, "slug": skill.slug, "name": skill.name,
+                "emoji": skill.emoji, "kind": skill.kind,
+            })
         return out, refused
 
     @database_sync_to_async
@@ -4415,8 +4471,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
         return [
             {
                 "id": str(r.skill.pk),
+                "slug": r.skill.slug,
                 "name": r.skill.name,
                 "emoji": r.skill.emoji,
+                "kind": r.skill.kind,
                 "attached_by": r.attached_by,
             }
             for r in rows

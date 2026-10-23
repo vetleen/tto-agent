@@ -154,3 +154,64 @@ class DetachSkillsToolTests(TestCase):
         prefs = get_preferences(self.user)
         self.assertIn("chat_skill_detach", prefs.allowed_tools)
         self.assertNotIn("chat_skill_detach", prefs.allowed_subagent_tools)
+
+
+class DetachRequiresTests(TestCase):
+    """A toolkit another attached skill still requires stays attached."""
+
+    def setUp(self):
+        AgentSkill.objects.all().delete()
+        self.user = User.objects.create_user(email="dreq@example.com", password="pass")
+        self.thread = ChatThread.objects.create(created_by=self.user, title="t")
+        self.toolkit = AgentSkill.objects.create(
+            slug="canvas_tools", name="Canvas Tools", instructions="x",
+            level="system", kind="toolkit", tool_names=["canvas_write"],
+        )
+        self.dep = AgentSkill.objects.create(
+            slug="dep", name="Dep", instructions="x", level="user",
+            created_by=self.user, requires=["canvas_tools"],
+        )
+        ChatThreadSkill.objects.create(
+            thread=self.thread, skill=self.toolkit, attached_by="agent"
+        )
+        ChatThreadSkill.objects.create(
+            thread=self.thread, skill=self.dep, attached_by="agent"
+        )
+        self.tool = DetachSkillsTool()
+        self.tool.context = RunContext.create(
+            user_id=self.user.pk, conversation_id=str(self.thread.id)
+        )
+
+    def _detach(self, *slugs):
+        return json.loads(self.tool._run(skill_slugs=list(slugs)))
+
+    def test_required_toolkit_is_refused_while_dependent_attached(self):
+        result = self._detach("canvas_tools")
+        self.assertEqual(result["status"], "error")
+        self.assertIn("still required by: dep", result["message"])
+        self.assertEqual(
+            _attached(self.thread), [("canvas_tools", "agent"), ("dep", "agent")]
+        )
+
+    def test_both_in_one_call_detach(self):
+        result = self._detach("canvas_tools", "dep")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(sorted(result["removed"]), ["canvas_tools", "dep"])
+        self.assertEqual(_attached(self.thread), [])
+
+    def test_detaching_the_dependent_never_cascades(self):
+        result = self._detach("dep")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["removed"], ["dep"])
+        self.assertEqual(_attached(self.thread), [("canvas_tools", "agent")])
+        # Now the toolkit is free to go.
+        self.assertEqual(self._detach("canvas_tools")["status"], "ok")
+        self.assertEqual(_attached(self.thread), [])
+
+    def test_user_attached_dependent_protects_the_toolkit(self):
+        ChatThreadSkill.objects.filter(thread=self.thread, skill=self.dep).update(
+            attached_by="user"
+        )
+        result = self._detach("canvas_tools")
+        self.assertEqual(result["status"], "error")
+        self.assertIn("still required by: dep", result["message"])

@@ -194,4 +194,6 @@ As you progress through the search process:
 You have a query provided to you by the user, which serves as your primary goal. You should do your best to thoroughly accomplish the user's task. *If necessary* to complete the task excellently, you may make one round of clarification questions, otherwise, use your best judgment. Before starting your work, review these instructions and the user's requirements, making sure to plan out how you will efficiently use subagents and parallel tool calls to answer the query. Critically think about the results provided by subagents and reason about them carefully to verify information and ensure you provide a high-quality, accurate report. Use the scratchpad actively to take notes on important findings and insights as you work. Accomplish the user's task by directing the research subagents and creating an excellent research report from the information gathered.
 """,
     "tool_names": [],
+    # The report is written in the canvas: the canvas toolkit comes along.
+    "requires": ["canvas_tools"],
 }

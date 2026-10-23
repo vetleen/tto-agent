@@ -1925,6 +1925,7 @@ def _skill_entry(skill, attached_by: str) -> dict:
         "slug": skill.slug,
         "name": skill.name,
         "emoji": skill.emoji,
+        "kind": skill.kind,
         "attached_by": attached_by,
     }
 
@@ -2049,8 +2050,10 @@ class AttachSkillsTool(ContextAwareTool):
         "tools and instructions become active immediately — from your next step in "
         "this same turn — so you can attach a skill and then use its tools right "
         "away. You may attach any number of skills as long as their combined size "
-        "fits the thread's skill budget. To remove a skill you attached earlier, "
-        "use chat_skill_detach; skills the user attached can't be detached by you."
+        "fits the thread's skill budget. A skill that requires a toolkit (e.g. "
+        "canvas_tools) attaches it automatically — the result's auto_attached says "
+        "which. To remove a skill you attached earlier, use chat_skill_detach; "
+        "skills the user attached can't be detached by you."
     )
     args_schema: type[BaseModel] = AttachSkillsInput
     section: str = "chat"
@@ -2098,6 +2101,24 @@ class AttachSkillsTool(ContextAwareTool):
                     "available_slugs": [s.slug for s in available],
                 })
             chosen.append(skill)
+
+        # Close the set under ``requires``: the toolkits a skill depends on come
+        # along, placed before their dependents. A requirement this user can't
+        # attach makes the dependent unattachable too — the whole call is
+        # refused so the agent never ends up with a playbook minus its tools.
+        from agent_skills.services import expand_required_skills
+
+        chosen, auto_map, missing = expand_required_skills(chosen, available)
+        if missing:
+            dep, reqs = next(iter(missing.items()))
+            return json.dumps({
+                "status": "error",
+                "message": (
+                    f"Skill '{dep}' requires '{reqs[0]}', which is not available to "
+                    "this user (disabled by the user or their organization). Ask the "
+                    "user to enable it on the Skills page."
+                ),
+            })
 
         from agent_skills.resources import attach_token_budget, skills_within_budget
 
@@ -2202,6 +2223,14 @@ class AttachSkillsTool(ContextAwareTool):
                     _render_one_skill(s, attached_by="agent")
                 )
 
+        # Which of the added rows came in only because a listed skill requires
+        # them (dependent slug -> required slugs actually attached now).
+        added_slugs = {s.slug for s in added}
+        auto_attached = {
+            dep: [r for r in reqs if r in added_slugs]
+            for dep, reqs in auto_map.items()
+            if any(r in added_slugs for r in reqs)
+        }
         return json.dumps({
             "status": "ok",
             "no_change": no_change,
@@ -2210,6 +2239,7 @@ class AttachSkillsTool(ContextAwareTool):
                 + [_skill_entry(s, "agent") for s in added]
             ),
             "added": [s.slug for s in added],
+            "auto_attached": auto_attached,
         })
 
 
@@ -2312,6 +2342,22 @@ class DetachSkillsTool(ContextAwareTool):
                         "by you: "
                         + ", ".join(r.skill.slug for r in protected)
                         + ". Ask the user to remove them if they're not needed."
+                    ),
+                })
+            # A skill another attached skill still requires (and that isn't
+            # detached in this same call) stays: removing it would strand the
+            # dependent without its tools.
+            from agent_skills.services import required_by
+
+            remaining = [r.skill for r in rows if r not in targets and _live(r)]
+            blockers = required_by([r.skill.slug for r in targets], remaining)
+            if blockers:
+                slug, deps = next(iter(blockers.items()))
+                return json.dumps({
+                    "status": "error",
+                    "message": (
+                        f"{slug} is still required by: {', '.join(deps)}. Detach them "
+                        "in the same call, or leave it attached."
                     ),
                 })
             removed_ids = (

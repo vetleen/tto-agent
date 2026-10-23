@@ -125,6 +125,20 @@ class EditInChatViewTests(TestCase):
         self.system_skill.refresh_from_db()
         self.assertEqual(self.system_skill.name, "Sys X")
 
+    def test_required_toolkit_attached_with_skill_creator(self):
+        toolkit = AgentSkill.objects.create(
+            slug="canvas_tools", name="Canvas Tools", instructions="i",
+            level="system", kind="toolkit", tool_names=["canvas_write"],
+        )
+        AgentSkill.objects.filter(pk=self.skill_creator.pk).update(requires=["canvas_tools"])
+        self.client.force_login(self.user)
+        self.client.post(reverse("agent_skills_edit_in_chat", args=[self.user_skill.id]))
+        thread = ChatThread.objects.get(created_by=self.user)
+        self.assertEqual(
+            list(thread.skills.values_list("id", flat=True)),
+            [toolkit.id, self.skill_creator.id],
+        )
+
     def test_toolkit_refused(self):
         toolkit = AgentSkill.objects.create(
             slug="canvas_tools", name="Canvas Tools", instructions="i",

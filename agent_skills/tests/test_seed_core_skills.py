@@ -108,6 +108,15 @@ class SeedGraphTests(TestCase):
             row = AgentSkill.objects.get(slug=data["slug"], level="system")
             self.assertEqual(row.requires, list(requires), data["slug"])
 
+    def test_canvas_drafting_seeds_require_canvas_tools(self):
+        for slug in ("skill-creator", "web-deep-researcher-2", "web-deep-researcher",
+                     "meeting-summarizer"):
+            row = AgentSkill.objects.get(slug=slug, level="system")
+            self.assertEqual(row.requires, ["canvas_tools"], slug)
+        for slug in ("researcher", "web-researcher", "patent-searcher"):
+            row = AgentSkill.objects.get(slug=slug, level="system")
+            self.assertEqual(row.requires, [], slug)
+
     def test_requires_graph_is_acyclic(self):
         graph = {s["slug"]: list(s.get("requires") or []) for s in self._seeds()}
 

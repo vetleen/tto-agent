@@ -29,7 +29,8 @@ A skill is a database record with these fields:
 - **name** — Human-readable title (e.g. "Patent Claim Drafter"). Name skills after the activity ("Drafting Patent Claims" energy, not "Helper" or "Utils").
 - **description** — 1-1024 chars. This is the ONLY text the system sees when deciding whether to activate the skill. It is the primary trigger mechanism. Keep it short.
 - **instructions** — The full playbook injected into your system prompt when the skill is active. This is where the skill's logic lives.
-- **tool_names** — List of tool names the skill needs (e.g. `["document_search", "document_read"]`). These tools become available only when they are attached to an active skill.
+- **tool_names** — List of skill-specific tool names the skill needs (e.g. `["patent_epoops_search"]`). These tools become available only when they are attached to an active skill.
+- **requires** — Slugs of the *toolkits* the skill depends on (e.g. `["canvas_tools"]`). A toolkit is a built-in skill that unlocks a tool group (canvas, web research, data rooms, image generation, slide decks, loops); whatever a skill lists here is attached automatically whenever the skill is attached, so a skill that drafts in the canvas never has to hope the canvas tools are there.
 - **resources** — Files and text blobs bundled with the skill (e.g. a report skeleton, a style-guide PDF, an example image). Each is either a *template* (a fill-in skeleton the agent loads and completes) or a *reference* (read-only material). When the skill is active its resources are listed in the system prompt automatically and read on demand — this is the skill's progressive-disclosure layer: heavy content lives in resources and loads only when needed, keeping the always-on instructions lean.
 
 Skills exist at three levels: **system** (provided by the application, not editable), **org** (shared within an organization), and **user** (personal). Higher levels shadow lower ones by slug — a user-level skill with the same slug as a system skill overrides it for the user by default, but user may toggle which version is active in the settings.
@@ -273,13 +274,22 @@ Once the user is happy with the drafts:
 
 ---
 
-## Step 4: Attach tools
+## Step 4: Attach toolkits and tools
 
-Some tools are **skill-specific** — available only when a skill lists them in
-its `tool_names`. Standard tools (web search, canvas, document search,
-sub-agents, etc.) are always available and don't need attaching, and the tools
-that read a skill's own resources are granted automatically to any skill that
-carries resources — never add those.
+Tools come in three groups:
+
+- **Always-on chat tools** (sub-agents, attachments, task plans…) need nothing.
+- **Toolkits** are built-in skills that unlock a tool group while attached:
+  `canvas_tools` (the canvas), `web_research_tools` (web search and fetch),
+  `data_room_tools` (document search, read and edit), `image_generation_tools`,
+  `slide_deck_tools` and `assistant_loop_tools`. A skill that needs one declares
+  it in `requires`, and it is then attached automatically with the skill — e.g.
+  `skill_edit(skill_slug="...", updates={{"requires": ["canvas_tools"]}})` for a
+  skill that drafts in the canvas. Never copy a toolkit's tools into
+  `tool_names`; require the toolkit instead.
+- **Skill-specific tools** are available only when a skill lists them in its
+  `tool_names`. The tools that read a skill's own resources are granted
+  automatically to any skill that carries resources — never add those.
 
 To pick the skill-specific tools a skill needs:
 1. `skill_tool_list` — see what's attachable
@@ -388,6 +398,9 @@ Repeat until the user is satisfied.
 7. **Generalize, don't overfit.** Make instructions that handle the class
    of problem, not specific instances.
    """,
+    # Description/instructions are drafted in canvases: the canvas toolkit
+    # comes along with the skill.
+    "requires": ["canvas_tools"],
     "tool_names": [
         "skill_create",
         "skill_edit",

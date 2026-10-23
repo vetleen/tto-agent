@@ -332,6 +332,12 @@ def _render_one_skill(skill: Any, attached_by: str | None = None) -> str:
         )
     else:
         block += f"Slug: `{slug}`\n"
+    requires = [r for r in (getattr(skill, "requires", None) or []) if isinstance(r, str)]
+    if requires:
+        block += (
+            "Requires: " + ", ".join(f"`{r}`" for r in requires)
+            + " (attached automatically with this skill).\n"
+        )
     if skill.description:
         block += f"## Skill description:\n{skill.description}\n"
     block += f"## Skill instructions:\n{deepened}\n"
@@ -454,7 +460,12 @@ def build_semi_static_prompt(
     # with its slug and origin) are excluded from this catalogue so the agent
     # doesn't try to re-attach one it already has.
     _attached_ids = {str(getattr(sk, "id", "")) for sk in (skills or [])}
-    catalogue = [s for s in (available_skills or []) if s.get("id") not in _attached_ids]
+    # A skill whose requirement can't be attached (``requires_unmet``) is not
+    # offered: chat_skill_attach would refuse it.
+    catalogue = [
+        s for s in (available_skills or [])
+        if s.get("id") not in _attached_ids and not s.get("requires_unmet")
+    ]
     if catalogue:
         prompt += (
             "\n# Skills available to this user\n"

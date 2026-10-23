@@ -73,4 +73,6 @@ reader's time.
 trustworthy — a future reader should be able to rely on every line.
 """,
     "tool_names": [],
+    # The minutes are drafted in the canvas: the canvas toolkit comes along.
+    "requires": ["canvas_tools"],
 }
