@@ -165,13 +165,16 @@ class EmbeddedImageDescriberBase:
         # JPEG 2000 / TIFF / BMP (common in scanned PDFs) are accepted by no
         # vision provider and shown by few browsers: store and describe a
         # PNG/JPEG conversion instead, or the image is silently never described.
+        # The conversion is already capped and re-encoded with the same settings
+        # as optimize_for_vision, so a second pass would only decode and
+        # re-encode it again (a lossy second generation for JPEG).
         converted = to_vision_format(raw)
         if converted is not None:
             img_bytes, content_type = converted
-
-        opt = optimize_for_vision(img_bytes, allow_transcode=False)
-        if opt is not None and len(opt[0]) < len(img_bytes):
-            img_bytes = opt[0]
+        else:
+            opt = optimize_for_vision(raw, allow_transcode=False)
+            if opt is not None and len(opt[0]) < len(raw):
+                img_bytes = opt[0]
 
         sha = hashlib.sha256(img_bytes).hexdigest()
 

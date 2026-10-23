@@ -8,6 +8,7 @@ as in ``documents/tests/test_progress.py`` / ``test_attachment_processing.py``.
 """
 from __future__ import annotations
 
+import hashlib
 import threading
 from unittest.mock import patch
 
@@ -173,6 +174,36 @@ class AttachmentImageDescriberTests(TestCase):
         text = d.substitute(t1 + t2, described)
         self.assertNotIn("JP2 image", text)
         self.assertEqual(text.count("A scanned page"), 2)
+
+    def test_converted_pictures_are_not_optimized_twice(self):
+        """to_vision_format already caps and re-encodes: its output is stored as
+        is, while a provider-accepted format still goes through
+        optimize_for_vision once."""
+        import io
+
+        from PIL import Image
+
+        from core.images import optimize_for_vision, to_vision_format
+
+        big = (2400, 1600)  # above the vision cap, so the conversion downscales
+        buf = io.BytesIO()
+        Image.new("L", big, 200).save(buf, format="TIFF")
+        tiff = buf.getvalue()
+
+        d = self._describer()
+        with patch("chat.services.describe_image", return_value="d"), \
+             patch("core.images.optimize_for_vision", wraps=optimize_for_vision) as optimize:
+            d.sink(_FakeImg(tiff, content_type="image/tiff"), 1)
+            optimize.assert_not_called()
+            d.sink(_FakeImg(_png(7)), 2)
+            optimize.assert_called_once()
+
+        converted, _media_type = to_vision_format(tiff)
+        stored = self._embedded().get(sha256=hashlib.sha256(converted).hexdigest())
+        self.assertEqual(stored.content_type, "image/png")
+        with stored.blob.open("rb") as f, Image.open(f) as img:
+            self.assertLessEqual(img.width * img.height, 1_150_000)
+            self.assertLessEqual(max(img.size), 1568)
 
     def test_dedupes_identical_pictures_and_numbers_unique_ones(self):
         d = self._describer()
