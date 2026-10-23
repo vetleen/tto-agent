@@ -971,8 +971,11 @@ JINA_READER_BASE_URL = os.environ.get("JINA_READER_BASE_URL", "https://r.jina.ai
 # Decisions (llm/service/decisions_service.py): the quick pathway calls OpenAI's
 # Decisions endpoint; when it fails, the request falls back to a structured-output
 # call and every process skips the endpoint for a while.
-# Read timeout per attempt at the endpoint.
-DECISIONS_QUICK_TIMEOUT_SECONDS = _env_int("DECISIONS_QUICK_TIMEOUT_SECONDS", "30")
+# Read timeout per attempt at the endpoint. Measured cold calls take 1–3.5 s
+# regardless of input size (2026-10-23, 0.4k–37k tokens); 15 s is ~5x the slowest
+# seen. Don't go much lower: a timeout on a merely slow call also opens the skip
+# window below, pushing every process onto the structured pathway for a minute.
+DECISIONS_QUICK_TIMEOUT_SECONDS = _env_int("DECISIONS_QUICK_TIMEOUT_SECONDS", "15")
 # SDK retries per call (408/409/429/5xx/connection errors, exponential backoff).
 # Worst case before the fallback ≈ (retries + 1) × timeout.
 DECISIONS_QUICK_MAX_RETRIES = _env_int("DECISIONS_QUICK_MAX_RETRIES", "1")

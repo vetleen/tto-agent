@@ -581,7 +581,7 @@ See `.env.example` for the full list with comments. Key production variables:
 | `LLM_DEFAULT_MID_MODEL` | Yes | Mid-tier model (also medium-quality sub-agents) |
 | `LLM_DEFAULT_CHEAP_MODEL` | Yes | Fast model for descriptions, classification (also low-quality sub-agents and the structured decisions pathway) |
 | `LLM_ALLOWED_MODELS` | Yes | Comma-separated `provider/model` allowlist |
-| `DECISIONS_QUICK_TIMEOUT_SECONDS` | No | Decisions (`llm/service/decisions_service.py`): read timeout per attempt at OpenAI's Decisions endpoint (default 30). On failure the request falls back to the structured pathway. |
+| `DECISIONS_QUICK_TIMEOUT_SECONDS` | No | Decisions (`llm/service/decisions_service.py`): read timeout per attempt at OpenAI's Decisions endpoint (default 15; measured calls take 1–3.5 s at any input size). On failure the request falls back to the structured pathway. Keep it well above normal latency — a timeout also opens the skip window. |
 | `DECISIONS_QUICK_MAX_RETRIES` | No | SDK retries per Decisions endpoint call — 408/409/429/5xx/connection errors with exponential backoff (default 1; worst case before the fallback ≈ (retries + 1) × timeout). |
 | `DECISIONS_QUICK_SKIP_SECONDS` | No | After a failed Decisions endpoint call, every process (web + worker, via the cache) uses the structured pathway for this long (default 60; `0` = retry the endpoint on every request). One WARNING per skip episode. |
 | `DECISIONS_STRUCTURED_BATCH_SIZE` | No | Questions per structured-output call on the structured decisions pathway (default 25). |
