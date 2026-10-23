@@ -203,6 +203,20 @@ class SubagentCanvasWriteEditTests(TestCase):
         self.run.refresh_from_db()
         self.assertEqual(self.run.canvas, "original text")
 
+    def test_edit_append_adds_text_at_the_end(self):
+        self.run.canvas = "# Findings\n\nOne."
+        self.run.save(update_fields=["canvas"])
+        out = _invoke(SubagentCanvasEditTool, {"append": "## Gaps\n\nNone."}, self.ctx)
+        self.assertEqual(out["status"], "ok")
+        self.assertEqual(out["appended_chars"], len("## Gaps\n\nNone."))
+        self.run.refresh_from_db()
+        self.assertEqual(self.run.canvas, "# Findings\n\nOne.\n\n## Gaps\n\nNone.")
+
+    def test_edit_without_edits_or_append_errors(self):
+        tool = SubagentCanvasEditTool()
+        tool.set_context(self.ctx)
+        self.assertIn("NOT run", tool.invoke({}))
+
     def test_unknown_run_is_inert(self):
         ctx = _ctx(self.user.id, self.thread.id, run_id=uuid.uuid4())
         out = _invoke(SubagentCanvasWriteTool, {"content": "x"}, ctx)

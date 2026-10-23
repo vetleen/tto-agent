@@ -159,6 +159,58 @@ class EditCanvasToolTests(TestCase):
         self.assertEqual(result["total_lines"], 4)
         self.assertEqual(result["chars"], len("line one\nline two\nline three\nline four"))
 
+    def test_append_adds_text_at_the_end(self):
+        self._setup_canvas("# Report\n\nPart one.\n")
+        result = _invoke(EditCanvasTool, {"append": "## Part two\n\nMore."}, _ctx(self.user.pk, self.thread.id))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["applied"], 0)
+        self.assertEqual(result["appended_chars"], len("## Part two\n\nMore."))
+        canvas = ChatCanvas.objects.get(thread=self.thread, title="Doc")
+        self.assertEqual(canvas.content, "# Report\n\nPart one.\n\n## Part two\n\nMore.")
+        self.assertEqual(result["total_lines"], len(canvas.content.split("\n")))
+        self.assertEqual(canvas.checkpoints.order_by("-order").first().description, "Appended text")
+
+    def test_append_runs_after_edits(self):
+        self._setup_canvas("Draft: TODO")
+        result = _invoke(EditCanvasTool, {
+            "edits": [{"old_text": "TODO", "new_text": "done"}], "append": "Next part.",
+        }, _ctx(self.user.pk, self.thread.id))
+        self.assertEqual(result["applied"], 1)
+        canvas = ChatCanvas.objects.get(thread=self.thread, title="Doc")
+        self.assertEqual(canvas.content, "Draft: done\n\nNext part.")
+
+    def test_append_to_empty_canvas_has_no_leading_blank_line(self):
+        self._setup_canvas("")
+        _invoke(EditCanvasTool, {"append": "First."}, _ctx(self.user.pk, self.thread.id))
+        self.assertEqual(ChatCanvas.objects.get(thread=self.thread, title="Doc").content, "First.")
+
+    def test_no_edits_and_no_append_is_an_error(self):
+        self._setup_canvas("x")
+        tool = EditCanvasTool()
+        tool.set_context(_ctx(self.user.pk, self.thread.id))
+        out = tool.invoke({"edits": []})
+        self.assertIn("NOT run", out)
+        self.assertIn("append", out)
+        self.assertEqual(ChatCanvas.objects.get(thread=self.thread, title="Doc").content, "x")
+
+    def test_oversized_append_is_rejected(self):
+        from chat.services import CANVAS_MAX_CHARS
+
+        self._setup_canvas("x")
+        result = _invoke(
+            EditCanvasTool, {"append": "y" * (CANVAS_MAX_CHARS + 1)}, _ctx(self.user.pk, self.thread.id),
+        )
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(ChatCanvas.objects.get(thread=self.thread, title="Doc").content, "x")
+
+    def test_trim_drops_append_with_read_note(self):
+        trimmed = EditCanvasTool().trim_args_at_edit_point(
+            {"append": "z" * 5000, "canvas_name": "Doc"}, later_calls=[],
+        )
+        self.assertEqual(trimmed.args, {"canvas_name": "Doc"})
+        self.assertIn("5,000-char appended text", trimmed.note)
+        self.assertIn("canvas_read", trimmed.note)
+
     def test_failed_edit_reports_unchanged_canvas_size(self):
         self._setup_canvas("a\nb\nc")
         result = _invoke(EditCanvasTool, {

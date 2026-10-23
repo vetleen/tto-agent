@@ -21,11 +21,18 @@ import json
 import logging
 
 from django.core.exceptions import ValidationError as DjangoValidationError
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
-from chat.canvas_tools import EditItem, _read_canvas_result
+from chat.canvas_tools import (
+    _APPEND_DESCRIPTION,
+    _NOTHING_TO_DO,
+    EditItem,
+    _edit_args_dropped,
+    _read_canvas_result,
+    append_to_canvas,
+)
 from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
-from llm.tools.interfaces import ArgTrim, drop_args, edits_description
+from llm.tools.interfaces import ArgTrim, drop_args
 
 logger = logging.getLogger(__name__)
 
@@ -64,8 +71,17 @@ class SubagentCanvasWriteInput(ReasonBaseModel):
 
 class SubagentCanvasEditInput(ReasonBaseModel):
     edits: list[EditItem] = Field(
-        description="List of targeted find-replace edits to apply."
+        default_factory=list,
+        description="List of targeted find-replace edits to apply.",
     )
+    append: str = Field(default="", description=_APPEND_DESCRIPTION)
+
+    @model_validator(mode="after")
+    def _edits_or_append(self):
+        # A copied trimmed call must fail validation, never reach the canvas.
+        if not self.edits and not self.append:
+            raise ValueError(_NOTHING_TO_DO)
+        return self
 
     @field_validator("edits", mode="before")
     @classmethod
@@ -177,16 +193,15 @@ class SubagentCanvasEditTool(ContextAwareTool):
         "only need to change specific parts. Each edit specifies old_text to find "
         "and new_text to replace it with. The old_text must match exactly once — "
         "if it appears multiple times, include more surrounding context to make "
-        "it unique. If your canvas is empty, use subagent_canvas_write first."
+        "it unique. If your canvas is empty, use subagent_canvas_write first. "
+        "To add text at the end, pass `append` (no old_text needed)."
     )
     args_schema: type[BaseModel] = SubagentCanvasEditInput
 
     def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> ArgTrim | None:
-        if "edits" not in args:
-            return None
-        return drop_args(args, {"edits": edits_description(args["edits"])}, _CANVAS_READ_WHERE)
+        return drop_args(args, _edit_args_dropped(args), _CANVAS_READ_WHERE)
 
-    def _run(self, edits: list[dict] | list[EditItem], **kwargs) -> str:
+    def _run(self, edits: list[dict] | list[EditItem] | None = None, append: str = "", **kwargs) -> str:
         from chat.edit_utils import apply_unique_text_edits
         from chat.services import (
             clip_to_canvas,
@@ -204,19 +219,30 @@ class SubagentCanvasEditTool(ContextAwareTool):
                 edit.get("old_text", "") if isinstance(edit, dict) else edit.old_text,
                 edit.get("new_text", "") if isinstance(edit, dict) else edit.new_text,
             )
-            for edit in edits
+            for edit in edits or []
         ]
-        # A replacement text over the cap is a runaway, not an edit.
-        rejection = oversized_edit_rejection(pairs, write_tool="subagent_canvas_write")
+        if not pairs and not append:
+            return json.dumps({
+                "status": "error",
+                "message": _NOTHING_TO_DO,
+            })
+        # A replacement or appended text over the cap is a runaway, not an edit.
+        rejection = oversized_edit_rejection(
+            [*pairs, ("", append)] if append else pairs, write_tool="subagent_canvas_write",
+        )
         if rejection:
             return json.dumps(rejection)
 
-        new_content, applied, failed = apply_unique_text_edits(run.canvas, pairs)
+        if pairs:
+            new_content, applied, failed = apply_unique_text_edits(run.canvas, pairs)
+        else:
+            new_content, applied, failed = run.canvas, 0, []
         hint = large_replacement_hint(failed, write_tool="subagent_canvas_write")
+        new_content = append_to_canvas(new_content, append)
 
-        # Nothing matched — leave the canvas untouched and report an error, so the
-        # model doesn't believe the edit succeeded (mirrors canvas_edit).
-        if applied == 0:
+        # Nothing matched (and nothing appended) — leave the canvas untouched and
+        # report an error, so the model doesn't believe the edit succeeded.
+        if applied == 0 and not append:
             result = {
                 "status": "error",
                 "applied": 0,
@@ -230,6 +256,8 @@ class SubagentCanvasEditTool(ContextAwareTool):
         run.canvas, original_chars = clip_to_canvas(new_content)
         run.save(update_fields=["canvas"])
         result = {"status": "ok", "applied": applied, "failed": failed}
+        if append:
+            result["appended_chars"] = len(append)
         # Echo the updated canvas so the model re-syncs after anchored edits —
         # but only while it fits the run's per-read cap; a 225k canvas would cost
         # ~56k tokens per edit. Over the cap: its shape, and a pointer to re-read.

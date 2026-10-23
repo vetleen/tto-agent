@@ -6,7 +6,7 @@ import json
 import logging
 import re
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from chat.services import CANVAS_MAX_CHARS, canvas_size_fields
 from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
@@ -63,10 +63,45 @@ class EditItem(BaseModel):
     reason: str = Field(default="", description="Brief reason for this edit.")
 
 
+_NOTHING_TO_DO = "Nothing to do: pass edits (old_text → new_text) and/or append."
+
+_APPEND_DESCRIPTION = (
+    "Text to add at the end of the canvas, after a blank line (no old_text needed; "
+    "applied after any edits). Use it to write a long document in parts."
+)
+
+
+def _edit_args_dropped(args: dict) -> dict:
+    """The big, re-readable arguments of an edit call, for ``drop_args``."""
+    dropped = {}
+    if "edits" in args:
+        dropped["edits"] = edits_description(args["edits"])
+    if isinstance(args.get("append"), str) and args["append"]:
+        dropped["append"] = f"the {len(args['append']):,}-char appended text"
+    return dropped
+
+
+def _edit_checkpoint_description(applied: int, append: str) -> str:
+    parts = ["Edited %d section(s)" % applied] if applied else []
+    if append:
+        parts.append("appended text")
+    return ", ".join(parts).capitalize()
+
+
+def append_to_canvas(content: str, append: str) -> str:
+    """``content`` with ``append`` added at the end, after a blank line."""
+    if not append:
+        return content
+    head = (content or "").rstrip("\n")
+    return f"{head}\n\n{append}" if head.strip() else append
+
+
 class EditCanvasInput(ReasonBaseModel):
     edits: list[EditItem] = Field(
-        description="List of targeted find-replace edits to apply sequentially."
+        default_factory=list,
+        description="List of targeted find-replace edits to apply sequentially.",
     )
+    append: str = Field(default="", description=_APPEND_DESCRIPTION)
     canvas_name: str = Field(
         default="",
         description=(
@@ -74,6 +109,14 @@ class EditCanvasInput(ReasonBaseModel):
             "canvas (the error lists the titles); may be omitted when there is exactly one."
         ),
     )
+
+    @model_validator(mode="after")
+    def _edits_or_append(self):
+        # A copied trimmed call (edits/append dropped) must fail validation,
+        # never reach the canvas.
+        if not self.edits and not self.append:
+            raise ValueError(_NOTHING_TO_DO)
+        return self
 
     @field_validator("edits", mode="before")
     @classmethod
@@ -117,9 +160,8 @@ class WriteCanvasTool(ContextAwareTool):
         "Use this when starting a document from scratch or doing a full rewrite. "
         "For targeted changes to an existing document, prefer the canvas_edit tool instead. "
         f"Content over {CANVAS_MAX_CHARS:,} characters is rejected. A long document cannot be "
-        "written in one call: write the first part with canvas_write (end it with a marker "
-        "line such as `<!-- continued -->`), then canvas_edit calls that replace the marker "
-        "with the next part and a new marker, each call well under your output limit."
+        "written in one call: write the first part with canvas_write, then add each next "
+        "part with canvas_edit(append=...), each call well under your output limit."
     )
     args_schema: type[BaseModel] = WriteCanvasInput
 
@@ -253,16 +295,18 @@ class EditCanvasTool(ContextAwareTool):
         "the document — if it appears multiple times, include more surrounding "
         "context to make it unique. If no canvas exists yet, use canvas_write first. "
         "Read the canvas first (canvas_read) so old_text matches the text as it is now. "
-        f"A replacement text over {CANVAS_MAX_CHARS:,} characters is rejected."
+        "To add text at the end, pass `append` (no read or old_text needed). "
+        f"A replacement or appended text over {CANVAS_MAX_CHARS:,} characters is rejected."
     )
     args_schema: type[BaseModel] = EditCanvasInput
 
     def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> ArgTrim | None:
-        if "edits" not in args:
-            return None
-        return drop_args(args, {"edits": edits_description(args["edits"])}, _CANVAS_READ_WHERE)
+        return drop_args(args, _edit_args_dropped(args), _CANVAS_READ_WHERE)
 
-    def _run(self, edits: list[dict] | list[EditItem], canvas_name: str = "", **kwargs) -> str:
+    def _run(
+        self, edits: list[dict] | list[EditItem] | None = None, canvas_name: str = "",
+        append: str = "", **kwargs,
+    ) -> str:
         from chat.services import (
             large_replacement_hint,
             oversized_edit_rejection,
@@ -278,11 +322,16 @@ class EditCanvasTool(ContextAwareTool):
                 edit.get("old_text", "") if isinstance(edit, dict) else edit.old_text,
                 edit.get("new_text", "") if isinstance(edit, dict) else edit.new_text,
             )
-            for edit in edits
+            for edit in edits or []
         ]
-        # A replacement text over the cap is a runaway, not an edit: refuse it
-        # before resolving or matching anything.
-        rejection = oversized_edit_rejection(pairs)
+        if not pairs and not append:
+            return json.dumps({
+                "status": "error",
+                "message": _NOTHING_TO_DO,
+            })
+        # A replacement or appended text over the cap is a runaway, not an edit:
+        # refuse it before resolving or matching anything.
+        rejection = oversized_edit_rejection([*pairs, ("", append)] if append else pairs)
         if rejection:
             return json.dumps(rejection)
 
@@ -296,13 +345,17 @@ class EditCanvasTool(ContextAwareTool):
         # buffer) so one edit can't match text another edit just inserted.
         from chat.edit_utils import apply_unique_text_edits
 
-        new_content, applied, failed = apply_unique_text_edits(canvas.content, pairs)
+        if pairs:
+            new_content, applied, failed = apply_unique_text_edits(canvas.content, pairs)
+        else:
+            new_content, applied, failed = canvas.content, 0, []
         hint = large_replacement_hint(failed)
+        new_content = append_to_canvas(new_content, append)
 
-        # Nothing matched — report an error and leave the canvas untouched (no
-        # save, no checkpoint), mirroring document_edit. Returning "ok" here would
-        # let the model believe the edit succeeded.
-        if applied == 0:
+        # Nothing matched (and nothing appended) — report an error and leave the
+        # canvas untouched (no save, no checkpoint), mirroring document_edit.
+        # Returning "ok" here would let the model believe the edit succeeded.
+        if applied == 0 and not append:
             result = {
                 "status": "error",
                 "applied": 0,
@@ -354,7 +407,7 @@ class EditCanvasTool(ContextAwareTool):
         focus_canvas(thread_id, canvas)
         create_canvas_checkpoint(
             canvas, source="ai_edit",
-            description="Edited %d section(s)" % applied,
+            description=_edit_checkpoint_description(applied, append),
         )
         if pre_ai_cp is not None and canvas.accepted_checkpoint_id is None:
             canvas.accepted_checkpoint = pre_ai_cp
@@ -368,6 +421,8 @@ class EditCanvasTool(ContextAwareTool):
             "canvas_id": str(canvas.pk),
             **canvas_size_fields(canvas.content),
         }
+        if append:
+            result["appended_chars"] = len(append)
         if hint:
             result["hint"] = hint
         if original_chars:
