@@ -1516,10 +1516,12 @@ def _subagent_reasoning_row(org, tier: str) -> dict:
     ``model`` is the tier's effective model (org override, else the org's tier
     default); the level is stored under ``subagents.reasoning[tier]``.
     """
-    from core.preferences import resolve_org_feature_model
+    from core.preferences import resolve_feature_model_from_prefs
 
-    model = resolve_org_feature_model(org.id, SUBAGENT_TIER_FEATURES[tier])
-    entry = (((org.preferences or {}).get("subagents") or {}).get("reasoning") or {}).get(tier) or {}
+    # Resolve from the org row already in hand (no second Organization fetch).
+    prefs = org.preferences or {}
+    model = resolve_feature_model_from_prefs(prefs, SUBAGENT_TIER_FEATURES[tier])
+    entry = ((prefs.get("subagents") or {}).get("reasoning") or {}).get(tier) or {}
     return {"tier": tier, **_reasoning_row_state(model, entry)}
 
 
@@ -1529,10 +1531,11 @@ def _feature_reasoning_row(org, feature_key: str) -> dict:
     ``model`` is the feature's effective model; the level is stored under
     ``feature_reasoning[feature_key]`` (core.preferences.resolve_org_feature_reasoning).
     """
-    from core.preferences import resolve_org_feature_model
+    from core.preferences import resolve_feature_model_from_prefs
 
-    model = resolve_org_feature_model(org.id, feature_key)
-    entry = ((org.preferences or {}).get("feature_reasoning") or {}).get(feature_key) or {}
+    prefs = org.preferences or {}
+    model = resolve_feature_model_from_prefs(prefs, feature_key)
+    entry = (prefs.get("feature_reasoning") or {}).get(feature_key) or {}
     return {"feature": feature_key, **_reasoning_row_state(model, entry)}
 
 
