@@ -8,7 +8,7 @@ import re
 
 from pydantic import BaseModel, Field, field_validator
 
-from chat.services import CANVAS_MAX_CHARS
+from chat.services import CANVAS_MAX_CHARS, canvas_size_fields
 from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
 from llm.tools.interfaces import ArgTrim, drop_args, edits_description
 
@@ -228,6 +228,7 @@ class WriteCanvasTool(ContextAwareTool):
 
         result = {
             "status": "ok", "title": canvas.title, "canvas_id": str(canvas.pk),
+            **canvas_size_fields(canvas.content),
         }
         if original_chars:
             result.update(truncation_result_fields(original_chars))
@@ -309,6 +310,7 @@ class EditCanvasTool(ContextAwareTool):
                 "message": "No edits applied.",
                 "title": canvas.title,
                 "canvas_id": str(canvas.pk),
+                **canvas_size_fields(canvas.content),
             }
             if hint:
                 result["hint"] = hint
@@ -364,6 +366,7 @@ class EditCanvasTool(ContextAwareTool):
             "failed": failed,
             "title": canvas.title,
             "canvas_id": str(canvas.pk),
+            **canvas_size_fields(canvas.content),
         }
         if hint:
             result["hint"] = hint

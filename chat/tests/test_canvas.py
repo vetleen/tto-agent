@@ -62,6 +62,24 @@ class WriteCanvasToolTests(TestCase):
         self.assertNotIn("content", result)
         self.assertNotIn("accepted_content", result)
 
+    def test_result_reports_canvas_size(self):
+        """The agent learns the line range from the write itself (no guessing
+        start_line past the end to find where the document stops)."""
+        result = _invoke(
+            WriteCanvasTool, {"title": "T", "content": "# A\n\nline two\nline three"},
+            _ctx(self.user.pk, self.thread.id),
+        )
+        self.assertEqual(result["total_lines"], 4)
+        self.assertEqual(result["chars"], len("# A\n\nline two\nline three"))
+        self.assertGreater(result["tokens"], 0)
+
+    def test_workspace_entry_counts_lines(self):
+        from chat.services import canvas_prompt_entry
+
+        _invoke(WriteCanvasTool, {"title": "T", "content": "a\nb\nc"}, _ctx(self.user.pk, self.thread.id))
+        canvas = ChatCanvas.objects.get(thread=self.thread, title="T")
+        self.assertEqual(canvas_prompt_entry(canvas)["lines"], 3)
+
     def test_no_context_returns_error(self):
         tool = WriteCanvasTool()
         result = json.loads(tool.invoke({"title": "T", "content": "C"}))
@@ -132,6 +150,22 @@ class EditCanvasToolTests(TestCase):
         self.assertNotIn("content", result)
         canvas = ChatCanvas.objects.get(thread=self.thread, title="Doc")
         self.assertIn("5 years", canvas.content)
+
+    def test_result_reports_canvas_size_after_edit(self):
+        self._setup_canvas("line one\nline two")
+        result = _invoke(EditCanvasTool, {
+            "edits": [{"old_text": "line two", "new_text": "line two\nline three\nline four"}]
+        }, _ctx(self.user.pk, self.thread.id))
+        self.assertEqual(result["total_lines"], 4)
+        self.assertEqual(result["chars"], len("line one\nline two\nline three\nline four"))
+
+    def test_failed_edit_reports_unchanged_canvas_size(self):
+        self._setup_canvas("a\nb\nc")
+        result = _invoke(EditCanvasTool, {
+            "edits": [{"old_text": "zzz", "new_text": "y"}]
+        }, _ctx(self.user.pk, self.thread.id))
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["total_lines"], 3)
 
     def test_skips_unfound_old_text(self):
         self._setup_canvas("Some content here.")
@@ -1774,8 +1808,8 @@ class CanvasWorkspaceListTests(TestCase):
 
     def _entries(self):
         return [
-            {"title": "Prior-art table", "chars": 184_230, "tokens": 46_100, "is_open": True,
-             "seen_state": "changed", "truncated_from_chars": None},
+            {"title": "Prior-art table", "chars": 184_230, "lines": 1_412, "tokens": 46_100,
+             "is_open": True, "seen_state": "changed", "truncated_from_chars": None},
             {"title": "Cover letter", "chars": 2_310, "tokens": 580, "is_open": False,
              "seen_state": "unchanged", "truncated_from_chars": None},
             {"title": "Imported handbook", "chars": 225_000, "tokens": 58_000, "is_open": False,
@@ -1788,7 +1822,7 @@ class CanvasWorkspaceListTests(TestCase):
         prompt = build_semi_static_prompt(canvases=self._entries())
         self.assertIn("# Canvas workspace", prompt)
         self.assertIn(
-            "**Prior-art table** — 184,230 chars, ~46,100 tokens — open in the user's editor "
+            "**Prior-art table** — 1,412 lines, 184,230 chars, ~46,100 tokens — open in the user's editor "
             "— changed since you last read it",
             prompt,
         )

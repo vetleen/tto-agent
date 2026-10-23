@@ -635,6 +635,8 @@ def render_canvas_workspace(canvases: list[dict]) -> str:
     )
     for c in canvases:
         size = f"{c.get('chars', 0):,} chars"
+        if c.get("lines") is not None:
+            size = f"{c['lines']:,} lines, {size}"
         if c.get("truncated_from_chars"):
             size += f" (cut from a {c['truncated_from_chars']:,}-char source)"
         tokens = c.get("tokens")

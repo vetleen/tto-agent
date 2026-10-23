@@ -128,6 +128,8 @@ class SubagentCanvasWriteEditTests(TestCase):
         )
         self.assertEqual(out["status"], "ok")
         self.assertEqual(out["chars"], len("Hello world"))
+        self.assertEqual(out["total_lines"], 1)
+        self.assertGreater(out["tokens"], 0)
         self.run.refresh_from_db()
         self.assertEqual(self.run.canvas, "Hello world")
         self.assertEqual(self.run.canvas_title, "Doc")
@@ -494,6 +496,8 @@ class SubagentLargeCanvasTests(TestCase):
         self.assertEqual(out["status"], "ok")
         self.assertNotIn("content", out)
         self.assertGreater(out["tokens"], 12_000)
+        self.run.refresh_from_db()
+        self.assertEqual(out["total_lines"], len(self.run.canvas.split("\n")))
         self.assertIn("outline", out)
         self.assertIn("subagent_canvas_read", out["note"])
 

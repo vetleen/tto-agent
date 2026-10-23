@@ -156,7 +156,9 @@ class SubagentCanvasWriteTool(ContextAwareTool):
             run.canvas_title = title[:255]
             update_fields.append("canvas_title")
         run.save(update_fields=update_fields)
-        result = {"status": "ok", "chars": len(run.canvas)}
+        from chat.services import canvas_size_fields
+
+        result = {"status": "ok", **canvas_size_fields(run.canvas)}
         if original_chars:
             result.update(truncation_result_fields(original_chars))
         return json.dumps(result)
@@ -240,6 +242,7 @@ class SubagentCanvasEditTool(ContextAwareTool):
         if tokens <= cap:
             result["content"] = run.canvas
         else:
+            result["total_lines"] = len(run.canvas.split("\n"))
             result["chars"] = len(run.canvas)
             result["tokens"] = tokens
             result["outline"] = canvas_outline(run.canvas, tokens=tokens)

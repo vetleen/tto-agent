@@ -236,6 +236,19 @@ def canvas_outline(content: str | None, *, tokens: int | None = None) -> dict:
     return outline
 
 
+def canvas_size_fields(content: str | None) -> dict:
+    """The whole canvas's size for a write/edit result, so the agent knows the
+    line range without guessing (lines counted as ``read_canvas_range`` does)."""
+    from core.tokens import count_tokens
+
+    content = content or ""
+    return {
+        "total_lines": len(content.split("\n")) if content else 0,
+        "chars": len(content),
+        "tokens": count_tokens(content) if content else 0,
+    }
+
+
 def read_canvas_range(
     content: str | None, *, start_line: int = 1, end_line: int | None = None, max_tokens: int,
 ) -> dict:
@@ -699,6 +712,7 @@ def canvas_prompt_entry(canvas, *, open_id=None) -> dict:
     return {
         "title": canvas.title,
         "chars": len(canvas.content or ""),
+        "lines": len(canvas.content.split("\n")) if canvas.content else 0,
         "tokens": canvas.token_count,
         "is_open": open_id is not None and canvas.pk == open_id,
         "seen_state": seen_state,
