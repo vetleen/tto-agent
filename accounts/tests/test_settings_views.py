@@ -384,6 +384,30 @@ class OrgSettingsAccessTests(TestCase):
         self.assertIsNotNone(row, "Disabled skill must remain visible on the settings page")
         self.assertFalse(row["enabled"])
 
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_toolkit_reads_enabled_without_an_org_entry(self, mock_reg, mock_models):
+        """The settings toggle mirrors the resolver: a toolkit with no org entry
+        is on; a system playbook with no entry is off."""
+        from agent_skills.models import AgentSkill
+
+        mock_reg.return_value.list_tools.return_value = {}
+        AgentSkill.objects.filter(slug__in=["tk-demo", "pb-demo"]).delete()
+        AgentSkill.objects.create(
+            slug="tk-demo", name="Toolkit Demo", instructions="i",
+            level="system", kind="toolkit",
+        )
+        AgentSkill.objects.create(
+            slug="pb-demo", name="Playbook Demo", instructions="i", level="system",
+        )
+
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        by_slug = {s["slug"]: s for s in response.context["skills_data"]}
+        self.assertTrue(by_slug["tk-demo"]["enabled"])
+        self.assertFalse(by_slug["pb-demo"]["enabled"])
+
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
 class OrgAllowedModelsUpdateTests(TestCase):
@@ -719,6 +743,31 @@ class PreferencesSkillCascadeTests(TestCase):
         prefs = get_preferences(self.user)
         skill_slugs = [s["slug"] for s in prefs.allowed_skills]
         self.assertNotIn("test-skill", skill_slugs)
+
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_toolkit_included_by_default(self, mock_reg, mock_models):
+        """System toolkits are on without an org entry; an explicit False
+        still disables them. System playbooks stay opt-in (above)."""
+        from agent_skills.models import AgentSkill
+
+        mock_reg.return_value.list_tools.return_value = {}
+        AgentSkill.objects.create(
+            slug="canvas_tools", name="Canvas Tools", instructions="i",
+            level="system", kind="toolkit",
+        )
+
+        from core.preferences import get_preferences
+
+        prefs = get_preferences(self.user)
+        self.assertIn("canvas_tools", [s["slug"] for s in prefs.allowed_skills])
+        self.assertNotIn("test-skill", [s["slug"] for s in prefs.allowed_skills])
+
+        self.org.preferences = {"skills": {"canvas_tools": {"enabled": False}}}
+        self.org.save(update_fields=["preferences"])
+        # Membership (and so the org prefs) is memoized per user instance.
+        prefs = get_preferences(User.objects.get(pk=self.user.pk))
+        self.assertNotIn("canvas_tools", [s["slug"] for s in prefs.allowed_skills])
 
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
     @patch("llm.tools.registry.get_tool_registry")

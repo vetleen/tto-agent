@@ -324,6 +324,8 @@ def org_settings_page(request):
 
     # Build skills data for the settings page, split by audience into the
     # main-agent skills and the sub-agent specializations subsections.
+    from agent_skills.services import skill_enabled_by_default
+
     visible_skills = list(
         AgentSkill.objects.filter(level="system", is_active=True)
     ) + list(
@@ -340,7 +342,7 @@ def org_settings_page(request):
             "emoji": skill.emoji,
             "description": skill.description,
             "tool_names": skill.tool_names or [],
-            "enabled": sp.get("enabled", skill.level != "system") is not False,
+            "enabled": sp.get("enabled", skill_enabled_by_default(skill)) is not False,
             "tools": {t: tool_toggles.get(t, True) is not False for t in (skill.tool_names or [])},
         }
         if getattr(skill, "audience", "main") == "subagent":

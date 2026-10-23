@@ -458,6 +458,7 @@ def get_preferences(user) -> ResolvedPreferences:
         filter_to_skill_tools,
         get_available_skills,
         get_subagent_skills,
+        skill_enabled_by_default,
     )
 
     org_skills_prefs = org_prefs.get("skills", {})
@@ -471,7 +472,7 @@ def get_preferences(user) -> ResolvedPreferences:
         entries = []
         for skill in skills:
             skill_pref = org_skills_prefs.get(skill.slug, {})
-            if skill_pref.get("enabled", skill.level != "system") is False:
+            if skill_pref.get("enabled", skill_enabled_by_default(skill)) is False:
                 continue
             verdict = approval.get(str(skill.id)) or {
                 "approved": True, "scan_state": skill.scan_state,

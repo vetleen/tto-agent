@@ -83,38 +83,45 @@ def skill_enabled_by_default(skill) -> bool:
 _SYSTEM_SLUGS_CACHE_ATTR = "_cached_active_system_skill_slugs"
 
 
-def _active_system_skill_slugs(user) -> set[str]:
-    """Return the slugs of every active system-level skill, memoized on ``user``.
+def _active_system_skill_index(user) -> dict[str, str]:
+    """Return ``{slug: kind}`` for every active system-level skill, memoized on
+    ``user``.
 
-    This set is *global* — it depends only on the ``AgentSkill`` table, never on
-    the user or their org — but system skills are seed-only (there is no runtime
-    UI to create or edit them), so it is invariant for the life of any request
-    or conversation. Memoizing it on the user instance collapses the repeated
-    lookup a sub-agent run makes — ``get_preferences`` resolves both the main
-    and sub-agent skill lists, then ``get_run_specialization_skill`` resolves
-    the sub-agent list again — from three identical queries into one. That
-    repetition is the N+1 Sentry flagged as WILFRED-8M in ``run_subagent_task``.
+    This index is *global* — it depends only on the ``AgentSkill`` table, never
+    on the user or their org — but system skills are seed-only (there is no
+    runtime UI to create or edit them), so it is invariant for the life of any
+    request or conversation. Memoizing it on the user instance collapses the
+    repeated lookup a sub-agent run makes — ``get_preferences`` resolves both
+    the main and sub-agent skill lists, then ``get_run_specialization_skill``
+    resolves the sub-agent list again — from three identical queries into one.
+    That repetition is the N+1 Sentry flagged as WILFRED-8M in
+    ``run_subagent_task``.
 
     ``request.user`` is a fresh instance per request, so the cache is naturally
     request-scoped; a long-lived holder (a WebSocket consumer) would only see a
-    stale set after a mid-connection reseed of system skills, which self-heals
+    stale index after a mid-connection reseed of system skills, which self-heals
     on reconnect or via :func:`invalidate_system_skill_slugs_cache`.
     """
     cached = getattr(user, _SYSTEM_SLUGS_CACHE_ATTR, None)
     if cached is not None:
         return cached
-    slugs = set(
+    index = dict(
         AgentSkill.objects.filter(
             level="system", is_active=True, deleted_at__isnull=True
-        ).values_list("slug", flat=True)
+        ).values_list("slug", "kind")
     )
     try:
-        setattr(user, _SYSTEM_SLUGS_CACHE_ATTR, slugs)
+        setattr(user, _SYSTEM_SLUGS_CACHE_ATTR, index)
     except (AttributeError, TypeError):
         # A user object that refuses attributes (not a real Django User) — just
         # degrade to the uncached result rather than blow up skill resolution.
         pass
-    return slugs
+    return index
+
+
+def _active_system_skill_slugs(user) -> set[str]:
+    """The slugs of every active system-level skill (see the index above)."""
+    return set(_active_system_skill_index(user))
 
 
 def invalidate_system_skill_slugs_cache(user) -> None:
@@ -212,8 +219,10 @@ def _org_disabled_info(user) -> tuple[set[str], set[str]]:
     *all_tier_disabled*: slugs an admin explicitly set ``enabled: False`` —
     hides every tier (system, org, user) of that slug.
 
-    *system_tier_disabled*: system-skill slugs not explicitly enabled — hides
-    only the system tier.  Org / user skills sharing the slug stay visible.
+    *system_tier_disabled*: system *playbook* slugs not explicitly enabled —
+    hides only the system tier (org / user skills sharing the slug stay
+    visible). System toolkits are on unless explicitly disabled, so they only
+    ever land in the first set (see :func:`skill_enabled_by_default`).
 
     The org settings page queries ``AgentSkill`` directly and intentionally
     bypasses this so admins can still toggle disabled skills back on.
@@ -230,9 +239,10 @@ def _org_disabled_info(user) -> tuple[set[str], set[str]]:
         if isinstance(pref, dict) and pref.get("enabled") is False
     }
 
-    system_slugs = _active_system_skill_slugs(user)
     system_tier_disabled = set()
-    for slug in system_slugs:
+    for slug, kind in _active_system_skill_index(user).items():
+        if kind == AgentSkill.Kind.TOOLKIT:
+            continue  # on by default; an explicit False is in all_tier_disabled
         pref = org_skills.get(slug)
         if not isinstance(pref, dict) or pref.get("enabled") is not True:
             system_tier_disabled.add(slug)

@@ -67,6 +67,29 @@ class GetAvailableSkillsTests(TestCase):
         skills = get_available_skills(self.user)
         self.assertEqual(len(skills), 0)
 
+    def test_toolkits_visible_by_default(self):
+        """System toolkits are on unless an admin explicitly disabled them;
+        system playbooks stay opt-in."""
+        AgentSkill.objects.create(
+            slug="canvas_tools", name="Canvas Tools", instructions="i",
+            level="system", kind="toolkit",
+        )
+        AgentSkill.objects.create(
+            slug="sys-skill", name="System Skill", instructions="i", level="system",
+        )
+        self.assertEqual(
+            [s.slug for s in get_available_skills(self.user)], ["canvas_tools"]
+        )
+
+    def test_toolkit_hidden_when_explicitly_disabled(self):
+        AgentSkill.objects.create(
+            slug="canvas_tools", name="Canvas Tools", instructions="i",
+            level="system", kind="toolkit",
+        )
+        self.org.preferences = {"skills": {"canvas_tools": {"enabled": False}}}
+        self.org.save(update_fields=["preferences"])
+        self.assertEqual(get_available_skills(self.user), [])
+
     def test_org_skills_visible_to_members(self):
         AgentSkill.objects.create(
             slug="org-skill", name="Org Skill",

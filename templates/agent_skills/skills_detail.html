@@ -45,6 +45,9 @@
          class="wf-input text-heading text-lg font-semibold rounded-base block w-full px-3 py-2 {% if not editable %}cursor-not-allowed{% endif %}">
           <p class="mt-2 text-xs text-body flex flex-wrap items-center gap-x-2 gap-y-1">
             <span class="wf-mono inline-block px-2 py-0.5 rounded-full border border-accent-subtle text-fg-accent">{{ level_label }}</span>
+            {% if skill.kind == "toolkit" %}
+            <span class="wf-mono inline-block px-2 py-0.5 rounded-full border border-default text-body" title="A built-in toolkit: it gives {{ assistant_name }} extra tools while attached.">Toolkit</span>
+            {% endif %}
             {% if is_pending_share %}
             <span class="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded-full border whitespace-nowrap text-fg-warning bg-warning-soft border-warning-subtle" title="{% if is_review %}Shared with the organization by {{ skill.created_by.first_name|default:skill.created_by.email }}{% else %}Waiting for an organization admin to approve it{% endif %}">Needs approval</span>
             {% endif %}
@@ -245,6 +248,8 @@
         </button>
       </form>
       {% else %}
+      {# Toolkits are built in: no editing, no copies — only export. #}
+      {% if skill.kind != "toolkit" %}
       <form method="post" action="{% url 'agent_skills_edit_in_chat' skill_id=skill.id %}" class="m-0">
         {% csrf_token %}
         <button type="submit" data-wf-ai-trigger data-busy-label="Opening {{ assistant_name }}…"
@@ -263,6 +268,7 @@
       <button type="button" id="save-as-user-btn" class="bg-neutral-primary-soft hover:bg-neutral-secondary border border-default text-heading shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand">
         Copy as personal skill
       </button>
+      {% endif %}
       {% endif %}
       {% if not is_org_admin and user_org and skill.level == "user" and editable %}
       {% if is_pending_share %}
@@ -288,7 +294,7 @@
         <button type="button" id="promote-btn" class="bg-neutral-primary-soft hover:bg-neutral-secondary border border-default text-heading shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand">
           Promote to organization skill
         </button>
-        {% elif skill.level == "system" %}
+        {% elif skill.level == "system" and skill.kind != "toolkit" %}
         <button type="button" id="save-as-org-btn" class="bg-neutral-primary-soft hover:bg-neutral-secondary border border-default text-heading shadow-xs font-medium rounded-base text-sm px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-brand">
           Copy as organization skill
         </button>

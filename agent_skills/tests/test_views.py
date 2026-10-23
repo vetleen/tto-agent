@@ -71,6 +71,51 @@ class SkillsListViewTests(TestCase):
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
+class ToolkitActionsHiddenTests(TestCase):
+    """A toolkit row / detail page offers no edit-in-chat or copy actions."""
+
+    def setUp(self):
+        AgentSkill.objects.all().delete()
+        self.admin = User.objects.create_user(email="adm@example.com", password="pw")
+        self.admin.email_verified = True
+        self.admin.save(update_fields=["email_verified"])
+        self.org = Organization.objects.create(name="Acme", slug="acme")
+        Membership.objects.create(user=self.admin, org=self.org, role=Membership.Role.ADMIN)
+        self.toolkit = AgentSkill.objects.create(
+            slug="canvas_tools", name="Canvas Tools", instructions="i",
+            level="system", kind="toolkit", tool_names=["canvas_write"],
+        )
+        self.client.force_login(self.admin)
+
+    def test_list_row_omits_copy_and_edit_actions(self):
+        response = self.client.get(reverse("agent_skills_list"))
+        self.assertContains(response, "Canvas Tools")
+        self.assertNotContains(response, "Copy as organization skill")
+        self.assertNotContains(response, "Copy as personal skill")
+        self.assertNotContains(response, "Edit with")
+        self.assertContains(response, "Export")
+
+        # The same admin sees the actions on a system playbook.
+        AgentSkill.objects.create(slug="pb", name="Playbook", instructions="i", level="system")
+        self.org.preferences = {"skills": {"pb": {"enabled": True}}}
+        self.org.save(update_fields=["preferences"])
+        response = self.client.get(reverse("agent_skills_list"))
+        self.assertContains(response, "Copy as organization skill")
+        self.assertContains(response, "Edit with")
+
+    def test_detail_page_omits_copy_buttons_and_marks_toolkit(self):
+        response = self.client.get(
+            reverse("agent_skills_detail", kwargs={"skill_id": self.toolkit.id})
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, ">Toolkit<")
+        self.assertNotContains(response, "Copy as personal skill")
+        self.assertNotContains(response, 'id="save-as-org-btn"')
+        self.assertNotContains(response, "Edit with")
+        self.assertContains(response, "Export")
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
 class AnnotateSkillsTests(TestCase):
     """The skills-list row annotation: can_edit is derived from a precomputed
     is_org_admin flag (no per-row Membership query)."""
@@ -111,6 +156,14 @@ class AnnotateSkillsTests(TestCase):
 
     def test_system_skill_never_editable(self):
         self.assertTrue(all(not r["can_edit"] for r in self._rows("system", is_org_admin=True)))
+
+    def test_is_toolkit_flag(self):
+        AgentSkill.objects.create(
+            slug="canvas_tools", name="Canvas Tools", instructions="i",
+            level="system", kind="toolkit",
+        )
+        flags = {r["skill"].slug: r["is_toolkit"] for r in self._rows("system", is_org_admin=False)}
+        self.assertEqual(flags, {"sys-x": False, "canvas_tools": True})
 
     def test_list_view_does_not_call_can_edit_skill_per_row(self):
         """Regression: the list path inlines can_edit, so the per-row query

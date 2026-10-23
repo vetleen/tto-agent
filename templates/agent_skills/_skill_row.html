@@ -98,17 +98,20 @@ preflight's `[hidden]` rule is !important).
         </button>
       </form>
       {% else %}
+      {# Toolkits are built in: no editing, no copies — only on/off and export. #}
+      {% if not row.is_toolkit %}
       <form method="post" action="{% url 'agent_skills_edit_in_chat' skill_id=row.skill.id %}" class="p-0">
         {% csrf_token %}
         <button type="submit" class="inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left">
           Edit with {{ assistant_name }}
         </button>
       </form>
+      {% endif %}
       <button type="button" class="skill-toggle-btn inline-flex items-center w-full px-4 py-2 text-sm text-heading hover:bg-neutral-tertiary rounded-base text-left disabled:opacity-50 disabled:cursor-not-allowed"{% if row.scan_pill == "pending" %} disabled{% endif %}>
         {% if row.is_enabled %}Disable{% else %}Enable{% endif %}
       </button>
       {# Copy as personal skill — for admins on an org skill this is replaced by Demote. #}
-      {% if not is_org_admin or row.skill.level != "org" %}
+      {% if not row.is_toolkit %}{% if not is_org_admin or row.skill.level != "org" %}
       <form method="post" action="{% url 'agent_skills_copy' skill_id=row.skill.id %}" class="p-0">
         {% csrf_token %}
         <input type="hidden" name="audience" value="{{ audience }}">
@@ -116,7 +119,7 @@ preflight's `[hidden]` rule is !important).
           Copy as personal skill
         </button>
       </form>
-      {% endif %}
+      {% endif %}{% endif %}
       {% if not is_org_admin and user_org and row.skill.level == "user" and row.can_edit %}
         {% if row.is_pending_share %}
         <form method="post" action="{% url 'agent_skills_share_withdraw' skill_id=row.skill.id %}" class="p-0">
@@ -142,7 +145,7 @@ preflight's `[hidden]` rule is !important).
             Promote to organization skill
           </button>
         </form>
-        {% elif row.skill.level == "system" %}
+        {% elif row.skill.level == "system" and not row.is_toolkit %}
         <form method="post" action="{% url 'agent_skills_copy_to_org' skill_id=row.skill.id %}" class="p-0">
           {% csrf_token %}
           <input type="hidden" name="audience" value="{{ audience }}">

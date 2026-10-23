@@ -98,9 +98,10 @@ class RunUserCacheTests(TestCase):
         AgentSkill.objects.create(slug="sys-a", name="Sys A", level="system")
 
         def _system_slug_selects(cap):
-            # The values_list("slug") lookup is the only slug-only SELECT on the
-            # skills table; the main accessible-skills filter selects every column.
-            marker = '"slug" as "slug" from "agent_skills_agentskill"'
+            # The values_list("slug", "kind") index lookup is the only SELECT on
+            # the skills table that ends on the kind column; the main
+            # accessible-skills filter selects every column.
+            marker = '"kind" as "kind" from "agent_skills_agentskill"'
             return [q for q in cap.captured_queries if marker in q["sql"].lower()]
 
         with CaptureQueriesContext(connection) as cap:

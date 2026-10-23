@@ -125,6 +125,21 @@ class EditInChatViewTests(TestCase):
         self.system_skill.refresh_from_db()
         self.assertEqual(self.system_skill.name, "Sys X")
 
+    def test_toolkit_refused(self):
+        toolkit = AgentSkill.objects.create(
+            slug="canvas_tools", name="Canvas Tools", instructions="i",
+            level="system", kind="toolkit",
+        )
+        self.client.force_login(self.user)
+        response = self.client.post(
+            reverse("agent_skills_edit_in_chat", args=[toolkit.id])
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response.url, reverse("agent_skills_detail", kwargs={"skill_id": toolkit.id})
+        )
+        self.assertFalse(ChatThread.objects.filter(created_by=self.user).exists())
+
     def test_unknown_skill_redirects(self):
         self.client.force_login(self.user)
         response = self.client.post(

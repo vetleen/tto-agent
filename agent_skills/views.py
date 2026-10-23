@@ -233,6 +233,8 @@ def _annotate_skills(
             # Others' pending shares (admin review rows) aren't the viewer's to
             # toggle, copy or export — only to view, approve or decline.
             "is_review": is_pending_share and skill.created_by_id != user.pk,
+            # Toolkits are built in: the row offers on/off, view and export only.
+            "is_toolkit": skill.kind == AgentSkill.Kind.TOOLKIT,
             "has_conflict": has_conflict,
             "conflict_label": conflict_label,
             "relative_date": _relative_date(skill.updated_at),
@@ -1021,6 +1023,9 @@ def skills_edit_in_chat(request, skill_id):
     if target is None:
         messages.error(request, "Skill not found.")
         return redirect("agent_skills_list")
+    if target.kind == AgentSkill.Kind.TOOLKIT:
+        messages.error(request, "Toolkits are built in and can't be edited.")
+        return redirect("agent_skills_detail", skill_id=target.id)
 
     skill_creator = AgentSkill.objects.filter(
         slug="skill-creator", level="system", is_active=True,
