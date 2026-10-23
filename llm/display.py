@@ -184,6 +184,28 @@ def supports_modality(model_id: str, modality: str) -> bool:
     return modality in input_modalities(model_id)
 
 
+# Named capabilities a feature may require of its model
+# (core.preferences.FeatureDefault.required_capability). Registry-only: a model
+# outside the registry has none.
+_CAPABILITY_PREDICATES = {
+    "decisions": lambda info: info.supports_decisions_api,
+}
+
+
+def supports_capability(model_id: str, capability: str) -> bool:
+    """Return True if the registry marks the model with *capability*.
+
+    An unknown capability is a programming error (a typo in FEATURE_DEFAULTS
+    must fail loudly) and raises ValueError; an unknown model is False.
+    """
+    try:
+        predicate = _CAPABILITY_PREDICATES[capability]
+    except KeyError:
+        raise ValueError(f"Unknown model capability: {capability!r}") from None
+    info = get_model_info(model_id)
+    return bool(info is not None and predicate(info))
+
+
 # Fixed token mix behind the "$" rating: the share of tokens by billing kind in
 # prod agent/chat turns (llm_llmcalllog, 2026-08-11..2026-10-10, 573M tokens over
 # 896 turns). Output is ~1% of tokens, so cache writes and reads drive what a

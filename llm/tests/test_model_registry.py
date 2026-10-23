@@ -68,6 +68,10 @@ class RegistryTests(SimpleTestCase):
                 self.assertIsNotNone(info.output_price)
                 self.assertIn(info.default_reasoning_level, info.reasoning_levels)
 
+    def test_decisions_api_support_is_luna_only(self):
+        with_decisions = [m for m in EXPECTED_IDS if get_model_info(m).supports_decisions_api]
+        self.assertEqual(with_decisions, ["openai/gpt-6-luna"])
+
     def test_exact_reasoning_capabilities(self):
         expected = {
             "openai/gpt-6-astra": (("low", "medium", "high", "xhigh", "max"), "medium"),

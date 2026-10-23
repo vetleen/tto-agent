@@ -90,6 +90,9 @@ class ModelInfo:
     # legitimate request, not just the wait for the first byte.
     request_timeout_seconds: int | None = None
     uses_responses_api: bool = False
+    # Accepted by OpenAI's Decisions endpoint (POST /v1/decisions) — the "quick"
+    # pathway of llm.service.decisions_service. GPT-6 Luna only, today.
+    supports_decisions_api: bool = False
     input_modalities: tuple[str, ...] = ("text",)
     output_modalities: tuple[str, ...] = ("text",)
     context_window: int = 128_000
@@ -236,7 +239,8 @@ _MODELS: dict[str, ModelInfo] = {
         # Product choice: high effort (provider default is medium; xhigh
         # benchmarks only marginally better at ~20% more tokens).
         reasoning_levels=_GPT56_LEVELS, default_reasoning_level="high",
-        uses_responses_api=True, input_modalities=_MULTIMODAL,
+        uses_responses_api=True, supports_decisions_api=True,
+        input_modalities=_MULTIMODAL,
         context_window=1_050_000, max_output_tokens=128_000,
         input_price=Decimal("0.10"), cached_input_price=Decimal("0.01"),
         cache_write_price=Decimal("0.125"), output_price=Decimal("0.50"),

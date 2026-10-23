@@ -17,6 +17,7 @@ from llm.display import (
     get_model_meta_tooltip,
     get_price_level,
     get_thinking_levels,
+    supports_capability,
     supports_thinking,
     supports_vision,
 )
@@ -56,6 +57,17 @@ class CapabilityTests(SimpleTestCase):
         self.assertTrue(supports_thinking("moonshot/kimi-k2-thinking"))
         self.assertFalse(supports_thinking("custom/plain"))
         self.assertFalse(supports_vision("custom/plain"))
+
+    def test_decisions_capability_is_registry_only(self):
+        # The quick decisions pathway (POST /v1/decisions) takes GPT-6 Luna only.
+        self.assertTrue(supports_capability("openai/gpt-6-luna", "decisions"))
+        self.assertFalse(supports_capability("openai/gpt-6-sol", "decisions"))
+        self.assertFalse(supports_capability("anthropic/claude-haiku-5-5", "decisions"))
+        # No heuristics for unknown models, unlike vision/thinking.
+        self.assertFalse(supports_capability("openai/gpt-7-luna", "decisions"))
+        # A capability name nobody defined is a programming error.
+        with self.assertRaises(ValueError):
+            supports_capability("openai/gpt-6-luna", "telepathy")
 
 
 class ReasoningLevelTests(SimpleTestCase):
