@@ -1357,8 +1357,7 @@ class SimpleChatPipelineTests(TestCase):
 
 class IterationNoticeTests(TestCase):
     """_iteration_notice: sub-agents get a round-budget countdown with a pacing
-    stage every round; main chat keeps the old warn-only-near-the-end behavior
-    byte-for-byte."""
+    stage every round; main chat keeps the warn-only-near-the-end behavior."""
 
     def _notice(self, i, max_iter, agent_kind):
         from llm.pipelines.simple_chat import _iteration_notice
@@ -1369,9 +1368,9 @@ class IterationNoticeTests(TestCase):
         from llm.pipelines.simple_chat import _round_stage_line
 
         line = _round_stage_line(rounds_left, budget)
-        if line.startswith("Explore"):
+        if line.startswith("You still have room to explore"):
             return "explore"
-        if line.startswith("Converge"):
+        if line.startswith("It may be time to converge"):
             return "converge"
         if line.startswith("Your rounds are almost up"):
             return "wrap"
@@ -1381,12 +1380,12 @@ class IterationNoticeTests(TestCase):
     def test_main_no_notice_far_from_limit(self):
         self.assertIsNone(self._notice(0, 10, "main"))
 
-    def test_main_warning_text_unchanged_at_two_remaining(self):
+    def test_main_warning_text_at_two_remaining(self):
         notice = self._notice(7, 10, "main")  # finished 8 of 10 -> 2 remaining
         self.assertEqual(
             notice.content,
-            "IMPORTANT: You have 2 tool iterations remaining. Wrap up your research "
-            "and prepare to deliver your comprehensive final response as plain text.",
+            "IMPORTANT: You have 2 tool iterations remaining. Wrap up your work "
+            "and prepare to deliver your final response.",
         )
 
     def test_main_warning_text_unchanged_at_last_iteration(self):

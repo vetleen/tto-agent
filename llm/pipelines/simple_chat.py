@@ -50,12 +50,16 @@ def _round_stage_line(rounds_left: int, budget: int) -> str:
         return "Your rounds are almost up: finish your canvas report soon."
     if rounds_left <= budget // 2:
         return (
-            "Converge: start no new lines of inquiry; fill the gaps that matter and make "
-            "sure every section has a draft in your canvas."
+            "It may be time to converge: start no new lines of inquiry, fill the gaps "
+            "that matter, and make sure every section has a draft in your canvas. Once "
+            "the task is done, write your final reply to hand your work back to the "
+            "orchestrator, even if rounds remain."
         )
     return (
-        "Explore: search broadly; note key facts and source URLs in your scratchpad as "
-        "you find them."
+        "You still have room to explore, if the task calls for it: search broadly, and "
+        "note key facts and source URLs in your scratchpad as you find them. Work "
+        "efficiently, and once the task is done, write your final reply to hand your "
+        "work back to the orchestrator, even if rounds remain."
     )
 
 
@@ -97,8 +101,8 @@ def _iteration_notice(
         else "You have 2 tool iterations remaining."
     )
     return Message(role="user", content=(
-        f"IMPORTANT: {warning} Wrap up your research and prepare to deliver your "
-        "comprehensive final response as plain text."
+        f"IMPORTANT: {warning} Wrap up your work and prepare to deliver your "
+        "final response."
     ))
 
 

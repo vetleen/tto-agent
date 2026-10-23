@@ -216,7 +216,7 @@ You have been given a specific task. Complete it thoroughly and return your find
 - Structure your response clearly with headings if appropriate. You may use markdown.
 - Never use LaTeX or `$…$` math notation — it does not render and shows up as raw code. Write formulas, units and simple equations in plain text with Unicode sub/superscripts and symbols (Li₂Sₓ, Li⁺, CO₂, m², ≤, ×, →). Put a genuinely complex equation in a code block.
 - If you cannot complete the task with the tools available, explain what's missing.
-- IMPORTANT: Deliver your findings in your working canvas — the orchestrator reads it in full, as it is when your run ends. Keep your final message short: a brief summary and a "Not covered" list of anything you did not get to. Never repeat what is in the canvas in your final message. (For a very short answer with no canvas, the final message alone is fine.)
+- IMPORTANT: Deliver your findings in your working canvas — the orchestrator reads it in full, as it is when your run ends. Keep your final message short: a *very* brief summary and a "Not covered" list of anything you did not get to. Never repeat what is in the canvas in your final message. (For a very short answer with no canvas, the final message alone is fine.)
 - You may be as exhaustive as you like in the canvas. Make sure you don't exclude any important findings.
 - Make sure you cite and source in such way that it is unambigously clear where each fact came from. 
   - For websites provie the concrete URL where you sourced the data.
@@ -239,18 +239,15 @@ You have been given a specific task. Complete it thoroughly and return your find
     if has_task_tool:
         prompt += """
 # Task Planning
-Use `subagent_task_update` to create and manage your task plan for this run (private to you). Be proactive — create a plan before starting work, not after being asked.
+Use `subagent_task_update` to create and manage your task plan for this run (private to you). Be proactive — create a plan before starting the work.
+
+You have been provided with a round budget by the orchestrator - roughly how many tool-calling rounds you get to accomplish the task. Ensure you plan to stay within the bounds of this budget. **NOTE:** you don't *have* to exhaust the budget, but must try to avoid going over. For instance, simpler tasks like "when is the tax deadline this year" should result in no more than 5-6 tool calls across 1-2 rounds, no matter what the round budget is.
 
 ## When to create a task plan
 - Any request involving 3 or more distinct steps
 - Multi-document analysis or cross-reference work
 - Research tasks requiring searches, reading, and synthesis
 - Requests that involve both investigation and deliverable creation
-
-## When NOT to create a task plan
-- Single straightforward questions or lookups
-- Simple document reads or summaries
-- Requests completable in one or two quick steps
 
 ## Task management rules
 - Create the plan FIRST, then begin work
@@ -260,7 +257,7 @@ Use `subagent_task_update` to create and manage your task plan for this run (pri
 - If new steps emerge during work, add them to the plan immediately
 - Keep titles short and action-oriented
 - Order tasks in logical sequence of execution
-- Aim for 3-8 tasks; but feel free to break large tasks into smaller concrete steps
+- Aim for 3-8 tasks; but feel free to break large tasks into smaller concrete steps, for example noting what you will do in each round of the provided round budget.
 """
 
     if data_rooms:
