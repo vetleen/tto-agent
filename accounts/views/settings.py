@@ -1462,28 +1462,25 @@ def org_max_context_update(request):
 _SUBAGENT_TIER_LABELS = {"low": "Low", "medium": "Medium", "high": "High"}
 
 
-def _subagent_reasoning_row(org, tier: str) -> dict:
-    """Reasoning-level control state for one sub-agent tier.
+def _reasoning_row_state(model: str, entry) -> dict:
+    """Reasoning-level control state for *model* and its stored
+    ``{"model", "level"}`` entry.
 
-    ``model`` is the tier's effective model (org override, else the org's tier
-    default). ``current`` is the stored level only while it was chosen for that
-    same model — mirroring chat.subagent_service.subagent_thinking_level, so the
-    page never shows a level that the run would ignore.
+    ``current`` is the stored level only while it was chosen for that same model
+    — mirroring the run-time resolvers (chat.subagent_service.subagent_thinking_level,
+    core.preferences.resolve_org_feature_reasoning), so the page never shows a
+    level that the run would ignore.
     """
-    from core.preferences import resolve_org_feature_model
     from llm.display import reasoning_level_label
     from llm.model_registry import get_model_info
 
-    model = resolve_org_feature_model(org.id, SUBAGENT_TIER_FEATURES[tier])
     info = get_model_info(model) if model else None
     levels = list(info.reasoning_levels) if info else []
-    entry = (((org.preferences or {}).get("subagents") or {}).get("reasoning") or {}).get(tier) or {}
     current = ""
     if isinstance(entry, dict) and entry.get("model") == model and entry.get("level") in levels:
         current = entry["level"]
     default_level = (info.default_reasoning_level or "") if info else ""
     return {
-        "tier": tier,
         "model": model,
         "model_display": info.display_name if info else model,
         "levels": levels,
@@ -1492,6 +1489,32 @@ def _subagent_reasoning_row(org, tier: str) -> dict:
         "default_label": reasoning_level_label(default_level) if default_level else "",
         "current": current,
     }
+
+
+def _subagent_reasoning_row(org, tier: str) -> dict:
+    """Reasoning-level control state for one sub-agent tier.
+
+    ``model`` is the tier's effective model (org override, else the org's tier
+    default); the level is stored under ``subagents.reasoning[tier]``.
+    """
+    from core.preferences import resolve_org_feature_model
+
+    model = resolve_org_feature_model(org.id, SUBAGENT_TIER_FEATURES[tier])
+    entry = (((org.preferences or {}).get("subagents") or {}).get("reasoning") or {}).get(tier) or {}
+    return {"tier": tier, **_reasoning_row_state(model, entry)}
+
+
+def _feature_reasoning_row(org, feature_key: str) -> dict:
+    """Reasoning-level control state for a ``reasoning_control`` feature.
+
+    ``model`` is the feature's effective model; the level is stored under
+    ``feature_reasoning[feature_key]`` (core.preferences.resolve_org_feature_reasoning).
+    """
+    from core.preferences import resolve_org_feature_model
+
+    model = resolve_org_feature_model(org.id, feature_key)
+    entry = ((org.preferences or {}).get("feature_reasoning") or {}).get(feature_key) or {}
+    return {"feature": feature_key, **_reasoning_row_state(model, entry)}
 
 
 @login_required
@@ -1686,7 +1709,7 @@ def org_skills_update(request):
 @org_admin_required
 def org_feature_model_update(request):
     """Set org's preferred model for a specific feature."""
-    from core.preferences import FEATURE_DEFAULTS
+    from core.preferences import FEATURE_DEFAULTS, feature_model_pool
     from llm.service.policies import get_allowed_models
 
     membership = request.org_membership
@@ -1701,7 +1724,8 @@ def org_feature_model_update(request):
     if feature not in FEATURE_DEFAULTS:
         return JsonResponse({"error": "Unknown feature"}, status=400)
 
-    if FEATURE_DEFAULTS[feature].scope != "org":
+    fdef = FEATURE_DEFAULTS[feature]
+    if fdef.scope != "org":
         return JsonResponse({"error": "This feature is not org-configurable"}, status=400)
 
     if model:
@@ -1710,6 +1734,8 @@ def org_feature_model_update(request):
         effective = [m for m in org_allowed if m in system_models] if org_allowed else list(system_models)
         if model not in effective:
             return JsonResponse({"error": "Model not in allowed list"}, status=400)
+        if model not in feature_model_pool(fdef, effective):
+            return JsonResponse({"error": "Model does not support this feature"}, status=400)
 
     tier = next((t for t, f in SUBAGENT_TIER_FEATURES.items() if f == feature), None)
 
@@ -1717,21 +1743,28 @@ def org_feature_model_update(request):
         feature_models = prefs.get("feature_models", {})
         feature_models[feature] = model
         prefs["feature_models"] = feature_models
+        # A pinned reasoning level belongs to its model: a model change resets
+        # the feature (or sub-agent tier) to the new model's default.
         if tier:
-            # A sub-agent tier's reasoning level belongs to its model: a model
-            # change resets the tier to the new model's default.
             subagents = prefs.get("subagents", {})
             reasoning = subagents.get("reasoning", {})
             if reasoning.pop(tier, None) is not None:
                 subagents["reasoning"] = reasoning
                 prefs["subagents"] = subagents
+        if fdef.reasoning_control:
+            reasoning = prefs.get("feature_reasoning", {})
+            if reasoning.pop(feature, None) is not None:
+                prefs["feature_reasoning"] = reasoning
 
     update_org_preferences(membership.org_id, mutate)
 
     response = {"ok": True, "feature": feature, "model": model}
-    if tier:
+    if tier or fdef.reasoning_control:
         membership.org.refresh_from_db(fields=["preferences"])
-        response["reasoning"] = _subagent_reasoning_row(membership.org, tier)
+        if tier:
+            response["reasoning"] = _subagent_reasoning_row(membership.org, tier)
+        else:
+            response["reasoning"] = _feature_reasoning_row(membership.org, feature)
     return JsonResponse(response)
 
 

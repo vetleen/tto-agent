@@ -37,22 +37,19 @@ def build_feature_rows(
     maps feature key -> (label, description). ``resolved`` (user page
     only) adds the effective value after the full cascade.
     """
-    from core.preferences import FEATURE_DEFAULTS
+    from core.preferences import FEATURE_DEFAULTS, feature_model_pool
 
     rows = []
     for fkey, fdef in FEATURE_DEFAULTS.items():
         if fdef.scope != scope:
             continue
-        # Any allowed model may serve any feature; only modality narrows it.
-        eligible = list(eligible_allowed)
-        if fdef.required_modality:
-            from llm.display import supports_modality
-
-            eligible = [m for m in eligible if supports_modality(m, fdef.required_modality)]
-            # No capable model in the allow-list → feature unavailable; omit the
-            # row entirely (matches core.preferences.feature_is_available()).
-            if not eligible:
-                continue
+        # Any allowed model may serve an ungated feature; a required modality
+        # or capability narrows it. No capable model in the allow-list →
+        # feature unavailable; omit the row entirely (matches
+        # core.preferences.feature_is_available()).
+        eligible = feature_model_pool(fdef, eligible_allowed)
+        if fdef.gated and not eligible:
+            continue
         label, desc = meta.get(fkey, (fkey.replace("_", " ").title(), ""))
         row = {
             "key": fkey,
@@ -62,6 +59,7 @@ def build_feature_rows(
             "current": current_overrides.get(fkey) or "",
             "eligible_models": eligible,
             "required_modality": fdef.required_modality,
+            "required_capability": fdef.required_capability,
         }
         if resolved is not None:
             row["resolved"] = resolved.get(fkey, "")

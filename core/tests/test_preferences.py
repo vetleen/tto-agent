@@ -1211,6 +1211,102 @@ class FeatureModelOverrideTest(TestCase):
             self.assertIn(fkey, prefs.feature_models, f"feature_models missing key: {fkey}")
 
 
+class FeatureModelPoolTest(TestCase):
+    """feature_model_pool(): the one eligibility filter behind resolution, the
+    settings rows and override validation."""
+
+    def test_ungated_feature_uses_every_allowed_model(self):
+        from core.preferences import FeatureDefault, feature_model_pool
+
+        fdef = FeatureDefault("cheap", "org")
+        allowed = ["openai/gpt-6-luna", "custom/plain"]
+        self.assertFalse(fdef.gated)
+        self.assertEqual(feature_model_pool(fdef, allowed), allowed)
+
+    def test_modality_gate(self):
+        from core.preferences import FeatureDefault, feature_model_pool
+
+        fdef = FeatureDefault("mid", "org", required_modality="image")
+        self.assertTrue(fdef.gated)
+        self.assertEqual(
+            feature_model_pool(fdef, ["openai/gpt-6-luna", "custom/plain"]), ["openai/gpt-6-luna"]
+        )
+
+    def test_capability_gate(self):
+        from core.preferences import FeatureDefault, feature_model_pool
+
+        fdef = FeatureDefault("cheap", "org", required_capability="decisions")
+        self.assertTrue(fdef.gated)
+        self.assertEqual(
+            feature_model_pool(
+                fdef, ["openai/gpt-6-sol", "openai/gpt-6-luna", "anthropic/claude-haiku-5-5"]
+            ),
+            ["openai/gpt-6-luna"],
+        )
+        self.assertEqual(feature_model_pool(fdef, ["openai/gpt-6-sol"]), [])
+
+    def test_modality_and_capability_combine(self):
+        from core.preferences import FeatureDefault, feature_model_pool
+
+        fdef = FeatureDefault("cheap", "org", required_modality="image", required_capability="decisions")
+        self.assertEqual(
+            feature_model_pool(fdef, ["custom/plain", "openai/gpt-6-luna", "openai/gpt-6-sol"]),
+            ["openai/gpt-6-luna"],
+        )
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5.4",
+        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=[
+        "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano", "gemini/gemini-3.5-flash",
+    ])
+    def test_resolve_from_prefs_matches_org_resolver(self, mock_allowed):
+        from core.preferences import resolve_feature_model_from_prefs, resolve_org_feature_model
+
+        org = Organization.objects.create(name="PoolOrg", slug="poolorg", preferences={
+            "feature_models": {"document_description": "gemini/gemini-3.5-flash"},
+        })
+        for key in ("document_description", "chat", "guardrails_classifier"):
+            with self.subTest(feature=key):
+                self.assertEqual(
+                    resolve_feature_model_from_prefs(org.preferences, key),
+                    resolve_org_feature_model(org.pk, key),
+                )
+                self.assertEqual(
+                    resolve_feature_model_from_prefs(None, key),
+                    resolve_org_feature_model(None, key),
+                )
+
+
+class ResolveOrgFeatureReasoningTest(TestCase):
+    """A pinned feature reasoning level is bound to the model it was chosen for."""
+
+    def test_level_applies_only_for_the_stored_model(self):
+        from core.preferences import resolve_org_feature_reasoning
+
+        prefs = {"feature_reasoning": {"f": {"model": "openai/gpt-6-luna", "level": "low"}}}
+        self.assertEqual(resolve_org_feature_reasoning(prefs, "f", "openai/gpt-6-luna"), "low")
+        # The feature now runs on another model → that model's default.
+        self.assertIsNone(resolve_org_feature_reasoning(prefs, "f", "openai/gpt-6-sol"))
+        self.assertIsNone(resolve_org_feature_reasoning(prefs, "other", "openai/gpt-6-luna"))
+        self.assertIsNone(resolve_org_feature_reasoning(prefs, "f", ""))
+        self.assertIsNone(resolve_org_feature_reasoning(None, "f", "openai/gpt-6-luna"))
+        self.assertIsNone(resolve_org_feature_reasoning({}, "f", "openai/gpt-6-luna"))
+
+    def test_level_the_model_no_longer_offers_reverts_to_default(self):
+        from core.preferences import resolve_org_feature_reasoning
+
+        prefs = {"feature_reasoning": {"f": {"model": "openai/gpt-6-luna", "level": "ultra"}}}
+        self.assertIsNone(resolve_org_feature_reasoning(prefs, "f", "openai/gpt-6-luna"))
+        # Malformed entry (not a dict) is ignored, never raises.
+        self.assertIsNone(resolve_org_feature_reasoning({"feature_reasoning": {"f": "low"}}, "f", "openai/gpt-6-luna"))
+        # Unknown model: no registry levels to validate against.
+        prefs = {"feature_reasoning": {"f": {"model": "custom/plain", "level": "low"}}}
+        self.assertIsNone(resolve_org_feature_reasoning(prefs, "f", "custom/plain"))
+
+
 class ModalityFeatureResolutionTest(TestCase):
     """Capability-gated features (required_modality) resolve to capable models
     and report availability correctly."""

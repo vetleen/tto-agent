@@ -1636,6 +1636,60 @@ class OrgFeatureModelUpdateTests(TestCase):
         self.assertEqual(self.org.preferences["feature_models"]["document_description"], "openai/gpt-5.4")
 
     @patch("llm.service.policies.get_allowed_models", return_value=[
+        "openai/gpt-5.4", "openai/gpt-5.4-mini", "custom/plain",
+    ])
+    def test_rejects_model_that_cannot_serve_a_gated_feature(self, mock_models):
+        # custom/plain is allowed but has no vision: it may not be picked for a
+        # modality-gated feature (the UI never offers it; the resolver ignores it).
+        self.org.preferences["allowed_models"].append("custom/plain")
+        self.org.save(update_fields=["preferences"])
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"feature": "document_image_description", "model": "custom/plain"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("does not support", response.json()["error"])
+        self.org.refresh_from_db()
+        self.assertNotIn("document_image_description", self.org.preferences.get("feature_models", {}))
+
+    @patch("llm.service.policies.get_allowed_models", return_value=[
+        "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
+    ])
+    def test_model_change_resets_feature_reasoning(self, mock_models):
+        # A reasoning_control feature's pinned level belongs to its model: a
+        # model change drops it and the response carries the fresh reasoning row.
+        from core.preferences import FeatureDefault
+
+        self.org.preferences["feature_reasoning"] = {
+            "skill_emoji": {"model": "openai/gpt-5.4-nano", "level": "low"},
+            "other_feature": {"model": "openai/gpt-5.4-nano", "level": "low"},
+        }
+        self.org.save(update_fields=["preferences"])
+        self.client.login(email=self.admin_user.email, password=self.password)
+        with patch.dict(
+            "core.preferences.FEATURE_DEFAULTS",
+            {"skill_emoji": FeatureDefault("cheap", "org", reasoning_control=True)},
+        ):
+            response = self.client.post(
+                self.url,
+                json.dumps({"feature": "skill_emoji", "model": "openai/gpt-5.4"}),
+                content_type="application/json",
+            )
+        self.assertEqual(response.status_code, 200)
+        reasoning = response.json()["reasoning"]
+        self.assertEqual(reasoning["feature"], "skill_emoji")
+        self.assertEqual(reasoning["model"], "openai/gpt-5.4")
+        self.assertEqual(reasoning["current"], "")
+        self.org.refresh_from_db()
+        # Only the changed feature is reset.
+        self.assertEqual(
+            self.org.preferences["feature_reasoning"],
+            {"other_feature": {"model": "openai/gpt-5.4-nano", "level": "low"}},
+        )
+
+    @patch("llm.service.policies.get_allowed_models", return_value=[
         "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
         "openai/gpt-5.6-sol", "openai/gpt-5.6-luna",
     ])

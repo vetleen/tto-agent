@@ -91,11 +91,43 @@ class FeatureDefault:
     required_modality: when set (e.g. "image"), only models whose input
         modalities include it are eligible, and the feature is *unavailable*
         when the effective allow-list has no capable model.
+    required_capability: when set (e.g. "decisions"), only models the registry
+        marks with that capability are eligible (llm.display.supports_capability);
+        like a modality, the feature is unavailable without a capable model.
+    reasoning_control: the org may pin a reasoning level for the feature's
+        model — prefs["feature_reasoning"][key] = {"model", "level"}, read by
+        resolve_org_feature_reasoning(); a model change resets it.
     """
 
     default_slot: str
     scope: str
     required_modality: str | None = None
+    required_capability: str | None = None
+    reasoning_control: bool = False
+
+    @property
+    def gated(self) -> bool:
+        """Whether only some models can serve the feature (modality or capability)."""
+        return bool(self.required_modality or self.required_capability)
+
+
+def feature_model_pool(fdef: FeatureDefault, allowed: list[str]) -> list[str]:
+    """The models in *allowed* that can serve *fdef*.
+
+    Narrowed to the feature's required modality and capability (if any);
+    features without either may use any allowed model. An empty pool means the
+    feature is unavailable. Every eligibility decision — resolution, the
+    settings rows, override validation — goes through here so they agree.
+    """
+    if not fdef.gated:
+        return list(allowed)
+    from llm.display import supports_capability, supports_modality
+
+    return [
+        m for m in allowed
+        if (not fdef.required_modality or supports_modality(m, fdef.required_modality))
+        and (not fdef.required_capability or supports_capability(m, fdef.required_capability))
+    ]
 
 
 # Per-feature model catalog.
@@ -572,19 +604,14 @@ def get_preferences(user) -> ResolvedPreferences:
     max_context_tokens = max(org_max_ctx, MIN_CONTEXT_TOKENS)
 
     # Resolve per-feature model overrides
-    from llm.display import supports_modality
-
     slot_model = {"primary": top_model, "mid": mid_model, "cheap": cheap_model}
     org_feature_prefs = org_prefs.get("feature_models") or {}
 
     feature_models: dict[str, str] = {}
     for fkey, fdef in FEATURE_DEFAULTS.items():
         # Eligible pool: the effective allow-list, narrowed to the feature's
-        # required modality (if any). Features without one use the full list.
-        if fdef.required_modality:
-            pool = [m for m in effective_allowed if supports_modality(m, fdef.required_modality)]
-        else:
-            pool = effective_allowed
+        # required modality/capability (if any).
+        pool = feature_model_pool(fdef, effective_allowed)
 
         override = org_feature_prefs.get(fkey)
 
@@ -594,8 +621,8 @@ def get_preferences(user) -> ResolvedPreferences:
             continue
 
         default_model = slot_model.get(fdef.default_slot, top_model)
-        if fdef.required_modality and default_model not in pool:
-            # The tier model can't handle the modality — fall to the first
+        if fdef.gated and default_model not in pool:
+            # The tier model can't serve the feature — fall to the first
             # capable model, or "" when none qualifies (feature disabled).
             default_model = pool[0] if pool else ""
         feature_models[fkey] = default_model
@@ -744,6 +771,22 @@ def resolve_org_feature_model(org_id: int | None, feature_key: str) -> str:
     Celery tasks or system contexts where only the org ID is available.
     """
     from accounts.models import Organization
+
+    org_prefs = None
+    if org_id:
+        try:
+            org_prefs = Organization.objects.get(pk=org_id).preferences or {}
+        except Organization.DoesNotExist:
+            pass
+    return resolve_feature_model_from_prefs(org_prefs, feature_key)
+
+
+def resolve_feature_model_from_prefs(org_prefs: dict | None, feature_key: str) -> str:
+    """``resolve_org_feature_model`` for an already-loaded org preferences dict.
+
+    ``None`` means no organization (system defaults only). Lets a caller that
+    reads several features resolve them from one Organization fetch.
+    """
     from llm.service.policies import get_allowed_models
 
     feature_def = FEATURE_DEFAULTS.get(feature_key)
@@ -752,28 +795,18 @@ def resolve_org_feature_model(org_id: int | None, feature_key: str) -> str:
 
     default_slot = feature_def.default_slot
     sys_models = _get_system_model_defaults()
-    system_allowed = get_allowed_models()
 
-    # Narrow to models satisfying the feature's required modality (if any) so
+    # Narrow to models that can serve the feature (modality/capability) so
     # every downstream pick — override, org/system default, first-allowed — is
     # capability-safe. An empty result means no eligible model (feature off).
-    if feature_def.required_modality:
-        from llm.display import supports_modality
-
-        system_allowed = [m for m in system_allowed if supports_modality(m, feature_def.required_modality)]
+    system_allowed = feature_model_pool(feature_def, get_allowed_models())
 
     # System-level default for this feature's tier
     sys_default = sys_models.get(default_slot, sys_models.get("primary", ""))
 
-    if not org_id:
+    if org_prefs is None:
         return sys_default if sys_default in system_allowed else (system_allowed[0] if system_allowed else "")
 
-    try:
-        org = Organization.objects.get(pk=org_id)
-    except Organization.DoesNotExist:
-        return sys_default if sys_default in system_allowed else (system_allowed[0] if system_allowed else "")
-
-    org_prefs = org.preferences or {}
     org_allowed = org_prefs.get("allowed_models")
     if org_allowed and isinstance(org_allowed, list):
         effective_allowed = []
@@ -803,20 +836,40 @@ def resolve_org_feature_model(org_id: int | None, feature_key: str) -> str:
     )
 
 
+def resolve_org_feature_reasoning(org_prefs: dict | None, feature_key: str, model: str) -> str | None:
+    """The org's pinned reasoning level for *feature_key* running on *model*.
+
+    A level is stored with the model it was chosen for
+    (``prefs["feature_reasoning"][key] = {"model", "level"}``) and applies only
+    while the feature still resolves to that exact model and the level is one
+    the model offers — any model change (override, slot default, allow-list
+    fallback, retirement) reverts to the registry default. Mirrors
+    chat.subagent_service.subagent_thinking_level. None = the model's default.
+    """
+    entry = ((org_prefs or {}).get("feature_reasoning") or {}).get(feature_key)
+    if not isinstance(entry, dict) or not model or entry.get("model") != model:
+        return None
+    from llm.model_registry import get_model_info
+
+    info = get_model_info(model)
+    level = entry.get("level")
+    if not info or level not in info.reasoning_levels:
+        return None
+    return level
+
+
 def feature_is_available(user, feature_key: str) -> bool:
     """Whether *feature_key* can run for *user*.
 
-    A feature with a ``required_modality`` is available only when the user's
-    effective allow-list contains at least one model that supports that
-    modality. Features without a required modality are always available.
+    A gated feature (``required_modality`` / ``required_capability``) is
+    available only when the user's effective allow-list contains at least one
+    model that can serve it. Ungated features are always available.
 
     Used by upload validation and the settings UI so both agree on whether a
     capability-gated feature (e.g. image description) is offered.
     """
     fdef = FEATURE_DEFAULTS.get(feature_key)
-    if not fdef or not fdef.required_modality:
+    if not fdef or not fdef.gated:
         return True
-    from llm.display import supports_modality
-
     prefs = get_preferences(user)
-    return any(supports_modality(m, fdef.required_modality) for m in prefs.allowed_models)
+    return bool(feature_model_pool(fdef, prefs.allowed_models))
