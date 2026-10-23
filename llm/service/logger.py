@@ -212,6 +212,26 @@ def _observability_fields(context) -> dict:
     }
 
 
+def _merge_log_metadata(request: "ChatRequest | None", provider_meta) -> dict | None:
+    """``response_metadata`` for the row: the caller's tags under the provider's.
+
+    A side-call tags its rows through ``request.params["_log_metadata"]`` (a
+    dict — e.g. the decisions service's ``kind``/``feature``/``pathway``) so a
+    call made on behalf of a feature is attributable without a migration. The
+    provider's own metadata keys win on a clash. Untagged requests return the
+    provider metadata unchanged (None stays None); ``params`` itself is never
+    serialised.
+    """
+    params = (request.params or {}) if request is not None else {}
+    extra = params.get("_log_metadata")
+    if not isinstance(extra, dict) or not extra:
+        return provider_meta
+    merged = dict(extra)
+    if isinstance(provider_meta, dict):
+        merged.update(provider_meta)
+    return merged
+
+
 def log_call(request: "ChatRequest", response: "ChatResponse", duration_ms: int) -> None:
     """Write a SUCCESS log entry for a non-streaming call. raw_output = slim summary JSON."""
     try:
@@ -256,7 +276,7 @@ def log_call(request: "ChatRequest", response: "ChatResponse", duration_ms: int)
             cost_usd=cost,
             duration_ms=duration_ms,
             status=LLMCallLog.Status.SUCCESS,
-            response_metadata=metadata.get("response_metadata"),
+            response_metadata=_merge_log_metadata(request, metadata.get("response_metadata")),
             stop_reason=metadata.get("stop_reason", ""),
             provider_model_id=metadata.get("provider_model_id", ""),
             **_observability_fields(context),
@@ -340,8 +360,8 @@ def log_stream(
             if computed is not None:
                 cost = computed
 
-        # Response metadata from message_end
-        resp_metadata = end_data.get("response_metadata")
+        # Response metadata from message_end (+ the caller's _log_metadata tags)
+        resp_metadata = _merge_log_metadata(request, end_data.get("response_metadata"))
         stop_reason = end_data.get("stop_reason", "")
         provider_model_id = end_data.get("provider_model_id", "")
 
@@ -433,6 +453,7 @@ def log_error(
             status=LLMCallLog.Status.ERROR,
             error_type=type(exc).__name__,
             error_message=str(exc),
+            response_metadata=_merge_log_metadata(request, None),
         )
     except Exception:
         logger.exception("Failed to write LLM error log")

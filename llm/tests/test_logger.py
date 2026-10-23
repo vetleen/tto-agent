@@ -721,6 +721,79 @@ class LogErrorTests(TestCase):
             log_error(request, ValueError("x"), duration_ms=10)
 
 
+class LogMetadataTagsTests(TestCase):
+    """request.params["_log_metadata"] tags a side-call's rows (kind/feature/…)."""
+
+    def _tagged_request(self, **extra):
+        request = _make_request()
+        request.params["_log_metadata"] = {"kind": "decisions", "feature": "smoke", **extra}
+        return request
+
+    def test_log_call_merges_tags_under_provider_metadata(self):
+        request = self._tagged_request(stop_reason="ours")
+        response = ChatResponse(
+            message=Message(role="assistant", content="Hi"),
+            model="gpt-4o-mini",
+            usage=None,
+            metadata={"response_metadata": {"stop_reason": "end_turn", "model_id": "m"}},
+        )
+        log_call(request, response, duration_ms=5)
+
+        meta = _get_log(request).response_metadata
+        self.assertEqual(meta["kind"], "decisions")
+        self.assertEqual(meta["feature"], "smoke")
+        self.assertEqual(meta["model_id"], "m")
+        # The provider's own key wins on a clash.
+        self.assertEqual(meta["stop_reason"], "end_turn")
+
+    def test_log_call_tags_alone_when_provider_gave_none(self):
+        request = self._tagged_request()
+        response = ChatResponse(
+            message=Message(role="assistant", content="Hi"), model="gpt-4o-mini", usage=None, metadata={},
+        )
+        log_call(request, response, duration_ms=5)
+        self.assertEqual(_get_log(request).response_metadata, {"kind": "decisions", "feature": "smoke"})
+
+    def test_untagged_request_leaves_metadata_unchanged(self):
+        request = _make_request()
+        response = ChatResponse(
+            message=Message(role="assistant", content="Hi"), model="gpt-4o-mini", usage=None, metadata={},
+        )
+        log_call(request, response, duration_ms=5)
+        self.assertIsNone(_get_log(request).response_metadata)
+
+    def test_non_dict_tags_are_ignored(self):
+        request = _make_request()
+        request.params["_log_metadata"] = "decisions"
+        response = ChatResponse(
+            message=Message(role="assistant", content="Hi"), model="gpt-4o-mini", usage=None, metadata={},
+        )
+        log_call(request, response, duration_ms=5)
+        self.assertIsNone(_get_log(request).response_metadata)
+
+    def test_log_error_carries_tags(self):
+        request = self._tagged_request()
+        log_error(request, ValueError("boom"), duration_ms=5)
+        self.assertEqual(_get_log(request).response_metadata, {"kind": "decisions", "feature": "smoke"})
+
+    def test_log_stream_merges_tags(self):
+        request = self._tagged_request()
+        request.stream = True
+        run_id = request.context.run_id
+        events = [
+            StreamEvent(event_type="token", data={"text": "Hi"}, sequence=1, run_id=run_id),
+            StreamEvent(event_type="message_end", data={
+                "input_tokens": 10, "output_tokens": 2, "total_tokens": 12,
+                "response_metadata": {"model_id": "m"},
+            }, sequence=2, run_id=run_id),
+        ]
+        log_stream(request, _acc(events), duration_ms=5)
+
+        meta = _get_log(request).response_metadata
+        self.assertEqual(meta["kind"], "decisions")
+        self.assertEqual(meta["model_id"], "m")
+
+
 class SerializeMessagesTests(TestCase):
     """Tests for _serialize_messages including base64 truncation."""
 
