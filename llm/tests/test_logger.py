@@ -794,6 +794,74 @@ class LogMetadataTagsTests(TestCase):
         self.assertEqual(meta["model_id"], "m")
 
 
+class LogDecisionsTests(TestCase):
+    """log_decisions / log_decisions_error: the quick decisions pathway's rows."""
+
+    def test_success_row(self):
+        from llm.service.logger import log_decisions
+
+        context = RunContext.create(conversation_id="conv-1")
+        log_decisions(
+            "openai/gpt-6-luna", context, feature_key="smoke", questions=3, refusals=1,
+            types={"predicate": 2, "score": 1}, batch=1, batches=2,
+            input_tokens=463, cached_tokens=100, cache_write_tokens=0, total_tokens=463,
+            cost_usd=Decimal("0.0000463"), duration_ms=1900, provider_model_id="gpt-6-luna",
+            prompt_cache_key="decisions:smoke",
+        )
+        log = _get_log_by_run(context.run_id)
+        self.assertEqual(log.status, "success")
+        self.assertEqual(log.model, "openai/gpt-6-luna")
+        self.assertEqual(log.provider_model_id, "gpt-6-luna")
+        self.assertEqual(log.conversation_id, "conv-1")
+        self.assertEqual(log.input_tokens, 463)
+        self.assertEqual(log.cached_tokens, 100)
+        self.assertEqual(log.output_tokens, 0)
+        self.assertEqual(log.reasoning_tokens, 0)
+        self.assertEqual(log.cost_usd, Decimal("0.0000463"))
+        self.assertEqual(log.duration_ms, 1900)
+        # Counts only — never question text or the input.
+        self.assertEqual(
+            log.prompt[0]["content"],
+            "[decisions: 3 question(s) (predicate=2, score=1); feature=smoke; batch 1/2]",
+        )
+        self.assertEqual(log.raw_output, "[answers: 3, refusals: 1]")
+        self.assertEqual(log.response_metadata["kind"], "decisions")
+        self.assertEqual(log.response_metadata["pathway"], "quick")
+        self.assertEqual(log.response_metadata["feature"], "smoke")
+        self.assertEqual(log.response_metadata["types"], {"predicate": 2, "score": 1})
+        self.assertEqual(log.response_metadata["prompt_cache_key"], "decisions:smoke")
+
+    def test_error_row(self):
+        from llm.service.logger import log_decisions_error
+
+        context = RunContext.create()
+        log_decisions_error(
+            "openai/gpt-6-luna", context, TimeoutError("read timed out"), 30_000,
+            feature_key="smoke", questions=3, batch=1, batches=1, error_code="timeout",
+        )
+        log = _get_log_by_run(context.run_id)
+        self.assertEqual(log.status, "error")
+        self.assertEqual(log.error_type, "timeout")
+        self.assertEqual(log.error_message, "read timed out")
+        self.assertEqual(log.response_metadata["error_code"], "timeout")
+        self.assertEqual(log.response_metadata["kind"], "decisions")
+
+    def test_never_raise(self):
+        from llm.service.logger import log_decisions, log_decisions_error
+
+        with patch.object(LLMCallLog.objects, "create", side_effect=RuntimeError("DB is down")):
+            log_decisions(
+                "m", None, feature_key="f", questions=1, refusals=0, types={}, batch=1, batches=1,
+                input_tokens=None, cached_tokens=None, cache_write_tokens=None, total_tokens=None,
+                cost_usd=None, duration_ms=1,
+            )
+            log_decisions_error("m", None, ValueError("x"), 1, feature_key="f", questions=1, batch=1, batches=1)
+
+
+def _get_log_by_run(run_id):
+    return LLMCallLog.objects.get(run_id=run_id)
+
+
 class SerializeMessagesTests(TestCase):
     """Tests for _serialize_messages including base64 truncation."""
 

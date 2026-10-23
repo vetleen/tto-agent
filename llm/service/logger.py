@@ -644,6 +644,125 @@ def log_image_generation_error(
         logger.exception("Failed to write LLM error log (image generation)")
 
 
+def log_decisions(
+    model: str,
+    context: "RunContext | None",
+    *,
+    feature_key: str,
+    questions: int,
+    refusals: int,
+    types: dict,
+    batch: int,
+    batches: int,
+    input_tokens: "int | None",
+    cached_tokens: "int | None",
+    cache_write_tokens: "int | None",
+    total_tokens: "int | None",
+    cost_usd: "Decimal | None",
+    duration_ms: int,
+    provider_model_id: str = "",
+    prompt_cache_key: str = "",
+) -> None:
+    """Write a SUCCESS log entry for a Decisions endpoint call. Never raises.
+
+    The quick pathway of the decisions service runs outside the chat pipeline
+    (like transcription and image generation), so it writes its own row for
+    unified cost tracking. The row carries counts only — never question text or
+    the input. ``response_metadata["kind"] == "decisions"`` separates these rows
+    from chat rows on the same model; the structured pathway's rows get the same
+    tags through ``request.params["_log_metadata"]``.
+    """
+    try:
+        from llm.models import LLMCallLog
+
+        type_summary = ", ".join(f"{k}={v}" for k, v in sorted(types.items()))
+        LLMCallLog.objects.create(
+            user_id=_user_fk_id(context.user_id if context else None),
+            run_id=context.run_id if context else "",
+            trace_id=(context.trace_id if context else "") or "",
+            conversation_id=(context.conversation_id if context else "") or "",
+            model=model,
+            is_stream=False,
+            prompt=[{
+                "role": "user",
+                "content": (
+                    f"[decisions: {questions} question(s) ({type_summary}); "
+                    f"feature={feature_key}; batch {batch}/{batches}]"
+                ),
+            }],
+            raw_output=f"[answers: {questions}, refusals: {refusals}]",
+            input_tokens=input_tokens,
+            output_tokens=0,
+            total_tokens=total_tokens,
+            cached_tokens=cached_tokens,
+            cache_write_tokens=cache_write_tokens,
+            reasoning_tokens=0,
+            cost_usd=cost_usd,
+            duration_ms=duration_ms,
+            status=LLMCallLog.Status.SUCCESS,
+            provider_model_id=provider_model_id or "",
+            response_metadata={
+                "kind": "decisions",
+                "feature": feature_key,
+                "pathway": "quick",
+                "questions": questions,
+                "refusals": refusals,
+                "types": types,
+                "batch": batch,
+                "batches": batches,
+                "prompt_cache_key": prompt_cache_key,
+            },
+        )
+    except Exception:
+        logger.exception("Failed to write LLM call log (decisions)")
+
+
+def log_decisions_error(
+    model: str,
+    context: "RunContext | None",
+    exc: BaseException,
+    duration_ms: int,
+    *,
+    feature_key: str,
+    questions: int,
+    batch: int,
+    batches: int,
+    error_code: str = "",
+) -> None:
+    """Write an ERROR log entry for a Decisions endpoint call. Never raises."""
+    try:
+        from llm.models import LLMCallLog
+
+        LLMCallLog.objects.create(
+            user_id=_user_fk_id(context.user_id if context else None),
+            run_id=context.run_id if context else "",
+            trace_id=(context.trace_id if context else "") or "",
+            conversation_id=(context.conversation_id if context else "") or "",
+            model=model,
+            is_stream=False,
+            prompt=[{
+                "role": "user",
+                "content": f"[decisions: {questions} question(s); feature={feature_key}; batch {batch}/{batches}]",
+            }],
+            raw_output="",
+            duration_ms=duration_ms,
+            status=LLMCallLog.Status.ERROR,
+            error_type=(error_code or type(exc).__name__)[:255],
+            error_message=str(exc)[:2000],
+            response_metadata={
+                "kind": "decisions",
+                "feature": feature_key,
+                "pathway": "quick",
+                "questions": questions,
+                "batch": batch,
+                "batches": batches,
+                "error_code": error_code,
+            },
+        )
+    except Exception:
+        logger.exception("Failed to write LLM error log (decisions)")
+
+
 def log_transcription_streaming(
     model: str,
     context: "RunContext | None",
@@ -718,4 +837,6 @@ __all__ = [
     "log_transcription",
     "log_transcription_error",
     "log_transcription_streaming",
+    "log_decisions",
+    "log_decisions_error",
 ]

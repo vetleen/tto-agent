@@ -134,6 +134,33 @@ class PricingLookupTests(SimpleTestCase):
         self.assertIsNone(get_model_pricing("unknown/model"))
 
 
+class DecisionsCostTests(SimpleTestCase):
+    def test_bills_input_only_at_the_registry_rates(self):
+        from llm.service.pricing import calculate_cost, calculate_decisions_cost
+
+        # Luna: $0.10/M input, $0.01/M cached, $0.125/M cache write; output free.
+        # (100k stays under the 272k long-context band.)
+        self.assertEqual(calculate_decisions_cost("openai/gpt-6-luna", 100_000), Decimal("0.01"))
+        self.assertEqual(
+            calculate_decisions_cost("openai/gpt-6-luna", 100_000, cached_input_tokens=50_000),
+            Decimal("0.0055"),
+        )
+        self.assertEqual(
+            calculate_decisions_cost("openai/gpt-6-luna", 100_000, cache_write_tokens=20_000),
+            Decimal("0.0105"),
+        )
+        self.assertEqual(
+            calculate_decisions_cost("openai/gpt-6-luna", 300_000),
+            calculate_cost("openai/gpt-6-luna", 300_000, 0),  # long-context band applies
+        )
+
+    def test_unknown_model_or_missing_usage_is_none(self):
+        from llm.service.pricing import calculate_decisions_cost
+
+        self.assertIsNone(calculate_decisions_cost("custom/plain", 1000))
+        self.assertIsNone(calculate_decisions_cost("openai/gpt-6-luna", None))
+
+
 class CostTests(SimpleTestCase):
     def test_basic_cost(self):
         self.assertEqual(

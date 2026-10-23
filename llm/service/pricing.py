@@ -227,9 +227,29 @@ def calculate_image_generation_cost(
     return None
 
 
+def calculate_decisions_cost(
+    model: str,
+    input_tokens: Optional[int],
+    cached_input_tokens: Optional[int] = None,
+    cache_write_tokens: Optional[int] = None,
+) -> Optional[Decimal]:
+    """Compute the USD cost of one Decisions endpoint call, or *None* if unknown.
+
+    The endpoint bills input only (its ``output_tokens`` is always 0), so this is
+    ``calculate_cost`` with no output: the model's registry input, cached-input
+    and cache-write rates apply, long-context band included. OpenAI has not
+    published a separate cache-read rate for the endpoint; the chat rate stands
+    in until it does.
+    """
+    if input_tokens is None:
+        return None
+    return calculate_cost(model, input_tokens, 0, cached_input_tokens, cache_write_tokens)
+
+
 __all__ = [
     "get_model_pricing",
     "calculate_cost",
     "calculate_transcription_cost",
     "calculate_image_generation_cost",
+    "calculate_decisions_cost",
 ]
