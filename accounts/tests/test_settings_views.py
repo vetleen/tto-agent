@@ -301,6 +301,72 @@ class OrgSettingsAccessTests(TestCase):
         self.assertNotIn("subagent_medium", feature_keys)
         self.assertNotIn("subagent_high", feature_keys)
 
+    @patch("llm.service.policies.get_allowed_models", return_value=[
+        "openai/gpt-5.6-sol", "openai/gpt-6-luna",
+    ])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_decisions_rows_rendered(self, mock_reg, mock_models):
+        mock_reg.return_value.list_tools.return_value = {}
+        self.client.login(email=self.admin_user.email, password=self.password)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, 200)
+        decisions = response.context["decisions"]
+        self.assertTrue(decisions["quick_enabled"])  # default on
+        self.assertTrue(decisions["quick_available_system"])
+        # Quick pathway: capability-gated → Luna only; structured: any allowed model.
+        self.assertEqual(decisions["quick_row"]["eligible_models"], ["openai/gpt-6-luna"])
+        self.assertEqual(decisions["quick_row"]["label"], "Quick decisions model")
+        structured = decisions["structured_row"]
+        self.assertEqual(structured["eligible_models"], ["openai/gpt-5.6-sol", "openai/gpt-6-luna"])
+        self.assertEqual(structured["reasoning"]["feature"], "decisions_structured")
+        self.assertEqual(structured["reasoning"]["current"], "")
+        # They render in the Decisions section, not the generic feature list, but
+        # stay in model_options so the live re-populate keeps working.
+        feature_keys = {row["key"] for row in response.context["org_features"]}
+        self.assertNotIn("decisions_quick", feature_keys)
+        self.assertNotIn("decisions_structured", feature_keys)
+        options = json.loads(response.context["model_options_json"])["features"]
+        self.assertEqual(options["decisions_quick"], ["openai/gpt-6-luna"])
+        self.assertEqual(options["decisions_structured"], ["openai/gpt-5.6-sol", "openai/gpt-6-luna"])
+        self.assertContains(response, "Quick decisions via OpenAI (recommended)")
+        self.assertContains(response, 'id="feature-reasoning-decisions_structured"')
+
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.6-sol"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_decisions_quick_row_absent_without_capable_system_model(self, mock_reg, mock_models):
+        mock_reg.return_value.list_tools.return_value = {}
+        self.client.login(email=self.admin_user.email, password=self.password)
+
+        response = self.client.get(self.url)
+
+        decisions = response.context["decisions"]
+        self.assertIsNone(decisions["quick_row"])
+        self.assertFalse(decisions["quick_available_system"])
+        self.assertIsNotNone(decisions["structured_row"])
+        self.assertContains(response, "not available on this installation")
+
+    @patch("llm.service.policies.get_allowed_models", return_value=[
+        "openai/gpt-5.6-sol", "openai/gpt-6-luna",
+    ])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_decisions_quick_row_absent_when_org_disallows_luna(self, mock_reg, mock_models):
+        mock_reg.return_value.list_tools.return_value = {}
+        self.org.preferences = {"allowed_models": ["openai/gpt-5.6-sol"], "decisions_quick_enabled": False}
+        self.org.save(update_fields=["preferences"])
+        self.client.login(email=self.admin_user.email, password=self.password)
+
+        response = self.client.get(self.url)
+
+        decisions = response.context["decisions"]
+        self.assertIsNone(decisions["quick_row"])
+        self.assertTrue(decisions["quick_available_system"])
+        self.assertFalse(decisions["quick_enabled"])
+        self.assertContains(response, "Allow GPT-6 Luna under Allowed models")
+        # The quick row is hidden while the toggle is off.
+        self.assertContains(response, 'id="decisions-quick-row" class="px-5 py-4 hidden"')
+
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5"])
     @patch("llm.tools.registry.get_tool_registry")
     def test_skills_section_tools_excluded_from_tool_sections(self, mock_reg, mock_models):
@@ -1593,6 +1659,58 @@ class PreferencesFeatureModelUpdateTests(TestCase):
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
+class OrgDecisionsQuickToggleTests(TestCase):
+    def setUp(self):
+        self.password = "test-pass-123"
+        self.admin_user = User.objects.create_user(
+            email="decadmin@example.com", password=self.password,
+        )
+        self.admin_user.email_verified = True
+        self.admin_user.save(update_fields=["email_verified"])
+        self.member_user = User.objects.create_user(
+            email="decmember@example.com", password=self.password,
+        )
+        self.member_user.email_verified = True
+        self.member_user.save(update_fields=["email_verified"])
+        self.org = Organization.objects.create(name="DecOrg", slug="decorg")
+        Membership.objects.create(user=self.admin_user, org=self.org, role=Membership.Role.ADMIN)
+        Membership.objects.create(user=self.member_user, org=self.org, role=Membership.Role.MEMBER)
+        self.url = reverse("accounts:org_decisions_quick_toggle_update")
+
+    def _post(self, body, user=None):
+        self.client.login(email=(user or self.admin_user).email, password=self.password)
+        return self.client.post(self.url, body, content_type="application/json")
+
+    def test_requires_admin(self):
+        response = self._post(json.dumps({"enabled": False}), user=self.member_user)
+        self.assertEqual(response.status_code, 403)
+        self.org.refresh_from_db()
+        self.assertNotIn("decisions_quick_enabled", self.org.preferences)
+
+    def test_toggle_off(self):
+        response = self._post(json.dumps({"enabled": False}))
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["ok"])
+        self.assertFalse(data["enabled"])
+        self.org.refresh_from_db()
+        self.assertFalse(self.org.preferences["decisions_quick_enabled"])
+
+    def test_toggle_on(self):
+        self.org.preferences = {"decisions_quick_enabled": False}
+        self.org.save(update_fields=["preferences"])
+        response = self._post(json.dumps({"enabled": True}))
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["enabled"])
+        self.org.refresh_from_db()
+        self.assertTrue(self.org.preferences["decisions_quick_enabled"])
+
+    def test_invalid_json_returns_400(self):
+        response = self._post("not json")
+        self.assertEqual(response.status_code, 400)
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
 class OrgFeatureModelUpdateTests(TestCase):
 
     def setUp(self):
@@ -1688,6 +1806,31 @@ class OrgFeatureModelUpdateTests(TestCase):
             self.org.preferences["feature_reasoning"],
             {"other_feature": {"model": "openai/gpt-5.4-nano", "level": "low"}},
         )
+
+    @patch("llm.service.policies.get_allowed_models", return_value=[
+        "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
+        "openai/gpt-5.6-sol", "openai/gpt-5.6-luna",
+    ])
+    def test_decisions_quick_accepts_only_capable_models(self, mock_models):
+        self.client.login(email=self.admin_user.email, password=self.password)
+
+        def post(feature, model):
+            return self.client.post(
+                self.url, json.dumps({"feature": feature, "model": model}), content_type="application/json",
+            )
+
+        response = post("decisions_quick", "openai/gpt-5.6-sol")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("does not support", response.json()["error"])
+        # gpt-5.6-luna is a retired alias of GPT-6 Luna → capable.
+        response = post("decisions_quick", "openai/gpt-5.6-luna")
+        self.assertEqual(response.status_code, 200)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.preferences["feature_models"]["decisions_quick"], "openai/gpt-5.6-luna")
+        # The structured pathway takes any allowed model and returns its reasoning row.
+        response = post("decisions_structured", "openai/gpt-5.6-sol")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["reasoning"]["feature"], "decisions_structured")
 
     @patch("llm.service.policies.get_allowed_models", return_value=[
         "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
@@ -2590,3 +2733,122 @@ class OrgSubagentReasoningUpdateTests(TestCase):
         self.assertContains(response, 'id="subagent-reasoning-medium"')
         self.assertContains(response, 'id="subagent-reasoning-low"')
         self.assertContains(response, "Model default (High)")
+
+
+@override_settings(
+    ALLOWED_HOSTS=["testserver"],
+    LLM_DEFAULT_MODEL="openai/gpt-6-sol",
+    LLM_DEFAULT_MID_MODEL="anthropic/claude-sonnet-5-5",
+    LLM_DEFAULT_CHEAP_MODEL="openai/gpt-6-luna",
+)
+@patch("llm.service.policies.get_allowed_models", return_value=_REASONING_SYSTEM_MODELS)
+class OrgFeatureReasoningUpdateTests(TestCase):
+    """Per-feature reasoning level (decisions_structured): stored with — and only
+    valid for — the feature's effective model; a model change resets it."""
+
+    def setUp(self):
+        self.password = "test-pass-123"
+        self.admin_user = User.objects.create_user(
+            email="featreasonadmin@example.com", password=self.password,
+        )
+        self.admin_user.email_verified = True
+        self.admin_user.save(update_fields=["email_verified"])
+        self.member_user = User.objects.create_user(
+            email="featreasonmember@example.com", password=self.password,
+        )
+        self.member_user.email_verified = True
+        self.member_user.save(update_fields=["email_verified"])
+        self.org = Organization.objects.create(name="FeatReasonOrg", slug="featreasonorg", preferences={})
+        Membership.objects.create(user=self.admin_user, org=self.org, role=Membership.Role.ADMIN)
+        Membership.objects.create(user=self.member_user, org=self.org, role=Membership.Role.MEMBER)
+        self.url = reverse("accounts:org_feature_reasoning_update")
+
+    def _post(self, body, user=None):
+        self.client.login(email=(user or self.admin_user).email, password=self.password)
+        return self.client.post(self.url, json.dumps(body), content_type="application/json")
+
+    def _reasoning(self):
+        self.org.refresh_from_db()
+        return self.org.preferences.get("feature_reasoning") or {}
+
+    def test_saves_level_with_effective_model(self, _models):
+        from core.preferences import resolve_decisions_settings
+
+        # No override: the structured pathway runs on the org's cheap model (Luna).
+        response = self._post({"feature": "decisions_structured", "level": "low"})
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["feature"], "decisions_structured")
+        self.assertEqual(data["model"], "openai/gpt-6-luna")
+        self.assertEqual(data["current"], "low")
+        self.assertEqual(data["default_level"], "high")
+        self.assertEqual(
+            self._reasoning(), {"decisions_structured": {"model": "openai/gpt-6-luna", "level": "low"}}
+        )
+        # The run-time resolver sees it.
+        self.assertEqual(resolve_decisions_settings(self.org.pk).structured_thinking_level, "low")
+
+    def test_rejects_feature_without_reasoning_control(self, _models):
+        for feature in ("chat", "decisions_quick", "thread_title", "nope"):
+            with self.subTest(feature=feature):
+                response = self._post({"feature": feature, "level": "low"})
+                self.assertEqual(response.status_code, 400)
+        self.assertEqual(self._reasoning(), {})
+
+    def test_rejects_level_not_offered_by_model(self, _models):
+        # Sonnet 5.5 has no "none"; Luna does — validated against the feature's model.
+        self.org.preferences["feature_models"] = {"decisions_structured": "anthropic/claude-sonnet-5-5"}
+        self.org.save(update_fields=["preferences"])
+        response = self._post({"feature": "decisions_structured", "level": "none"})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self._reasoning(), {})
+
+    def test_member_forbidden(self, _models):
+        response = self._post({"feature": "decisions_structured", "level": "low"}, user=self.member_user)
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(self._reasoning(), {})
+
+    def test_empty_or_default_level_clears_entry(self, _models):
+        self._post({"feature": "decisions_structured", "level": "low"})
+        self._post({"feature": "decisions_structured", "level": ""})
+        self.assertEqual(self._reasoning(), {})
+        # Picking the model's own default stores nothing either.
+        response = self._post({"feature": "decisions_structured", "level": "high"})
+        self.assertEqual(response.json()["current"], "")
+        self.assertEqual(self._reasoning(), {})
+
+    def test_model_change_resets_level(self, _models):
+        from core.preferences import resolve_decisions_settings
+
+        self._post({"feature": "decisions_structured", "level": "low"})
+        response = self.client.post(
+            reverse("accounts:org_feature_model_update"),
+            json.dumps({"feature": "decisions_structured", "model": "anthropic/claude-sonnet-5-5"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        reasoning = response.json()["reasoning"]
+        self.assertEqual(reasoning["feature"], "decisions_structured")
+        self.assertEqual(reasoning["model"], "anthropic/claude-sonnet-5-5")
+        self.assertEqual(reasoning["current"], "")
+        self.assertNotIn("none", reasoning["levels"])
+        self.assertEqual(self._reasoning(), {})
+        self.assertIsNone(resolve_decisions_settings(self.org.pk).structured_thinking_level)
+
+    def test_stale_level_not_shown_on_page(self, _models):
+        """A level stored for a model the feature no longer runs on renders as
+        "model default" — the run ignores it too."""
+        self.org.preferences["feature_reasoning"] = {
+            "decisions_structured": {"model": "anthropic/claude-sonnet-5-5", "level": "low"},
+        }
+        self.org.save(update_fields=["preferences"])
+        self.client.login(email=self.admin_user.email, password=self.password)
+        with patch("llm.tools.registry.get_tool_registry") as mock_reg:
+            mock_reg.return_value.list_tools.return_value = {}
+            response = self.client.get(reverse("accounts:org_settings"))
+        self.assertEqual(response.status_code, 200)
+        row = response.context["decisions"]["structured_row"]["reasoning"]
+        self.assertEqual(row["model"], "openai/gpt-6-luna")
+        self.assertEqual(row["current"], "")
+        self.assertEqual(row["default_label"], "High")
+        self.assertContains(response, 'id="feature-reasoning-decisions_structured"')

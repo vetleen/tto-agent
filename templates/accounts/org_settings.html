@@ -20,7 +20,8 @@
         <li><a href="#tools" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Tools</a></li>
         <li><a href="#subagents" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Sub-agents</a></li>
         <li><a href="#pii" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">PII classification</a></li>
-        <li><a href="#context" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Context window</a></li>
+        <li><a href="#decisions" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Decisions</a></li>
+        <li><a href="#context"class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Context window</a></li>
         <li><a href="#skills" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Skills</a></li>
         <li><a href="#styles" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Document styles</a></li>
         <li><a href="#slide-styles" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Slide styles</a></li>
@@ -449,6 +450,97 @@
                 >
               </label>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Decisions -->
+      <section id="decisions" class="scroll-mt-24">
+        <div class="mb-3">
+          <h2 class="text-base font-semibold text-heading">Decisions</h2>
+          <p class="mt-0.5 text-sm text-body">How {{ assistant_name|default:"the assistant" }} answers structured yes/no, multiple-choice and scoring questions behind the scenes.</p>
+        </div>
+        <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
+          <div class="px-5 py-4">
+            <label class="flex items-center justify-between gap-3 rounded-base border border-default bg-neutral-primary p-3 cursor-pointer hover:bg-neutral-secondary-soft transition-colors">
+              <div>
+                <span class="text-sm font-medium text-heading">Quick decisions via OpenAI (recommended)</span>
+                <p class="text-xs text-body mt-0.5">Routes decisions through OpenAI's Decisions endpoint: typed answers in a couple of seconds at a fraction of the cost. When off — or whenever the endpoint is unavailable — the structured decisions model below answers instead.</p>
+              </div>
+              <input
+                type="checkbox"
+                id="decisions-quick-toggle"
+                class="rounded border-default text-brand focus:ring-brand-medium"
+                {% if decisions.quick_enabled %}checked{% endif %}
+              >
+            </label>
+          </div>
+          <div class="border-t border-default divide-y divide-default">
+            <div id="decisions-quick-row" class="px-5 py-4{% if not decisions.quick_enabled %} hidden{% endif %}">
+              {% if decisions.quick_row %}
+              <label class="block text-sm font-medium text-heading" for="org-feature-model-decisions_quick">{{ decisions.quick_row.label }}</label>
+              <p class="text-xs text-body mt-0.5">{{ decisions.quick_row.desc }}</p>
+              <select
+                id="org-feature-model-decisions_quick"
+                data-feature="decisions_quick"
+                class="org-feature-model-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+              >
+                <option value="">Automatic (recommended)</option>
+                {% for model in decisions.quick_row.eligible_models %}
+                <option value="{{ model }}" {% if decisions.quick_row.current == model %}selected{% endif %}>{{ model }}</option>
+                {% endfor %}
+              </select>
+              {% else %}
+              <span class="block text-sm font-medium text-heading">Quick decisions model</span>
+              {% if decisions.quick_available_system %}
+              <p class="text-xs text-body mt-0.5">No allowed model supports quick decisions. Allow GPT-6 Luna under Allowed models to turn them on; until then the structured decisions model answers.</p>
+              {% else %}
+              <p class="text-xs text-body mt-0.5">Quick decisions are not available on this installation; the structured decisions model answers.</p>
+              {% endif %}
+              {% endif %}
+            </div>
+            {% with row=decisions.structured_row %}
+            {% if row %}
+            <div class="px-5 py-4">
+              <label class="block text-sm font-medium text-heading" for="org-feature-model-decisions_structured">{{ row.label }}</label>
+              <p class="text-xs text-body mt-0.5">{{ row.desc }}</p>
+              <div class="mt-2 flex flex-col gap-2 sm:flex-row">
+                <div class="flex-1 min-w-0">
+                  <span class="block text-xs font-medium text-body mb-1">Model</span>
+                  <select
+                    id="org-feature-model-decisions_structured"
+                    data-feature="decisions_structured"
+                    aria-label="{{ row.label }}"
+                    class="org-feature-model-select block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+                  >
+                    <option value="">Use organization default {{ row.default_slot }} model (recommended)</option>
+                    {% for model in row.eligible_models %}
+                    <option value="{{ model }}" {% if row.current == model %}selected{% endif %}>{{ model }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div class="sm:w-56">
+                  <label class="block text-xs font-medium text-body mb-1" for="feature-reasoning-decisions_structured">Reasoning</label>
+                  <select
+                    id="feature-reasoning-decisions_structured"
+                    data-feature="decisions_structured"
+                    class="org-feature-reasoning-select block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium disabled:opacity-60"
+                    {% if not row.reasoning.levels %}disabled{% endif %}
+                  >
+                    {% if row.reasoning.levels %}
+                    <option value="">Model default ({{ row.reasoning.default_label }})</option>
+                    {% for opt in row.reasoning.level_options %}
+                    <option value="{{ opt.value }}" {% if row.reasoning.current == opt.value %}selected{% endif %}>{{ opt.label }}</option>
+                    {% endfor %}
+                    {% else %}
+                    <option value="">Not adjustable</option>
+                    {% endif %}
+                  </select>
+                </div>
+              </div>
+            </div>
+            {% endif %}
+            {% endwith %}
           </div>
         </div>
       </section>
@@ -972,15 +1064,17 @@
           sel.value = '';
           return;
         }
-        if (data.reasoning) renderSubagentReasoning(data.reasoning);
+        if (data.reasoning) renderReasoning(data.reasoning);
       });
     });
   });
 
-  // Sub-agent reasoning level per tier. The server resolves the tier's model
-  // and returns its levels, so the select is always redrawn from a response.
-  function renderSubagentReasoning(row) {
-    var sel = document.getElementById('subagent-reasoning-' + row.tier);
+  // Reasoning level for a sub-agent tier (row.tier) or a feature with reasoning
+  // control (row.feature). The server resolves the effective model and returns
+  // its levels, so the select is always redrawn from a response.
+  function renderReasoning(row) {
+    var id = row.tier ? 'subagent-reasoning-' + row.tier : 'feature-reasoning-' + row.feature;
+    var sel = document.getElementById(id);
     if (!sel) return;
     while (sel.options.length) { sel.remove(0); }
     var first = document.createElement('option');
@@ -1012,7 +1106,26 @@
           sel.value = sel.dataset.saved || '';
           return;
         }
-        renderSubagentReasoning(data);
+        renderReasoning(data);
+      });
+    });
+  });
+
+  document.querySelectorAll('.org-feature-reasoning-select').forEach(function(sel) {
+    sel.dataset.saved = sel.value;
+    sel.addEventListener('change', function() {
+      fetch('{% url "accounts:org_feature_reasoning_update" %}', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ feature: sel.dataset.feature, level: sel.value }),
+        credentials: 'same-origin',
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.error) {
+          alert(data.error);
+          sel.value = sel.dataset.saved || '';
+          return;
+        }
+        renderReasoning(data);
       });
     });
   });
@@ -1153,6 +1266,29 @@
         credentials: 'same-origin',
       }).then(function(r) { return r.json(); }).then(function(data) {
         if (data.error) alert(data.error);
+      });
+    });
+  }
+
+  // --- Decisions section ---
+  var decisionsQuickToggle = document.getElementById('decisions-quick-toggle');
+  if (decisionsQuickToggle) {
+    decisionsQuickToggle.addEventListener('change', function() {
+      var toggle = this;
+      fetch('{% url "accounts:org_decisions_quick_toggle_update" %}', {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrf, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: toggle.checked }),
+        credentials: 'same-origin',
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.error) {
+          alert(data.error);
+          toggle.checked = !toggle.checked;
+          return;
+        }
+        // The quick-model row only matters while the quick pathway is on.
+        var quickRow = document.getElementById('decisions-quick-row');
+        if (quickRow) quickRow.classList.toggle('hidden', !data.enabled);
       });
     });
   }

@@ -1307,6 +1307,90 @@ class ResolveOrgFeatureReasoningTest(TestCase):
         self.assertIsNone(resolve_org_feature_reasoning(prefs, "f", "custom/plain"))
 
 
+_DECISIONS_SYSTEM_MODELS = [
+    "openai/gpt-6-sol", "openai/gpt-6-luna", "anthropic/claude-sonnet-5-5", "anthropic/claude-haiku-5-5",
+]
+
+
+class DecisionsSettingsTest(TestCase):
+    """resolve_decisions_settings(): the quick toggle, both pathway models and
+    the pinned reasoning level from one org fetch."""
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-6-sol",
+        LLM_DEFAULT_MID_MODEL="anthropic/claude-sonnet-5-5",
+        LLM_DEFAULT_CHEAP_MODEL="anthropic/claude-haiku-5-5",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=_DECISIONS_SYSTEM_MODELS)
+    def test_system_defaults(self, mock_allowed):
+        from core.preferences import resolve_decisions_settings
+
+        s = resolve_decisions_settings(None)
+        self.assertTrue(s.quick_enabled)
+        # The cheap slot (Haiku) lacks the capability → first capable allowed model.
+        self.assertEqual(s.quick_model, "openai/gpt-6-luna")
+        self.assertEqual(s.structured_model, "anthropic/claude-haiku-5-5")
+        self.assertIsNone(s.structured_thinking_level)
+        # A missing org behaves like no org.
+        self.assertEqual(resolve_decisions_settings(999_999), s)
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-6-sol",
+        LLM_DEFAULT_MID_MODEL="anthropic/claude-sonnet-5-5",
+        LLM_DEFAULT_CHEAP_MODEL="anthropic/claude-haiku-5-5",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=_DECISIONS_SYSTEM_MODELS)
+    def test_org_toggle_overrides_and_pinned_level(self, mock_allowed):
+        from core.preferences import resolve_decisions_settings
+
+        org = Organization.objects.create(name="DecOrg", slug="decorg", preferences={
+            "decisions_quick_enabled": False,
+            "feature_models": {"decisions_structured": "openai/gpt-6-sol"},
+            "feature_reasoning": {"decisions_structured": {"model": "openai/gpt-6-sol", "level": "low"}},
+        })
+        s = resolve_decisions_settings(org.pk)
+        self.assertFalse(s.quick_enabled)
+        self.assertEqual(s.quick_model, "openai/gpt-6-luna")
+        self.assertEqual(s.structured_model, "openai/gpt-6-sol")
+        self.assertEqual(s.structured_thinking_level, "low")
+        # The level was pinned for Sol; once the feature runs on Sonnet it is inert.
+        org.preferences["feature_models"]["decisions_structured"] = "anthropic/claude-sonnet-5-5"
+        org.save(update_fields=["preferences"])
+        s = resolve_decisions_settings(org.pk)
+        self.assertEqual(s.structured_model, "anthropic/claude-sonnet-5-5")
+        self.assertIsNone(s.structured_thinking_level)
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-6-sol",
+        LLM_DEFAULT_MID_MODEL="anthropic/claude-sonnet-5-5",
+        LLM_DEFAULT_CHEAP_MODEL="anthropic/claude-haiku-5-5",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=_DECISIONS_SYSTEM_MODELS)
+    def test_quick_model_empty_when_org_disallows_every_capable_model(self, mock_allowed):
+        from core.preferences import resolve_decisions_settings
+
+        org = Organization.objects.create(name="DecOrg2", slug="decorg2", preferences={
+            "allowed_models": ["openai/gpt-6-sol", "anthropic/claude-haiku-5-5"],
+        })
+        s = resolve_decisions_settings(org.pk)
+        self.assertTrue(s.quick_enabled)
+        self.assertEqual(s.quick_model, "")
+        self.assertEqual(s.structured_model, "anthropic/claude-haiku-5-5")
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-6-sol",
+        LLM_DEFAULT_MID_MODEL="openai/gpt-6-sol",
+        LLM_DEFAULT_CHEAP_MODEL="openai/gpt-6-sol",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-6-sol"])
+    def test_quick_model_empty_when_not_allowed_system_wide(self, mock_allowed):
+        from core.preferences import resolve_decisions_settings
+
+        s = resolve_decisions_settings(None)
+        self.assertEqual(s.quick_model, "")
+        self.assertEqual(s.structured_model, "openai/gpt-6-sol")
+
+
 class ModalityFeatureResolutionTest(TestCase):
     """Capability-gated features (required_modality) resolve to capable models
     and report availability correctly."""

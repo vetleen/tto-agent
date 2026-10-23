@@ -162,7 +162,18 @@ FEATURE_DEFAULTS: dict[str, FeatureDefault] = {
     "subagent_low": FeatureDefault("cheap", "org"),
     "subagent_medium": FeatureDefault("mid", "org"),
     "subagent_high": FeatureDefault("primary", "org"),
+    # Decisions (llm/service/decisions_service.py): structured yes/no, choice and
+    # score questions. "quick" = OpenAI's Decisions endpoint — only models with
+    # that capability (GPT-6 Luna); "" when none is allowed. "structured" = the
+    # structured-output pathway: the only pathway while the org's quick toggle
+    # (DECISIONS_QUICK_PREF) is off, the fallback when quick fails.
+    "decisions_quick": FeatureDefault("cheap", "org", required_capability="decisions"),
+    "decisions_structured": FeatureDefault("cheap", "org", reasoning_control=True),
 }
+
+# Org pref (flat key in Organization.preferences): route decisions through the
+# quick pathway when a capable model is allowed. Default on.
+DECISIONS_QUICK_PREF = "decisions_quick_enabled"
 
 # Sub-agent model-quality tiers (SubAgentRun.model_tier), lowest first. Not to
 # be confused with the slot vocabulary ("primary"/"mid"/"cheap") above.
@@ -856,6 +867,38 @@ def resolve_org_feature_reasoning(org_prefs: dict | None, feature_key: str, mode
     if not info or level not in info.reasoning_levels:
         return None
     return level
+
+
+@dataclass(frozen=True)
+class DecisionsSettings:
+    """An org's effective decisions configuration (llm.service.decisions_service)."""
+
+    quick_enabled: bool  # the "Quick decisions via OpenAI" toggle
+    quick_model: str  # "" when no allowed model has the decisions capability
+    structured_model: str  # "" only when the org may use no model at all
+    structured_thinking_level: str | None  # None = the model's registry default
+
+
+def resolve_decisions_settings(org_id: int | None) -> DecisionsSettings:
+    """Resolve the quick toggle, both pathway models and the pinned reasoning
+    level from one Organization fetch. ``org_id`` None → system defaults."""
+    from accounts.models import Organization
+
+    org_prefs: dict | None = None
+    if org_id:
+        try:
+            org_prefs = Organization.objects.get(pk=org_id).preferences or {}
+        except Organization.DoesNotExist:
+            pass
+    structured_model = resolve_feature_model_from_prefs(org_prefs, "decisions_structured")
+    return DecisionsSettings(
+        quick_enabled=bool((org_prefs or {}).get(DECISIONS_QUICK_PREF, True)),
+        quick_model=resolve_feature_model_from_prefs(org_prefs, "decisions_quick"),
+        structured_model=structured_model,
+        structured_thinking_level=resolve_org_feature_reasoning(
+            org_prefs, "decisions_structured", structured_model
+        ),
+    )
 
 
 def feature_is_available(user, feature_key: str) -> bool:

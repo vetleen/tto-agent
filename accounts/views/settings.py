@@ -20,7 +20,7 @@ from accounts.views._builders import (
 )
 from accounts.views._helpers import org_admin_required
 from core.http import parse_json_object
-from core.preferences import SUBAGENT_TIER_FEATURES, SUBAGENT_TIERS
+from core.preferences import DECISIONS_QUICK_PREF, SUBAGENT_TIER_FEATURES, SUBAGENT_TIERS
 
 logger = logging.getLogger(__name__)
 
@@ -443,6 +443,8 @@ def org_settings_page(request):
         "subagent_low": ("Low-quality sub-agents", "For simple, well-defined delegated work, such as lookups, narrow searches and summaries."),
         "subagent_medium": ("Medium-quality sub-agents", "Handle most delegated work, such as web research, summaries and lookups."),
         "subagent_high": ("High-quality sub-agents", f"Used rarely, only for tasks that need exceptional intelligence. {django_settings.ASSISTANT_NAME} picks the model quality for each sub-agent."),
+        "decisions_quick": ("Quick decisions model", "Answers structured yes/no, multiple-choice and scoring questions through OpenAI's Decisions endpoint — fast and cheap. Only models that endpoint accepts are offered."),
+        "decisions_structured": ("Structured decisions model", "Answers the same questions with a normal structured-output call. Used for every decision when quick decisions are off, and as the fallback when they fail or are unavailable."),
     }
     org_features = build_feature_rows(
         "org", org_feature_models, effective_org_allowed, _ORG_FEATURE_META
@@ -456,6 +458,14 @@ def org_settings_page(request):
         tier = next(t for t, f in SUBAGENT_TIER_FEATURES.items() if f == row["key"])
         row["reasoning"] = _subagent_reasoning_row(org, tier)
     org_features = [r for r in org_features if r["key"] not in _SUBAGENT_MODEL_KEYS]
+    # Likewise the Decisions rows render in their own section (toggle + the two
+    # pathways). The quick row is absent when no allowed model has the capability.
+    _DECISIONS_KEYS = {"decisions_quick", "decisions_structured"}
+    decisions_rows = {r["key"]: r for r in org_features if r["key"] in _DECISIONS_KEYS}
+    org_features = [r for r in org_features if r["key"] not in _DECISIONS_KEYS]
+    decisions_structured_row = decisions_rows.get("decisions_structured")
+    if decisions_structured_row is not None:
+        decisions_structured_row["reasoning"] = _feature_reasoning_row(org, "decisions_structured")
 
     # Full (allowed-independent) eligible model lists per tier and per feature.
     # The Model-defaults and Feature-override dropdowns are server-rendered only
@@ -469,6 +479,14 @@ def org_settings_page(request):
                 "org", org_feature_models, system_models, _ORG_FEATURE_META
             )
         },
+    }
+    decisions = {
+        "quick_enabled": bool(org_prefs.get(DECISIONS_QUICK_PREF, True)),
+        "quick_row": decisions_rows.get("decisions_quick"),
+        # Whether ANY system model could serve the quick pathway — tells the
+        # template whether allowing a model would help when quick_row is None.
+        "quick_available_system": bool(model_options["features"].get("decisions_quick")),
+        "structured_row": decisions_structured_row,
     }
 
     from core.fonts import org_font_families
@@ -548,6 +566,7 @@ def org_settings_page(request):
         "effective_image_choices": effective_image_choices,
         "org_features": org_features,
         "subagent_model_rows": subagent_model_rows,
+        "decisions": decisions,
         "tiers": build_tier_rows(system_defaults, effective_org_allowed),
         "model_options_json": json.dumps(model_options),
     })
@@ -1565,6 +1584,78 @@ def org_subagent_reasoning_update(request):
     update_org_preferences(membership.org_id, mutate)
 
     return JsonResponse({"ok": True, **row, "current": level if store else ""})
+
+
+@login_required
+@require_POST
+@org_admin_required
+def org_feature_reasoning_update(request):
+    """Set the reasoning level for a ``reasoning_control`` feature ("" = model default).
+
+    The level is validated against — and stored with — the feature's current
+    effective model, resolved server-side. A later model change makes the stored
+    level inert (core.preferences.resolve_org_feature_reasoning).
+    """
+    from core.preferences import FEATURE_DEFAULTS
+
+    membership = request.org_membership
+
+    data, err = _parse_json_body(request)
+    if err:
+        return err
+
+    feature = _str_field(data, "feature")
+    fdef = FEATURE_DEFAULTS.get(feature)
+    if fdef is None or fdef.scope != "org" or not fdef.reasoning_control:
+        return JsonResponse({"error": "This feature has no reasoning control"}, status=400)
+    level = _str_field(data, "level")
+
+    row = _feature_reasoning_row(membership.org, feature)
+    if level and not row["levels"]:
+        return JsonResponse(
+            {"error": f"{row['model_display']} does not support configurable reasoning"}, status=400
+        )
+    if level and level not in row["levels"]:
+        return JsonResponse(
+            {"error": f"Reasoning level '{level}' is not available for {row['model_display']}. "
+                      f"Choose one of: {', '.join(row['levels'])}."},
+            status=400,
+        )
+    # Choosing the model's default is the same as "use default": store nothing.
+    store = bool(level) and level != row["default_level"]
+
+    def mutate(prefs):
+        reasoning = prefs.get("feature_reasoning", {})
+        if store:
+            reasoning[feature] = {"model": row["model"], "level": level}
+        else:
+            reasoning.pop(feature, None)
+        prefs["feature_reasoning"] = reasoning
+
+    update_org_preferences(membership.org_id, mutate)
+
+    return JsonResponse({"ok": True, **row, "current": level if store else ""})
+
+
+@login_required
+@require_POST
+@org_admin_required
+def org_decisions_quick_toggle_update(request):
+    """Toggle the quick pathway (OpenAI's Decisions endpoint) for decisions."""
+    membership = request.org_membership
+
+    data, err = _parse_json_body(request)
+    if err:
+        return err
+
+    enabled = bool(data.get("enabled", True))
+
+    def mutate(prefs):
+        prefs[DECISIONS_QUICK_PREF] = enabled
+
+    update_org_preferences(membership.org_id, mutate)
+
+    return JsonResponse({"ok": True, "enabled": enabled})
 
 
 @login_required
