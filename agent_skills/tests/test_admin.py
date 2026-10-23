@@ -44,6 +44,13 @@ class RestoreSkillsActionTests(TestCase):
         self.assertIsNone(self.live.deleted_at)
         self.assertEqual(self.live.slug, "here")
 
+    def test_kind_is_filterable_and_editable(self):
+        self.assertIn("kind", self.admin.list_filter)
+        self.assertIn("kind", self.admin.list_display)
+        fields = [f for _, opts in self.admin.fieldsets for f in opts["fields"]]
+        self.assertIn("kind", fields)
+        self.assertIn("requires", fields)
+
     def test_restore_rededupes_when_slug_taken(self):
         # A live skill already holds the slug the deleted one wants back.
         AgentSkill.objects.create(

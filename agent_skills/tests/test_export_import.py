@@ -82,6 +82,18 @@ class ExportSkillTests(TestCase):
         self.assertEqual(outline["content"], ["# Title", "", "## Findings"])
         self.assertEqual(outline["kind"], "reference")
 
+    def test_export_carries_kind_and_requires(self):
+        data = export_skill(self.skill)
+        self.assertEqual(data["kind"], "playbook")
+        self.assertEqual(data["requires"], [])
+
+        toolkit = _make_skill(slug="canvas_tools", kind="toolkit")
+        self.assertEqual(export_skill(toolkit)["kind"], "toolkit")
+
+        dependent = _make_skill(slug="dep", requires=["canvas_tools", "canvas_tools", "dep"])
+        # Read-side normalization: deduped, never names itself.
+        self.assertEqual(export_skill(dependent)["requires"], ["canvas_tools"])
+
     def test_dump_json_is_readable_envelope(self):
         raw = dump_skills_json([self.skill])
         # Envelope present.
@@ -120,6 +132,41 @@ class ParseImportServiceTests(TestCase):
         tmpls = {t.name: t.content for t in imported.templates.all()}
         self.assertEqual(tmpls["Outline"], "# Title\n\n## Findings")
         self.assertEqual(tmpls["Notes"], "single line")
+
+    def test_import_keeps_requires_but_never_creates_a_toolkit(self):
+        raw = json.dumps({"wilfred_skill_export": EXPORT_VERSION, "skills": [{
+            "name": "Dep", "instructions": ["x"], "kind": "toolkit",
+            "requires": ["canvas_tools", "Canvas_Tools", "bad slug!", 7, "dep"],
+            "slug": "dep",
+        }]}).encode("utf-8")
+        payloads = parse_skill_export(raw)
+        # Normalized: lower-cased + deduped, malformed and non-string entries
+        # dropped, the skill's own slug dropped.
+        self.assertEqual(payloads[0]["requires"], ["canvas_tools"])
+
+        imported = import_skill(self.user, payloads[0])
+        self.assertEqual(imported.kind, "playbook")
+        self.assertEqual(imported.requires, ["canvas_tools"])
+
+    def test_subagent_import_drops_requires(self):
+        raw = json.dumps({"skills": [{
+            "name": "Spec", "instructions": ["x"], "audience": "subagent",
+            "requires": ["canvas_tools"],
+        }]}).encode("utf-8")
+        payloads = parse_skill_export(raw)
+        self.assertEqual(payloads[0]["requires"], [])
+        imported = import_skill(self.user, payloads[0])
+        self.assertEqual(imported.requires, [])
+
+    def test_requires_capped(self):
+        from agent_skills.models import MAX_REQUIRES
+
+        raw = json.dumps({"skills": [{
+            "name": "Many", "instructions": ["x"],
+            "requires": [f"tk{i}" for i in range(MAX_REQUIRES + 5)],
+        }]}).encode("utf-8")
+        payloads = parse_skill_export(raw)
+        self.assertEqual(len(payloads[0]["requires"]), MAX_REQUIRES)
 
     def test_v1_templates_import_as_resources(self):
         # A legacy v1 export (``templates`` key) still imports, as kind=template.

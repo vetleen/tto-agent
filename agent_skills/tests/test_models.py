@@ -287,6 +287,28 @@ class SeedSystemSkillsTests(TestCase):
         skill.refresh_from_db()
         self.assertEqual(skill.updated_at, ts_before)
 
+    def test_seed_syncs_kind_and_requires(self):
+        """``kind`` and ``requires`` are seed-owned: a drifted row is repaired."""
+        from agent_skills.seed_skills import SYSTEM_SKILLS, seed_system_skills
+
+        toolkit = next(s for s in SYSTEM_SKILLS if s.get("kind") == "toolkit")
+        AgentSkill.objects.filter(slug=toolkit["slug"], level="system").update(
+            kind=AgentSkill.Kind.PLAYBOOK, requires=["something"],
+        )
+
+        seed_system_skills()
+
+        row = AgentSkill.objects.get(slug=toolkit["slug"], level="system")
+        self.assertEqual(row.kind, AgentSkill.Kind.TOOLKIT)
+        self.assertEqual(row.requires, list(toolkit.get("requires", [])))
+
+    def test_new_skill_defaults_to_playbook_without_requires(self):
+        skill = AgentSkill.objects.create(
+            slug="plain", name="Plain", instructions="i", level="system",
+        )
+        self.assertEqual(skill.kind, AgentSkill.Kind.PLAYBOOK)
+        self.assertEqual(skill.requires, [])
+
 
 _SEED_MEDIA = tempfile.mkdtemp(prefix="seed-resource-test-")
 

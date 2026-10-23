@@ -61,6 +61,64 @@ class SeedCoreSkillsTest(TestCase):
             self.assertIn(tool, skill.tool_names)
 
 
+class SeedGraphTests(TestCase):
+    """Seed-level invariants of the toolkit / ``requires`` model: toolkits are
+    main-audience tool unlocks, ``requires`` only names seed slugs on
+    main-audience playbooks, and the dependency graph has no cycles."""
+
+    def _seeds(self):
+        from agent_skills.seed_skills import SYSTEM_SKILLS
+
+        return SYSTEM_SKILLS
+
+    def test_toolkit_seeds(self):
+        toolkits = [s for s in self._seeds() if s.get("kind") == "toolkit"]
+        self.assertEqual(
+            sorted(s["slug"] for s in toolkits),
+            sorted([
+                "assistant_loop_tools", "canvas_collaborator", "data_room_tools",
+                "image_generator", "web_research_tools", "slide_deck_collaborator",
+            ]),
+        )
+        for data in toolkits:
+            self.assertEqual(data.get("audience", "main"), "main", data["slug"])
+            self.assertTrue(data["tool_names"], data["slug"])
+            self.assertFalse(data.get("requires"), data["slug"])
+            row = AgentSkill.objects.get(slug=data["slug"], level="system")
+            self.assertEqual(row.kind, AgentSkill.Kind.TOOLKIT, data["slug"])
+
+    def test_playbook_seeds_default_kind(self):
+        for data in self._seeds():
+            if data.get("kind") == "toolkit":
+                continue
+            row = AgentSkill.objects.get(slug=data["slug"], level="system")
+            self.assertEqual(row.kind, AgentSkill.Kind.PLAYBOOK, data["slug"])
+
+    def test_requires_name_seed_slugs_on_main_playbooks(self):
+        seeds = self._seeds()
+        slugs = {s["slug"] for s in seeds}
+        for data in seeds:
+            requires = data.get("requires") or []
+            for req in requires:
+                self.assertIn(req, slugs, f"{data['slug']} requires unknown {req}")
+                self.assertNotEqual(req, data["slug"])
+            if requires:
+                self.assertEqual(data.get("audience", "main"), "main", data["slug"])
+            row = AgentSkill.objects.get(slug=data["slug"], level="system")
+            self.assertEqual(row.requires, list(requires), data["slug"])
+
+    def test_requires_graph_is_acyclic(self):
+        graph = {s["slug"]: list(s.get("requires") or []) for s in self._seeds()}
+
+        def visit(slug, stack):
+            self.assertNotIn(slug, stack, f"requires cycle through {slug}")
+            for req in graph.get(slug, []):
+                visit(req, stack + [slug])
+
+        for slug in graph:
+            visit(slug, [])
+
+
 class ImageGeneratorGateTest(TestCase):
     """The image-model gate moved from allowed_tools into skill-tool resolution:
     chat_generate_image survives in the enabled image_generator skill only when

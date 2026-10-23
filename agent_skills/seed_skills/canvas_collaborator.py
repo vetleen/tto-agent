@@ -77,4 +77,5 @@ Supported diagram types: `graph`/`flowchart`, `sequenceDiagram`, `classDiagram`,
         "canvas_paste_user_text",
         "chat_attachment_open_to_canvas",
     ],
+    "kind": "toolkit",
 }

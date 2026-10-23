@@ -27,4 +27,5 @@ pass those explicitly as the user intends.
         "chat_loop_edit",
         "chat_loop_stop",
     ],
+    "kind": "toolkit",
 }

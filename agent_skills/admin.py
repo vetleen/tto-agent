@@ -34,19 +34,24 @@ class DeletedSkillFilter(admin.SimpleListFilter):
 @admin.register(AgentSkill)
 class AgentSkillAdmin(admin.ModelAdmin):
     list_display = (
-        "name", "slug", "level", "audience", "organization", "created_by",
+        "name", "slug", "level", "audience", "kind", "organization", "created_by",
         "is_active", "deleted_at", "scan_state", "standing_token_count",
     )
-    list_filter = ("level", "audience", "scan_state", "is_active", DeletedSkillFilter)
+    list_filter = (
+        "level", "audience", "kind", "scan_state", "is_active", DeletedSkillFilter,
+    )
     search_fields = ("name", "slug", "description")
     raw_id_fields = ("organization", "created_by", "parent")
     actions = ["restore_skills"]
     fieldsets = (
         ("Identity", {"fields": ("name", "slug", "emoji", "description")}),
-        ("Ownership", {"fields": ("level", "audience", "organization", "created_by", "parent")}),
-        ("Configuration", {"fields": ("instructions", "tool_names", "is_active")}),
+        ("Ownership", {
+            "fields": ("level", "audience", "kind", "organization", "created_by", "parent"),
+        }),
+        # requires: slugs attached automatically with this skill (toolkits).
+        ("Configuration", {"fields": ("instructions", "tool_names", "requires", "is_active")}),
         # standing_token_count is what the chat_skill_attach token budget
-        # (SKILL_ATTACH_TOKEN_BUDGET, ~40k) sums across attached skills.
+        # (SKILL_ATTACH_TOKEN_BUDGET, 60k) sums across attached skills.
         ("Scan / approval", {
             "fields": (
                 "scan_state", "approved_content_hash", "scan_detail",

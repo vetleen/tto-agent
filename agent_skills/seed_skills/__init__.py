@@ -98,6 +98,10 @@ def seed_system_skills():
             # Default to the main agent; sub-agent specializations (and any
             # future shared seeds) opt in explicitly.
             "audience": skill_data.get("audience", AgentSkill.Audience.MAIN),
+            # Toolkits (tool-unlock seeds) opt in; everything else is a playbook.
+            "kind": skill_data.get("kind", AgentSkill.Kind.PLAYBOOK),
+            # Slugs attached automatically with this skill (e.g. canvas_tools).
+            "requires": list(skill_data.get("requires", [])),
         }
         try:
             skill = AgentSkill.objects.get(slug=skill_data["slug"], level="system")

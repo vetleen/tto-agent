@@ -674,6 +674,17 @@ class EditSkillTool(ContextAwareTool):
                 updates["tool_names"], skill_audience=skill.audience
             )
             update_fields.append("tool_names")
+        if "requires" in updates:
+            # Slugs of skills (typically toolkits) attached automatically with
+            # this one. Main-audience only: a sub-agent specialization can't
+            # attach toolkits, so the field is cleared there.
+            from agent_skills.services import normalize_requires
+
+            skill.requires = (
+                normalize_requires(updates["requires"], own_slug=skill.slug)
+                if skill.audience != "subagent" else []
+            )
+            update_fields.append("requires")
         # NOTE: is_active is deliberately NOT editable here. Every skill lookup
         # (list, detail, this tool's own resolution) filters is_active=True, so
         # deactivating would make the skill invisible and unrecoverable outside

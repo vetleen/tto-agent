@@ -209,6 +209,74 @@ class CopyToOrgViewTests(TestCase):
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
+class ToolkitCopyRefusalTests(TestCase):
+    """Toolkits are built in: neither service nor view makes a copy of one."""
+
+    def setUp(self):
+        AgentSkill.objects.all().delete()
+        self.admin = User.objects.create_user(email="adm@example.com", password="pw")
+        self.admin.email_verified = True
+        self.admin.save(update_fields=["email_verified"])
+        self.org = Organization.objects.create(name="Co", slug="co")
+        Membership.objects.create(user=self.admin, org=self.org, role=Membership.Role.ADMIN)
+        self.toolkit = AgentSkill.objects.create(
+            slug="canvas_tools", name="Canvas Tools", instructions="i",
+            level="system", kind="toolkit", tool_names=["canvas_write"],
+        )
+        self.org.preferences = {"skills": {"canvas_tools": {"enabled": True}}}
+        self.org.save(update_fields=["preferences"])
+
+    def test_fork_refuses_toolkit(self):
+        from agent_skills.services import fork_skill
+
+        with self.assertRaises(ValueError):
+            fork_skill(self.admin, self.toolkit)
+        self.assertEqual(AgentSkill.objects.count(), 1)
+
+    def test_promote_refuses_toolkit(self):
+        from agent_skills.services import promote_skill_to_org
+
+        with self.assertRaises(ValueError):
+            promote_skill_to_org(self.admin, self.toolkit, self.org)
+        self.assertEqual(AgentSkill.objects.count(), 1)
+
+    def test_copy_views_redirect_with_message(self):
+        from django.contrib.messages import get_messages
+
+        self.client.force_login(self.admin)
+        detail = reverse("agent_skills_detail", kwargs={"skill_id": self.toolkit.id})
+
+        def _assert_refused(response):
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(response.url, detail)
+            texts = [str(m) for m in get_messages(response.wsgi_request)]
+            self.assertTrue(any("can't be copied" in t for t in texts), texts)
+
+        for url_name in ("agent_skills_copy", "agent_skills_copy_to_org"):
+            _assert_refused(self.client.post(
+                reverse(url_name, kwargs={"skill_id": self.toolkit.id})
+            ))
+        for action in ("save_as_user", "save_as_org"):
+            _assert_refused(self.client.post(
+                reverse("agent_skills_save", kwargs={"skill_id": self.toolkit.id}),
+                {"action": action, "name": "X", "instructions": "i"},
+            ))
+        self.assertEqual(AgentSkill.objects.count(), 1)
+
+    def test_copies_carry_requires(self):
+        from agent_skills.services import fork_skill, promote_skill_to_org
+
+        dep = AgentSkill.objects.create(
+            slug="dep", name="Dep", instructions="i", level="system",
+            requires=["canvas_tools"],
+        )
+        self.assertEqual(fork_skill(self.admin, dep).requires, ["canvas_tools"])
+        self.assertEqual(
+            promote_skill_to_org(self.admin, dep, self.org).requires, ["canvas_tools"],
+        )
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
 class DetailActionMoveTests(TestCase):
     """The detail-page Promote/Demote buttons save form edits then change type."""
 

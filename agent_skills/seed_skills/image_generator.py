@@ -60,4 +60,5 @@ Do NOT write markdown image syntax such as `![caption](file.png)` — it does no
 
 """,
     "tool_names": ["chat_generate_image"],
+    "kind": "toolkit",
 }

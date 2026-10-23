@@ -21,10 +21,8 @@ MAX_RESOURCE_CHARS = MAX_INSTRUCTIONS_CHARS
 # Back-compat alias — callers migrating from the template-era name.
 MAX_TEMPLATE_CHARS = MAX_RESOURCE_CHARS
 
-# Hard cap on how many skills may be attached to a single chat thread.
-# NOTE: being replaced by a token budget (settings.SKILL_ATTACH_TOKEN_BUDGET);
-# kept until the chat_skill_attach / consumer / UI call sites are migrated.
-MAX_THREAD_SKILLS = 5
+# Upper bound on the number of slugs a skill may list in ``requires``.
+MAX_REQUIRES = 10
 
 
 def skill_resource_upload_path(instance: "SkillResource", filename: str) -> str:
@@ -46,6 +44,14 @@ class AgentSkill(models.Model):
         MAIN = "main", "Main agent"
         SUBAGENT = "subagent", "Sub-agent"
         SHARED = "shared", "Shared"
+
+    class Kind(models.TextChoices):
+        # What the skill is for. A PLAYBOOK carries instructions for a kind of
+        # task; a TOOLKIT exists to unlock a tool group (canvas, web, data
+        # rooms…) and is seed-only — user/org/imported skills are always
+        # playbooks. Orthogonal to ``level`` (ownership) and ``audience``.
+        PLAYBOOK = "playbook", "Playbook"
+        TOOLKIT = "toolkit", "Toolkit"
 
     class ScanState(models.TextChoices):
         # Approval gate for user/org skills (system skills are auto-approved).
@@ -70,8 +76,15 @@ class AgentSkill(models.Model):
     description = models.TextField(max_length=1024, blank=True)
     instructions = models.TextField(max_length=MAX_INSTRUCTIONS_CHARS)
     tool_names = models.JSONField(default=list, blank=True)
+    # Slugs of skills this one needs (typically toolkits). Resolved through the
+    # user's available set; the thread's attached set is kept closed under it
+    # (see agent_skills.services.expand_required_skills). Main audience only.
+    requires = models.JSONField(default=list, blank=True)
     audience = models.CharField(
         max_length=10, choices=Audience.choices, default=Audience.MAIN
+    )
+    kind = models.CharField(
+        max_length=10, choices=Kind.choices, default=Kind.PLAYBOOK
     )
     level = models.CharField(max_length=10, choices=Level.choices)
     organization = models.ForeignKey(

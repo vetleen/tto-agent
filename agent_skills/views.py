@@ -617,7 +617,11 @@ def skills_save(request, skill_id):
         # Make a user copy (carrying its resources), then write the form's text
         # fields into it. Resources are copied by fork_skill now that the form
         # no longer recreates them.
-        copy = fork_skill(request.user, skill, copy_templates=True, rescan=False)
+        try:
+            copy = fork_skill(request.user, skill, copy_templates=True, rescan=False)
+        except ValueError as exc:  # toolkit
+            messages.error(request, str(exc))
+            return redirect("agent_skills_detail", skill_id=skill.id)
         try:
             _apply_skill_form(copy, request)
         except SkillFormValidationError as exc:
@@ -638,6 +642,9 @@ def skills_save(request, skill_id):
             )
         except PermissionError:
             return HttpResponseForbidden("Org admin required.")
+        except ValueError as exc:  # toolkit
+            messages.error(request, str(exc))
+            return redirect("agent_skills_detail", skill_id=skill.id)
         # promote_skill_to_org no-ops (returns the source row) when the skill
         # is already an org skill in this org — in that case there is no copy
         # to clean up on failure, and deleting would destroy the original.
@@ -710,9 +717,13 @@ def skills_copy(request, skill_id):
     skill = get_skill_for_user(request.user, str(skill_id))
     if skill is None:
         return redirect("agent_skills_list")
-    new_skill = fork_skill(
-        request.user, skill, audience=_audience_from_request(request)
-    )
+    try:
+        new_skill = fork_skill(
+            request.user, skill, audience=_audience_from_request(request)
+        )
+    except ValueError as exc:  # toolkit
+        messages.error(request, str(exc))
+        return redirect("agent_skills_detail", skill_id=skill.id)
     messages.success(request, f"Copied as '{new_skill.name}'.")
     return redirect("agent_skills_detail", skill_id=new_skill.id)
 
@@ -876,6 +887,9 @@ def skills_copy_to_org(request, skill_id):
         )
     except PermissionError:
         return HttpResponseForbidden("Org admin required.")
+    except ValueError as exc:  # toolkit
+        messages.error(request, str(exc))
+        return redirect("agent_skills_detail", skill_id=skill.id)
     messages.success(request, f"Copied '{copied.name}' as an organization skill.")
     return redirect("agent_skills_detail", skill_id=copied.id)
 
@@ -947,6 +961,8 @@ def skills_import(request):
         payload["tool_names"] = filter_to_skill_tools(
             payload.get("tool_names") or [], skill_audience=target_audience
         )
+        if target_audience == AgentSkill.Audience.SUBAGENT:
+            payload["requires"] = []  # main-audience only
         try:
             created.append(import_skill(request.user, payload))
         except Exception:

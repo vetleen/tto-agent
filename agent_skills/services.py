@@ -12,6 +12,7 @@ from django.utils.text import slugify
 
 from agent_skills.models import (
     MAX_INSTRUCTIONS_CHARS,
+    MAX_REQUIRES,
     MAX_RESOURCE_CHARS,
     AgentSkill,
     SkillResource,
@@ -27,6 +28,56 @@ if TYPE_CHECKING:
 
 # Priority order for shadowing — higher level wins.
 _LEVEL_ORDER = {"system": 0, "org": 1, "user": 2}
+
+# What a ``requires`` entry may look like (a slug as the SlugField stores it).
+_REQUIRES_SLUG_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
+
+
+def normalize_requires(raw, *, own_slug: str = "") -> list[str]:
+    """Normalize a ``requires`` value from any write path (form, import, tool).
+
+    Total — never raises: anything that is not a list yields ``[]``; entries
+    are stripped, lower-cased, validated against the slug shape, de-duplicated
+    keep-first, kept from naming the skill itself, and capped at ``MAX_REQUIRES``.
+    """
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        slug = item.strip().lower()
+        if not slug or slug == own_slug or slug in out:
+            continue
+        if not _REQUIRES_SLUG_RE.match(slug):
+            continue
+        out.append(slug)
+        if len(out) >= MAX_REQUIRES:
+            break
+    return out
+
+
+def skill_requires(skill) -> list[str]:
+    """The normalized ``requires`` list of a skill (read side)."""
+    return normalize_requires(
+        getattr(skill, "requires", None), own_slug=getattr(skill, "slug", "") or ""
+    )
+
+
+def skill_enabled_by_default(skill) -> bool:
+    """Whether an org that has no explicit ``enabled`` entry for this skill's
+    slug sees it as enabled.
+
+    System *playbooks* are opt-in per org (an admin enables them on the org
+    settings page); system *toolkits* and every org/user skill are on unless
+    an admin explicitly disabled them. The three places that read the org
+    ``skills`` prefs (``_org_disabled_info``, ``core.preferences``, the org
+    settings page) all defer to this one rule.
+    """
+    return (
+        getattr(skill, "level", None) != "system"
+        or getattr(skill, "kind", None) == AgentSkill.Kind.TOOLKIT
+    )
 
 
 _SYSTEM_SLUGS_CACHE_ATTR = "_cached_active_system_skill_slugs"
@@ -602,7 +653,13 @@ def fork_skill(
     standalone copy. The detail-page form action passes ``False`` because
     it then re-creates the templates from the submitted form data; copying
     them here would clash with the ``unique_template_per_skill`` constraint.
+
+    Toolkits are built in and never copied (``ValueError``): a copy would be an
+    ordinary playbook that shadows the real toolkit under the same slug.
     """
+    if source_skill.kind == AgentSkill.Kind.TOOLKIT:
+        raise ValueError("Toolkits are built in and can't be copied.")
+
     new_name = _next_user_skill_name(user, source_skill.name)
 
     parent = source_skill.parent if source_skill.level == "user" else source_skill
@@ -628,6 +685,7 @@ def fork_skill(
             description=source_skill.description,
             instructions=source_skill.instructions,
             tool_names=list(source_skill.tool_names or []),
+            requires=skill_requires(source_skill),
             audience=new_audience,
             level="user",
             created_by=user,
@@ -810,6 +868,9 @@ def promote_skill_to_org(
     if not is_admin:
         raise PermissionError("Only org admins can promote skills.")
 
+    if source_skill.kind == AgentSkill.Kind.TOOLKIT:
+        raise ValueError("Toolkits are built in and can't be copied.")
+
     if source_skill.level == "org" and source_skill.organization_id == organization.id:
         return source_skill
 
@@ -832,6 +893,7 @@ def promote_skill_to_org(
             description=source_skill.description,
             instructions=source_skill.instructions,
             tool_names=list(source_skill.tool_names or []),
+            requires=skill_requires(source_skill),
             audience=new_audience,
             level="org",
             organization=organization,
@@ -1241,9 +1303,13 @@ def export_skill(skill: AgentSkill) -> dict:
         "name": skill.name,
         "emoji": skill.emoji,
         "audience": skill.audience,
+        # Informational: an import always creates a playbook (toolkits are
+        # seed-only), but the file says what it was exported from.
+        "kind": skill.kind,
         "description": _lines(skill.description),
         "instructions": _lines(skill.instructions),
         "tool_names": list(skill.tool_names or []),
+        "requires": skill_requires(skill),
         "resources": resources,
     }
 
@@ -1290,6 +1356,13 @@ def _normalize_skill_payload(entry: dict) -> dict:
     tool_names = (
         filter_to_skill_tools(raw_tools, skill_audience=audience)
         if isinstance(raw_tools, list) else []
+    )
+
+    # ``requires`` is main-audience only (sub-agent specializations can't
+    # attach toolkits). ``kind`` is never read: imports are always playbooks.
+    requires = (
+        normalize_requires(entry.get("requires"), own_slug=slug)
+        if audience != AgentSkill.Audience.SUBAGENT else []
     )
 
     # v2 uses ``resources`` (with a ``kind``); fall back to a v1 ``templates``
@@ -1350,6 +1423,7 @@ def _normalize_skill_payload(entry: dict) -> dict:
         "description": description,
         "instructions": instructions,
         "tool_names": tool_names,
+        "requires": requires,
         "resources": resources,
     }
 
@@ -1430,7 +1504,13 @@ def import_skill(user, payload: dict) -> AgentSkill:
     audience = payload.get("audience") or AgentSkill.Audience.MAIN
     if audience not in AgentSkill.Audience.values:
         audience = AgentSkill.Audience.MAIN
+    requires = (
+        normalize_requires(payload.get("requires"))
+        if audience != AgentSkill.Audience.SUBAGENT else []
+    )
 
+    # ``kind`` is deliberately not taken from the payload: toolkits are
+    # seed-only, so an import is always a playbook.
     skill = _save_with_free_slug(
         base_slug,
         lambda s: AgentSkill.objects.filter(
@@ -1445,6 +1525,7 @@ def import_skill(user, payload: dict) -> AgentSkill:
             tool_names=filter_to_skill_tools(
                 payload.get("tool_names") or [], skill_audience=audience
             ),
+            requires=[r for r in requires if r != s],
             level="user",
             created_by=user,
             parent=None,

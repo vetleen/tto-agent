@@ -455,4 +455,5 @@ SLIDE_DECK_COLLABORATOR = {
         "slides_list_themes",
         "slides_set_theme",
     ],
+    "kind": "toolkit",
 }

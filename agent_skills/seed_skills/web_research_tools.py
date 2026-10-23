@@ -38,4 +38,5 @@ reply** where you want the image to appear. A text link, filename, or URL will N
 display the image; only the token renders it inline. Cite the source in your prose.
 """,
     "tool_names": ["web_search", "web_search_read", "web_fetch", "web_image_view"],
+    "kind": "toolkit",
 }
