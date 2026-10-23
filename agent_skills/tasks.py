@@ -35,7 +35,16 @@ def process_skill_resource_upload_task(resource_id, user_id=None):
     if resource is None:
         logger.warning("process_skill_resource_upload_task: resource %s gone", resource_id)
         return
-    svc.process_upload(resource, _get_user(user_id))
+    try:
+        svc.process_upload(resource, _get_user(user_id))
+    except SkillResource.NotUpdated:
+        # The user deleted the resource while it was being extracted/scanned
+        # (WILFRED-A7); the scan result has nowhere to go and the delete
+        # already re-gates the skill.
+        logger.info(
+            "process_skill_resource_upload_task: resource %s deleted mid-processing",
+            resource_id,
+        )
 
 
 @shared_task

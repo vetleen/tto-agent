@@ -3,6 +3,7 @@
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.db import transaction
 from django.test import TestCase
 
 from accounts.models import Organization
@@ -178,6 +179,37 @@ class ScanResourceTests(TestCase):
         self.res.refresh_from_db()
         self.assertEqual(self.res.status, SkillResource.Status.SCAN_FAILED)
         self.assertFalse(self.res.is_quarantined)
+
+
+class UploadTaskDeletedMidScanTests(TestCase):
+    """WILFRED-A7: the user deletes an upload while the worker is scanning it."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="d@example.com", password="pw")
+        self.skill = AgentSkill.objects.create(
+            slug="s", name="S", instructions="i", level="user", created_by=self.user,
+        )
+        self.res = svc.create_pending_upload(
+            self.skill, data=b"some reference notes", filename="notes.txt",
+            user=self.user,
+        )
+
+    def test_delete_during_scan_ends_task_quietly(self):
+        from agent_skills.tasks import process_skill_resource_upload_task
+
+        def delete_then_allow(*args, **kwargs):
+            SkillResource.objects.filter(pk=self.res.pk).delete()
+            return CLEAN_GUARDRAIL
+
+        with patch.object(svc, "_scan_text_guardrail", side_effect=delete_then_allow), \
+                patch.object(svc, "_scan_text_pii", return_value=CLEAN_PII), \
+                self.assertLogs("agent_skills.tasks", level="INFO") as logs:
+            # The failed save marks the enclosing transaction for rollback; a
+            # savepoint keeps TestCase's own transaction usable (prod runs in
+            # autocommit, so the worker has no enclosing atomic block).
+            with transaction.atomic():
+                process_skill_resource_upload_task(self.res.pk, self.user.pk)
+        self.assertIn("deleted mid-processing", "\n".join(logs.output))
 
 
 class ApprovalGateTests(TestCase):
