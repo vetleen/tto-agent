@@ -218,6 +218,181 @@ class WaitForAttachmentsTests(TransactionTestCase):
         self.assertEqual(old_att.processing_state, State.PENDING)
 
 
+_LOCMEM = override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}})
+
+
+@_IN_MEMORY_STORAGE
+@_LOCMEM
+@patch("chat.consumers._ATTACHMENT_POLL_INTERVAL_S", 0.01)
+class AttachmentHoldExtensionTests(TransactionTestCase):
+    """The hold's deadline extends while worker progress keeps moving (WILFRED-A6)."""
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        self.user = User.objects.create_user(email="extend@example.com", password="pw")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+
+    def tearDown(self):
+        from django.core.cache import cache
+
+        cache.clear()
+
+    _consumer = WaitForAttachmentsTests._consumer
+    _att = WaitForAttachmentsTests._att
+    _set_state = WaitForAttachmentsTests._set_state
+
+    async def _hold(self, turn):
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        ok = await self._consumer(turn)._wait_for_attachments(
+            self.thread, turn, seed_mode=False, on_waiting=AsyncMock(),
+        )
+        return ok, loop.time() - start
+
+    @staticmethod
+    def _ticker(att, stop, every=0.02):
+        """Bump the attachment's ``extracting`` page counter until *stop* is set."""
+        from documents.services.progress import attachments as att_progress
+
+        async def tick():
+            page = 0
+            while not stop.is_set():
+                page += 1
+                att_progress.set_stage(str(att.id), "extracting", current=page, total=999)
+                await asyncio.sleep(every)
+
+        return asyncio.create_task(tick())
+
+    @override_settings(
+        CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS=0.2,
+        CHAT_ATTACHMENT_READY_EXTEND_SECONDS=0.2,
+        CHAT_ATTACHMENT_READY_MAX_SECONDS=2,
+    )
+    async def test_hold_extends_while_progress_keeps_changing(self):
+        att = await self._att()
+        turn = _make_turn([att.id])
+        stop = asyncio.Event()
+        ticker = self._ticker(att, stop)
+
+        async def finish_late():
+            await asyncio.sleep(0.5)  # past the 0.2 s base deadline
+            await self._set_state(att, State.READY)
+            stop.set()
+
+        finisher = asyncio.create_task(finish_late())
+        ok, elapsed = await self._hold(turn)
+        await finisher
+        await ticker
+        self.assertTrue(ok)
+        self.assertGreaterEqual(elapsed, 0.45)
+        self.assertEqual(turn.attachments_not_ready, set())
+
+    @override_settings(
+        CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS=0.4,
+        CHAT_ATTACHMENT_READY_EXTEND_SECONDS=0.1,
+        CHAT_ATTACHMENT_READY_MAX_SECONDS=2,
+    )
+    async def test_hold_does_not_extend_without_recent_activity(self):
+        from documents.services.progress import attachments as att_progress
+
+        att = await self._att()
+        turn = _make_turn([att.id])
+
+        async def one_tick():
+            await asyncio.sleep(0.05)
+            att_progress.set_stage(str(att.id), "extracting", current=1, total=9)
+
+        ticker = asyncio.create_task(one_tick())
+        with self.assertLogs("chat.consumers", "WARNING") as logs:
+            ok, elapsed = await self._hold(turn)
+        await ticker
+        self.assertTrue(ok)
+        self.assertLess(elapsed, 0.8)
+        self.assertEqual(turn.attachments_not_ready, {str(att.id)})
+        self.assertIn("0 extension(s)", "\n".join(logs.output))
+
+    @override_settings(
+        CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS=0.1,
+        CHAT_ATTACHMENT_READY_EXTEND_SECONDS=0.1,
+        CHAT_ATTACHMENT_READY_MAX_SECONDS=0.3,
+    )
+    async def test_hold_caps_at_max_total(self):
+        att = await self._att()
+        turn = _make_turn([att.id])
+        stop = asyncio.Event()
+        ticker = self._ticker(att, stop)
+        with self.assertLogs("chat.consumers", "INFO") as logs:
+            ok, elapsed = await self._hold(turn)
+        stop.set()
+        await ticker
+        self.assertTrue(ok)
+        self.assertGreaterEqual(elapsed, 0.29)
+        self.assertLess(elapsed, 0.8)
+        self.assertEqual(turn.attachments_not_ready, {str(att.id)})
+        output = "\n".join(logs.output)
+        self.assertEqual(output.count("attachment hold: extending"), 2)
+        self.assertIn("2 extension(s)", output)
+
+    @override_settings(
+        CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS=0.1,
+        CHAT_ATTACHMENT_READY_EXTEND_SECONDS=0.1,
+        CHAT_ATTACHMENT_READY_MAX_SECONDS=0.1,
+    )
+    async def test_no_extension_when_max_not_above_base(self):
+        att = await self._att()
+        turn = _make_turn([att.id])
+        stop = asyncio.Event()
+        ticker = self._ticker(att, stop)
+        with self.assertLogs("chat.consumers", "WARNING") as logs:
+            ok, elapsed = await self._hold(turn)
+        stop.set()
+        await ticker
+        self.assertTrue(ok)
+        self.assertLess(elapsed, 0.5)
+        self.assertIn("0 extension(s)", "\n".join(logs.output))
+
+    @override_settings(
+        CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS=0.1,
+        CHAT_ATTACHMENT_READY_EXTEND_SECONDS=0.1,
+        CHAT_ATTACHMENT_READY_MAX_SECONDS=0.3,
+    )
+    async def test_activity_on_a_second_pending_attachment_counts(self):
+        from documents.services.progress import attachments as att_progress
+
+        first = await self._att(name="a.pdf")
+        second = await self._att(name="b.pdf")
+        # The first file's progress is static (the client summary shows only it).
+        att_progress.set_stage(str(first.id), "describing_images", current=1, total=4)
+        turn = _make_turn([first.id, second.id])
+        stop = asyncio.Event()
+        ticker = self._ticker(second, stop)
+        with self.assertLogs("chat.consumers", "INFO") as logs:
+            ok, _elapsed = await self._hold(turn)
+        stop.set()
+        await ticker
+        self.assertTrue(ok)
+        self.assertIn("2 extension(s)", "\n".join(logs.output))
+
+    @override_settings(
+        CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS=0.1,
+        CHAT_ATTACHMENT_READY_EXTEND_SECONDS=0.5,
+        CHAT_ATTACHMENT_READY_MAX_SECONDS=2,
+    )
+    async def test_progress_already_present_at_the_first_poll_is_not_activity(self):
+        from documents.services.progress import attachments as att_progress
+
+        att = await self._att()
+        att_progress.set_stage(str(att.id), "extracting", current=3, total=9)
+        turn = _make_turn([att.id])
+        with self.assertLogs("chat.consumers", "WARNING") as logs:
+            ok, elapsed = await self._hold(turn)
+        self.assertTrue(ok)
+        self.assertLess(elapsed, 0.5)
+        self.assertIn("last progress none", "\n".join(logs.output))
+
+
 @_IN_MEMORY_STORAGE
 @override_settings(
     CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}},

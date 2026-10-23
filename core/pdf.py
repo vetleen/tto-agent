@@ -679,6 +679,7 @@ def form_field_blocks(pdf_bytes: bytes, indices=None) -> dict[int, str]:
 
 def pdf_to_text(
     file, *, image_sink: Callable[[object, int], str], page_markers: bool = False,
+    page_progress: Callable[[int, int], None] | None = None,
 ) -> str:
     """Extract a PDF to text. ``file`` may be a path, bytes, or a binary
     file-like. For each page: ``page.extract_text()`` followed by the inline
@@ -691,6 +692,9 @@ def pdf_to_text(
     ``page_markers=True`` prefixes every page — including pages with no text and
     no images, which are otherwise dropped — with ``page_marker(n)`` so a caller
     can recover page numbers after the text has been cleaned and chunked.
+
+    ``page_progress(page_no, n_pages)``, when given, is called after each page
+    (best effort: a failing callback never fails the extraction).
     """
     from django.conf import settings
     from pypdf import PdfReader
@@ -751,6 +755,7 @@ def pdf_to_text(
         return token
 
     try:
+        n_pages = len(reader.pages) if page_progress is not None else 0
         for page_no, page in enumerate(reader.pages, start=1):
             try:
                 text = (page.extract_text() or "").replace("\x00", "")
@@ -820,6 +825,11 @@ def pdf_to_text(
             # Free this page's decoded rasters before moving on — otherwise pypdf
             # keeps every decoded image of the document resident until we return.
             _release_decoded_streams(page, image_refs)
+            if page_progress is not None:
+                try:
+                    page_progress(page_no, n_pages)
+                except Exception:  # noqa: BLE001 — progress is feedback only
+                    logger.debug("pdf_to_text: page_progress callback failed", exc_info=True)
     finally:
         pdfium_doc.close()
         close = getattr(reader, "close", None)

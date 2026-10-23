@@ -664,6 +664,11 @@ CHAT_ATTACHMENT_PPTX_MAX_SIZE_BYTES = _env_int("CHAT_ATTACHMENT_PPTX_MAX_SIZE_BY
 # attachments on its message are processed, for at most this many seconds; on
 # timeout it proceeds with in-turn extraction / text only. 0 disables the hold.
 CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS = _env_int("CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS", "180")
+# At that deadline, if the pending attachment(s) showed worker progress within
+# the last EXTEND seconds, the hold is extended by EXTEND and re-checked — never
+# past MAX seconds from the hold's start. EXTEND=0 or MAX <= TIMEOUT disables it.
+CHAT_ATTACHMENT_READY_EXTEND_SECONDS = _env_int("CHAT_ATTACHMENT_READY_EXTEND_SECONDS", "60")
+CHAT_ATTACHMENT_READY_MAX_SECONDS = _env_int("CHAT_ATTACHMENT_READY_MAX_SECONDS", "300")
 # Decks above this many slides get text only (no renders); attachments are not
 # gated by a PII scan, so this only bounds render time and storage.
 CHAT_ATTACHMENT_RENDER_MAX_SLIDES = _env_int("CHAT_ATTACHMENT_RENDER_MAX_SLIDES", "50")

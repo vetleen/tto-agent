@@ -291,7 +291,12 @@ class ExtractAttachmentTextProgressTests(TestCase):
             text = get_or_extract_attachment_text(
                 att, _docx_with_image(), user=self.user, progress=lambda s, c, t: seen.append((s, c, t)),
             )
-        self.assertEqual(seen, [("extracting", 0, 0), ("describing_images", 0, 1), ("describing_images", 1, 1)])
+        self.assertEqual(seen, [
+            ("extracting", 0, 0),
+            ("extracting", 1, 0),  # one tick per stored picture
+            ("describing_images", 0, 1),
+            ("describing_images", 1, 1),
+        ])
         att.refresh_from_db()
         self.assertIn("Image 1: A red rectangle", text)
         self.assertEqual(att.extracted_content, text)  # cached with the final label

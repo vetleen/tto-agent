@@ -336,7 +336,12 @@ class AttachmentProgressTests(TestCase):
             self.assertEqual(process_attachment(str(att.id)), "ready")
         self.assertEqual(seen_during_describe, [{"stage": "describing_images", "current": 0, "total": 1}])
         stages = [(c.args[1], c.kwargs.get("current", 0), c.kwargs.get("total", 0)) for c in set_stage.call_args_list]
-        self.assertEqual(stages[:3], [("extracting", 0, 0), ("describing_images", 0, 1), ("describing_images", 1, 1)])
+        self.assertEqual(stages[:4], [
+            ("extracting", 0, 0),
+            ("extracting", 1, 1),  # one tick per PDF page
+            ("describing_images", 0, 1),
+            ("describing_images", 1, 1),
+        ])
         self.assertIsNone(att_progress.read(str(att.id)))
 
     def test_render_progress_counts_slides_from_the_resumed_position(self):

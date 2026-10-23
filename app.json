@@ -182,6 +182,16 @@
       "value": "180",
       "required": false
     },
+    "CHAT_ATTACHMENT_READY_EXTEND_SECONDS": {
+      "description": "At the hold deadline, extend by this many seconds if the attachments showed worker progress within the last this-many seconds (repeats up to CHAT_ATTACHMENT_READY_MAX_SECONDS). 0 disables extensions. Default 60.",
+      "value": "60",
+      "required": false
+    },
+    "CHAT_ATTACHMENT_READY_MAX_SECONDS": {
+      "description": "Absolute cap on the attachment hold including extensions. Default 300.",
+      "value": "300",
+      "required": false
+    },
     "CHAT_ATTACHMENT_RENDER_MAX_SLIDES": {
       "description": "Attached decks with more slides get extracted text only (no slide renders). Default 50.",
       "value": "50",

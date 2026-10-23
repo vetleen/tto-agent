@@ -5016,13 +5016,24 @@ class ChatConsumer(AsyncWebsocketConsumer):
         progress)`` is awaited the first time it actually waits and again whenever
         the progress summary (the first pending file's live worker stage) changes;
         unchanged polls never resend.
+
+        At the deadline, a hold whose pending files showed worker progress within
+        the last ``CHAT_ATTACHMENT_READY_EXTEND_SECONDS`` is extended by that much
+        and re-checked, never past ``CHAT_ATTACHMENT_READY_MAX_SECONDS`` from the
+        start (defaults 180 → 240 → 300). Progress already present at the first
+        poll is the baseline, not activity.
         """
         from django.conf import settings
 
-        try:
-            timeout = float(getattr(settings, "CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS", 180) or 0)
-        except (TypeError, ValueError):
-            timeout = 180.0
+        def _seconds(name, default):
+            try:
+                return float(getattr(settings, name, default) or 0)
+            except (TypeError, ValueError):
+                return float(default)
+
+        timeout = _seconds("CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS", 180)
+        extend = _seconds("CHAT_ATTACHMENT_READY_EXTEND_SECONDS", 60)
+        max_total = _seconds("CHAT_ATTACHMENT_READY_MAX_SECONDS", 300)
         ids = [str(x) for x in (turn.attachment_ids or [])]
         if seed_mode and not ids:
             # The minutes seed turn carries no ids: the files sit on the user
@@ -5032,15 +5043,30 @@ class ChatConsumer(AsyncWebsocketConsumer):
             return True
 
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
+        start = loop.time()
+        # Measured from start (not summed onto loop.time()) so the cap is exact.
+        allowed = timeout
+        can_extend = extend > 0 and max_total > timeout
         announced = False
         last_sent = None
+        # Progress across ALL pending files (the client summary shows only the
+        # first): any change between polls counts as activity.
+        last_activity_sig = None
+        last_activity_at = None
+        extensions = 0
         while True:
             pending = await self._pending_attachments(str(thread.id), ids)
             if not pending:
                 return True
             if self._stopped or turn.cancel_event.is_set() or self._turn is not turn:
                 return False
+            now = loop.time()
+            activity_sig = tuple(
+                (str(pk), tuple(sorted((progress or {}).items()))) for pk, _name, progress in pending
+            )
+            if last_activity_sig is not None and activity_sig != last_activity_sig:
+                last_activity_at = now
+            last_activity_sig = activity_sig
             names = [name for _pk, name, _progress in pending]
             summary = _attachment_progress_summary(pending)
             signature = (tuple(names), tuple(sorted(summary.items())) if summary else None)
@@ -5051,14 +5077,29 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     await on_waiting(names, summary)
                 except Exception:  # noqa: BLE001 — a failed notice must not abort the turn
                     logger.warning("attachment hold: could not notify the client", exc_info=True)
-            if loop.time() >= deadline:
-                turn.attachments_not_ready = {str(pk) for pk, _name, _progress in pending}
-                logger.warning(
-                    "attachment hold: %s attachment(s) still processing after %.0fs on thread %s; "
-                    "proceeding without them",
-                    len(pending), timeout, thread.id,
-                )
-                return True
+            now = loop.time()
+            if now - start >= allowed:
+                recent = last_activity_at is not None and now - last_activity_at <= extend
+                if can_extend and recent and allowed < max_total:
+                    allowed = min(allowed + extend, max_total)
+                    extensions += 1
+                    logger.info(
+                        "attachment hold: extending by %.0fs for %s attachment(s) on thread %s "
+                        "(progress %.0fs ago; %.0fs waited, extension %d)",
+                        extend, len(pending), thread.id, now - last_activity_at, now - start, extensions,
+                    )
+                else:
+                    turn.attachments_not_ready = {str(pk) for pk, _name, _progress in pending}
+                    last_progress = (
+                        f"{now - last_activity_at:.0f}s ago" if last_activity_at is not None else "none"
+                    )
+                    logger.warning(
+                        "attachment hold: %s attachment(s) still processing after %.0fs "
+                        "(base %.0fs + %d extension(s); last progress %s) on thread %s; "
+                        "proceeding without them",
+                        len(pending), now - start, timeout, extensions, last_progress, thread.id,
+                    )
+                    return True
             await asyncio.sleep(_ATTACHMENT_POLL_INTERVAL_S)
 
     @database_sync_to_async

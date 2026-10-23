@@ -239,7 +239,8 @@ READY and never blocks searchability; state lives in `DataRoomDocumentVersion.pa
   (`chat/attachment_render.py`): uploads are named `a-<attachment uuid>-<batch>.pptx`, decks over
   `CHAT_ATTACHMENT_RENDER_MAX_SLIDES` (50) get text only, and there is no stale sweeper — Celery's
   3 retries bound the attempts, after which the row is `page_render_state=failed` (text still
-  works). The chat turn waits for the row (`CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS`, 180 s) and
+  works). The chat turn waits for the row (`CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS`, 180 s, extended
+  60 s at a time while progress keeps moving, up to `CHAT_ATTACHMENT_READY_MAX_SECONDS`, 300 s) and
   then proceeds with text; a busy render service therefore shows up as "still processing" markers
   on the upload turn, with the slides viewable via `chat_attachment_view` on the next one.
   Embedded pictures are described by the same concurrent describer as data rooms
@@ -600,6 +601,8 @@ See `.env.example` for the full list with comments. Key production variables:
 | `CHAT_ATTACHMENT_PDF_MAX_SIZE_BYTES` | No | Max chat-attachment PDF upload (default: 30 MB) |
 | `CHAT_ATTACHMENT_PPTX_MAX_SIZE_BYTES` | No | Max chat/meeting-attachment `.pptx` upload (default: 30 MB; rendered slide-by-slide on the worker, never sent as-is) |
 | `CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS` | No | Max time a chat turn is held for its attachments' worker-side processing (default: 180; `0` = no hold → turn runs with in-turn extraction / text only) |
+| `CHAT_ATTACHMENT_READY_EXTEND_SECONDS` | No | At the hold deadline, extend by this much if the attachments showed progress within the last this-much (default: 60; `0` = never extend) |
+| `CHAT_ATTACHMENT_READY_MAX_SECONDS` | No | Absolute cap on the hold including extensions (default: 300) |
 | `CHAT_ATTACHMENT_RENDER_MAX_SLIDES` | No | Attached decks above this many slides get text only, no slide renders (default: 50) |
 | `CHAT_ATTACHMENT_INITIAL_SLIDES` | No | Slides of attached decks shown natively on the upload turn, per message (default: 20); the rest via `chat_attachment_view(pages=…)` |
 | `CHAT_ATTACHMENT_MAX_DESCRIBED_IMAGES` | No | Unique embedded pictures vision-described per pdf/docx/pptx chat or meeting attachment (default: 50). The rest are stored with a format-only label; ~0.6 s and ~$0.0001 per picture on Luna |

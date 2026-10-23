@@ -294,8 +294,11 @@ hook, `EmbeddedImageDescriber(version, doc)` is the data-room arm) — cap
 `ChatAttachment.processing_state` (`pending`/`ready`/`failed`; images/text are `ready` from
 the start) is what the consumer waits on before taking a turn-gate slot
 (`_wait_for_attachments`, `CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS`, client event
-`turn.waiting_for_attachments`); on timeout the turn proceeds with lazy extraction and
-"still processing" markers. Progress goes through `documents/services/progress.py`'s
+`turn.waiting_for_attachments`); at the deadline the hold is extended by
+`CHAT_ATTACHMENT_READY_EXTEND_SECONDS` (60) while any pending file's progress changed within
+that window, capped at `CHAT_ATTACHMENT_READY_MAX_SECONDS` (300) — `extracting` ticks per PDF
+page / stored picture so a long extraction counts as activity; on timeout the turn proceeds
+with lazy extraction and "still processing" markers. Progress goes through `documents/services/progress.py`'s
 `attachments` store (`attprogress:v1:<uuid>`: `extracting` → `describing_images i/N` →
 `rendering i/N`, cleared on every terminal exit): the status endpoint returns it as `progress`
 while pending, and the hold loop re-sends `turn.waiting_for_attachments` with a `progress`

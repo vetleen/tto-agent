@@ -1155,7 +1155,9 @@ def extract_attachment_text(att, file_bytes: bytes, *, user, progress=None) -> s
 
     ``progress`` is an optional ``(stage, current, total)`` callable — stages
     ``extracting`` and ``describing_images`` — used by the worker task to feed
-    the composer pill / held-turn bubble.
+    the composer pill / held-turn bubble. ``extracting`` ticks per page for a
+    PDF (``current`` of ``total`` pages) and per stored picture otherwise
+    (``total`` 0); the turn hold reads those ticks as activity.
     """
     from chat.assets import AttachmentImageDescriber
     from core.file_types import KIND_PDF, kind_for_mime
@@ -1163,21 +1165,30 @@ def extract_attachment_text(att, file_bytes: bytes, *, user, progress=None) -> s
     describer = AttachmentImageDescriber(att, user)
     _report_progress(progress, "extracting")
 
+    def sink(image, idx):
+        token = describer.sink(image, idx)
+        _report_progress(progress, "extracting", idx, 0)
+        return token
+
     kind = kind_for_mime(att.content_type)
     if kind == KIND_PDF:
         from core.pdf import pdf_to_text
 
-        text = pdf_to_text(file_bytes, image_sink=describer.sink)
+        text = pdf_to_text(
+            file_bytes,
+            image_sink=describer.sink,
+            page_progress=lambda page, n: _report_progress(progress, "extracting", page, n),
+        )
     elif kind == KIND_EMAIL:
         from chat.email_attachments import email_attachment_text
 
-        text = email_attachment_text(att, file_bytes, image_sink=describer.sink)
+        text = email_attachment_text(att, file_bytes, image_sink=sink)
     elif kind == KIND_PPTX:
-        text = pptx_to_markdown(file_bytes, image_sink=describer.sink)
+        text = pptx_to_markdown(file_bytes, image_sink=sink)
     else:
         from core.docx import docx_to_markdown
 
-        text = docx_to_markdown(file_bytes, image_sink=describer.sink)
+        text = docx_to_markdown(file_bytes, image_sink=sink)
 
     if describer.total:
         _report_progress(progress, "describing_images", 0, describer.total)

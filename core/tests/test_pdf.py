@@ -126,6 +126,36 @@ class PdfPageMarkerTests(SimpleTestCase):
         self.assertLess(out.index(page_marker(2)), out.index("[[image:fake-1|"))
 
 
+class PdfPageProgressTests(SimpleTestCase):
+    """``page_progress(page_no, n_pages)`` ticks once per page, best effort."""
+
+    def _three_pages(self) -> bytes:
+        return _merge(_text_pdf("Page one words"), _blank_pdf(), _image_pdf(_img(120, 80)))
+
+    def test_called_once_per_page_in_order(self):
+        sink, _ = _recording_sink()
+        ticks = []
+        pdf_to_text(self._three_pages(), image_sink=sink, page_progress=lambda p, n: ticks.append((p, n)))
+        self.assertEqual(ticks, [(1, 3), (2, 3), (3, 3)])
+
+    def test_failing_callback_never_fails_extraction(self):
+        sink, calls = _recording_sink()
+
+        def boom(_p, _n):
+            raise RuntimeError("progress store down")
+
+        out = pdf_to_text(self._three_pages(), image_sink=sink, page_progress=boom)
+        self.assertIn("Page one words", out)
+        self.assertEqual(len(calls), 1)
+
+    def test_output_unchanged_with_or_without_callback(self):
+        sink, _ = _recording_sink()
+        plain = pdf_to_text(self._three_pages(), image_sink=sink)
+        sink, _ = _recording_sink()
+        ticked = pdf_to_text(self._three_pages(), image_sink=sink, page_progress=lambda p, n: None)
+        self.assertEqual(plain, ticked)
+
+
 class PdfToTextTests(SimpleTestCase):
     def test_extracts_page_text(self):
         sink, calls = _recording_sink()
