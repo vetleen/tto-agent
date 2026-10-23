@@ -457,21 +457,43 @@
       fileInput.value = "";
     });
   }
-  if (dropzone) {
-    ["dragenter", "dragover"].forEach(function (ev) {
-      dropzone.addEventListener(ev, function (e) {
-        e.preventDefault();
-        dropzone.classList.add("border-brand", "bg-brand-softer");
-      });
+  // The whole page is the drop target (same overlay as the data room), not just
+  // the dropzone box. Only file drags count — text dragged into an editor must
+  // still land there — and nothing is taken while the resource modal is open
+  // (its Replace / editor own the drop) or an upload is in flight.
+  var pageContainer = document.getElementById("page-container");
+  var dropOverlay = document.getElementById("drop-overlay");
+  if (dropzone && pageContainer && dropOverlay) {
+    var dragCounter = 0;
+    var isFileDrag = function (e) {
+      if (!e.dataTransfer || Array.prototype.indexOf.call(e.dataTransfer.types, "Files") === -1) return false;
+      var m = document.getElementById("resource-modal");
+      if (m && !m.classList.contains("hidden")) return false;
+      return !dropzone.classList.contains("pointer-events-none");
+    };
+    var hideOverlay = function () {
+      dragCounter = 0;
+      dropOverlay.classList.add("hidden");
+    };
+    pageContainer.addEventListener("dragenter", function (e) {
+      if (!isFileDrag(e)) return;
+      e.preventDefault();
+      dragCounter++;
+      dropOverlay.classList.remove("hidden");
     });
-    ["dragleave", "drop"].forEach(function (ev) {
-      dropzone.addEventListener(ev, function (e) {
-        e.preventDefault();
-        dropzone.classList.remove("border-brand", "bg-brand-softer");
-      });
+    pageContainer.addEventListener("dragover", function (e) {
+      if (isFileDrag(e)) e.preventDefault();
     });
-    dropzone.addEventListener("drop", function (e) {
-      if (e.dataTransfer && e.dataTransfer.files) uploadFiles(e.dataTransfer.files);
+    pageContainer.addEventListener("dragleave", function (e) {
+      if (!isFileDrag(e)) return;
+      dragCounter = Math.max(0, dragCounter - 1);
+      if (dragCounter === 0) dropOverlay.classList.add("hidden");
+    });
+    pageContainer.addEventListener("drop", function (e) {
+      if (!isFileDrag(e)) return;
+      e.preventDefault();
+      hideOverlay();
+      if (e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files);
     });
   }
 

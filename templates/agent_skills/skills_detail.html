@@ -5,7 +5,13 @@
 {% block body_class %}pt-16 bg-neutral-primary min-h-screen{% endblock %}
 {% block content %}
 {% include "_markdown_styles.html" %}
-<div class="max-w-4xl mx-auto px-4 py-10">
+<div class="max-w-4xl mx-auto px-4 py-10 relative" id="page-container">
+  {% if editable %}
+  {# Drop overlay: a file dragged anywhere on the page becomes a resource. #}
+  <div id="drop-overlay" class="hidden absolute inset-0 z-50 bg-brand/10 border-2 border-dashed border-brand rounded-lg flex items-center justify-center pointer-events-none">
+    <span class="text-brand font-medium text-lg">Drop files to upload</span>
+  </div>
+  {% endif %}
   {% if messages %}
   <ul class="mb-6 space-y-2">
     {% for message in messages %}
