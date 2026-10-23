@@ -374,6 +374,20 @@ def _render_one_skill(skill: Any, attached_by: str | None = None) -> str:
     return block
 
 
+def _catalogue_line(s: dict) -> str:
+    """One catalogue bullet: ``- emoji **slug** — Name: description`` (the
+    description collapsed to one line and cut at 160 chars)."""
+    desc = (s.get("description") or "").strip().replace("\n", " ")
+    if len(desc) > 160:
+        desc = desc[:157] + "..."
+    emoji = (s.get("emoji") or "").strip()
+    prefix = f"{emoji} " if emoji else ""
+    line = f"- {prefix}**{s['slug']}** — {s.get('name', '')}"
+    if desc:
+        line += f": {desc}"
+    return line
+
+
 def _skill_scan_reason(scan_state: str | None) -> str:
     """Why a catalogue skill isn't attachable, from its safety-scan state."""
     if scan_state == "pending":
@@ -455,52 +469,62 @@ def build_semi_static_prompt(
             prompt += f"- {line}\n"
         prompt += "</about>\n"
 
-    # -- Available skills catalogue --
-    # Skills already attached (rendered under "# Relevant skills" below, each
-    # with its slug and origin) are excluded from this catalogue so the agent
-    # doesn't try to re-attach one it already has.
-    _attached_ids = {str(getattr(sk, "id", "")) for sk in (skills or [])}
-    # A skill whose requirement can't be attached (``requires_unmet``) is not
+    # -- Available skills + toolkits catalogues --
+    # Skills already attached (rendered under "# Relevant skills" / "# Attached
+    # toolkits" below, each with its slug and origin) are excluded from the
+    # catalogues so the agent doesn't try to re-attach one it already has. A
+    # skill whose requirement can't be attached (``requires_unmet``) is not
     # offered: chat_skill_attach would refuse it.
+    _attached_ids = {str(getattr(sk, "id", "")) for sk in (skills or [])}
     catalogue = [
         s for s in (available_skills or [])
         if s.get("id") not in _attached_ids and not s.get("requires_unmet")
     ]
-    if catalogue:
+    playbooks = [s for s in catalogue if s.get("kind") != "toolkit"]
+    toolkits = [s for s in catalogue if s.get("kind") == "toolkit"]
+    if playbooks:
         prompt += (
             "\n# Skills available to this user\n"
             "The following skills are NOT yet attached. Attach one or more with "
             "`chat_skill_attach(skill_slugs=[\"<slug>\", ...])` when they fit the "
             "user's request. Attaching is additive: pass only the slugs to add — "
-            "everything already attached stays attached.\n"
-            "Several core capabilities are delivered through skills rather than as "
-            "always-on tools, so be eager to attach a relevant skill when the task "
-            "calls for that capability. When a skill you attached is no longer "
-            "needed, detach it with `chat_skill_detach(skill_slugs=[\"<slug>\", ...])` "
-            "(each attached skill's slug is listed under it in # Relevant skills). "
-            "Skills the user attached can't be detached by you — ask the user instead.\n"
+            "everything already attached stays attached. A skill that requires a "
+            "toolkit (listed further down) attaches it automatically. "
+            "When a skill you attached is no longer needed, detach it with "
+            "`chat_skill_detach(skill_slugs=[\"<slug>\", ...])` (each attached skill's "
+            "slug is listed under it in # Relevant skills). Skills the user attached "
+            "can't be detached by you — ask the user instead.\n"
         )
-        if any(s.get("approved", True) is False for s in catalogue):
+        if any(s.get("approved", True) is False for s in playbooks):
             prompt += (
                 "A skill marked NOT attachable hasn't passed its safety scan; "
                 "`chat_skill_attach` refuses it. Don't retry — tell the user what "
                 "the note says to do.\n"
             )
-        for s in catalogue:
-            desc = (s.get("description") or "").strip().replace("\n", " ")
-            if len(desc) > 160:
-                desc = desc[:157] + "..."
-            emoji = (s.get("emoji") or "").strip()
-            prefix = f"{emoji} " if emoji else ""
-            line = f"- {prefix}**{s['slug']}** — {s.get('name', '')}"
-            if desc:
-                line += f": {desc}"
+        for s in playbooks:
+            line = _catalogue_line(s)
+            requires = [r for r in (s.get("requires") or []) if isinstance(r, str)]
+            if requires:
+                line += " (requires: " + ", ".join(requires) + ")"
             if s.get("approved", True) is False:
                 line += (
                     f" — NOT attachable yet ({_skill_scan_reason(s.get('scan_state'))}; "
                     "ask the user to enable it on the Skills page)"
                 )
             prompt += line + "\n"
+    if toolkits:
+        prompt += (
+            "\n# Toolkits available to this user\n"
+            "Toolkits unlock extra tools (the canvas, web research, data rooms, image "
+            "generation, slide decks, loops). Attach one with "
+            "`chat_skill_attach(skill_slugs=[\"<slug>\"])` exactly like a skill, BEFORE "
+            "calling any of its tools — its tools and instructions are live from your "
+            "next step. Be eager to attach the toolkit a task calls for. Detach it with "
+            "`chat_skill_detach` when you're done with it. A skill that requires a "
+            "toolkit attaches it automatically.\n"
+        )
+        for s in toolkits:
+            prompt += _catalogue_line(s) + "\n"
 
     # -- Sub-agent specializations catalogue --
     if specializations:
@@ -513,26 +537,33 @@ def build_semi_static_prompt(
             "general-purpose sub-agent with no special tools.\n"
         )
         for s in specializations:
-            desc = (s.get("description") or "").strip().replace("\n", " ")
-            if len(desc) > 160:
-                desc = desc[:157] + "..."
-            emoji = (s.get("emoji") or "").strip()
-            prefix = f"{emoji} " if emoji else ""
-            line = f"- {prefix}**{s['slug']}** — {s.get('name', '')}"
-            if desc:
-                line += f": {desc}"
-            prompt += line + "\n"
+            prompt += _catalogue_line(s) + "\n"
 
-    # -- Attached skills section --
-    if skills:
+    # -- Attached skills / toolkits sections --
+    origins = skill_origins or {}
+    attached_playbooks = [
+        sk for sk in (skills or []) if getattr(sk, "kind", "playbook") != "toolkit"
+    ]
+    attached_toolkits = [
+        sk for sk in (skills or []) if getattr(sk, "kind", "playbook") == "toolkit"
+    ]
+    if attached_playbooks:
         prompt += (
             "\n# Relevant skills\n"
             "Below are predefined SKILLS — typically playbooks explaining in detail how to handle "
-            "a user request of a particular type. Follow them to the best of your ability. "
-            "Some skills primarily provide new tools within a domain.\n"
+            "a user request of a particular type. Follow them to the best of your ability.\n"
         )
-        origins = skill_origins or {}
-        for skill in skills:
+        for skill in attached_playbooks:
+            prompt += "\n" + _render_one_skill(
+                skill, attached_by=origins.get(str(getattr(skill, "id", "")))
+            )
+    if attached_toolkits:
+        prompt += (
+            "\n# Attached toolkits\n"
+            "The toolkits below are attached: their tools are available to you now, "
+            "and their instructions explain how to use them.\n"
+        )
+        for skill in attached_toolkits:
             prompt += "\n" + _render_one_skill(
                 skill, attached_by=origins.get(str(getattr(skill, "id", "")))
             )

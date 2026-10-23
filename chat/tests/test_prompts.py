@@ -1299,6 +1299,78 @@ class AvailableSkillsSectionTests(TestCase):
         )
         self.assertIn("line one line two", bullet_line)
 
+
+class ToolkitsCatalogueTests(TestCase):
+    """Toolkits (kind="toolkit") get their own catalogue block and their own
+    attached section, so the agent can tell a tool unlock from a playbook."""
+
+    def _entries(self):
+        return [
+            {"slug": "patent", "name": "Patent Drafter", "description": "Drafts.",
+             "kind": "playbook", "requires": ["canvas_tools"]},
+            {"slug": "canvas_tools", "name": "Canvas Tools", "description": "The canvas.",
+             "kind": "toolkit", "requires": []},
+            {"slug": "web_research_tools", "name": "Web Research Tools",
+             "description": "Search the web.", "kind": "toolkit"},
+        ]
+
+    def test_toolkits_listed_in_their_own_block(self):
+        prompt = build_semi_static_prompt(available_skills=self._entries())
+        skills_at = prompt.index("# Skills available to this user")
+        toolkits_at = prompt.index("# Toolkits available to this user")
+        self.assertLess(skills_at, toolkits_at)
+        skills_block = prompt[skills_at:toolkits_at]
+        toolkits_block = prompt[toolkits_at:]
+        self.assertIn("**patent** — Patent Drafter", skills_block)
+        self.assertNotIn("**canvas_tools**", skills_block)
+        self.assertIn("**canvas_tools** — Canvas Tools: The canvas.", toolkits_block)
+        self.assertIn("**web_research_tools** — Web Research Tools", toolkits_block)
+        # The rule: attach before using the tools; required toolkits come along.
+        self.assertIn("BEFORE calling any of its tools", toolkits_block)
+        self.assertIn("attaches it automatically", toolkits_block)
+
+    def test_playbook_line_names_its_requirements(self):
+        prompt = build_semi_static_prompt(available_skills=self._entries())
+        bullet = next(l for l in prompt.splitlines() if l.startswith("- **patent**"))
+        self.assertIn("(requires: canvas_tools)", bullet)
+
+    def test_blocks_omitted_when_empty(self):
+        only_toolkits = [e for e in self._entries() if e["kind"] == "toolkit"]
+        prompt = build_semi_static_prompt(available_skills=only_toolkits)
+        self.assertNotIn("# Skills available to this user", prompt)
+        self.assertIn("# Toolkits available to this user", prompt)
+
+        only_playbooks = [e for e in self._entries() if e["kind"] == "playbook"]
+        prompt = build_semi_static_prompt(available_skills=only_playbooks)
+        self.assertIn("# Skills available to this user", prompt)
+        self.assertNotIn("# Toolkits available to this user", prompt)
+
+    def test_attached_toolkits_render_under_their_own_heading(self):
+        playbook = MagicMock()
+        playbook.name, playbook.slug, playbook.id = "Patent Drafter", "patent", "id-1"
+        playbook.kind, playbook.description = "playbook", ""
+        playbook.instructions = "Draft patents."
+        playbook.templates.all.return_value = []
+        toolkit = MagicMock()
+        toolkit.name, toolkit.slug, toolkit.id = "Canvas Tools", "canvas_tools", "id-2"
+        toolkit.kind, toolkit.description = "toolkit", ""
+        toolkit.instructions = "Use canvas_write."
+        toolkit.templates.all.return_value = []
+
+        prompt = build_semi_static_prompt(skills=[toolkit, playbook])
+        relevant_at = prompt.index("# Relevant skills")
+        toolkits_at = prompt.index("# Attached toolkits")
+        self.assertLess(relevant_at, toolkits_at)
+        self.assertIn("## Patent Drafter", prompt[relevant_at:toolkits_at])
+        self.assertNotIn("## Canvas Tools", prompt[relevant_at:toolkits_at])
+        self.assertIn("## Canvas Tools\nSlug: `canvas_tools`", prompt[toolkits_at:])
+        self.assertIn("Use canvas_write.", prompt[toolkits_at:])
+
+        # Playbooks only: no toolkit section at all.
+        prompt = build_semi_static_prompt(skills=[playbook])
+        self.assertNotIn("# Attached toolkits", prompt)
+        self.assertEqual(prompt.count("# Relevant skills"), 1)
+
     def test_emoji_prefixed_when_provided(self):
         prompt = build_semi_static_prompt(
             available_skills=[
