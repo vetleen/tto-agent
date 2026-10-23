@@ -485,11 +485,14 @@ def _create_subagent_failure_message(run, *, capacity: bool = False) -> None:
 HEARTBEAT_MIN_INTERVAL_SECONDS = 15
 
 
-def _heartbeat(run_id):
+def _heartbeat(run_id, rounds=None):
     """A throttled ``RunContext.on_activity`` callback that stamps the run's
-    ``last_activity_at``. Called from the run's thread and from tool worker
-    threads; a worker thread closes the DB connection it opened (a stray
-    connection per thread would eat into the Postgres/PgBouncer cap)."""
+    ``last_activity_at`` — and, when ``rounds`` (a callable returning the
+    loop's round count so far) is given, ``rounds_used``, so the count is live
+    while the run works instead of appearing only at completion. Called from
+    the run's thread and from tool worker threads; a worker thread closes the
+    DB connection it opened (a stray connection per thread would eat into the
+    Postgres/PgBouncer cap)."""
     import threading
     import time
 
@@ -507,10 +510,15 @@ def _heartbeat(run_id):
             last[0] = now
         from chat.models import SubAgentRun
 
+        fields = {"last_activity_at": timezone.now()}
+        if rounds is not None:
+            used = rounds()
+            if used:
+                fields["rounds_used"] = used
         try:
             SubAgentRun.objects.filter(
                 pk=run_id, status=SubAgentRun.Status.RUNNING,
-            ).update(last_activity_at=timezone.now())
+            ).update(**fields)
         except Exception:
             logger.debug("Sub-agent heartbeat for run %s failed", run_id, exc_info=True)
         finally:
@@ -701,8 +709,11 @@ def run_subagent(run_id: uuid.UUID) -> None:
         # the tool loop shows context.scratchpad once up front and again at every
         # edit point (llm/pipelines/edit_points.py).
         context.scratchpad = run.scratchpad or ""
-        # Heartbeat for the stale-run sweeper (there is no wall-clock limit).
-        context.on_activity = _heartbeat(run_id)
+        # Heartbeat for the stale-run sweeper (there is no wall-clock limit);
+        # also keeps rounds_used current while the run works.
+        context.on_activity = _heartbeat(
+            run_id, rounds=lambda: context.observability.get("rounds"),
+        )
         # Reuse this one (already memoized) User instance for every tool call in the
         # run, so UserSettings/Membership are read once instead of per tool. Set on
         # this single thread before the streaming tool loop spawns its workers.

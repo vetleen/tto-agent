@@ -669,6 +669,23 @@ class StaleRunExpirationTests(TestCase):
         run.refresh_from_db()
         self.assertEqual(run.last_activity_at, stamped)
 
+    def test_heartbeat_writes_live_round_count(self):
+        from chat import subagent_service
+
+        run = SubAgentRun.objects.create(
+            thread=self.thread, user=self.user, prompt="x", status=SubAgentRun.Status.RUNNING,
+        )
+        obs = {}
+        beat = subagent_service._heartbeat(run.pk, rounds=lambda: obs.get("rounds"))
+        with patch.object(subagent_service, "HEARTBEAT_MIN_INTERVAL_SECONDS", 0):
+            beat()  # no round counted yet: rounds_used stays unset
+            run.refresh_from_db()
+            self.assertIsNone(run.rounds_used)
+            obs["rounds"] = 4
+            beat()
+        run.refresh_from_db()
+        self.assertEqual(run.rounds_used, 4)
+
     def test_task_swallows_transient_db_error(self):
         """A transient DB outage (e.g. Postgres restarting during maintenance)
         should be logged and skipped, not surface as an unhandled error so the

@@ -133,8 +133,8 @@ class SlideSetAdmin(admin.ModelAdmin):
 
 @admin.register(SubAgentRun)
 class SubAgentRunAdmin(admin.ModelAdmin):
-    list_display = ("short_id", "thread", "user", "status", "model_tier", "model_used", "tokens_used", "cost_display", "has_result", "created_at")
-    list_filter = ("status", "model_tier", "created_at")
+    list_display = ("short_id", "thread", "user", "status", "model_tier", "round_budget", "model_used", "tokens_used", "cost_display", "has_result", "created_at")
+    list_filter = ("status", "model_tier", "round_budget", "created_at")
     search_fields = ("prompt", "result", "id")
     readonly_fields = ("id", "created_at", "dispatched_at", "started_at", "completed_at", "reported_at", "delivered_at")
     list_select_related = ("thread", "user")
