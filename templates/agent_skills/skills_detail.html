@@ -28,6 +28,7 @@
     {% csrf_token %}
     <input type="hidden" name="action" id="skill-form-action" value="save">
     <input type="hidden" name="tool_names_json" id="tool-names-json" value="{{ tool_names_json }}">
+    {% if show_requires %}<input type="hidden" name="requires_json" id="requires-json" value="{{ requires_json }}">{% endif %}
 
     {# ----- Header card ----- #}
     <section class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
@@ -159,6 +160,29 @@
         </div>
       </div>
     </section>
+
+    {# ----- Requires (toolkits) — playbooks of the main audience only ----- #}
+    {% if show_requires %}
+    <section id="requires-section">
+      <div class="flex items-center justify-between gap-3 mb-3">
+        <div class="min-w-0">
+          <h2 class="text-base font-semibold text-heading">Requires</h2>
+          <p class="mt-0.5 text-sm text-body">Toolkits this skill needs. They are attached automatically whenever the skill is attached.</p>
+        </div>
+        {% if editable %}
+        <button type="button" id="open-requires-picker" data-modal-target="requires-picker-modal" data-modal-show="requires-picker-modal" class="shrink-0 inline-flex items-center gap-1.5 bg-neutral-primary-soft hover:bg-neutral-secondary border border-default text-heading shadow-xs font-medium rounded-base text-xs px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand">
+          <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+          Add toolkit
+        </button>
+        {% endif %}
+      </div>
+      <div class="rounded-base border border-default bg-neutral-primary-soft p-5">
+        <div id="requires-chips" class="flex flex-wrap gap-2 min-h-[2rem]">
+          {# Populated by JS from requires-json #}
+        </div>
+      </div>
+    </section>
+    {% endif %}
 
     {# Resources are managed below, outside this form, via dedicated endpoints. #}
   </form>
@@ -396,6 +420,51 @@
       </div>
     </div>
   </div>
+
+  {# ----- Requires picker modal (same anatomy as the tool picker) ----- #}
+  {% if show_requires %}
+  <div id="requires-picker-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed top-0 left-0 right-0 z-50 hidden w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] max-h-full">
+    <div class="wf-toolmodal" style="position:relative;width:600px;max-width:100%;margin:auto;background:var(--color-neutral-primary-medium);border:1px solid var(--color-default-subtle);border-radius:12px;box-shadow:var(--shadow-xl);overflow:hidden;">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--color-default-subtle);">
+        <h2 style="margin:0;font-family:var(--font-serif);font-size:20px;font-weight:600;color:var(--color-heading);letter-spacing:-0.01em;">Toolkits</h2>
+        <button type="button" data-modal-hide="requires-picker-modal" class="wf-toolclose" aria-label="Close" style="display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border:0;background:transparent;color:var(--color-body-subtle);border-radius:5px;cursor:pointer;"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg></button>
+      </div>
+      <div style="padding:18px 22px 6px;">
+        <div style="position:relative;display:flex;align-items:center;">
+          <span style="position:absolute;left:12px;color:var(--color-fg-disabled);display:inline-flex;pointer-events:none;"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg></span>
+          <input id="requires-picker-search" type="text" placeholder="Search toolkits" autocomplete="off" style="width:100%;height:38px;font-family:var(--font-sans);font-size:14px;color:var(--color-heading);background:var(--color-neutral-primary-soft);border:1px solid var(--color-brand-subtle);border-radius:8px;padding:0 12px 0 36px;box-shadow:var(--shadow-inset);">
+        </div>
+      </div>
+      <div id="requires-picker-list" class="wf-toollist" style="max-height:360px;overflow-y:auto;padding:8px 22px 12px;display:flex;flex-direction:column;gap:8px;">
+        {% for tk in available_toolkits %}
+        <label class="wf-tool-card" data-requires-card style="display:flex;align-items:flex-start;gap:12px;width:100%;text-align:left;padding:13px 14px;border:1px solid var(--color-default-subtle);background:var(--color-neutral-primary-soft);border-radius:8px;cursor:pointer;">
+          <input type="checkbox" data-skill-slug="{{ tk.slug }}" data-skill-name="{{ tk.name }}" class="requires-picker-checkbox">
+          <span style="flex:1;min-width:0;">
+            <span style="display:block;font-size:14px;font-weight:500;color:var(--color-heading);">{% if tk.emoji %}{{ tk.emoji }} {% endif %}{{ tk.name }} <code class="wf-mono" style="font-size:12px;color:var(--color-body-subtle);">{{ tk.slug }}</code></span>
+            <p style="display:block;font-size:12.5px;color:var(--color-body-subtle);line-height:1.45;margin:3px 0 0;">{{ tk.description|truncatechars:160 }}</p>
+          </span>
+        </label>
+        {% empty %}
+        <p style="font-size:13px;color:var(--color-body);padding:6px 2px;">No toolkits available.</p>
+        {% endfor %}
+        <p id="requires-picker-noresults" style="display:none;font-size:13px;color:var(--color-body-subtle);padding:6px 2px;">No toolkits match your search.</p>
+      </div>
+      <div class="wf-soft-panel" style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 22px;border-top:1px solid var(--color-default-subtle);">
+        <span id="requires-picker-count" style="font-size:12px;color:var(--color-body-subtle);">No toolkits selected</span>
+        <div style="display:flex;gap:10px;">
+          <button type="button" data-modal-hide="requires-picker-modal" class="wf-toolbtn-ghost" style="height:40px;padding:0 14px;border:0;border-radius:8px;background:transparent;font-family:var(--font-sans);font-size:14px;font-weight:500;color:var(--color-body);cursor:pointer;">Cancel</button>
+          <button type="button" id="apply-requires-picker" class="wf-toolbtn-primary" style="height:40px;padding:0 16px;border:0;border-radius:8px;font-family:var(--font-sans);font-size:14px;font-weight:600;color:var(--color-on-brand);background:var(--color-brand);cursor:pointer;">Apply</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <template id="requires-chip-template">
+    <span class="tool-chip inline-flex items-center gap-1.5 bg-neutral-secondary-soft border border-default text-heading text-xs rounded-base px-2.5 py-1" title="">
+      <span class="tool-chip-name"></span>
+      <button type="button" class="remove-tool-btn text-body hover:text-fg-danger" aria-label="Remove toolkit">&times;</button>
+    </span>
+  </template>
+  {% endif %}
 
   {# ----- Resource row template (for JS cloning) ----- #}
   {# Row anatomy: checkbox · status · icon · name (+ mono filename subline) ·   #}

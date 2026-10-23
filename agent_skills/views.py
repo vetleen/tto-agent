@@ -29,6 +29,7 @@ from agent_skills.services import (
     get_available_skills,
     get_user_skill_prefs,
     shadowing_default,
+    skill_requires,
     unmet_requirements,
     approve_skill_share,
     attach_skills_closed,
@@ -465,6 +466,14 @@ def skills_detail(request, skill_id):
             "scan_pill": _scan_pill(True, approval),
             "resource_count_cap": RESOURCE_COUNT_CAP,
             "tool_names_json": json.dumps(list(skill.tool_names or [])),
+            # Requires picker: toolkits attached automatically with this skill.
+            # Only playbooks of the main audience carry requirements.
+            "requires_json": json.dumps(skill_requires(skill)),
+            "available_toolkits": _available_toolkits(request.user),
+            "show_requires": (
+                skill.kind != AgentSkill.Kind.TOOLKIT
+                and skill.audience != AgentSkill.Audience.SUBAGENT
+            ),
             "editable": editable,
             "can_delete": not is_review and can_delete_skill(request.user, skill),
             "is_review": is_review,
@@ -517,6 +526,18 @@ def _parse_templates_json(raw: str) -> list[dict]:
             "content": content[:MAX_TEMPLATE_CHARS],
         })
     return cleaned
+
+
+def _available_toolkits(user) -> list[dict]:
+    """The toolkits a skill may require, for the detail page's Requires picker:
+    every toolkit visible to the user's org (a toolkit the user switched off
+    for themselves is still a valid requirement — the row then says it's
+    disabled)."""
+    return [
+        {"slug": s.slug, "name": s.name, "emoji": s.emoji, "description": s.description}
+        for s in sorted(get_accessible_skills(user), key=lambda s: s.name)
+        if s.kind == AgentSkill.Kind.TOOLKIT
+    ]
 
 
 def _parse_tool_names_json(raw: str) -> list[str]:
@@ -578,6 +599,27 @@ def _apply_skill_form(skill: AgentSkill, request) -> None:
     skill.instructions = instructions
     skill.tool_names = tool_names
 
+    # Requires (toolkits attached automatically with the skill). Only when the
+    # form carried the field, so a POST without it leaves the list alone;
+    # unknown slugs are dropped and sub-agent skills / toolkits never carry any.
+    if "requires_json" in request.POST:
+        from agent_skills.services import normalize_requires
+
+        if (
+            skill.audience == AgentSkill.Audience.SUBAGENT
+            or skill.kind == AgentSkill.Kind.TOOLKIT
+        ):
+            skill.requires = []
+        else:
+            known = {s.slug for s in get_accessible_skills(request.user)}
+            skill.requires = [
+                r for r in normalize_requires(
+                    _parse_tool_names_json(request.POST.get("requires_json", "")),
+                    own_slug=skill.slug,
+                )
+                if r in known
+            ]
+
     # Slug management (user tier only). The slug auto-follows the name on every
     # save unless the user froze it via the advanced editor — signalled by the
     # ``slug_customize`` hidden field. ``base`` is the desired slug before dedup;
@@ -599,7 +641,7 @@ def _apply_skill_form(skill: AgentSkill, request) -> None:
         skill.slug = slug
         skill.save(update_fields=[
             "slug", "slug_customized", "name", "emoji", "description",
-            "instructions", "tool_names", "updated_at",
+            "instructions", "tool_names", "requires", "updated_at",
         ])
         return skill
 

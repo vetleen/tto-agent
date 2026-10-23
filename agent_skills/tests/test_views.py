@@ -146,6 +146,109 @@ class ToolkitsTabTests(TestCase):
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
+class RequiresPickerTests(TestCase):
+    """The detail page's Requires section: a playbook lists the toolkits it
+    needs and (when editable) picks them from the org's toolkits; the save
+    persists known slugs only; toolkits and sub-agent skills have no section."""
+
+    def setUp(self):
+        AgentSkill.objects.all().delete()
+        self.user = User.objects.create_user(email="rp@example.com", password="pw")
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+        self.org = Organization.objects.create(name="Acme", slug="acme")
+        Membership.objects.create(user=self.user, org=self.org, role=Membership.Role.MEMBER)
+        self.toolkit = AgentSkill.objects.create(
+            slug="canvas_tools", name="Canvas Tools", instructions="i",
+            level="system", kind="toolkit", tool_names=["canvas_write"],
+        )
+        self.playbook = AgentSkill.objects.create(
+            slug="mine", name="Mine", instructions="draft", level="user",
+            created_by=self.user, requires=["canvas_tools"],
+        )
+        self.client.force_login(self.user)
+
+    def _detail(self, skill):
+        return self.client.get(reverse("agent_skills_detail", kwargs={"skill_id": skill.id}))
+
+    def test_playbook_shows_section_with_available_toolkits(self):
+        response = self._detail(self.playbook)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context["show_requires"])
+        self.assertEqual(response.context["requires_json"], '["canvas_tools"]')
+        self.assertEqual(
+            [t["slug"] for t in response.context["available_toolkits"]], ["canvas_tools"]
+        )
+        self.assertContains(response, 'id="requires-section"')
+        self.assertContains(response, 'id="open-requires-picker"')
+        self.assertContains(response, 'data-skill-slug="canvas_tools"')
+
+    def test_system_playbook_is_read_only(self):
+        sys_pb = AgentSkill.objects.create(
+            slug="sys-pb", name="Sys PB", instructions="i", level="system",
+            requires=["canvas_tools"],
+        )
+        self.org.preferences = {"skills": {"sys-pb": {"enabled": True}}}
+        self.org.save(update_fields=["preferences"])
+        response = self._detail(sys_pb)
+        self.assertContains(response, 'id="requires-section"')
+        self.assertNotContains(response, 'id="open-requires-picker"')
+
+    def test_toolkit_and_subagent_skill_have_no_section(self):
+        response = self._detail(self.toolkit)
+        self.assertFalse(response.context["show_requires"])
+        self.assertNotContains(response, 'id="requires-section"')
+        spec = AgentSkill.objects.create(
+            slug="spec", name="Spec", instructions="i", level="user",
+            created_by=self.user, audience="subagent",
+        )
+        response = self._detail(spec)
+        self.assertFalse(response.context["show_requires"])
+        self.assertNotContains(response, 'id="requires-section"')
+
+    def test_save_persists_known_slugs_only(self):
+        response = self.client.post(
+            reverse("agent_skills_save", kwargs={"skill_id": self.playbook.id}),
+            {
+                "action": "save", "name": "Mine", "instructions": "draft",
+                "requires_json": json.dumps(["canvas_tools", "no_such_tools", "mine"]),
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        self.playbook.refresh_from_db()
+        self.assertEqual(self.playbook.requires, ["canvas_tools"])
+
+        # A POST without the field leaves the list alone; an empty list clears it.
+        self.client.post(
+            reverse("agent_skills_save", kwargs={"skill_id": self.playbook.id}),
+            {"action": "save", "name": "Mine", "instructions": "draft"},
+        )
+        self.playbook.refresh_from_db()
+        self.assertEqual(self.playbook.requires, ["canvas_tools"])
+        self.client.post(
+            reverse("agent_skills_save", kwargs={"skill_id": self.playbook.id}),
+            {"action": "save", "name": "Mine", "instructions": "draft", "requires_json": "[]"},
+        )
+        self.playbook.refresh_from_db()
+        self.assertEqual(self.playbook.requires, [])
+
+    def test_subagent_skill_save_clears_requires(self):
+        spec = AgentSkill.objects.create(
+            slug="spec", name="Spec", instructions="i", level="user",
+            created_by=self.user, audience="subagent",
+        )
+        self.client.post(
+            reverse("agent_skills_save", kwargs={"skill_id": spec.id}),
+            {
+                "action": "save", "name": "Spec", "instructions": "i",
+                "requires_json": json.dumps(["canvas_tools"]),
+            },
+        )
+        spec.refresh_from_db()
+        self.assertEqual(spec.requires, [])
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
 class ToolkitActionsHiddenTests(TestCase):
     """A toolkit row / detail page offers no edit-in-chat or copy actions."""
 

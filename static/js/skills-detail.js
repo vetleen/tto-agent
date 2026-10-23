@@ -237,6 +237,133 @@
     });
   }
 
+  // ----- Requires (toolkits attached automatically with this skill) -----
+  // Same anatomy as the tools picker: a hidden JSON input of slugs, chips,
+  // and a checkbox modal listing the available toolkits. The section is only
+  // rendered for playbooks of the main audience, so every element is optional.
+  var requiresInput = document.getElementById("requires-json");
+  var requiresChipsEl = document.getElementById("requires-chips");
+  var requires = [];
+  if (requiresInput) {
+    try {
+      requires = JSON.parse(requiresInput.value || "[]");
+    } catch (e) {
+      requires = [];
+    }
+  }
+
+  function syncRequiresInput() {
+    if (requiresInput) requiresInput.value = JSON.stringify(requires);
+  }
+
+  function requiresPickerCard(slug) {
+    return document.querySelector(
+      '.requires-picker-checkbox[data-skill-slug="' + cssEscape(slug) + '"]'
+    );
+  }
+
+  function renderRequiresChips() {
+    if (!requiresChipsEl) return;
+    requiresChipsEl.innerHTML = "";
+    if (!requires.length) {
+      var empty = document.createElement("p");
+      empty.className = "text-xs text-body italic";
+      empty.textContent = "No toolkits required.";
+      requiresChipsEl.appendChild(empty);
+      return;
+    }
+    var tmpl = document.getElementById("requires-chip-template");
+    requires.forEach(function (slug) {
+      var node = tmpl.content.firstElementChild.cloneNode(true);
+      var cb = requiresPickerCard(slug);
+      var label = cb ? cb.getAttribute("data-skill-name") || slug : slug;
+      node.querySelector(".tool-chip-name").textContent = label;
+      node.setAttribute("title", slug);
+      var removeBtn = node.querySelector(".remove-tool-btn");
+      if (!editable) {
+        removeBtn.remove();
+      } else {
+        removeBtn.addEventListener("click", function () {
+          requires = requires.filter(function (s) { return s !== slug; });
+          syncRequiresInput();
+          renderRequiresChips();
+        });
+      }
+      requiresChipsEl.appendChild(node);
+    });
+  }
+
+  var applyRequiresPickerBtn = document.getElementById("apply-requires-picker");
+  var openRequiresPickerBtn = document.getElementById("open-requires-picker");
+  var requiresPickerSearch = document.getElementById("requires-picker-search");
+  var requiresPickerCount = document.getElementById("requires-picker-count");
+
+  function updateRequiresPickerCount() {
+    if (!requiresPickerCount) return;
+    var n = document.querySelectorAll(".requires-picker-checkbox:checked").length;
+    requiresPickerCount.textContent =
+      n === 0 ? "No toolkits selected" : n === 1 ? "1 toolkit selected" : n + " toolkits selected";
+  }
+
+  function filterRequiresCards() {
+    var q = requiresPickerSearch ? requiresPickerSearch.value.trim().toLowerCase() : "";
+    var anyVisible = false;
+    document.querySelectorAll("#requires-picker-list [data-requires-card]").forEach(function (card) {
+      var cb = card.querySelector(".requires-picker-checkbox");
+      var hay = cb
+        ? ((cb.getAttribute("data-skill-slug") || "") + " " + (cb.getAttribute("data-skill-name") || "")).toLowerCase()
+        : "";
+      var descEl = card.querySelector("p");
+      if (descEl) hay += " " + descEl.textContent.toLowerCase();
+      var match = hay.indexOf(q) !== -1;
+      card.style.display = match ? "" : "none";
+      if (match) anyVisible = true;
+    });
+    var nr = document.getElementById("requires-picker-noresults");
+    if (nr) nr.style.display = (q !== "" && !anyVisible) ? "" : "none";
+  }
+
+  if (requiresPickerSearch) {
+    requiresPickerSearch.addEventListener("input", filterRequiresCards);
+  }
+  document.querySelectorAll(".requires-picker-checkbox").forEach(function (cb) {
+    cb.addEventListener("change", updateRequiresPickerCount);
+  });
+
+  if (openRequiresPickerBtn) {
+    openRequiresPickerBtn.addEventListener("click", function () {
+      document.querySelectorAll(".requires-picker-checkbox").forEach(function (cb) {
+        cb.checked = requires.indexOf(cb.getAttribute("data-skill-slug")) !== -1;
+      });
+      if (requiresPickerSearch) requiresPickerSearch.value = "";
+      filterRequiresCards();
+      updateRequiresPickerCount();
+    });
+  }
+
+  if (applyRequiresPickerBtn) {
+    applyRequiresPickerBtn.addEventListener("click", function () {
+      var picked = [];
+      document.querySelectorAll(".requires-picker-checkbox:checked").forEach(function (cb) {
+        picked.push(cb.getAttribute("data-skill-slug"));
+      });
+      requires = picked;
+      syncRequiresInput();
+      renderRequiresChips();
+      var modal = document.getElementById("requires-picker-modal");
+      if (modal && window.FlowbiteInstances) {
+        var instance = window.FlowbiteInstances.getInstance("Modal", "requires-picker-modal");
+        if (instance) instance.hide();
+      } else if (modal) {
+        modal.classList.add("hidden");
+        modal.setAttribute("aria-hidden", "true");
+        document.body.classList.remove("overflow-hidden");
+        var backdrop = document.querySelector("[modal-backdrop]");
+        if (backdrop) backdrop.remove();
+      }
+    });
+  }
+
   // Resources (formerly "templates") are managed by skills-resources.js via
   // dedicated endpoints, not this form.
 
@@ -488,6 +615,7 @@
 
   // ----- Initial render -----
   renderToolChips();
+  renderRequiresChips();
   pollScanStatus();
 
   // Mount CM editors over the instructions/description fields. Template rows are
