@@ -148,9 +148,16 @@ class TextPart(BaseModel):
     text: str = Field(min_length=1)
 
 
+# The Decisions endpoint rejects an input_json part whose serialised data exceeds
+# this (400 "input_json data exceeds the maximum serialized size of 262144
+# bytes", observed 2026-10-23). Larger structured input goes in as text parts.
+MAX_JSON_PART_BYTES = 262_144
+
+
 class JsonPart(BaseModel):
     """Structured data as input; sent as ``input_json`` on the quick pathway and
-    as a fenced JSON block on the structured one."""
+    as a fenced JSON block on the structured one. Serialised size is capped at
+    ``MAX_JSON_PART_BYTES`` (the endpoint's limit); split or use ``TextPart``."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -161,9 +168,14 @@ class JsonPart(BaseModel):
     @classmethod
     def _json_serialisable(cls, value: Any) -> Any:
         try:
-            json.dumps(value)
+            size = len(json.dumps(value).encode("utf-8"))
         except (TypeError, ValueError) as exc:
             raise ValueError(f"input_json data must be JSON-serialisable: {exc}") from None
+        if size > MAX_JSON_PART_BYTES:
+            raise ValueError(
+                f"input_json data is {size} bytes serialised; the endpoint's cap is "
+                f"{MAX_JSON_PART_BYTES} — split it or pass it as text"
+            )
         return value
 
 
@@ -341,6 +353,7 @@ __all__ = [
     "InputPart",
     "JsonPart",
     "Level",
+    "MAX_JSON_PART_BYTES",
     "MAX_SCORE_LEVELS",
     "MIN_SCORE_LEVELS",
     "Pathway",

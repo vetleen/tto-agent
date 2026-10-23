@@ -134,6 +134,13 @@ class InputTests(SimpleTestCase):
         with self.assertRaises(ValidationError):
             JsonPart(data={"when": object()})
 
+    def test_json_part_is_capped_at_the_endpoint_limit(self):
+        from llm.types.decisions import MAX_JSON_PART_BYTES
+
+        JsonPart(data={"text": "x" * (MAX_JSON_PART_BYTES - 20)})
+        with self.assertRaisesRegex(ValidationError, "split it or pass it as text"):
+            JsonPart(data={"text": "x" * MAX_JSON_PART_BYTES})
+
     def test_estimate_input_tokens_counts_text_and_json(self):
         text_only = normalize_input("hello world " * 50)
         with_json = text_only + [InputMessage(content=[JsonPart(data={"k": "v" * 400})])]
