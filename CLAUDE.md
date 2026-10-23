@@ -97,6 +97,28 @@ For deploy details, config vars, rollback, and ops, see `RUNBOOK.md`.
 - **feedback/** — In-app feedback submissions (text + screenshot + console errors) via `/api/feedback/submit/`.
 - **core/** — Shared utilities (tokens, preferences), custom error pages, request-ID middleware.
 
+## Decisions
+
+`llm/service/decisions_service.py` answers structured **predicate / choice / score** questions
+(`llm/types/decisions.py`) through one call: `get_decisions_service().decide(questions, input,
+feature_key=…, org_id=…)` (sync; `adecide` async). Two pathways, **identical answer objects** —
+a caller never sees which answered: **quick** = OpenAI's Decisions endpoint
+(`llm/service/decisions_quick.py`, `POST /v1/decisions` via the SDK's generic `client.post`,
+models with `ModelInfo.supports_decisions_api` — Luna; batches of 400) and **structured** =
+`LLMService.run_structured` on any chat model with a per-batch `create_model` schema
+(`llm/service/decisions_structured.py`, batches of `DECISIONS_STRUCTURED_BATCH_SIZE`). Per org
+(`core/preferences.py:resolve_decisions_settings`): the `decisions_quick_enabled` toggle, the
+`decisions_quick` (capability-gated) / `decisions_structured` feature models and a pinned reasoning
+level for the latter (`feature_reasoning`, `FeatureDefault.reasoning_control`) — the "Decisions"
+section of the org settings page. Quick runs only when the toggle is on, a capable model is
+allowed, `OPENAI_API_KEY` is set and no skip window is open; a quick failure after the SDK's
+retries requeues the batch on the structured pathway and opens a shared
+`DECISIONS_QUICK_SKIP_SECONDS` window (`QuickAvailability`, cache-shared like the EPO throttle).
+Request-too-large and 400s raise instead. Quick calls write their own `LLMCallLog` rows
+(`log_decisions`, `response_metadata.kind="decisions"`); structured rows are tagged through
+`params["_log_metadata"]`. An application is one small function with its own `feature_key`; no
+existing classifier has been moved onto it yet.
+
 ## Chat Tool Labels
 
 Display labels are **tool metadata**, declared on the tool class (a `ContextAwareTool`

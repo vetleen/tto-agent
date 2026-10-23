@@ -968,6 +968,23 @@ EPO_OPS_RPM = _env_int("EPO_OPS_RPM", "200")
 # resolves (2026-06); override here if Jina ships a new regional endpoint.
 JINA_READER_BASE_URL = os.environ.get("JINA_READER_BASE_URL", "https://r.jina.ai")
 
+# Decisions (llm/service/decisions_service.py): the quick pathway calls OpenAI's
+# Decisions endpoint; when it fails, the request falls back to a structured-output
+# call and every process skips the endpoint for a while.
+# Read timeout per attempt at the endpoint.
+DECISIONS_QUICK_TIMEOUT_SECONDS = _env_int("DECISIONS_QUICK_TIMEOUT_SECONDS", "30")
+# SDK retries per call (408/409/429/5xx/connection errors, exponential backoff).
+# Worst case before the fallback ≈ (retries + 1) × timeout.
+DECISIONS_QUICK_MAX_RETRIES = _env_int("DECISIONS_QUICK_MAX_RETRIES", "1")
+# After a failed call, skip the endpoint for this long (all processes, via the
+# cache). 0 disables the skip window.
+DECISIONS_QUICK_SKIP_SECONDS = _env_int("DECISIONS_QUICK_SKIP_SECONDS", "60")
+# Questions per structured-output call (keeps each schema small).
+DECISIONS_STRUCTURED_BATCH_SIZE = _env_int("DECISIONS_STRUCTURED_BATCH_SIZE", "25")
+# Cap on the shared input (cl100k estimate); over it the call raises instead of
+# trying either pathway. 0 = no cap.
+DECISIONS_MAX_INPUT_TOKENS = _env_int("DECISIONS_MAX_INPUT_TOKENS", "100000")
+
 # Transcription settings
 TRANSCRIPTION_DEFAULT_MODEL = os.environ.get("TRANSCRIPTION_DEFAULT_MODEL", "openai/gpt-4o-mini-transcribe")
 # Per-path defaults. When unset, fall back to TRANSCRIPTION_DEFAULT_MODEL.
