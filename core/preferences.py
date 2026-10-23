@@ -812,8 +812,13 @@ def resolve_feature_model_from_prefs(org_prefs: dict | None, feature_key: str) -
     # capability-safe. An empty result means no eligible model (feature off).
     system_allowed = feature_model_pool(feature_def, get_allowed_models())
 
-    # System-level default for this feature's tier
-    sys_default = sys_models.get(default_slot, sys_models.get("primary", ""))
+    # System-level default for this feature's tier — matched into the allow-list
+    # so a retired alias in LLM_DEFAULT_* (e.g. openai/gpt-5.6-luna) resolves to
+    # its replacement instead of falling through to the first allowed model, as
+    # _resolve_tier already does on the org path.
+    sys_default = _match_allowed_model(
+        sys_models.get(default_slot, sys_models.get("primary", "")), system_allowed
+    ) or ""
 
     if org_prefs is None:
         return sys_default if sys_default in system_allowed else (system_allowed[0] if system_allowed else "")

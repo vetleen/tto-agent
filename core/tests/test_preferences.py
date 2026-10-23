@@ -1460,6 +1460,26 @@ class ResolveOrgFeatureModelTest(TestCase):
         self.assertEqual(model, "openai/gpt-5.4-mini")
 
     @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-6-astra",
+        LLM_DEFAULT_MID_MODEL="openai/gpt-6-astra",
+        LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.6-luna",  # retired alias of gpt-6-luna
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=[
+        "openai/gpt-6-astra", "openai/gpt-6-luna",
+    ])
+    def test_no_org_canonicalises_a_retired_alias_in_the_system_default(self, mock_allowed):
+        # The allow-list is canonical; the env default is not. Without matching,
+        # the cheap slot missed the list and fell to the first allowed model
+        # (Astra, a flagship) for every no-org caller.
+        from core.preferences import resolve_decisions_settings, resolve_org_feature_model
+
+        self.assertEqual(resolve_org_feature_model(None, "guardrails_classifier"), "openai/gpt-6-luna")
+        self.assertEqual(resolve_decisions_settings(None).structured_model, "openai/gpt-6-luna")
+        # A default that is genuinely not allowed still falls to the first allowed model.
+        with override_settings(LLM_DEFAULT_CHEAP_MODEL="anthropic/claude-haiku-5-5"):
+            self.assertEqual(resolve_org_feature_model(None, "guardrails_classifier"), "openai/gpt-6-astra")
+
+    @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
         LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
