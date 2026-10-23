@@ -5338,6 +5338,10 @@
     }
     function close() {
       stopReconcile();  // no need to poll for a panel the user has closed (reopening re-requests state)
+      // A thread without a deck gets "slidedeck.closed" on every (re)connect. If the
+      // panel isn't open there is nothing to undo — and un-hiding the chat pane here
+      // would squeeze it in beside an open mobile canvas (it spills over the canvas).
+      if (!isOpen) return;
       panel.classList.add("hidden"); panel.classList.remove("flex");
       handle.classList.add("hidden"); handle.classList.remove("flex");
       isOpen = false;
