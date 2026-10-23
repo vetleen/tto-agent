@@ -747,7 +747,9 @@ def log_decisions_error(
             raw_output="",
             duration_ms=duration_ms,
             status=LLMCallLog.Status.ERROR,
-            error_type=(error_code or type(exc).__name__)[:255],
+            # The exception class, like every other error row; the classified
+            # code lives in response_metadata.
+            error_type=type(exc).__name__[:255],
             error_message=str(exc)[:2000],
             response_metadata={
                 "kind": "decisions",

@@ -841,7 +841,8 @@ class LogDecisionsTests(TestCase):
         )
         log = _get_log_by_run(context.run_id)
         self.assertEqual(log.status, "error")
-        self.assertEqual(log.error_type, "timeout")
+        # The class name, like every other error row; the code is in the metadata.
+        self.assertEqual(log.error_type, "TimeoutError")
         self.assertEqual(log.error_message, "read timed out")
         self.assertEqual(log.response_metadata["error_code"], "timeout")
         self.assertEqual(log.response_metadata["kind"], "decisions")

@@ -167,8 +167,11 @@ class DecisionsService:
                     if not prefs.structured_model:
                         from llm.core.providers.base import exception_for_error_code
 
+                        # The typed subclass for known codes; the code itself is
+                        # passed so an unmapped one (malformed_response) survives.
                         raise exception_for_error_code(exc.error_code)(
-                            f"Decisions endpoint failed ({exc.error_code}) and no structured model is allowed"
+                            f"Decisions endpoint failed ({exc.error_code}) and no structured model is allowed",
+                            error_code=exc.error_code,
                         ) from exc
                     logger.info(
                         "decisions: quick failed (%s) after %d ms; structured pathway takes over "

@@ -236,7 +236,7 @@ class DecisionsServiceTests(TestCase):
         rows = self._quick_rows()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].status, "error")
-        self.assertEqual(rows[0].error_type, "timeout")
+        self.assertEqual(rows[0].error_type, "QuickUnavailable")
         self.assertEqual(rows[0].response_metadata["error_code"], "timeout")
 
     def test_malformed_response_falls_back(self):
@@ -249,10 +249,18 @@ class DecisionsServiceTests(TestCase):
     def test_quick_failure_without_a_structured_model_raises(self):
         self.prefs.return_value = _settings(structured_model="")
         self.client.post.side_effect = openai.APITimeoutError(request=httpx.Request("POST", _URL))
-        with self.assertRaises(LLMTimeoutError):
+        with self.assertRaises(LLMTimeoutError) as cm:
             self._decide()
+        self.assertEqual(cm.exception.error_code, "timeout")
         self.assertTrue(self.availability.is_suspended())
         self.llm.run_structured.assert_not_called()
+        # A code with no typed subclass keeps its code on the base class.
+        self.availability.reset()
+        self.client.post.side_effect = lambda path, **kw: {"model": "gpt-6-luna"}
+        with self.assertLogs("llm.service.decisions_quick", level="ERROR"):
+            with self.assertRaises(LLMProviderError) as cm:
+                self._decide()
+        self.assertEqual(cm.exception.error_code, "malformed_response")
 
     def test_programmer_errors_do_not_fall_back(self):
         response = httpx.Response(400, request=httpx.Request("POST", _URL))
