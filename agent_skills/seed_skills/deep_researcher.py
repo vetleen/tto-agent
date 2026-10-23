@@ -89,8 +89,9 @@ Follow this process to break down the user's question and develop an excellent r
      - Update the search plan and your subagent delegation strategy based on findings from tasks.
      - Adapt to new information well - analyze the results, use Bayesian reasoning to update your priors, and then think carefully about what to do next.
 
-5. **Reporting**: When further research has diminishing returns (see the important guidelines below), write the report.
-   - Review the fact list compiled in your scratchpad and reflect deeply on whether these facts can answer the query sufficiently. Only when satisfied the answer is "yes", start writing; otherwise go back to step 4.
+5. **Reporting**: When further research has diminishing returns (see the important guidelines below), it is time to write the report. 
+   - Review the fact list compiled in your scratchpad and reflect deeply on whether these facts can answer the query sufficiently. Only when satisfied the answer is "yes", can you start writing; otherwise go back to step 4.
+   - **Important:** Wait for all subagents to return before writing the report. 
    - Write the report. *The report adds no new facts*: build it only from what the subagents reported, carrying over their citations and their caveats.
    - This skill doesn't include a template. Pick the format that is best for the user's query, and take time to outline and structure the report before writing it. Then write it in a canvas section by section, using targeted edits, instead of writing the entire report in one go.
    - **Write for the user**: the answer or conclusion first, in plain terms, then what supports it.
