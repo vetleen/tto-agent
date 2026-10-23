@@ -26,7 +26,7 @@ import math
 import re
 from typing import Annotated, Any, Iterable, Literal, Sequence
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 from llm.types.responses import Usage
 
@@ -75,7 +75,7 @@ class Question(BaseModel):
     @field_validator("name")
     @classmethod
     def _valid_name(cls, value: str) -> str:
-        if not _NAME_RE.match(value):
+        if not _NAME_RE.fullmatch(value):
             raise ValueError(
                 "question name must be 1–64 characters of letters, digits, '_', '.' or '-'"
             )
@@ -163,20 +163,33 @@ class JsonPart(BaseModel):
 
     type: Literal["input_json"] = "input_json"
     data: Any
+    _serialized: str = PrivateAttr(default="")
 
-    @field_validator("data")
-    @classmethod
-    def _json_serialisable(cls, value: Any) -> Any:
+    @model_validator(mode="after")
+    def _serialise_once(self) -> "JsonPart":
+        # Serialise exactly as the SDK (httpx) puts it on the wire — compact,
+        # UTF-8, no NaN/Infinity — so the size check and the token estimate
+        # measure what the endpoint sees, and a NaN fails here as a caller error
+        # instead of inside client.post (where it would look like an outage).
         try:
-            size = len(json.dumps(value).encode("utf-8"))
+            serialized = json.dumps(
+                self.data, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+            )
         except (TypeError, ValueError) as exc:
             raise ValueError(f"input_json data must be JSON-serialisable: {exc}") from None
+        size = len(serialized.encode("utf-8"))
         if size > MAX_JSON_PART_BYTES:
             raise ValueError(
                 f"input_json data is {size} bytes serialised; the endpoint's cap is "
                 f"{MAX_JSON_PART_BYTES} — split it or pass it as text"
             )
-        return value
+        self._serialized = serialized
+        return self
+
+    @property
+    def serialized(self) -> str:
+        """The data exactly as it goes on the wire (compact UTF-8 JSON), computed once."""
+        return self._serialized
 
 
 # Room for an image part later; v1 is text + JSON.
@@ -215,7 +228,7 @@ def estimate_input_tokens(messages: Iterable[InputMessage]) -> int:
             if isinstance(part, TextPart):
                 total += count_tokens(part.text)
             else:
-                total += count_tokens(json.dumps(part.data, ensure_ascii=False))
+                total += count_tokens(part.serialized)
     return total
 
 

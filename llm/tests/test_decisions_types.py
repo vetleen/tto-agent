@@ -62,7 +62,7 @@ class QuestionValidationTests(SimpleTestCase):
     def test_name_pattern_and_instructions(self):
         for ok in ("a", "snake_case", "dotted.name", "with-dash", "x" * 64):
             Question(type="predicate", name=ok, instructions="?")
-        for bad in ("", "has space", "x" * 65, "ünïcode", "semi;colon"):
+        for bad in ("", "has space", "x" * 65, "ünïcode", "semi;colon", "trailing\n"):
             with self.subTest(name=bad), self.assertRaises(ValidationError):
                 Question(type="predicate", name=bad, instructions="?")
         with self.assertRaises(ValidationError):
@@ -140,6 +140,21 @@ class InputTests(SimpleTestCase):
         JsonPart(data={"text": "x" * (MAX_JSON_PART_BYTES - 20)})
         with self.assertRaisesRegex(ValidationError, "split it or pass it as text"):
             JsonPart(data={"text": "x" * MAX_JSON_PART_BYTES})
+
+    def test_json_part_is_measured_as_the_wire_encodes_it(self):
+        from llm.types.decisions import MAX_JSON_PART_BYTES
+
+        # 100k "æ": 600k chars under ensure_ascii (\\u00e6) but ~200 KB of UTF-8 on
+        # the wire — the endpoint accepts it, so must we.
+        part = JsonPart(data={"t": "æ" * 100_000})
+        self.assertLess(len(part.serialized.encode("utf-8")), MAX_JSON_PART_BYTES)
+        # Compact separators, computed once and reused by the token estimate.
+        self.assertEqual(JsonPart(data={"a": 1, "b": [1, 2]}).serialized, '{"a":1,"b":[1,2]}')
+        # NaN/Infinity would be rejected by httpx inside client.post (and look
+        # like an outage); they are caller errors here.
+        for bad in (float("nan"), float("inf")):
+            with self.subTest(value=bad), self.assertRaises(ValidationError):
+                JsonPart(data={"score": bad})
 
     def test_estimate_input_tokens_counts_text_and_json(self):
         text_only = normalize_input("hello world " * 50)
