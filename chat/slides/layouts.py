@@ -21,7 +21,7 @@ import copy
 # content is 60pt and any block reaching column 12 runs flush to the 912pt right
 # margin. `_span(a, b)` returns the (x, w) of a block covering columns a..b.
 #
-# These exact numbers are mirrored in the Slide Deck Collaborator skill (the
+# These exact numbers are mirrored in the Slide Deck Tools skill (the
 # model is handed the table, not the formula) — keep the two in sync.
 _MARGIN = 48      # left content margin
 _PITCH = 72       # column pitch (864 / 12)

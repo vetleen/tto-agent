@@ -512,7 +512,7 @@ def get_preferences(user) -> ResolvedPreferences:
     allowed_specializations = _resolve_skill_entries(get_subagent_skills(user))
 
     allowed_tools = base_allowed
-    # chat_generate_image now lives behind the image_generator skill
+    # chat_generate_image now lives behind the image_generation_tools skill
     # (section="skills"), but still requires a configured image model. Strip it
     # from any enabled skill's resolved tools when no model resolves, so an
     # active skill can't surface a dead tool. Org tool toggles above still apply.

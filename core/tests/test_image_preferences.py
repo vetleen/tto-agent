@@ -10,7 +10,7 @@ from django.test import TestCase, override_settings
 from accounts.models import Membership, Organization
 
 _ALLOWED_LLM = ["openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano"]
-# chat_generate_image moved behind the image_generator skill (section="skills"),
+# chat_generate_image moved behind the image_generation_tools skill (section="skills"),
 # so it is never an always-on tool; the image-model gate now governs whether the
 # active skill surfaces it (covered by agent_skills.ImageGeneratorGateTest). These
 # tests cover the image-model resolution cascade only.

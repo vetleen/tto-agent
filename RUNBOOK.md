@@ -192,8 +192,8 @@ Two halves, both LibreOffice-free and Heroku-ready:
 
 Rollout steps:
 1. **Global kill-switch.** `SLIDES_ENABLED=true` (default); `false` disables the feature.
-2. **Per-org enablement.** The `slide_deck_collaborator` seed skill is **off by default per
-   org**. Enable for a pilot via `org.preferences["skills"]["slide_deck_collaborator"]["enabled"] = True`.
+2. **Per-org enablement.** The `slide_deck_tools` seed skill is **off by default per
+   org**. Enable for a pilot via `org.preferences["skills"]["slide_deck_tools"]["enabled"] = True`.
 3. **Verify on staging:** author a deck → the filmstrip fills with rendered previews, the
    `.pptx` and PDF download and open correctly, per-slide comments round-trip, and the agent's
    `slides_preview_slide` returns images it reacts to. Watch worker `sample#memory_rss` on a

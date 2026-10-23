@@ -121,7 +121,7 @@
       "required": false
     },
     "SLIDES_ENABLED": {
-      "description": "Global kill-switch for the AI slide-deck feature. Per-org rollout is the 'slide_deck_collaborator' seed skill's org enablement. Default true.",
+      "description": "Global kill-switch for the AI slide-deck feature. Per-org rollout is the 'slide_deck_tools' seed skill's org enablement. Default true.",
       "value": "true",
       "required": false
     },

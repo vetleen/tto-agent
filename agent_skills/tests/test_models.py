@@ -341,7 +341,7 @@ class SeedFileResourceTests(TestCase):
     isolated and cleaned up by ``tearDownModule``."""
 
     def _slide_skill(self):
-        return AgentSkill.objects.get(slug="slide_deck_collaborator", level="system")
+        return AgentSkill.objects.get(slug="slide_deck_tools", level="system")
 
     def test_slide_layouts_image_seeded(self):
         from agent_skills.seed_skills import seed_system_skills

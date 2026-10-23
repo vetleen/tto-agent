@@ -1,6 +1,6 @@
-"""Canvas Collaborator (seed skill).
+"""Canvas Tools (seed toolkit).
 
-A main-agent skill that unlocks the canvas workspace tools (``canvas_write``,
+A main-agent toolkit that unlocks the canvas workspace tools (``canvas_write``,
 ``canvas_edit``, ``canvas_read``, ``canvas_delete``, ``canvas_save_to_document``,
 ``canvas_paste_user_text`` and ``chat_attachment_open_to_canvas``; all
 ``section="skills"``, ``audience="main"``). Activating it lets the assistant draft
@@ -8,9 +8,9 @@ and edit documents in the side-panel canvas. Sub-agents have their own canvas
 tools (``subagent_canvas_*``) and do not use these.
 """
 
-CANVAS_COLLABORATOR = {
-    "slug": "canvas_collaborator",
-    "name": "Canvas Collaborator",
+CANVAS_TOOLS = {
+    "slug": "canvas_tools",
+    "name": "Canvas Tools",
     "emoji": "📝",
     "description": (
         "Draft and edit text with the user in a side-panel canvas. Activate whenever "
@@ -20,7 +20,7 @@ CANVAS_COLLABORATOR = {
         "**Note:** This skill has tools that enable creating, editing, deleting and otherwise managing the canvas."
     ),
     "instructions": """\
-# Canvas Collaborator
+# Canvas Tools
 
 After working in the canvas, don't reproduce the content in
 chat — just refer to it (e.g. "I've drafted it in the canvas").

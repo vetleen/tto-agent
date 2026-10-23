@@ -1663,7 +1663,7 @@ def build_canvas_ingress_manifests(thread_id, selected_tool_names, *, message_li
     """Build the (# Your messages, # Attachments) dynamic-context manifests.
 
     Each is gated on the corresponding tool actually being available this turn, so
-    they cost no tokens when the Canvas Collaborator skill isn't attached.
+    they cost no tokens when the Canvas Tools skill isn't attached.
     ``selected_tool_names`` must be the set of tool-NAME strings for the turn (what
     ``_resolve_selected_tools`` returns) — gating on tool objects here was the bug
     that silently dropped both manifests. Returns ``(pasteable_messages, attachments)``;

@@ -108,7 +108,7 @@ with its size and whether it changed since you last read it; read a canvas with 
 (by line range for a large one) before you edit, summarise or quote it, and write long documents \
 in parts.
 
-**Note:** The tools that let you work with the canvas are gated behind the **canvas_collaborator** skill.
+**Note:** The tools that let you work with the canvas are gated behind the **canvas_tools** skill.
 """
 
     prompt += """
@@ -599,7 +599,7 @@ def build_semi_static_prompt(
     else:
         prompt += "\n# Data Rooms\nNo data rooms are attached to this conversation. You are answering off-the-cuff without access to any uploaded documents.\n"
 
-    # -- Canvas metadata (usage instructions live in the canvas_collaborator skill) --
+    # -- Canvas metadata (usage instructions live in the canvas_tools skill) --
     if canvases:
         prompt += render_canvas_workspace(canvases)
 
@@ -631,7 +631,7 @@ def render_canvas_workspace(canvases: list[dict]) -> str:
             "the one open in their editor (marked below), not the one you last worked on. "
             if several else ""
         )
-        + "Tools for canvas management live in skills, notably the **canvas_collaborator** skill.\n"
+        + "Tools for canvas management live in skills, notably the **canvas_tools** skill.\n"
     )
     for c in canvases:
         size = f"{c.get('chars', 0):,} chars"

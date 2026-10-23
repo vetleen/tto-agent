@@ -30,11 +30,11 @@ class SlidesUpdatedToolsMembershipTests(SimpleTestCase):
 
 class SkillWiringTests(SimpleTestCase):
     def test_skill_tools_registered_and_audience_compatible(self):
-        from agent_skills.seed_skills.slide_deck_collaborator import SLIDE_DECK_COLLABORATOR
+        from agent_skills.seed_skills.slide_deck_tools import SLIDE_DECK_TOOLS
         from llm.tools import get_tool_registry
 
         reg = get_tool_registry()
-        for name in SLIDE_DECK_COLLABORATOR["tool_names"]:
+        for name in SLIDE_DECK_TOOLS["tool_names"]:
             tool = reg.get_tool(name)
             self.assertIsNotNone(tool, f"{name} not registered")
             self.assertEqual(tool.section, "skills", name)
@@ -44,17 +44,17 @@ class SkillWiringTests(SimpleTestCase):
         from agent_skills.seed_skills import SYSTEM_SKILLS
 
         slugs = {s["slug"] for s in SYSTEM_SKILLS}
-        self.assertIn("slide_deck_collaborator", slugs)
+        self.assertIn("slide_deck_tools", slugs)
 
     def test_skill_advertises_every_shape_box_chart_and_icon(self):
         """What the model is told exists is generated from the code, so nothing
         drawable is hidden and nothing advertised is rejected."""
-        from agent_skills.seed_skills.slide_deck_collaborator import SLIDE_DECK_COLLABORATOR
+        from agent_skills.seed_skills.slide_deck_tools import SLIDE_DECK_TOOLS
         from chat.slides.icons import ICON_NAMES
         from chat.slides.schema import CHART_KINDS, SHAPE_NAMES
         from chat.slides.theme import WILFRED_BASE_THEME
 
-        text = SLIDE_DECK_COLLABORATOR["instructions"]
+        text = SLIDE_DECK_TOOLS["instructions"]
         self.assertNotIn("__", text.replace("__init__", ""))  # every placeholder filled
         for name in [*ICON_NAMES, *SHAPE_NAMES, *CHART_KINDS, *WILFRED_BASE_THEME["boxes"]]:
             self.assertIn(name, text, name)
@@ -64,9 +64,9 @@ class SkillWiringTests(SimpleTestCase):
             self.assertNotIn(gone, shapes_line)
 
     def test_skill_carries_the_retired_layouts_as_recipes(self):
-        from agent_skills.seed_skills.slide_deck_collaborator import SLIDE_DECK_COLLABORATOR
+        from agent_skills.seed_skills.slide_deck_tools import SLIDE_DECK_TOOLS
 
-        text = SLIDE_DECK_COLLABORATOR["instructions"]
+        text = SLIDE_DECK_TOOLS["instructions"]
         self.assertIn("x=48/254/460/666", text)            # process chevrons
         self.assertIn("x=352 y=179 w=256 h=256", text)      # cycle ring
         self.assertIn("x1=48 y1=256 x2=912 y2=256", text)   # timeline rule

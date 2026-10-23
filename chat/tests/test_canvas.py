@@ -2640,14 +2640,14 @@ class ReadCanvasToolTests(TestCase):
         self.assertEqual(tool.end_label_for_result({"status": "error"}), "Couldn't read canvas")
 
     def test_is_main_audience_skill_tool_with_labels(self):
-        from agent_skills.seed_skills.canvas_collaborator import CANVAS_COLLABORATOR
+        from agent_skills.seed_skills.canvas_tools import CANVAS_TOOLS
         from chat.canvas_tools import ReadCanvasTool
 
         tool = ReadCanvasTool()
         self.assertEqual(tool.audience, "main")
         self.assertEqual(tool.section, "skills")
         self.assertEqual(tool.start_label, "Reading canvas...")
-        self.assertIn("canvas_read", CANVAS_COLLABORATOR["tool_names"])
+        self.assertIn("canvas_read", CANVAS_TOOLS["tool_names"])
 
 
 # ---------------------------------------------------------------------------

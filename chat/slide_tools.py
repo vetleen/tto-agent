@@ -3,7 +3,7 @@
 The deck sibling of chat/canvas_tools.py. The assistant writes/edits one
 canonical JSON document (chat.slides.schema); the user only ever sees the
 rendered filmstrip. All tools are audience="main", section="skills" (gated
-behind the "Slide Deck Collaborator" seed skill).
+behind the "Slide Deck Tools" seed skill).
 
 ``slides_preview_slide`` (the dispatch+poll visual feedback tool) lives here too
 but is wired to the worker render task in a later phase.
@@ -439,7 +439,7 @@ class WriteDeckTool(ContextAwareTool):
         "when the deck needs rebuilding around a new narrative, not how decks are created (use "
         "slides_create_deck for that) and not for targeted changes (use slide_canvas_edit). KEEP "
         "the ids of slides/elements you carry over — the user comments by id. The deck/element "
-        "JSON format is documented in the Slide Deck Collaborator skill."
+        "JSON format is documented in the Slide Deck Tools skill."
     )
     args_schema: type[BaseModel] = WriteDeckInput
     # The current-deck block / Active Slide Deck section always covers this

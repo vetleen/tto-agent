@@ -494,7 +494,7 @@ class BuildStaticSystemPromptTests(TestCase):
 
     def test_canvas_boilerplate_moved_to_skill(self):
         # Canvas usage boilerplate (## Diagrams etc.) moved into the
-        # canvas_collaborator skill; only non-canvas boilerplate stays static.
+        # canvas_tools skill; only non-canvas boilerplate stays static.
         prompt = build_static_system_prompt()
         self.assertNotIn("## Diagrams", prompt)
         self.assertIn("## Emails", prompt)

@@ -1,5 +1,5 @@
-"""Seeding checks for the five core capability skills (canvas / image / loop /
-data room / web) that gate always-on tool groups behind a main-agent skill."""
+"""Seeding checks for the toolkits (canvas / image / loop / data room / web /
+slide deck) that gate tool groups behind a main-agent skill."""
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
@@ -19,8 +19,8 @@ class SeedCoreSkillsTest(TestCase):
     def _get(self, slug):
         return AgentSkill.objects.filter(slug=slug, level="system").first()
 
-    def test_image_generator_seeded(self):
-        skill = self._get("image_generator")
+    def test_image_generation_tools_seeded(self):
+        skill = self._get("image_generation_tools")
         self.assertIsNotNone(skill)
         self.assertEqual(skill.audience, "main")
         self.assertIn("chat_generate_image", skill.tool_names)
@@ -32,8 +32,8 @@ class SeedCoreSkillsTest(TestCase):
         for tool in ("chat_loop_create", "chat_loop_list", "chat_loop_edit", "chat_loop_stop"):
             self.assertIn(tool, skill.tool_names)
 
-    def test_canvas_collaborator_seeded(self):
-        skill = self._get("canvas_collaborator")
+    def test_canvas_tools_seeded(self):
+        skill = self._get("canvas_tools")
         self.assertIsNotNone(skill)
         self.assertEqual(skill.audience, "main")
         for tool in (
@@ -76,11 +76,12 @@ class SeedGraphTests(TestCase):
         self.assertEqual(
             sorted(s["slug"] for s in toolkits),
             sorted([
-                "assistant_loop_tools", "canvas_collaborator", "data_room_tools",
-                "image_generator", "web_research_tools", "slide_deck_collaborator",
+                "assistant_loop_tools", "canvas_tools", "data_room_tools",
+                "image_generation_tools", "web_research_tools", "slide_deck_tools",
             ]),
         )
         for data in toolkits:
+            self.assertTrue(data["slug"].endswith("_tools"), data["slug"])
             self.assertEqual(data.get("audience", "main"), "main", data["slug"])
             self.assertTrue(data["tool_names"], data["slug"])
             self.assertFalse(data.get("requires"), data["slug"])
@@ -121,22 +122,23 @@ class SeedGraphTests(TestCase):
 
 class ImageGeneratorGateTest(TestCase):
     """The image-model gate moved from allowed_tools into skill-tool resolution:
-    chat_generate_image survives in the enabled image_generator skill only when
-    an image model resolves."""
+    chat_generate_image survives in the enabled image_generation_tools skill only
+    when an image model resolves."""
 
     def setUp(self):
         self.user = User.objects.create_user(email="imggate@example.com", password="pw")
         self.org = Organization.objects.create(
             name="ImgOrg", slug="imgorg",
-            preferences={"skills": {"image_generator": {"enabled": True}}},
+            preferences={"skills": {"image_generation_tools": {"enabled": True}}},
         )
         Membership.objects.create(user=self.user, org=self.org, role=Membership.Role.MEMBER)
 
     def _image_tools(self, prefs):
         entry = next(
-            (s for s in prefs.allowed_skills if s["slug"] == "image_generator"), None
+            (s for s in prefs.allowed_skills if s["slug"] == "image_generation_tools"),
+            None,
         )
-        self.assertIsNotNone(entry, "image_generator should be enabled and visible")
+        self.assertIsNotNone(entry, "image_generation_tools should be enabled and visible")
         return entry["tool_names"]
 
     @override_settings(

@@ -1,11 +1,11 @@
-"""Slide Deck Collaborator (seed skill).
+"""Slide Deck Tools (seed toolkit).
 
-A main-agent skill that unlocks the slide-deck tools (``slides_create_deck``,
+A main-agent toolkit that unlocks the slide-deck tools (``slides_create_deck``,
 ``slide_canvas_write``, ``slide_canvas_edit``, ``slide_canvas_activate``,
 ``slide_canvas_delete``, ``slides_add_slide``, ``slides_preview_slide``,
 ``slides_list_themes`` and ``slides_set_theme``; all ``section="skills"``,
 ``audience="main"``). Off by default per org — enable via
-``org.preferences["skills"]["slide_deck_collaborator"]["enabled"] = True``.
+``org.preferences["skills"]["slide_deck_tools"]["enabled"] = True``.
 
 The element vocabularies the instructions advertise (shapes, themed boxes, chart
 kinds, icon names) are GENERATED from the renderer/schema modules, so what the
@@ -38,7 +38,7 @@ from chat.slides.schema import CHART_KINDS, SHAPE_NAMES
 from chat.slides.theme import WILFRED_BASE_THEME
 
 _INSTRUCTIONS = """\
-# Slide Deck Collaborator
+# Slide Deck Tools
 
 You build a PowerPoint slide deck for the user in a side panel. You author and edit
 the deck as a JSON document; the user sees rendered slide images and comments on them —
@@ -433,9 +433,9 @@ def _render_instructions() -> str:
     )
 
 
-SLIDE_DECK_COLLABORATOR = {
-    "slug": "slide_deck_collaborator",
-    "name": "Slide Deck Collaborator",
+SLIDE_DECK_TOOLS = {
+    "slug": "slide_deck_tools",
+    "name": "Slide Deck Tools",
     "emoji": "📊",
     "description": (
         "Author and iterate on a PowerPoint slide deck with the user in a side-panel "

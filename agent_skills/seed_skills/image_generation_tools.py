@@ -1,15 +1,15 @@
-"""Image Generator (seed skill).
+"""Image Generation Tools (seed toolkit).
 
-A main-agent skill that unlocks image generation. Activating it surfaces the
+A main-agent toolkit that unlocks image generation. Activating it surfaces the
 ``chat_generate_image`` tool (``section="skills"``, ``audience="main"``) plus the
 instructions for using it. The tool additionally requires a configured image
 model — when none resolves it is withheld even while the skill is active (see
 core/preferences.py). Sub-agents do not get this tool.
 """
 
-IMAGE_GENERATOR = {
-    "slug": "image_generator",
-    "name": "Image Generator",
+IMAGE_GENERATION_TOOLS = {
+    "slug": "image_generation_tools",
+    "name": "Image Generation Tools",
     "emoji": "🎨",
     "description": (
         "Generate or edit images from a text prompt. Activate this when the user "
@@ -17,7 +17,7 @@ IMAGE_GENERATOR = {
         "**Note:** This skill has tools that enable calling image models for generation and editing."
     ),
     "instructions": """\
-# Image Generator
+# Image Generation Tools
 
 Generate or edit images.
 
