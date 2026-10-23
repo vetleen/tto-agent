@@ -1480,6 +1480,28 @@ class ResolveOrgFeatureModelTest(TestCase):
             self.assertEqual(resolve_org_feature_model(None, "guardrails_classifier"), "openai/gpt-6-astra")
 
     @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-6-sol",
+        LLM_DEFAULT_MID_MODEL="openai/gpt-6-sol",
+        LLM_DEFAULT_CHEAP_MODEL="anthropic/claude-haiku-5-5",
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=[
+        "openai/gpt-6-sol", "openai/gpt-6-luna", "anthropic/claude-haiku-5-5",
+    ])
+    def test_org_gated_feature_ignores_slot_fit_like_get_preferences(self, mock_allowed):
+        # The org disallows the cheap-slot model; the quick pool is [Luna]. A gated
+        # pool is already the set of capable models, so even if none "fits" the
+        # slot the first capable one serves (as get_preferences resolves it);
+        # an ungated feature keeps the slot-fit rule.
+        from core.preferences import resolve_org_feature_model
+
+        org = Organization.objects.create(name="GateOrg", slug="gateorg", preferences={
+            "allowed_models": ["openai/gpt-6-sol", "openai/gpt-6-luna"],
+        })
+        with patch("llm.model_registry.model_fits_slot", return_value=False):
+            self.assertEqual(resolve_org_feature_model(org.pk, "decisions_quick"), "openai/gpt-6-luna")
+            self.assertEqual(resolve_org_feature_model(org.pk, "guardrails_classifier"), "")
+
+    @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
         LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",

@@ -842,7 +842,7 @@ def resolve_feature_model_from_prefs(org_prefs: dict | None, feature_key: str) -
 
     # Fall back to org's tier default → system tier default
     org_models = org_prefs.get("models", {})
-    return _resolve_tier(
+    resolved = _resolve_tier(
         user_choice=None,
         org_default=org_models.get(default_slot),
         system_default=sys_default,
@@ -850,6 +850,12 @@ def resolve_feature_model_from_prefs(org_prefs: dict | None, feature_key: str) -
         system_allowed=system_allowed,
         slot=default_slot,
     )
+    if not resolved and feature_def.gated and effective_allowed:
+        # A gated pool already holds only the models able to serve the feature;
+        # slot fit must not veto the only capable ones. Matches get_preferences,
+        # which falls to pool[0] for gated features.
+        resolved = effective_allowed[0]
+    return resolved
 
 
 def resolve_org_feature_reasoning(org_prefs: dict | None, feature_key: str, model: str) -> str | None:
