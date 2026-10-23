@@ -73,6 +73,8 @@ class StreamLogAccumulator:
         data = event.data or {}
         if et == "token":
             self._text_parts.append(data.get("text", ""))
+        elif et == "text_break":
+            self._text_parts.append("\n\n")
         elif et == "tool_start":
             tid = data.get("tool_call_id") or ""
             self._tool_by_id[tid] = {

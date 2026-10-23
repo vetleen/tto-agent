@@ -707,6 +707,23 @@ class BaseLangChainChatModel(ChatModel):
             return []
         return [("token", {"text": str(text)})]
 
+    def _text_segment(self, chunk) -> object | None:
+        """Which text segment of the response this chunk's text belongs to.
+
+        A provider that returns several separate text messages in one response
+        (OpenAI Responses: a ``commentary`` progress note, then the
+        ``final_answer``) returns a key per message; ``stream`` emits a
+        ``text_break`` event when it changes. Default: None (one segment).
+        """
+        return None
+
+    def _join_text_blocks(self, blocks: list) -> str:
+        """The plain text of a response's content blocks."""
+        return "".join(
+            block.get("text", "") for block in blocks
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+
     def _extract_replay_metadata(self, lc_message: object) -> dict:
         """Provider-specific state that must be echoed back on the next turn.
 
@@ -955,10 +972,7 @@ class BaseLangChainChatModel(ChatModel):
         raw_content = getattr(result, "content", "") or ""
         content_blocks = None
         if isinstance(raw_content, list):
-            content = "".join(
-                block.get("text", "") for block in raw_content
-                if isinstance(block, dict) and block.get("type") == "text"
-            )
+            content = self._join_text_blocks(raw_content)
             full_blocks = [
                 block for block in raw_content
                 if isinstance(block, dict)
@@ -1040,6 +1054,8 @@ class BaseLangChainChatModel(ChatModel):
         # error: an error event fails sub-agent runs and ends the main turn.
         guard = OutputGuard()
         abort_reason: str | None = None
+        # The text segment the last visible token belonged to (see _text_segment).
+        last_segment: object | None = None
 
         stream_succeeded = False
         last_exc: Exception | None = None
@@ -1054,6 +1070,23 @@ class BaseLangChainChatModel(ChatModel):
                     parsed = self._parse_chunk(chunk)
                     for event_type, event_data in parsed:
                         if event_type == "token":
+                            segment = self._text_segment(chunk)
+                            if (
+                                segment is not None
+                                and last_segment is not None
+                                and segment != last_segment
+                            ):
+                                # A new text message in the same response: what
+                                # streamed so far was a progress note.
+                                yield StreamEvent(
+                                    event_type="text_break",
+                                    data={},
+                                    sequence=sequence,
+                                    run_id=run_id,
+                                )
+                                sequence += 1
+                            if segment is not None:
+                                last_segment = segment
                             output_text_parts.append(event_data.get("text", ""))
                         events_yielded = True
                         yield StreamEvent(
@@ -1152,6 +1185,7 @@ class BaseLangChainChatModel(ChatModel):
                     last_chunk = None
                     accumulated = None
                     output_text_parts = []
+                    last_segment = None
                     guard = OutputGuard()
                     abort_reason = None
                 else:
@@ -1246,10 +1280,7 @@ class BaseLangChainChatModel(ChatModel):
         if accumulated is not None:
             raw_content = getattr(accumulated, "content", "") or ""
             if isinstance(raw_content, list):
-                end_data["content"] = "".join(
-                    block.get("text", "") for block in raw_content
-                    if isinstance(block, dict) and block.get("type") == "text"
-                )
+                end_data["content"] = self._join_text_blocks(raw_content)
                 # Preserve thinking / redacted_thinking / text blocks (with
                 # signatures) for conversation history — Anthropic requires them
                 # echoed back unmodified on a thinking+tool-use turn.

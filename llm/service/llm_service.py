@@ -55,7 +55,7 @@ class _StreamCollapser:
     """Incrementally reduce a stream into a ``ChatResponse`` (pure; no I/O).
 
     The final assistant text is rebuilt from ``token`` events, reset on each
-    ``message_start`` so only the last turn's answer survives (the streaming
+    ``message_start`` and ``text_break`` so only the last answer survives (the streaming
     tool-loop pops ``content`` from its final ``message_end``). Usage comes
     from the LAST ``message_end`` (which carries the aggregated totals). An
     ``error`` event — emitted by the provider instead of raising — is re-raised
@@ -72,7 +72,8 @@ class _StreamCollapser:
 
     def feed(self, event: StreamEvent) -> None:
         et = event.event_type
-        if et == "message_start":
+        if et in ("message_start", "text_break"):
+            # A text_break means the text so far was a progress note.
             self._text_parts = []
         elif et == "token":
             self._text_parts.append(event.data.get("text", ""))

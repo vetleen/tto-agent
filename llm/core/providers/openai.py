@@ -69,6 +69,35 @@ class OpenAIChatModel(BaseLangChainChatModel):
             )
         return str(content) if content else ""
 
+    def _text_segment(self, chunk) -> object | None:
+        """The content-block ``index`` of this chunk's text.
+
+        The Responses API can return several message items in one response
+        (GPT-6 writes a ``commentary`` progress note, then its ``final_answer``);
+        langchain-openai gives each its own ``index``.
+        """
+        content = getattr(chunk, "content", None)
+        if not isinstance(content, list):
+            return None
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
+                return block.get("index")
+        return None
+
+    def _join_text_blocks(self, blocks: list) -> str:
+        """Join separate message items with a blank line, never glued together."""
+        groups: list[list[str]] = []
+        last_key: object = object()
+        for block in blocks:
+            if not isinstance(block, dict) or block.get("type") != "text":
+                continue
+            key = block.get("index", block.get("id"))
+            if key is None or key != last_key or not groups:
+                groups.append([])
+            groups[-1].append(block.get("text", "") or "")
+            last_key = key
+        return "\n\n".join(text for text in ("".join(g) for g in groups) if text)
+
     @staticmethod
     def _extract_reasoning(additional: dict) -> str:
         """Pull reasoning-summary text out of a chunk's additional_kwargs.

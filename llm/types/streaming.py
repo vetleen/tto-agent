@@ -22,6 +22,10 @@ StreamEventType = Literal[
     # overload ({provider, error_code, wait_seconds, attempt, max_attempts}).
     # Forwarded to the client; the collapser and log accumulator ignore it.
     "provider_retry",
+    # A new text message started inside the same model response (OpenAI
+    # Responses: a ``commentary`` progress note, then the ``final_answer``).
+    # The text streamed so far is a progress note, not part of the answer.
+    "text_break",
 ]
 
 
