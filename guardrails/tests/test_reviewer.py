@@ -392,3 +392,144 @@ class ReviewFlaggedSkillContentTests(TestCase):
             "x", self._classifier_result(), label="d", org_id=None,
         )
         self.assertIsNone(decision)
+
+    @override_settings(LLM_DEFAULT_TOP_MODEL="test-top-model")
+    @patch("guardrails.reviewer._get_llm_service")
+    def test_uses_given_context(self, mock_get_service):
+        from guardrails.reviewer import review_flagged_skill_content
+        from guardrails.schemas import ChunkReviewDecision
+        from llm.types import RunContext
+
+        captured = []
+
+        def fake(request, schema):
+            captured.append(request.context)
+            return (ChunkReviewDecision(action="allow", confidence=0.9, severity="low", reasoning="ok"), None)
+
+        svc = MagicMock()
+        svc.run_structured.side_effect = fake
+        mock_get_service.return_value = svc
+
+        shadow_context = RunContext(trace_id="shadow-skill_content-20261024")
+        review_flagged_skill_content("x", self._classifier_result(), label="d", org_id=None, context=shadow_context)
+        review_flagged_skill_content("x", self._classifier_result(), label="d", org_id=None, user_id=7)
+        self.assertIs(captured[0], shadow_context)
+        self.assertEqual(captured[1].user_id, "7")
+
+
+class ReviewFlaggedWebContentContextTests(TestCase):
+    @override_settings(LLM_DEFAULT_TOP_MODEL="test-top-model")
+    @patch("guardrails.reviewer._get_llm_service")
+    def test_uses_given_context(self, mock_get_service):
+        from guardrails.reviewer import review_flagged_web_content
+        from guardrails.schemas import WebReviewDecision
+        from llm.types import RunContext
+
+        captured = []
+
+        def fake(request, schema):
+            captured.append(request.context)
+            return (WebReviewDecision(action="allow", confidence=0.9, severity="low", reasoning="ok"), None)
+
+        svc = MagicMock()
+        svc.run_structured.side_effect = fake
+        mock_get_service.return_value = svc
+        flag = ClassifierResult(is_suspicious=True, concern_tags=["jailbreak"], confidence=0.7, reasoning="r")
+
+        shadow_context = RunContext(trace_id="shadow-web_content-20261024")
+        review_flagged_web_content("page", flag, "web_fetch", org_id=None, context=shadow_context)
+        review_flagged_web_content("page", flag, "web_fetch", org_id=None, user_id=7, conversation_id="t1")
+        self.assertIs(captured[0], shadow_context)
+        self.assertEqual(captured[1].user_id, "7")
+        self.assertEqual(captured[1].conversation_id, "t1")
+
+
+class ReviewFlaggedMessageSyncTests(TestCase):
+    """The sync entry point the shadow comparison uses: same decision as the async
+    wrapper, a history cutoff, and a caller-supplied RunContext."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="sync@example.com", password="test1234")
+        self.flag = ClassifierResult(
+            is_suspicious=True, concern_tags=["data_extraction"], confidence=0.6, reasoning="r",
+        )
+
+    def _service(self, captured):
+        def fake(request, schema):
+            captured.append(request)
+            return (
+                ReviewerDecision(action="dismiss", confidence=0.9, severity="low", reasoning="fp", user_message="ok"),
+                None,
+            )
+
+        svc = MagicMock()
+        svc.run_structured.side_effect = fake
+        return svc
+
+    def _event(self, raw_input, created_at):
+        event = GuardrailEvent.objects.create(
+            user=self.user, trigger_source="user_message", check_type="llm_review",
+            tags=["prompt_injection"], confidence=0.9, severity="high", action_taken="blocked",
+            raw_input=raw_input, reviewer_output="reasoning",
+        )
+        GuardrailEvent.objects.filter(pk=event.pk).update(created_at=created_at)
+        return event
+
+    @override_settings(LLM_DEFAULT_TOP_MODEL="test-top-model")
+    @patch("guardrails.reviewer._get_llm_service")
+    def test_sync_returns_the_decision(self, mock_get_service):
+        from guardrails.reviewer import review_flagged_message_sync
+
+        captured = []
+        mock_get_service.return_value = self._service(captured)
+        decision = review_flagged_message_sync("hi", self.flag, self.user.pk, None, "thread-1")
+        self.assertEqual(decision.action, "dismiss")
+        self.assertEqual(captured[0].context.user_id, str(self.user.pk))
+        self.assertEqual(captured[0].context.conversation_id, "thread-1")
+
+    @override_settings(LLM_DEFAULT_TOP_MODEL="test-top-model")
+    @patch("guardrails.reviewer._get_llm_service")
+    def test_history_before_excludes_later_events(self, mock_get_service):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from guardrails.reviewer import review_flagged_message_sync
+
+        now = timezone.now()
+        self._event("earlier message", now - timedelta(hours=1))
+        self._event("later message", now + timedelta(minutes=1))
+        captured = []
+        mock_get_service.return_value = self._service(captured)
+
+        review_flagged_message_sync("hi", self.flag, self.user.pk, None, history_before=now)
+        prompt = captured[0].messages[1].content
+        self.assertIn("earlier message", prompt)
+        self.assertNotIn("later message", prompt)
+
+        review_flagged_message_sync("hi", self.flag, self.user.pk, None)
+        self.assertIn("later message", captured[1].messages[1].content)
+
+    @override_settings(LLM_DEFAULT_TOP_MODEL="test-top-model")
+    @patch("guardrails.reviewer._get_llm_service")
+    def test_uses_given_context(self, mock_get_service):
+        from guardrails.reviewer import review_flagged_message_sync
+        from llm.types import RunContext
+
+        captured = []
+        mock_get_service.return_value = self._service(captured)
+        shadow_context = RunContext(trace_id="shadow-chat_message-20261024")
+        review_flagged_message_sync("hi", self.flag, self.user.pk, None, context=shadow_context)
+        self.assertIs(captured[0].context, shadow_context)
+
+    def test_build_user_history_before(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        now = timezone.now()
+        self._event("old one", now - timedelta(days=1))
+        self._event("new one", now + timedelta(seconds=5))
+        history = _build_user_history(self.user.pk, "n", before=now)
+        self.assertIn("old one", history)
+        self.assertNotIn("new one", history)

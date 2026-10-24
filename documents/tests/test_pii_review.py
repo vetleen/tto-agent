@@ -106,3 +106,26 @@ class ReviewFlaggedPIIWindowTests(TestCase):
             "x", ["pii_special_category"], "d", org_id=None,
         )
         self.assertIsNone(decision)
+
+    @patch(_RESOLVE, return_value="openai/gpt-4o-mini")
+    @patch("documents.services.pii_review._get_llm_service")
+    def test_uses_given_context(self, mock_get_service, _mock_resolve):
+        from documents.services.pii_review import review_flagged_pii_window
+        from llm.types import RunContext
+
+        captured = []
+
+        def fake(request, schema):
+            captured.append(request.context)
+            return (_decision(), None)
+
+        svc = MagicMock()
+        svc.run_structured.side_effect = fake
+        mock_get_service.return_value = svc
+
+        shadow_context = RunContext(trace_id="shadow-pii-20261024-abc")
+        review_flagged_pii_window("x", ["pii_special_category"], "d", org_id=None, context=shadow_context)
+        review_flagged_pii_window("x", ["pii_special_category"], "d", org_id=None, user_id=7)
+        self.assertIs(captured[0], shadow_context)
+        self.assertEqual(captured[1].user_id, "7")
+        self.assertNotEqual(captured[1].trace_id, "shadow-pii-20261024-abc")

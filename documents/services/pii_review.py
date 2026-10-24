@@ -118,6 +118,7 @@ def review_flagged_pii_window(
     document_title: str,
     org_id: int | None,
     user_id: int | None = None,
+    context=None,
 ):
     """Layer 2 review of one window the PII classifier flagged for Art. 9/10.
 
@@ -129,7 +130,8 @@ def review_flagged_pii_window(
 
     A reviewer *call failure* propagates: the scan gates document release, so an
     unreviewed Article 9/10 candidate must not silently release or quarantine —
-    the caller's existing retry/SCAN_FAILED contract applies.
+    the caller's existing retry/SCAN_FAILED contract applies. ``context`` (a
+    ``RunContext``) lets a caller group the call under its own trace_id.
     """
     from core.preferences import resolve_org_feature_model
     from llm.types import ChatRequest, Message, RunContext
@@ -159,7 +161,7 @@ def review_flagged_pii_window(
         f"{_wrap_untrusted(window_text, nonce)}"
     )
 
-    context = RunContext.create(user_id=user_id)
+    context = context or RunContext.create(user_id=user_id)
     request = ChatRequest(
         messages=[
             Message(role="system", content=_PII_REVIEWER_SYSTEM_PROMPT),

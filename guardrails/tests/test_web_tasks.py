@@ -14,7 +14,12 @@ from accounts.models import Membership, Organization, User
 from guardrails.classifier import GuardrailModelUnavailableError
 from guardrails.models import GuardrailEvent
 from guardrails.schemas import ClassifierResult, WebReviewDecision
-from guardrails.tasks import _MAX_WEB_SCAN_CHARS, _scan_web_content, scan_web_content_task
+from guardrails.tasks import (
+    _MAX_WEB_SCAN_CHARS,
+    _record_flagged_web_content,
+    _scan_web_content,
+    scan_web_content_task,
+)
 
 
 def _clean():
@@ -136,3 +141,18 @@ class WebScanTests(TransactionTestCase):
         scan_web_content_task("   ", self.user.pk, None, "web_fetch")
         scan_web_content_task(None, self.user.pk, None, "web_fetch")
         mock_scan.assert_not_called()
+
+    @patch("guardrails.reviewer.review_flagged_web_content")
+    def test_record_returns_the_production_verdict(self, mock_review):
+        """The verdict string feeds the shadow comparison: reviewer action, or
+        no_model / error when there was no reviewer verdict."""
+        args = ("suspicious", self.user.pk, None, self.org.pk, "web_fetch", _flagged())
+
+        mock_review.return_value = WebReviewDecision(action="allow", confidence=0.9, severity="low", reasoning="x")
+        self.assertEqual(_record_flagged_web_content(*args), "allow")
+        mock_review.return_value = WebReviewDecision(action="withhold", confidence=0.8, severity="high", reasoning="x")
+        self.assertEqual(_record_flagged_web_content(*args), "withhold")
+        mock_review.return_value = None
+        self.assertEqual(_record_flagged_web_content(*args), "no_model")
+        mock_review.side_effect = RuntimeError("boom")
+        self.assertEqual(_record_flagged_web_content(*args), "error")

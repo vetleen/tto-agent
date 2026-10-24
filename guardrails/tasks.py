@@ -815,8 +815,13 @@ def _scan_web_content(text: str, user_id: int, thread_id, source_label: str) -> 
 
 def _record_flagged_web_content(
     text: str, user_id: int, thread_id, org_id: int | None, source_label: str, result,
-) -> None:
-    """Log the classifier escalation, then the reviewer's (log-only) verdict."""
+) -> str:
+    """Log the classifier escalation, then the reviewer's (log-only) verdict.
+
+    Returns the production verdict as a string — the reviewer's ``allow`` /
+    ``withhold``, ``no_model`` when no reviewer is configured, ``error`` when it
+    raised — so the caller can hand it to the shadow comparison.
+    """
     from guardrails.reviewer import review_flagged_web_content
 
     escalation = _log_web_event(
@@ -835,12 +840,14 @@ def _record_flagged_web_content(
             user_id=user_id,
             conversation_id=str(thread_id) if thread_id else None,
         )
+        verdict = "no_model" if decision is None else decision.action
     except Exception:
         logger.exception(
             "scan_web_content_task: reviewer errored source=%s; recording classifier flag",
             source_label,
         )
         decision = None
+        verdict = "error"
 
     if decision is None:
         # No reviewer model, or it errored — record the classifier flag as the
@@ -852,7 +859,7 @@ def _record_flagged_web_content(
             action_taken="logged", raw_input=text,
             reviewer_output=result.reasoning, related_event=escalation,
         )
-        return
+        return verdict
 
     if decision.action == "withhold":
         # Genuine injection per the reviewer. Log-only for now: record what we WOULD
@@ -876,6 +883,7 @@ def _record_flagged_web_content(
             action_taken="dismissed", raw_input=text,
             reviewer_output=decision.reasoning, related_event=escalation,
         )
+    return verdict
 
 
 def _log_web_event(
