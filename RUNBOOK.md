@@ -342,6 +342,14 @@ python manage.py backfill_descriptions --doc-ids 30 33
 python manage.py enforce_retention
 python manage.py enforce_retention --dry-run
 python manage.py enforce_retention --target LLMCallLog   # single target
+
+# Chunk-scan shadow comparison (decisions quick pathway vs. the classifier; see
+# shadow_chunk_scan_nightly). Agreement, probability deciles, false-positive rates
+# (blind reviewer "allow" share per system), skipped counters and cost.
+python manage.py shadow_chunk_scan_report                       # last 7 days up to yesterday
+python manage.py shadow_chunk_scan_report --date 2026-10-23 --days 1
+python manage.py shadow_chunk_scan_report --days 14 --disagreements   # + live text previews
+python manage.py shadow_chunk_scan_report --run 2026-10-23      # run the shadow for that day first (a write: one-off dyno on prod is user-gated)
 ```
 
 ### Data-retention scheduling
