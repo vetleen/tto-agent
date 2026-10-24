@@ -526,6 +526,31 @@ class RunShadowTests(_ShadowBase):
         self.assertEqual(summary["llm_calls"], 1)
 
 
+class ServiceSingletonTests(SimpleTestCase):
+    def test_first_call_on_fresh_state_does_not_deadlock(self):
+        """get_shadow_decisions_service() and shadow_availability() share one
+        non-reentrant lock; the first ever call built the availability while
+        holding it and hung forever (found on the first real run)."""
+        import threading
+
+        from guardrails import shadow
+        from guardrails.shadow import SHADOW_SKIP_KEY, get_shadow_decisions_service
+
+        saved = (shadow._service, shadow._availability)
+        shadow._service, shadow._availability = None, None
+        self.addCleanup(lambda: setattr(shadow, "_service", saved[0]))
+        self.addCleanup(lambda: setattr(shadow, "_availability", saved[1]))
+
+        result = {}
+        worker = threading.Thread(target=lambda: result.setdefault("service", get_shadow_decisions_service()))
+        worker.start()
+        worker.join(timeout=5)
+        self.assertFalse(worker.is_alive(), "get_shadow_decisions_service() deadlocked")
+        service = result["service"]
+        self.assertEqual(service._availability._key, SHADOW_SKIP_KEY)
+        self.assertIs(get_shadow_decisions_service(), service)
+
+
 class NightlyTaskTests(TestCase):
     @override_settings(GUARDRAIL_SHADOW_ENABLED=False)
     def test_disabled_setting_skips(self):

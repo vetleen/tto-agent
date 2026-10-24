@@ -120,11 +120,14 @@ def get_shadow_decisions_service():
     """A DecisionsService bound to the shadow skip window."""
     global _service
     if _service is None:
+        # Resolve the availability BEFORE taking the lock: it takes the same
+        # (non-reentrant) lock itself, so doing it inside would deadlock.
+        availability = shadow_availability()
         with _lock:
             if _service is None:
                 from llm.service.decisions_service import DecisionsService
 
-                _service = DecisionsService(availability=shadow_availability())
+                _service = DecisionsService(availability=availability)
     return _service
 
 
