@@ -145,6 +145,19 @@ kill switch `CLASSIFIER_SHADOW_ENABLED` (forced off under `manage.py test`; hook
 `override_settings`). Report: `manage.py classifier_shadow_report [--family …] [--disagreements]`.
 Never changes a verdict, never writes a `GuardrailEvent`.
 
+**PII shadow** (`documents/services/pii_shadow.py`, beat task `shadow_pii_scan_nightly`, 02:52 UTC):
+re-windows yesterday's READY versions exactly like the PII scan (`pii_scan.iter_pii_windows` +
+`pii_window_text`, the same head/tail truncation) and asks the quick pathway ten predicates per
+window, worded from `PIICategoryOutput`'s field descriptions. Production stores only the per-version
+union (`DataRoomDocumentTag`) and a `PIIReviewEvent` per Art. 9/10 candidate window, so the
+comparison is version-level per category, plus the gated section: production's reviewer is already
+blind (candidates only), so only quick-only gated positives the version was never tagged with get a
+second review by the same reviewer. Writes `PIIScanShadowRun`/`PIIScanShadowResult` (ids and numbers)
+and its own `LLMCallLog` rows (trace_id `shadow-pii-<date>-…`); shares the chunk shadow's decisions
+service and skip window; caps `PII_SHADOW_MAX_WINDOWS` / `_MAX_REVIEWS`, kill switch
+`PII_SHADOW_ENABLED`. Report: `manage.py pii_shadow_report [--disagreements] [--run DATE]`. The PII
+scan itself is unchanged.
+
 ## Chat Tool Labels
 
 Display labels are **tool metadata**, declared on the tool class (a `ContextAwareTool`

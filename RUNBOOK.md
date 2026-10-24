@@ -360,6 +360,15 @@ python manage.py classifier_shadow_report                        # last 7 days u
 python manage.py classifier_shadow_report --date 2026-10-25 --days 1
 python manage.py classifier_shadow_report --family web_content --family chat_message
 python manage.py classifier_shadow_report --days 14 --disagreements   # chat rows get a live preview; others ids + hash
+
+# Nightly PII shadow (documents/services/pii_shadow.py; see shadow_pii_scan_nightly).
+# Version-level agreement per GDPR category (quick max probability vs. the version's
+# tags), the Art. 9/10 section (production reviewer on classifier candidates vs. the
+# same reviewer on quick-only candidates), skipped counters and cost.
+python manage.py pii_shadow_report                              # last 7 days up to yesterday
+python manage.py pii_shadow_report --date 2026-10-25 --days 1
+python manage.py pii_shadow_report --days 14 --disagreements    # + live previews of the strongest window
+python manage.py pii_shadow_report --run 2026-10-25             # run the shadow for that day first (a write: one-off dyno on prod is user-gated)
 ```
 
 ### Data-retention scheduling
