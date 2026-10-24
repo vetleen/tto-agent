@@ -351,6 +351,14 @@ python manage.py shadow_chunk_scan_report                       # last 7 days up
 python manage.py shadow_chunk_scan_report --date 2026-10-23 --days 1
 python manage.py shadow_chunk_scan_report --days 14 --disagreements   # + live text previews
 python manage.py shadow_chunk_scan_report --run 2026-10-23      # run the shadow for that day first (a write: one-off dyno on prod is user-gated)
+
+# Inline classifier shadow (chat message, web content, skill content, identity fields;
+# see guardrails/shadow_classifier.py). Same numbers per family, plus the production
+# verdict distribution and the shadow's own cost per family.
+python manage.py classifier_shadow_report                        # last 7 days up to yesterday, all families
+python manage.py classifier_shadow_report --date 2026-10-25 --days 1
+python manage.py classifier_shadow_report --family web_content --family chat_message
+python manage.py classifier_shadow_report --days 14 --disagreements   # chat rows get a live preview; others ids + hash
 ```
 
 ### Data-retention scheduling

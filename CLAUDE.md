@@ -130,6 +130,21 @@ own `LLMCallLog` rows (`feature=shadow_chunk_scan`, grouped by the run's trace_i
 window (`decisions_quick_skip:shadow`), and never touches chunks, versions or events. Read it with
 `manage.py shadow_chunk_scan_report`. The chunk scan itself is unchanged.
 
+**Classifier shadows** (`guardrails/shadow_classifier.py`): the same comparison, inline, for the four
+text classifiers that share `guardrails/classifier.py:_run_classifier` — chat messages, web content,
+skill content and the identity fields. Each call site hands the text and the production outcome
+(classifier verdict + its reviewer's) to `run_classifier_shadow`, which re-asks the quick pathway
+(the family's own system prompt as the developer message, a predicate + a concern choice), blind-reviews
+a positive with the family's own reviewer (the chat reviewer's sync core with a `history_before`
+cutoff at the pipeline's start) and writes a `ClassifierShadowResult` (ids, a hash and numbers; never
+text). Web and skill scans run it inline on the worker; the chat consumer and the settings views only
+enqueue `shadow_classifier_task` (`guardrails/service.py:run_classifier_pipeline` → `asyncio.to_thread`
+publish; `shadow_identity_field`). `LLMCallLog` rows are grouped per family and day by
+`trace_id="shadow-<family>-<YYYYMMDD>"`. Caps `CLASSIFIER_SHADOW_MAX_PER_DAY` / `_MAX_REVIEWS_PER_DAY`,
+kill switch `CLASSIFIER_SHADOW_ENABLED` (forced off under `manage.py test`; hook tests opt in with
+`override_settings`). Report: `manage.py classifier_shadow_report [--family …] [--disagreements]`.
+Never changes a verdict, never writes a `GuardrailEvent`.
+
 ## Chat Tool Labels
 
 Display labels are **tool metadata**, declared on the tool class (a `ContextAwareTool`
