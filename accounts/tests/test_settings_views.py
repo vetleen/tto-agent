@@ -1709,6 +1709,15 @@ class OrgDecisionsQuickToggleTests(TestCase):
         response = self._post("not json")
         self.assertEqual(response.status_code, 400)
 
+    def test_non_boolean_enabled_returns_400(self):
+        self.org.preferences = {"decisions_quick_enabled": False}
+        self.org.save(update_fields=["preferences"])
+        for value in ("false", "0", 1, None, [True]):
+            response = self._post(json.dumps({"enabled": value}))
+            self.assertEqual(response.status_code, 400, value)
+        self.org.refresh_from_db()
+        self.assertFalse(self.org.preferences["decisions_quick_enabled"])
+
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
 class OrgFeatureModelUpdateTests(TestCase):

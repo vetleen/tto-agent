@@ -1651,7 +1651,10 @@ def org_decisions_quick_toggle_update(request):
     if err:
         return err
 
-    enabled = bool(data.get("enabled", True))
+    enabled = data.get("enabled", True)
+    if not isinstance(enabled, bool):
+        # bool("false") is True — a non-boolean must not silently turn the pathway on.
+        return JsonResponse({"error": "enabled must be true or false."}, status=400)
 
     def mutate(prefs):
         prefs[DECISIONS_QUICK_PREF] = enabled
