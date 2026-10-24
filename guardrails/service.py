@@ -20,8 +20,11 @@ before streaming (see chat/consumers.py `_handle_chat_message`).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
+
+from django.utils import timezone
 
 from guardrails.schemas import ClassifierResult, HeuristicResult, ReviewerDecision
 
@@ -106,12 +109,40 @@ async def run_classifier_pipeline(
     heuristic_result: HeuristicResult,
     thread_id: str | None = None,
     org_id: int | None = None,
+    *,
+    message_id=None,
 ) -> GuardrailVerdict:
     """Layers 1+2: classifier + reviewer pipeline.
 
     No timeout — runs to completion and always creates GuardrailEvent records.
-    Designed to run concurrently with the LLM stream.
+    Designed to run concurrently with the LLM stream. Afterwards the verdict is
+    handed to the shadow comparison (guardrails/shadow_classifier.py) — a broker
+    publish only, off the event loop; the shadow itself runs on the worker and can
+    never change the verdict. ``message_id`` is the user ``ChatMessage`` id, kept
+    by the shadow so a comparison can be traced back.
     """
+    started_at = timezone.now()
+    verdict = await _run_layers(text, user, heuristic_result, thread_id, org_id)
+    try:
+        from guardrails.shadow_classifier import enqueue_chat_message_shadow
+
+        await asyncio.to_thread(
+            enqueue_chat_message_shadow,
+            text=text, verdict=verdict, org_id=org_id, user_id=user.pk, thread_id=thread_id,
+            message_id=message_id, started_at=started_at,
+        )
+    except Exception:
+        logger.debug("guardrail: classifier shadow enqueue failed (non-fatal)", exc_info=True)
+    return verdict
+
+
+async def _run_layers(
+    text: str,
+    user,
+    heuristic_result: HeuristicResult,
+    thread_id: str | None,
+    org_id: int | None,
+) -> GuardrailVerdict:
     verdict = GuardrailVerdict()
     verdict.heuristic_result = heuristic_result
 

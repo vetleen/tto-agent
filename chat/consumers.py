@@ -2282,6 +2282,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                         heuristic_result=heuristic_verdict.heuristic_result,
                         thread_id=str(thread.id),
                         org_id=org_id,
+                        message_id=turn.user_message_id,
                     )
                     if hold_verdict.action == "block":
                         await self._redact_messages(
@@ -3579,6 +3580,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 heuristic_result=heuristic_result,
                 thread_id=str(thread.id),
                 org_id=org_id,
+                message_id=turn.user_message_id,
             )
         except asyncio.CancelledError:
             logger.debug("guardrail: pipeline cancelled (user stopped)")

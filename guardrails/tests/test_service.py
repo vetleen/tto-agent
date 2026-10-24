@@ -298,6 +298,67 @@ class RunClassifierPipelineTest(TransactionTestCase):
         self.assertTrue(self.membership.is_suspended)
 
 
+class PipelineShadowEnqueueTest(TransactionTestCase):
+    """run_classifier_pipeline hands its verdict to the shadow comparison (an
+    enqueue only) and is never affected by it."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(email="shadow-pipe@example.com", password="test1234")
+        self.org = Organization.objects.create(name="Shadow Pipe Org", slug="shadow-pipe-org")
+        Membership.objects.create(user=self.user, org=self.org)
+        self.clean_heuristic = HeuristicResult(
+            is_suspicious=False, should_block=False, tags=[], confidence=0.0,
+        )
+
+    @patch("guardrails.shadow_classifier.enqueue_chat_message_shadow")
+    @patch("guardrails.reviewer.review_flagged_message", new_callable=AsyncMock)
+    @patch("guardrails.classifier.classify_message", new_callable=AsyncMock)
+    def test_verdict_is_handed_to_the_shadow_with_the_message_id(self, mock_classify, mock_review, mock_enqueue):
+        from django.utils import timezone
+
+        from guardrails.service import run_classifier_pipeline
+
+        mock_classify.return_value = ClassifierResult(
+            is_suspicious=True, concern_tags=["jailbreak"], confidence=0.7, reasoning="r",
+        )
+        mock_review.return_value = ReviewerDecision(
+            action="dismiss", confidence=0.9, severity="low", reasoning="fp", user_message="ok",
+        )
+        from chat.models import ChatThread
+
+        thread = ChatThread.objects.create(created_by=self.user)
+        before = timezone.now()
+        verdict = async_to_sync(run_classifier_pipeline)(
+            text="hello", user=self.user, heuristic_result=self.clean_heuristic,
+            thread_id=str(thread.id), org_id=self.org.pk, message_id="msg-1",
+        )
+        self.assertEqual(verdict.action, "dismiss")
+        kwargs = mock_enqueue.call_args.kwargs
+        self.assertEqual(kwargs["text"], "hello")
+        self.assertIs(kwargs["verdict"], verdict)
+        self.assertEqual(kwargs["org_id"], self.org.pk)
+        self.assertEqual(kwargs["user_id"], self.user.pk)
+        self.assertEqual(kwargs["thread_id"], str(thread.id))
+        self.assertEqual(kwargs["message_id"], "msg-1")
+        self.assertGreaterEqual(kwargs["started_at"], before)
+        self.assertLessEqual(kwargs["started_at"], timezone.now())
+
+    @patch("guardrails.shadow_classifier.enqueue_chat_message_shadow", side_effect=RuntimeError("broker down"))
+    @patch("guardrails.classifier.classify_message", new_callable=AsyncMock)
+    def test_shadow_failure_never_changes_the_verdict(self, mock_classify, _mock_enqueue):
+        from guardrails.service import run_classifier_pipeline
+
+        mock_classify.return_value = ClassifierResult(
+            is_suspicious=False, concern_tags=[], confidence=0.1, reasoning="clean",
+        )
+        verdict = async_to_sync(run_classifier_pipeline)(
+            text="Normal question", user=self.user, heuristic_result=self.clean_heuristic,
+            thread_id=None, org_id=self.org.pk,
+        )
+        self.assertEqual(verdict.action, "allow")
+        self.assertFalse(GuardrailEvent.objects.exists())
+
+
 class CheckUserMessageTest(TransactionTestCase):
     """Test the check_user_message wrapper (backward compat).
 

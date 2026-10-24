@@ -2195,6 +2195,11 @@ class GuardrailHoldAndLimitTests(TransactionTestCase):
         blocked, _others = await self._recv_until(comm, "guardrail.blocked")
         self.assertEqual(blocked["data"]["message"], "Blocked by review.")
         mock_pipeline.assert_awaited_once()
+        # The pipeline gets the user message's id (the shadow comparison records it).
+        user_message_pk = await database_sync_to_async(
+            lambda: ChatMessage.objects.filter(role="user").values_list("pk", flat=True).first()
+        )()
+        self.assertEqual(mock_pipeline.await_args.kwargs["message_id"], user_message_pk)
         # Blocked before the stream: no assistant message was ever produced.
         assistant_count = await database_sync_to_async(
             ChatMessage.objects.filter(role="assistant").count
