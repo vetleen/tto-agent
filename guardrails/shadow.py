@@ -402,7 +402,8 @@ def run_shadow_for_day(day: date, *, max_chunks: int | None = None, max_reviews:
         if aborted:
             break
         if chunks_left <= 0:
-            skipped["cap_chunks"] += len(select_chunks(day, version_id))
+            # Count only — never load the texts of chunks we are not going to compare.
+            skipped["cap_chunks"] += _eligible_chunks(day).filter(version_id=version_id).count()
             continue
         version = (
             DataRoomDocumentVersion.objects.select_related("document").filter(pk=version_id).first()

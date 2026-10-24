@@ -67,10 +67,12 @@ def allow_share(verdicts: Iterable[str], allow: set[str], act: set[str]) -> str:
 
 # Which production / blind-review verdict strings count as "allow" (the classifier
 # was wrong) and which as "act" (the classifier was right), per classifier family.
-# Anything else (no_model, error, not_reviewed, "") is excluded from the FP denominators.
+# Only verdicts a REVIEWER made count: the skill scan's reviewer-less threshold
+# outcomes (threshold_logged / threshold_quarantine), no_model, error, not_reviewed
+# and "" are excluded from the FP denominators — as the chunk report excludes them.
 FAMILY_VERDICTS: dict[str, dict[str, set[str]]] = {
     "web_content": {"allow": {"allow"}, "act": {"withhold"}},
-    "skill_content": {"allow": {"allow", "threshold_logged"}, "act": {"quarantine", "threshold_quarantine"}},
+    "skill_content": {"allow": {"allow"}, "act": {"quarantine"}},
     "chat_message": {"allow": {"dismiss"}, "act": {"warn", "block", "suspend"}},
     "identity_field": {"allow": set(), "act": {"blocked"}},
 }

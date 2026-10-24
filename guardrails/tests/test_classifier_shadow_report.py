@@ -133,6 +133,24 @@ class ReportTests(TestCase):
         self.assertEqual(s["fp"]["classifier_prod"], "0.0% (0/1)")
         self.assertEqual(set(s["blind"]["by_verdict"]), {"block", "dismiss"})
 
+    def test_skill_threshold_outcomes_are_not_judged(self):
+        """A reviewer-less threshold outcome is production's fallback, not a reviewer
+        verdict: it stays out of the FP denominators (as in the chunk report) but shows
+        in the production verdict distribution."""
+        rows = []
+        for review, blind in (("threshold_logged", "allow"), ("threshold_quarantine", "quarantine"), ("allow", "quarantine")):
+            rows.append(ClassifierShadowResult(
+                family="skill_content", prod_flagged=True, prod_confidence=0.5, prod_tags=["jailbreak"],
+                prod_review=review, quick_probability=0.9, quick_flagged=True, quick_pathway="quick",
+                blind_review=blind, blind_review_source="classifier", blind_review_confidence=0.9,
+                text_chars=1, text_sha256="x",
+            ))
+        s = summarize_family(rows, "skill_content")
+        self.assertEqual(s["fp"]["classifier_prod"], "100.0% (1/1)")  # only the reviewed row
+        self.assertEqual(s["fp"]["classifier_blind"], "33.3% (1/3)")
+        self.assertEqual(s["fp"]["prod_vs_blind"], "0.0% (0/1)")
+        self.assertEqual(s["prod_reviews"], {"threshold_logged": 1, "threshold_quarantine": 1, "allow": 1})
+
     def test_summarize_identity_has_no_fp_rates(self):
         rows = list(ClassifierShadowResult.objects.filter(family="identity_field"))
         s = summarize_family(rows, "identity_field")

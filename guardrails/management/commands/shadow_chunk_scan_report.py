@@ -21,7 +21,10 @@ from datetime import date, timedelta
 
 from django.core.management.base import BaseCommand, CommandError
 
-DECILES = 10
+from guardrails.shadow_stats import agreement, allow_share, confusion, deciles, mean, pct
+
+# Reviewer verdicts on a chunk; the threshold outcomes (no reviewer) are not judged.
+_ALLOW, _ACT = {"allow"}, {"quarantine"}
 
 
 def _parse_day(value: str) -> date:
@@ -31,17 +34,14 @@ def _parse_day(value: str) -> date:
         raise CommandError(f"Not a date (YYYY-MM-DD): {value}") from exc
 
 
-def _pct(num: int, den: int) -> str:
-    return f"{(100.0 * num / den):.1f}% ({num}/{den})" if den else "n/a (0)"
-
-
-def _decile(p: float) -> int:
-    return min(DECILES - 1, int(p * DECILES))
-
-
 def summarize(rows) -> dict:
-    """Aggregate shadow rows into the report's numbers (pure; tested directly)."""
+    """Aggregate shadow rows into the report's numbers (pure; tested directly).
+
+    The arithmetic lives in ``guardrails.shadow_stats`` (shared with the classifier and
+    PII reports); this maps chunk rows onto it and keeps this report's key names.
+    """
     headline = [r for r in rows if r.quick_pathway == "quick" and r.quick_probability is not None]
+    pairs = [(r.classifier_flagged, r.quick_probability) for r in headline]
     out = {
         "rows": len(rows),
         "chunks": len(headline),
@@ -49,46 +49,27 @@ def summarize(rows) -> dict:
         "orgs": len({r.org_id for r in headline}),
         "non_quick": sum(1 for r in rows if r.quick_pathway != "quick"),
         "refusals": sum(1 for r in rows if r.quick_probability is None),
+        "confusion": confusion((r.classifier_flagged, r.quick_flagged) for r in headline),
+        "agreement": agreement(pairs),
     }
-    confusion = Counter()
-    for r in headline:
-        if r.classifier_flagged and r.quick_flagged:
-            confusion["both_positive"] += 1
-        elif r.classifier_flagged:
-            confusion["classifier_only"] += 1
-        elif r.quick_flagged:
-            confusion["quick_only"] += 1
-        else:
-            confusion["both_negative"] += 1
-    out["confusion"] = dict(confusion)
-    out["agreement"] = {
-        t: _pct(sum(1 for r in headline if r.classifier_flagged == (r.quick_probability >= t)), len(headline))
-        for t in (0.3, 0.5, 0.7)
-    }
-    flagged_hist, clean_hist = [0] * DECILES, [0] * DECILES
-    for r in headline:
-        (flagged_hist if r.classifier_flagged else clean_hist)[_decile(r.quick_probability)] += 1
-    out["deciles"] = {"classifier_flagged": flagged_hist, "classifier_not_flagged": clean_hist}
-
-    def allow_share(subset, attr):
-        judged = [r for r in subset if getattr(r, attr) in ("allow", "quarantine")]
-        return _pct(sum(1 for r in judged if getattr(r, attr) == "allow"), len(judged))
+    hist = deciles(pairs)
+    out["deciles"] = {"classifier_flagged": hist["prod_flagged"], "classifier_not_flagged": hist["prod_not_flagged"]}
 
     clf_pos = [r for r in headline if r.classifier_flagged]
     quick_pos = [r for r in headline if r.quick_flagged]
-    both_judged = [r for r in clf_pos if r.blind_review in ("allow", "quarantine") and r.prod_review in ("allow", "quarantine")]
+    judged = _ALLOW | _ACT
+    both_judged = [r for r in clf_pos if r.blind_review in judged and r.prod_review in judged]
     out["fp"] = {
-        "classifier_blind": allow_share(clf_pos, "blind_review"),
-        "quick_blind": allow_share(quick_pos, "blind_review"),
-        "classifier_prod": allow_share(clf_pos, "prod_review"),
-        "prod_vs_blind": _pct(sum(1 for r in both_judged if r.blind_review == r.prod_review), len(both_judged)),
+        "classifier_blind": allow_share((r.blind_review for r in clf_pos), _ALLOW, _ACT),
+        "quick_blind": allow_share((r.blind_review for r in quick_pos), _ALLOW, _ACT),
+        "classifier_prod": allow_share((r.prod_review for r in clf_pos), _ALLOW, _ACT),
+        "prod_vs_blind": pct(sum(1 for r in both_judged if r.blind_review == r.prod_review), len(both_judged)),
     }
-    reviewed = [r for r in rows if r.blind_review in ("allow", "quarantine")]
+    reviewed = [r for r in rows if r.blind_review in judged]
     by_verdict = {}
     for verdict in ("allow", "quarantine"):
         subset = [r for r in reviewed if r.blind_review == verdict]
-        confs = [r.blind_review_confidence for r in subset if r.blind_review_confidence is not None]
-        by_verdict[verdict] = {"n": len(subset), "mean_confidence": (sum(confs) / len(confs)) if confs else None}
+        by_verdict[verdict] = {"n": len(subset), "mean_confidence": mean(r.blind_review_confidence for r in subset)}
     out["blind"] = {
         "by_verdict": by_verdict,
         "severity": dict(Counter(r.blind_review_severity for r in reviewed if r.blind_review_severity)),
