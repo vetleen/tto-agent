@@ -1888,6 +1888,7 @@ def profile_update(request):
     from accounts.models import get_user_org
     from guardrails.classifier import classify_description_sync
     from guardrails.service import record_identity_field_block
+    from guardrails.shadow_classifier import shadow_identity_field
 
     logger = logging.getLogger(__name__)
 
@@ -1923,6 +1924,7 @@ def profile_update(request):
         try:
             identity_text = " ".join(identity_texts)
             result = classify_description_sync(identity_text, user.pk, org_id)
+            shadow_identity_field("profile_name", identity_text, user=user, org_id=org_id, result=result)
             if result.is_suspicious:
                 logger.warning("Profile name/title blocked for user %s: %s", user.pk, result.reasoning)
                 record_identity_field_block(
@@ -1950,6 +1952,7 @@ def profile_update(request):
         if desc:
             try:
                 result = classify_description_sync(desc, user.pk, org_id)
+                shadow_identity_field("profile_description", desc, user=user, org_id=org_id, result=result)
                 if result.is_suspicious:
                     logger.warning("Profile description blocked for user %s: %s", user.pk, result.reasoning)
                     record_identity_field_block(
@@ -2067,6 +2070,7 @@ def org_description_update(request):
 
     from guardrails.classifier import classify_org_description_sync
     from guardrails.service import record_identity_field_block
+    from guardrails.shadow_classifier import shadow_identity_field
 
     logger = logging.getLogger(__name__)
 
@@ -2086,6 +2090,9 @@ def org_description_update(request):
     if desc:
         try:
             result = classify_org_description_sync(desc, request.user.pk, membership.org_id)
+            shadow_identity_field(
+                "org_description", desc, user=request.user, org_id=membership.org_id, result=result,
+            )
             if result.is_suspicious:
                 logger.warning(
                     "Org description blocked for org %s by user %s: %s",
@@ -2144,6 +2151,7 @@ def soul_update(request):
     from accounts.models import get_user_org
     from guardrails.classifier import classify_soul_sync
     from guardrails.service import record_identity_field_block
+    from guardrails.shadow_classifier import shadow_identity_field
 
     logger = logging.getLogger(__name__)
 
@@ -2165,6 +2173,9 @@ def soul_update(request):
     if soul:
         try:
             result = classify_soul_sync(soul, request.user.pk, org.pk if org else None)
+            shadow_identity_field(
+                "soul", soul, user=request.user, org_id=org.pk if org else None, result=result,
+            )
             if result.is_suspicious:
                 logger.warning("Personal SOUL blocked for user %s: %s", request.user.pk, result.reasoning)
                 record_identity_field_block(
@@ -2214,6 +2225,7 @@ def org_soul_update(request):
     from accounts.agent_customization import MAX_SOUL_LENGTH
     from guardrails.classifier import classify_soul_sync
     from guardrails.service import record_identity_field_block
+    from guardrails.shadow_classifier import shadow_identity_field
 
     logger = logging.getLogger(__name__)
 
@@ -2233,6 +2245,7 @@ def org_soul_update(request):
     if soul:
         try:
             result = classify_soul_sync(soul, request.user.pk, membership.org_id)
+            shadow_identity_field("org_soul", soul, user=request.user, org_id=membership.org_id, result=result)
             if result.is_suspicious:
                 logger.warning(
                     "Org SOUL blocked for org %s by user %s: %s",
@@ -2284,6 +2297,7 @@ def org_name_update(request):
 
     from guardrails.classifier import classify_description_sync
     from guardrails.service import record_identity_field_block
+    from guardrails.shadow_classifier import shadow_identity_field
 
     logger = logging.getLogger(__name__)
 
@@ -2305,6 +2319,7 @@ def org_name_update(request):
 
     try:
         result = classify_description_sync(name, request.user.pk, membership.org_id)
+        shadow_identity_field("org_name", name, user=request.user, org_id=membership.org_id, result=result)
         if result.is_suspicious:
             logger.warning(
                 "Org name blocked for org %s by user %s: %s",
