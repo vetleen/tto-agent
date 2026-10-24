@@ -46,9 +46,9 @@ class ScanTextGuardrailShadowTests(TestCase):
         self.assertEqual(kwargs["prod"].review, "")
         self.assertEqual(kwargs["org_id"], 3)
         self.assertEqual(kwargs["user_id"], self.user.pk)
-        self.assertEqual(
-            kwargs["subject"], {"skill_id": 9, "blob": "instructions", "label": "My Skill: instructions", "window": 0},
-        )
+        # ids only in the stored subject; the label (user text) only frames the blind review
+        self.assertEqual(kwargs["subject"], {"skill_id": 9, "blob": "instructions", "window": 0})
+        self.assertEqual(kwargs["review_label"], "My Skill: instructions")
 
     @patch("guardrails.reviewer.review_flagged_skill_content")
     @patch("guardrails.classifier.classify_skill_content_sync", return_value=_flagged())
@@ -60,7 +60,8 @@ class ScanTextGuardrailShadowTests(TestCase):
         self.assertTrue(kwargs["prod"].flagged)
         self.assertEqual(kwargs["prod"].review, "allow")
         self.assertEqual(kwargs["prod"].tags, ["jailbreak"])
-        self.assertEqual(kwargs["subject"], {"label": "label", "window": 0})
+        self.assertEqual(kwargs["subject"], {"window": 0})
+        self.assertEqual(kwargs["review_label"], "label")
 
     @patch("guardrails.reviewer.review_flagged_skill_content", return_value=None)
     @patch("guardrails.classifier.classify_skill_content_sync", return_value=_flagged())
@@ -121,8 +122,10 @@ class CallersPassSubjectTests(TestCase):
             guard.call_args.kwargs["subject"], {"resource_id": resource.pk, "skill_id": self.skill.pk},
         )
 
-    def test_scan_blob_passes_skill_id_and_blob_label(self):
+    def test_scan_blob_passes_skill_id_and_blob_kind_never_a_resource_name(self):
         with patch.object(svc, "_scan_text_guardrail", return_value=("allow", "", [])) as guard, \
                 patch.object(svc, "_scan_text_pii", return_value=({}, False, "", "")):
             svc._scan_blob(self.skill, "instructions", "do the thing", self.user, None, "fp")
-        self.assertEqual(guard.call_args.kwargs["subject"], {"skill_id": self.skill.pk, "blob": "instructions"})
+            self.assertEqual(guard.call_args.kwargs["subject"], {"skill_id": self.skill.pk, "blob": "instructions"})
+            svc._scan_blob(self.skill, "J.Smith_medical_history.pdf", "body", self.user, None, "fp2")
+            self.assertEqual(guard.call_args.kwargs["subject"], {"skill_id": self.skill.pk, "blob": "resource"})

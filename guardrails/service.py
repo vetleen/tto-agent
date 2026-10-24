@@ -21,6 +21,7 @@ before streaming (see chat/consumers.py `_handle_chat_message`).
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 from dataclasses import dataclass, field
 
@@ -43,6 +44,10 @@ class GuardrailVerdict:
     heuristic_result: HeuristicResult | None = None
     classifier_result: ClassifierResult | None = None
     reviewer_decision: ReviewerDecision | None = None
+    # What Layer 2 actually did for a classifier positive, recorded at the time:
+    # the reviewer's action, "no_model" (synthetic block, no reviewer configured),
+    # "error" (reviewer raised → failsafe block), "" (the classifier did not flag).
+    review_outcome: str = ""
     events: list = field(default_factory=list)  # list of created GuardrailEvent records
 
 
@@ -117,23 +122,44 @@ async def run_classifier_pipeline(
     No timeout — runs to completion and always creates GuardrailEvent records.
     Designed to run concurrently with the LLM stream. Afterwards the verdict is
     handed to the shadow comparison (guardrails/shadow_classifier.py) — a broker
-    publish only, off the event loop; the shadow itself runs on the worker and can
+    publish only, run detached on the default executor so a slow or retrying
+    publish never delays the verdict; the shadow itself runs on the worker and can
     never change the verdict. ``message_id`` is the user ``ChatMessage`` id, kept
     by the shadow so a comparison can be traced back.
     """
     started_at = timezone.now()
     verdict = await _run_layers(text, user, heuristic_result, thread_id, org_id)
+    _schedule_shadow_enqueue(
+        text=text, verdict=verdict, org_id=org_id, user_id=user.pk, thread_id=thread_id,
+        message_id=message_id, started_at=started_at,
+    )
+    return verdict
+
+
+def _schedule_shadow_enqueue(**kwargs) -> None:
+    """Queue the shadow enqueue on the loop's default executor and return at once.
+
+    The verdict must reach the consumer immediately (the hold path blocks streaming
+    on it; the parallel path redacts on it), while the Celery publish may retry for
+    ~8 s when the broker blips (CELERY_TASK_PUBLISH_RETRY_POLICY). Failures are
+    logged at debug and never surface.
+    """
     try:
         from guardrails.shadow_classifier import enqueue_chat_message_shadow
 
-        await asyncio.to_thread(
-            enqueue_chat_message_shadow,
-            text=text, verdict=verdict, org_id=org_id, user_id=user.pk, thread_id=thread_id,
-            message_id=message_id, started_at=started_at,
-        )
+        loop = asyncio.get_running_loop()
+        future = loop.run_in_executor(None, functools.partial(enqueue_chat_message_shadow, **kwargs))
+        future.add_done_callback(_shadow_enqueue_done)
     except Exception:
-        logger.debug("guardrail: classifier shadow enqueue failed (non-fatal)", exc_info=True)
-    return verdict
+        logger.debug("guardrail: classifier shadow enqueue could not be scheduled (non-fatal)", exc_info=True)
+
+
+def _shadow_enqueue_done(future) -> None:
+    if future.cancelled():
+        return
+    exc = future.exception()
+    if exc is not None:
+        logger.debug("guardrail: classifier shadow enqueue failed (non-fatal)", exc_info=exc)
 
 
 async def _run_layers(
@@ -218,8 +244,14 @@ async def _run_layers(
             conversation_id=thread_id,
         )
         verdict.reviewer_decision = reviewer_decision
+        from guardrails.reviewer import NO_REVIEWER_MODEL_REASONING
+
+        verdict.review_outcome = (
+            "no_model" if reviewer_decision.reasoning == NO_REVIEWER_MODEL_REASONING else reviewer_decision.action
+        )
     except Exception:
         logger.exception("guardrail: reviewer error for user_id=%s, defaulting to block", user.pk)
+        verdict.review_outcome = "error"
         verdict.action = "block"
         verdict.message = "Your message has been flagged for review. Please contact your system administrator."
         # Audit the failsafe block — without this, the block is invisible to

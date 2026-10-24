@@ -998,15 +998,19 @@ GUARDRAIL_SHADOW_MAX_REVIEWS = _env_int("GUARDRAIL_SHADOW_MAX_REVIEWS", "60")
 # Inline shadow of the text classifiers (chat message, web content, skill content,
 # identity fields) against the decisions service (guardrails/shadow_classifier.py).
 # Each production classification is re-asked on the quick pathway and both verdicts
-# are recorded; positives get one blind Layer-2 review. Off under `manage.py test` so
-# the existing classifier/view tests never touch the broker (precedent:
-# RATELIMIT_ENABLE); hook tests opt in with override_settings.
-CLASSIFIER_SHADOW_ENABLED = _get_env_bool(os.environ.get("CLASSIFIER_SHADOW_ENABLED"), not TESTING)
-CLASSIFIER_SHADOW_FAMILIES = [
-    f.strip() for f in os.environ.get(
-        "CLASSIFIER_SHADOW_FAMILIES", "chat_message,web_content,skill_content,identity_field",
-    ).split(",") if f.strip()
-]
+# are recorded; positives get one blind Layer-2 review. Forced off under
+# `manage.py test` (whatever .env says) so the existing classifier/view tests never
+# touch the broker (precedent: RATELIMIT_ENABLE); hook tests opt in with
+# override_settings. An empty CLASSIFIER_SHADOW_FAMILIES shadows nothing.
+CLASSIFIER_SHADOW_ENABLED = _get_env_bool(os.environ.get("CLASSIFIER_SHADOW_ENABLED"), True)
+if TESTING:
+    CLASSIFIER_SHADOW_ENABLED = False
+_classifier_shadow_families = os.environ.get("CLASSIFIER_SHADOW_FAMILIES")
+CLASSIFIER_SHADOW_FAMILIES = (
+    ["chat_message", "web_content", "skill_content", "identity_field"]
+    if _classifier_shadow_families is None
+    else [f.strip() for f in _classifier_shadow_families.split(",") if f.strip()]
+)
 CLASSIFIER_SHADOW_MAX_PER_DAY = _env_int("CLASSIFIER_SHADOW_MAX_PER_DAY", "2000")  # per family
 CLASSIFIER_SHADOW_MAX_REVIEWS_PER_DAY = _env_int("CLASSIFIER_SHADOW_MAX_REVIEWS_PER_DAY", "30")  # all families
 

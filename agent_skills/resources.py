@@ -434,7 +434,8 @@ def _scan_text_guardrail(text, user, org_id, label, *, subject=None) -> tuple[st
 def _shadow_skill_window(window, index, cres, prod_review, *, subject, label, uid, org_id) -> None:
     """Shadow comparison of one classified window against the decisions service
     (guardrails/shadow_classifier.py). Inline: this already runs on the worker.
-    Never raises; never changes the verdict."""
+    Never raises; never changes the verdict. ``label`` (a skill/resource name — user
+    text) only frames the blind review; the stored subject holds ids."""
     from guardrails.shadow_classifier import ProdOutcome, run_classifier_shadow
 
     run_classifier_shadow(
@@ -444,7 +445,8 @@ def _shadow_skill_window(window, index, cres, prod_review, *, subject, label, ui
             tags=list(cres.concern_tags or []), review=prod_review,
         ),
         org_id=org_id, user_id=uid, conversation_id=None,
-        subject={**(subject or {}), "label": label, "window": index},
+        subject={**(subject or {}), "window": index},
+        review_label=label,
     )
 
 
@@ -982,7 +984,9 @@ def _scan_blob(
     title = f"{skill.name}: {label}"
     reasons: list[str] = []
     g_action, _, _ = _scan_text_guardrail(
-        blob, user, org_id, title, subject={"skill_id": skill.pk, "blob": label},
+        blob, user, org_id, title,
+        # ids/kinds only — a resource's name is user text and must not be stored.
+        subject={"skill_id": skill.pk, "blob": label if label in ("instructions", "description") else "resource"},
     )
     if g_action == "quarantine":
         reasons.append(f"“{label}” was flagged as adversarial content.")

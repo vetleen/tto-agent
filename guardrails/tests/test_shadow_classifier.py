@@ -215,7 +215,7 @@ class RunTests(_Base):
         self.review_action = "quarantine"
         row = self._run(
             family="skill_content", prod=_flagged("quarantine", tags=("jailbreak",), confidence=0.72),
-            subject={"skill_id": 5, "label": "My Skill: instructions", "window": 0},
+            subject={"skill_id": 5, "window": 0}, review_label="My Skill: instructions",
         )
         self.assertTrue(row.prod_flagged)
         self.assertEqual(row.prod_review, "quarantine")
@@ -227,7 +227,8 @@ class RunTests(_Base):
         self.assertIn("Concern tags: jailbreak", prompt)
         self.assertIn("Confidence: 0.72", prompt)
         self.assertIn(SHADOW_REVIEW_PLACEHOLDER, prompt)
-        self.assertIn("My Skill: instructions", prompt)
+        self.assertIn("My Skill: instructions", prompt)  # shown to the reviewer ...
+        self.assertNotIn("My Skill", str(row.subject))     # ... never stored
         self.assertIn("skill", self.review_requests[0].messages[0].content)
 
     def test_both_positive_reviewed_once_with_classifier_framing(self):
@@ -269,11 +270,30 @@ class RunTests(_Base):
         self.assertFalse(membership.is_suspended)
         self.assertIsNone(membership.suspended_at)
 
-    def test_chat_without_reviewer_model_records_no_model(self):
+    def test_chat_without_reviewer_model_records_no_model_without_a_review_slot(self):
+        from django.core.cache import cache
+
+        from guardrails.shadow_classifier import _daily_key
+
         self.resolve.return_value = ""
         row = self._run(family="chat_message", text="x", prod=_flagged("block"), subject={})
         self.assertEqual(row.blind_review, "no_model")
         self.reviewer_llm.run_structured.assert_not_called()
+        self.assertIsNone(cache.get(_daily_key("reviews", timezone.localdate())))
+
+    def test_daily_cap_is_not_consumed_by_gated_traffic(self):
+        from django.core.cache import cache
+
+        from guardrails.shadow_classifier import _daily_key
+
+        with patch(
+            "core.preferences.resolve_decisions_settings",
+            return_value=DecisionsSettings(False, "openai/gpt-6-luna", "", None),
+        ):
+            self.assertIsNone(self._run())
+        self.assertIsNone(cache.get(_daily_key("web_content", timezone.localdate())))
+        with override_settings(CLASSIFIER_SHADOW_MAX_PER_DAY=1):
+            self.assertIsNotNone(self._run())  # the eligible org still gets its slot
 
     def test_identity_positive_is_never_reviewed(self):
         self.prob, self.concern = 0.9, "prompt_injection"
@@ -381,30 +401,25 @@ class RunTests(_Base):
 class EnqueueTests(_Base):
     """The web-dyno call sites only enqueue the task with a derived production verdict."""
 
-    def _verdict(self, suspicious, reviewer=None, action="allow", tags=("data_extraction",)):
-        from guardrails.schemas import ReviewerDecision
-
-        verdict = GuardrailVerdict(action=action)
+    def _verdict(self, suspicious, outcome="", action="allow", tags=("data_extraction",)):
+        verdict = GuardrailVerdict(action=action, review_outcome=outcome)
         verdict.classifier_result = ClassifierResult(
             is_suspicious=suspicious, concern_tags=list(tags), confidence=0.6, reasoning="r",
         )
-        if reviewer:
-            verdict.reviewer_decision = ReviewerDecision(
-                action=reviewer, confidence=0.9, severity="low", reasoning="r", user_message="m",
-            )
         return verdict
 
     @patch("guardrails.tasks.shadow_classifier_task.delay")
-    def test_chat_enqueue_derives_the_production_review(self, delay):
+    def test_chat_enqueue_uses_the_recorded_review_outcome(self, delay):
         started = timezone.now()
         common = dict(org_id=self.org.pk, user_id=self.user.pk, thread_id="t1", message_id="m1", started_at=started)
 
-        enqueue_chat_message_shadow(text="hi", verdict=self._verdict(False), **common)
-        enqueue_chat_message_shadow(text="hi", verdict=self._verdict(True, reviewer="dismiss"), **common)
-        enqueue_chat_message_shadow(text="hi", verdict=self._verdict(True, action="block"), **common)  # failsafe
-        self.assertEqual(delay.call_count, 3)
+        enqueue_chat_message_shadow(text="hi", verdict=self._verdict(False, outcome="dismiss"), **common)  # ignored
+        enqueue_chat_message_shadow(text="hi", verdict=self._verdict(True, outcome="dismiss"), **common)
+        enqueue_chat_message_shadow(text="hi", verdict=self._verdict(True, outcome="error", action="block"), **common)
+        enqueue_chat_message_shadow(text="hi", verdict=self._verdict(True, outcome="no_model", action="block"), **common)
+        self.assertEqual(delay.call_count, 4)
         reviews = [c.args[2]["review"] for c in delay.call_args_list]
-        self.assertEqual(reviews, ["", "dismiss", "error"])
+        self.assertEqual(reviews, ["", "dismiss", "error", "no_model"])
         args = delay.call_args_list[1].args
         self.assertEqual(args[0], "chat_message")
         self.assertEqual(args[1], "hi")
@@ -414,6 +429,18 @@ class EnqueueTests(_Base):
         self.assertEqual(args[5], "t1")
         self.assertEqual(args[6], {"message_id": "m1", "thread_id": "t1"})
         self.assertEqual(args[8], started.isoformat())
+
+    @patch("guardrails.tasks.shadow_classifier_task.delay")
+    def test_chat_enqueue_sends_long_texts_by_id_only(self, delay):
+        from guardrails.shadow_classifier import CHAT_QUEUED_TEXT_MAX_CHARS
+
+        long_text = "x" * (CHAT_QUEUED_TEXT_MAX_CHARS + 1)
+        common = dict(org_id=self.org.pk, user_id=self.user.pk, thread_id="t1", started_at=None)
+        enqueue_chat_message_shadow(text=long_text, verdict=self._verdict(False), message_id="m1", **common)
+        self.assertIsNone(delay.call_args.args[1])
+        self.assertEqual(delay.call_args.args[6]["message_id"], "m1")
+        enqueue_chat_message_shadow(text=long_text, verdict=self._verdict(False), message_id=None, **common)
+        self.assertEqual(delay.call_count, 1)  # nothing to re-read → not enqueued
 
     @patch("guardrails.tasks.shadow_classifier_task.delay")
     def test_chat_enqueue_skips_classifier_errors_and_disabled(self, delay):
@@ -457,14 +484,33 @@ class TaskTests(_Base):
         self.assertEqual(row.subject, {"message_id": "m1", "thread_id": "t1"})
         self.assertEqual(row.blind_review, "dismiss")
 
-    def test_task_marks_chat_prod_review_no_model_without_a_reviewer(self):
-        self.resolve.return_value = ""
-        shadow_classifier_task.apply(args=(
-            "chat_message", "hello", _flagged("block").to_dict(), self.org.pk, self.user.pk, None, {}, None, None,
-        ))
+    def test_task_reads_a_long_message_by_id(self):
+        from chat.models import ChatMessage, ChatThread
+
+        thread = ChatThread.objects.create(created_by=self.user)
+        message = ChatMessage.objects.create(thread=thread, role="user", content="a long message body")
+        outcome = shadow_classifier_task.apply(args=(
+            "chat_message", None, _clean().to_dict(), self.org.pk, self.user.pk, str(thread.pk),
+            {"message_id": str(message.pk), "thread_id": str(thread.pk)}, None, None,
+        )).get()
+        self.assertEqual(outcome, "recorded")
         row = ClassifierShadowResult.objects.get()
-        self.assertEqual(row.prod_review, "no_model")
-        self.assertEqual(row.blind_review, "no_model")
+        self.assertEqual(row.text_chars, len("a long message body"))
+        self.assertEqual(row.text_sha256, hashlib.sha256(b"a long message body").hexdigest())
+
+    def test_task_skips_a_redacted_or_missing_message(self):
+        from chat.models import ChatMessage, ChatThread
+
+        thread = ChatThread.objects.create(created_by=self.user)
+        redacted = ChatMessage.objects.create(thread=thread, role="user", content="[removed]", is_redacted=True)
+        for message_id in (str(redacted.pk), "00000000-0000-0000-0000-000000000000", None):
+            outcome = shadow_classifier_task.apply(args=(
+                "chat_message", None, _clean().to_dict(), self.org.pk, self.user.pk, None,
+                {"message_id": message_id, "thread_id": None}, None, None,
+            )).get()
+            self.assertEqual(outcome, "skipped")
+        self.assertEqual(ClassifierShadowResult.objects.count(), 0)
+        self.service.decide.assert_not_called()
 
     def test_task_identity_uses_the_field_prompt(self):
         shadow_classifier_task.apply(args=(

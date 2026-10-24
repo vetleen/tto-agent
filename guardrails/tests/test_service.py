@@ -333,6 +333,8 @@ class PipelineShadowEnqueueTest(TransactionTestCase):
             thread_id=str(thread.id), org_id=self.org.pk, message_id="msg-1",
         )
         self.assertEqual(verdict.action, "dismiss")
+        self.assertEqual(verdict.review_outcome, "dismiss")
+        self._wait_for(mock_enqueue)  # the enqueue is detached from the verdict
         kwargs = mock_enqueue.call_args.kwargs
         self.assertEqual(kwargs["text"], "hello")
         self.assertIs(kwargs["verdict"], verdict)
@@ -343,9 +345,17 @@ class PipelineShadowEnqueueTest(TransactionTestCase):
         self.assertGreaterEqual(kwargs["started_at"], before)
         self.assertLessEqual(kwargs["started_at"], timezone.now())
 
+    @staticmethod
+    def _wait_for(mock, timeout=3.0):
+        import time
+
+        deadline = time.monotonic() + timeout
+        while not mock.called and time.monotonic() < deadline:
+            time.sleep(0.02)
+
     @patch("guardrails.shadow_classifier.enqueue_chat_message_shadow", side_effect=RuntimeError("broker down"))
     @patch("guardrails.classifier.classify_message", new_callable=AsyncMock)
-    def test_shadow_failure_never_changes_the_verdict(self, mock_classify, _mock_enqueue):
+    def test_shadow_failure_never_changes_the_verdict(self, mock_classify, mock_enqueue):
         from guardrails.service import run_classifier_pipeline
 
         mock_classify.return_value = ClassifierResult(
@@ -356,7 +366,36 @@ class PipelineShadowEnqueueTest(TransactionTestCase):
             thread_id=None, org_id=self.org.pk,
         )
         self.assertEqual(verdict.action, "allow")
+        self.assertEqual(verdict.review_outcome, "")
         self.assertFalse(GuardrailEvent.objects.exists())
+        self._wait_for(mock_enqueue)
+
+    @patch("guardrails.shadow_classifier.enqueue_chat_message_shadow")
+    @patch("guardrails.reviewer.review_flagged_message", new_callable=AsyncMock)
+    @patch("guardrails.classifier.classify_message", new_callable=AsyncMock)
+    def test_review_outcome_records_error_and_no_model(self, mock_classify, mock_review, _mock_enqueue):
+        from guardrails.reviewer import NO_REVIEWER_MODEL_REASONING
+        from guardrails.service import run_classifier_pipeline
+
+        mock_classify.return_value = ClassifierResult(
+            is_suspicious=True, concern_tags=["jailbreak"], confidence=0.7, reasoning="r",
+        )
+        mock_review.side_effect = RuntimeError("reviewer down")
+        verdict = async_to_sync(run_classifier_pipeline)(
+            text="hello", user=self.user, heuristic_result=self.clean_heuristic, thread_id=None, org_id=self.org.pk,
+        )
+        self.assertEqual(verdict.action, "block")
+        self.assertEqual(verdict.review_outcome, "error")
+
+        mock_review.side_effect = None
+        mock_review.return_value = ReviewerDecision(
+            action="block", confidence=1.0, severity="medium", reasoning=NO_REVIEWER_MODEL_REASONING, user_message="m",
+        )
+        verdict = async_to_sync(run_classifier_pipeline)(
+            text="hello", user=self.user, heuristic_result=self.clean_heuristic, thread_id=None, org_id=self.org.pk,
+        )
+        self.assertEqual(verdict.action, "block")
+        self.assertEqual(verdict.review_outcome, "no_model")
 
 
 class CheckUserMessageTest(TransactionTestCase):

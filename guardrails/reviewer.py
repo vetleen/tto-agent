@@ -131,6 +131,11 @@ def _wrap_untrusted(text: str, nonce: str) -> str:
     return f"<<<UNTRUSTED[{nonce}]>>>{text}<<<END_UNTRUSTED[{nonce}]>>>"
 
 
+# Reasoning on the synthetic block returned when no reviewer model resolves; the
+# pipeline records that outcome as "no_model" rather than a reviewer verdict.
+NO_REVIEWER_MODEL_REASONING = "No top model configured; defaulting to block."
+
+
 def review_flagged_message_sync(
     text: str,
     classifier_result: ClassifierResult,
@@ -162,7 +167,7 @@ def review_flagged_message_sync(
             action="block",
             confidence=1.0,
             severity="medium",
-            reasoning="No top model configured; defaulting to block.",
+            reasoning=NO_REVIEWER_MODEL_REASONING,
             user_message="Your message has been flagged for review. Please contact your system administrator.",
         )
 
