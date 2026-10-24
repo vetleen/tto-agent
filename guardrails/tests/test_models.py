@@ -101,6 +101,32 @@ class GuardrailEventModelTest(TestCase):
         self.assertIsNone(other.version_id)
 
 
+class ChunkScanShadowResultModelTest(TestCase):
+    def test_unique_per_day_and_chunk(self):
+        from datetime import date
+
+        from django.db import IntegrityError, transaction
+
+        from guardrails.models import ChunkScanShadowResult
+
+        def row():
+            return ChunkScanShadowResult(
+                run_date=date(2026, 10, 23), version_id=1, chunk_id=99, chunk_index=0,
+                chunk_chars=10, classifier_flagged=False, quick_probability=0.1,
+                quick_pathway="quick",
+            )
+
+        row().save()
+        with transaction.atomic(), self.assertRaises(IntegrityError):
+            row().save()
+        # A different day for the same chunk is fine.
+        ChunkScanShadowResult.objects.create(
+            run_date=date(2026, 10, 24), version_id=1, chunk_id=99, chunk_index=0,
+            chunk_chars=10, classifier_flagged=False, quick_probability=0.1, quick_pathway="quick",
+        )
+        self.assertEqual(ChunkScanShadowResult.objects.filter(chunk_id=99).count(), 2)
+
+
 class MembershipSuspensionTest(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="test@example.com", password="test1234")

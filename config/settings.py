@@ -988,6 +988,13 @@ DECISIONS_STRUCTURED_BATCH_SIZE = _env_int("DECISIONS_STRUCTURED_BATCH_SIZE", "2
 # trying either pathway. 0 = no cap.
 DECISIONS_MAX_INPUT_TOKENS = _env_int("DECISIONS_MAX_INPUT_TOKENS", "100000")
 
+# Nightly shadow comparison of the chunk-scan classifier against the decisions
+# service (guardrails/shadow.py). Reads yesterday's chunks and events; writes only
+# its own tables + LLMCallLog rows. The caps bound one night's spend.
+GUARDRAIL_SHADOW_ENABLED = _get_env_bool(os.environ.get("GUARDRAIL_SHADOW_ENABLED"), True)
+GUARDRAIL_SHADOW_MAX_CHUNKS = _env_int("GUARDRAIL_SHADOW_MAX_CHUNKS", "3000")
+GUARDRAIL_SHADOW_MAX_REVIEWS = _env_int("GUARDRAIL_SHADOW_MAX_REVIEWS", "60")
+
 # Transcription settings
 TRANSCRIPTION_DEFAULT_MODEL = os.environ.get("TRANSCRIPTION_DEFAULT_MODEL", "openai/gpt-4o-mini-transcribe")
 # Per-path defaults. When unset, fall back to TRANSCRIPTION_DEFAULT_MODEL.
@@ -1120,6 +1127,14 @@ CELERY_BEAT_SCHEDULE = {
     "expire-stale-canvas-imports": {
         "task": "chat.tasks.expire_stale_canvas_imports",
         "schedule": 300.0,
+    },
+    # Shadow-compare yesterday's chunk scans against the decisions service
+    # (guardrails.shadow). Crontabs are UTC: 02:37 UTC = 03:37/04:37 Oslo — after
+    # the 02:00 Oslo pg:backup, clear of prune-document-versions (03:22) and the
+    # worker restart (03:45). Bounded by GUARDRAIL_SHADOW_MAX_CHUNKS/REVIEWS.
+    "shadow-chunk-scan-nightly": {
+        "task": "guardrails.tasks.shadow_chunk_scan_nightly",
+        "schedule": crontab(hour=2, minute=37),
     },
     # Restart the worker dyno in the quiet early morning (03:45 UTC ≈ 04:45/
     # 05:45 Oslo) so each business day starts from the lean boot footprint

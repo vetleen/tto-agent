@@ -119,6 +119,17 @@ Request-too-large and 400s raise instead. Quick calls write their own `LLMCallLo
 `params["_log_metadata"]`. An application is one small function with its own `feature_key`; no
 existing classifier has been moved onto it yet.
 
+**Chunk-scan shadow** (`guardrails/shadow.py`, beat task `shadow_chunk_scan_nightly`, 02:37 UTC): the
+first evidence-gathering step. Every night it re-runs yesterday's document chunks through the quick
+pathway with the chunk scan's own batching, system prompt (`CHUNK_SCAN_SYSTEM_PROMPT`) and concern
+tags (`CONCERN_TAGS`), compares against production's per-chunk verdicts (`GuardrailEvent.chunk_id`),
+and sends every positive from either system to the same Layer-2 reviewer **blind** — a placeholder
+Layer-1 block with tag + number, no reasoning — so false-positive rates are comparable. Side-effect
+free: it writes `ChunkScanShadowRun`/`ChunkScanShadowResult` (ids and numbers, never text) and its
+own `LLMCallLog` rows (`feature=shadow_chunk_scan`, grouped by the run's trace_id), uses its own skip
+window (`decisions_quick_skip:shadow`), and never touches chunks, versions or events. Read it with
+`manage.py shadow_chunk_scan_report`. The chunk scan itself is unchanged.
+
 ## Chat Tool Labels
 
 Display labels are **tool metadata**, declared on the tool class (a `ContextAwareTool`

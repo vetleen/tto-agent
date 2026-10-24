@@ -688,6 +688,25 @@ def _refresh_partial_quarantine(version) -> None:
     recompute_document_sensitivity(version.document_id)
 
 
+@shared_task(bind=True)
+def shadow_chunk_scan_nightly(self) -> dict | str:
+    """Nightly shadow comparison of yesterday's chunk scans against the decisions
+    service (guardrails.shadow). A plain task, not DocumentPipelineTask: it holds
+    no document slot and never touches versions, chunks or events. No retries —
+    a partial night is completed by ``manage.py shadow_chunk_scan_report --run``.
+    """
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    if not settings.GUARDRAIL_SHADOW_ENABLED:
+        logger.info("shadow_chunk_scan: disabled (GUARDRAIL_SHADOW_ENABLED)")
+        return "disabled"
+    from guardrails.shadow import run_shadow_for_day
+
+    return run_shadow_for_day(timezone.localdate() - timedelta(days=1))
+
+
 def _log_chunk_event(
     document, chunk_text: str, check_type: str, tags: list[str],
     confidence: float, severity: str, action_taken: str,

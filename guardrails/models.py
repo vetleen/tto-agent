@@ -105,3 +105,70 @@ class GuardrailEvent(models.Model):
 
     def __str__(self) -> str:
         return f"GuardrailEvent {self.id} ({self.check_type}/{self.action_taken})"
+
+
+class ChunkScanShadowRun(models.Model):
+    """One nightly (or manual) shadow comparison run (guardrails/shadow.py).
+
+    ``trace_id`` is the ``LLMCallLog.trace_id`` of every decisions and reviewer
+    call the run made, so its cost can be summed; ``summary`` holds the counters
+    the run logged at the end (the report reads them from here).
+    """
+
+    run_date = models.DateField(db_index=True)
+    trace_id = models.CharField(max_length=64)
+    started_at = models.DateTimeField(auto_now_add=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    summary = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["-started_at"]
+
+    def __str__(self) -> str:
+        return f"ChunkScanShadowRun {self.run_date} ({self.trace_id})"
+
+
+class ChunkScanShadowResult(models.Model):
+    """One chunk's shadow comparison: the production classifier's verdict next to
+    the decisions quick pathway's, plus the blind reviewer verdict for a positive.
+
+    Ids and numbers only — never chunk text (the report fetches previews live).
+    ``chunk_id``/``version_id`` are plain ints so rows outlive deleted chunks.
+    """
+
+    run_date = models.DateField(db_index=True)
+    trace_id = models.CharField(max_length=64, blank=True, default="")
+    org_id = models.IntegerField(null=True, blank=True)
+    version_id = models.BigIntegerField()
+    chunk_id = models.BigIntegerField()
+    chunk_index = models.PositiveIntegerField()
+    chunk_chars = models.PositiveIntegerField()
+    # Production (from GuardrailEvents carrying chunk_id).
+    classifier_flagged = models.BooleanField()
+    classifier_confidence = models.FloatField(null=True, blank=True)
+    classifier_tags = models.JSONField(default=list, blank=True)
+    # allow | quarantine (reviewer) | threshold_quarantine | threshold_logged | "" (not flagged)
+    prod_review = models.CharField(max_length=24, blank=True, default="")
+    # Decisions quick pathway. probability None = the endpoint refused the question.
+    quick_probability = models.FloatField(null=True, blank=True)
+    quick_concern = models.CharField(max_length=32, blank=True, default="")
+    quick_flagged = models.BooleanField(default=False)  # probability >= SHADOW_FLAG_THRESHOLD
+    quick_pathway = models.CharField(max_length=12)  # quick | structured | mixed
+    # Blind reviewer verdict for a positive under either system:
+    # allow | quarantine | error | no_model | not_reviewed | "" (not a positive)
+    blind_review = models.CharField(max_length=24, blank=True, default="")
+    # Whose tag + number framed the review: classifier | quick.
+    blind_review_source = models.CharField(max_length=12, blank=True, default="")
+    blind_review_confidence = models.FloatField(null=True, blank=True)
+    blind_review_severity = models.CharField(max_length=10, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["run_date", "chunk_id"], name="guardrails_shadow_unique_day_chunk"
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"ChunkScanShadowResult {self.run_date} chunk={self.chunk_id}"

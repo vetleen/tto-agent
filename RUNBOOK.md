@@ -303,6 +303,7 @@ The resolver also produces three PyPy-only lines (`brotlicffi`, `cbor2==5.9.0`,
 | `transcribe_uploaded_audio_task` | meetings | default | 1800s hard / 1740s soft | Transcribe an uploaded audio file (may be long) |
 | `render_document_pages` | documents | 3 | 1800s hard / 1740s soft | Render a READY data-room pptx version's slides to JPEGs via the Gotenberg render service (batches of 8, one conversion in flight per worker; retries busy/unavailable with 30 s → 600 s backoff) |
 | `process_chat_attachment` | chat | 3 | 900s hard / 840s soft | Process a pdf/docx/pptx chat or meeting attachment right after upload: text extraction (embedded pictures → attachment-owned Assets), page/slide count, and for decks the slide renders via the render service. The chat turn waits on `ChatAttachment.processing_state` (≤ `CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS`); retries busy/unavailable with 30 s → 300 s backoff |
+| `shadow_chunk_scan_nightly` | guardrails | 0 | none (bounded by `GUARDRAIL_SHADOW_MAX_CHUNKS`/`_REVIEWS`) | Beat 02:37 UTC: re-runs yesterday's chunk scans through the decisions quick pathway and blind-reviews both systems' positives with the Layer-2 reviewer (`guardrails/shadow.py`). Side-effect free: writes only `ChunkScanShadowRun`/`ChunkScanShadowResult` + its own `LLMCallLog` rows. Skips the day after a deploy whose events lack `chunk_id`. `GUARDRAIL_SHADOW_ENABLED=false` turns it off |
 
 Tasks use exponential backoff on retry, except `run_subagent_task`, which retries after a fixed 30 s: a retrying run keeps holding its sub-agent execution slot, so it must not sit idle for long.
 
@@ -586,6 +587,9 @@ See `.env.example` for the full list with comments. Key production variables:
 | `DECISIONS_QUICK_SKIP_SECONDS` | No | After a failed Decisions endpoint call, every process (web + worker, via the cache) uses the structured pathway for this long (default 60; `0` = retry the endpoint on every request). One WARNING per skip episode. |
 | `DECISIONS_STRUCTURED_BATCH_SIZE` | No | Questions per structured-output call on the structured decisions pathway (default 25). |
 | `DECISIONS_MAX_INPUT_TOKENS` | No | Cap on a decision call's shared input, cl100k estimate (default 100000); over it the call raises `LLMRequestTooLargeError` without trying either pathway. `0` = no cap. |
+| `GUARDRAIL_SHADOW_ENABLED` | No | Nightly shadow comparison of the chunk-scan guardrail against the decisions service (`shadow_chunk_scan_nightly`, default `true`). `false` turns the job off. |
+| `GUARDRAIL_SHADOW_MAX_CHUNKS` | No | Chunks the shadow compares per night (default 3000; ~16 quick calls at today's volume). |
+| `GUARDRAIL_SHADOW_MAX_REVIEWS` | No | Blind Layer-2 reviewer calls the shadow makes per night, over both systems' positives (default 60). |
 | `ANTHROPIC_API_KEY` | No | Anthropic LLM provider |
 | `GEMINI_API_KEY` | No | Google Gemini LLM provider |
 | `MOONSHOT_API_KEY` | No | Moonshot/Kimi LLM provider |
