@@ -886,6 +886,29 @@ def _record_flagged_web_content(
     return verdict
 
 
+@shared_task(bind=True)
+def shadow_classifier_task(
+    self, family, text, prod, org_id, user_id, conversation_id, subject,
+    system_prompt_key=None, started_at=None,
+) -> str:
+    """Off-dyno shadow comparison of one text classification
+    (guardrails.shadow_classifier) — used by the chat-message and identity-field
+    call sites, which run on the web dyno; the web and skill scans shadow inline on
+    the worker. A plain task: no retries (a lost comparison is just a missing row),
+    no document slot. Never raises.
+    """
+    from guardrails.shadow_classifier import run_shadow_from_task
+
+    try:
+        return run_shadow_from_task(
+            family, text, prod, org_id, user_id, conversation_id, subject,
+            system_prompt_key=system_prompt_key, started_at=started_at,
+        )
+    except Exception:
+        logger.exception("shadow_classifier_task: failed family=%s", family)
+        return "error"
+
+
 def _log_web_event(
     *, user_id: int, org_id: int | None, thread_id, check_type: str, tags: list[str],
     confidence: float, severity: str, action_taken: str, raw_input: str,

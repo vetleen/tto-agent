@@ -172,3 +172,55 @@ class ChunkScanShadowResult(models.Model):
 
     def __str__(self) -> str:
         return f"ChunkScanShadowResult {self.run_date} chunk={self.chunk_id}"
+
+
+class ClassifierShadowResult(models.Model):
+    """One inline shadow comparison of a text classifier call
+    (guardrails/shadow_classifier.py): the production classifier's verdict and its
+    reviewer's, next to the decisions quick pathway's, plus the blind reviewer
+    verdict for a positive under either system.
+
+    Ids, a hash and numbers only — never the text. ``subject`` holds the ids that
+    identify what was classified (message/thread, source label, resource/skill,
+    field); the ``family`` says which classifier.
+    """
+
+    FAMILIES = ("chat_message", "web_content", "skill_content", "identity_field")
+
+    family = models.CharField(max_length=20)
+    created_at = models.DateTimeField(auto_now_add=True)
+    org_id = models.IntegerField(null=True, blank=True)
+    user_id = models.IntegerField(null=True, blank=True)
+    conversation_id = models.CharField(max_length=64, blank=True, default="")
+    subject = models.JSONField(default=dict, blank=True)
+    text_chars = models.PositiveIntegerField()
+    text_sha256 = models.CharField(max_length=64)
+    # Production: the classifier's verdict and what its reviewer decided.
+    prod_flagged = models.BooleanField()
+    prod_confidence = models.FloatField(null=True, blank=True)
+    prod_tags = models.JSONField(default=list, blank=True)
+    # web: allow | withhold | no_model | error; skill: allow | quarantine |
+    # threshold_quarantine | threshold_logged | no_model; chat: dismiss | warn |
+    # block | suspend | no_model | error; identity: blocked; "" = not flagged.
+    prod_review = models.CharField(max_length=24, blank=True, default="")
+    # Decisions quick pathway. probability None = refusal or decide error.
+    quick_probability = models.FloatField(null=True, blank=True)
+    quick_concern = models.CharField(max_length=32, blank=True, default="")
+    quick_flagged = models.BooleanField(default=False)  # probability >= 0.5
+    quick_pathway = models.CharField(max_length=12, blank=True, default="")  # quick | structured | mixed | "" (error)
+    # Blind reviewer verdict for a positive under either system: the family's
+    # reviewer action | error | no_model | not_reviewed | "" (not a positive / identity).
+    blind_review = models.CharField(max_length=24, blank=True, default="")
+    blind_review_source = models.CharField(max_length=12, blank=True, default="")  # classifier | quick
+    blind_review_confidence = models.FloatField(null=True, blank=True)
+    blind_review_severity = models.CharField(max_length=10, blank=True, default="")
+    trace_id = models.CharField(max_length=64, blank=True, default="")
+    decide_error = models.CharField(max_length=64, blank=True, default="")  # exception class name
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["family", "created_at"], name="guardrails_clfshadow_fam_crt"),
+        ]
+
+    def __str__(self) -> str:
+        return f"ClassifierShadowResult {self.family} {self.created_at:%Y-%m-%d}"
