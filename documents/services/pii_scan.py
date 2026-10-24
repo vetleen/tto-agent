@@ -370,6 +370,48 @@ def _review_gated_candidates(
     )
 
 
+# The chunk fields one PII window is built from (shared with the PII shadow).
+PII_WINDOW_FIELDS = ("text", "heading", "token_count", "chunk_index")
+
+
+def pii_window_text(window: list[dict]) -> str:
+    """The text one PII window is classified on: each chunk as ``heading\\ntext``
+    (the heading only when present), chunks joined by blank lines."""
+    parts = []
+    for chunk in window:
+        heading = (chunk.get("heading") or "").strip()
+        text = chunk.get("text") or ""
+        parts.append(f"{heading}\n{text}" if heading else text)
+    return "\n\n".join(parts)
+
+
+def iter_pii_windows(version_id: int, budget: int | None = None):
+    """Yield ``(window_index, chunks)`` exactly as ``scan_pii_categories_for_version``
+    batches a version: chunks accumulate in chunk_index order until their
+    ``token_count`` reaches ``budget`` (``PII_SCAN_WINDOW_TOKENS``); a trailing
+    partial window comes last. Shared with the PII shadow
+    (``documents/services/pii_shadow.py``) so both see identical windows.
+    """
+    from django.conf import settings
+
+    from documents.services.chunk_access import iter_version_chunks
+
+    if budget is None:
+        budget = getattr(settings, "PII_SCAN_WINDOW_TOKENS", 6000)
+    window: list[dict] = []
+    window_tokens = 0
+    index = 0
+    for chunk in iter_version_chunks(version_id, fields=PII_WINDOW_FIELDS):
+        window.append(chunk)
+        window_tokens += chunk.get("token_count") or 0
+        if window_tokens >= budget:
+            yield index, window
+            window, window_tokens = [], 0
+            index += 1
+    if window:
+        yield index, window
+
+
 def _scan_window(
     window, state, *,
     document, document_title, version_id, user_id, data_room_id, org_id,
@@ -386,12 +428,7 @@ def _scan_window(
     """
     if not window:
         return
-    parts = []
-    for chunk in window:
-        heading = (chunk.get("heading") or "").strip()
-        text = chunk.get("text") or ""
-        parts.append(f"{heading}\n{text}" if heading else text)
-    window_text = "\n\n".join(parts)
+    window_text = pii_window_text(window)
     result = scan_pii_categories(
         window_text, user_id=user_id, data_room_id=data_room_id, org_id=org_id,
     )
@@ -429,10 +466,7 @@ def scan_pii_categories_for_version(
     Returns early once every category has been found — further scanning cannot
     change the result.
     """
-    from django.conf import settings
-
     from documents.models import DataRoomDocumentVersion
-    from documents.services.chunk_access import iter_version_chunks
 
     version = (
         DataRoomDocumentVersion.objects.select_related("document")
@@ -442,29 +476,16 @@ def scan_pii_categories_for_version(
     document = version.document if version else None
     document_title = document.display_name if document else ""
 
-    budget = getattr(settings, "PII_SCAN_WINDOW_TOKENS", 6000)
     state = _ScanState()
-    window: list[dict] = []
-    window_tokens = 0
-
     scan_kwargs = dict(
         document=document, document_title=document_title,
         version_id=version_id, user_id=user_id,
         data_room_id=data_room_id, org_id=org_id,
     )
 
-    for chunk in iter_version_chunks(
-        version_id, fields=("text", "heading", "token_count", "chunk_index")
-    ):
-        window.append(chunk)
-        window_tokens += chunk.get("token_count") or 0
-        if window_tokens >= budget:
-            _scan_window(window, state, **scan_kwargs)
-            window, window_tokens = [], 0
-            state.window_index += 1
-            if len(state.detected) == len(PII_CATEGORIES):  # all categories found — stop early (lossless)
-                return PIIScanResult(state.detected, "\n".join(state.findings))
-
-    if window:
+    for index, window in iter_pii_windows(version_id):
+        state.window_index = index
         _scan_window(window, state, **scan_kwargs)
+        if len(state.detected) == len(PII_CATEGORIES):  # all categories found — stop early (lossless)
+            break
     return PIIScanResult(state.detected, "\n".join(state.findings))
