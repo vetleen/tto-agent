@@ -26,8 +26,9 @@ from collections import Counter, defaultdict
 from datetime import date, timedelta
 
 from django.core.management.base import BaseCommand, CommandError
+from django.db.models import Q
 
-from documents.services.pii_scan import GATED_CATEGORIES, PII_CATEGORIES
+from documents.services.pii_scan import PII_CATEGORIES
 from documents.services.pii_shadow import SHADOW_FLAG_THRESHOLD
 from guardrails.shadow_stats import agreement, confusion, deciles, mean, pct
 
@@ -242,12 +243,15 @@ class Command(BaseCommand):
         self.stdout.write(f"disagreements (version/category, classifier_only / quick_only): {len(lines)}")
         chunks = {}
         if lines:
+            # Fetch exactly the previewed chunks, one (version, chunk_index) pair each.
             wanted = {(s.version_id, s.chunk_index_from) for *_, s in lines}
-            for version_id, chunk_index, text in DataRoomDocumentChunk.objects.filter(
-                version_id__in={v for v, _ in wanted},
-            ).values_list("version_id", "chunk_index", "text"):
-                if (version_id, chunk_index) in wanted:
-                    chunks[(version_id, chunk_index)] = text
+            selector = Q()
+            for version_id, chunk_index in wanted:
+                selector |= Q(version_id=version_id, chunk_index=chunk_index)
+            for version_id, chunk_index, text in DataRoomDocumentChunk.objects.filter(selector).values_list(
+                "version_id", "chunk_index", "text",
+            ):
+                chunks[(version_id, chunk_index)] = text
         for version_id, category, p, tagged, strongest in lines:
             kind = "classifier_only" if tagged else "quick_only"
             text = chunks.get((version_id, strongest.chunk_index_from))

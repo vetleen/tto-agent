@@ -67,11 +67,11 @@ def build_questions() -> list[Question]:
     questions = []
     for category in PII_CATEGORIES:
         description = (PIICategoryOutput.model_fields[category].description or category).strip().rstrip(".")
-        questions.append(Question(
-            type="predicate",
-            name=category,
-            instructions=f"The text contains {description[0].lower() + description[1:]}.",
-        ))
+        # Continue the sentence: lowercase a leading capitalised word ("Personal identity
+        # data" → "personal …") but leave acronyms alone ("GDPR Article 9 …").
+        if len(description) > 1 and description[0].isupper() and description[1].islower():
+            description = description[0].lower() + description[1:]
+        questions.append(Question(type="predicate", name=category, instructions=f"The text contains {description}."))
     return questions
 
 

@@ -376,13 +376,11 @@ PII_WINDOW_FIELDS = ("text", "heading", "token_count", "chunk_index")
 
 def pii_window_text(window: list[dict]) -> str:
     """The text one PII window is classified on: each chunk as ``heading\\ntext``
-    (the heading only when present), chunks joined by blank lines."""
-    parts = []
-    for chunk in window:
-        heading = (chunk.get("heading") or "").strip()
-        text = chunk.get("text") or ""
-        parts.append(f"{heading}\n{text}" if heading else text)
-    return "\n\n".join(parts)
+    (the heading only when present), chunks joined by blank lines — the same join
+    every other reader of a version's chunks uses."""
+    from documents.services.chunk_access import _join_chunks
+
+    return _join_chunks(window)
 
 
 def iter_pii_windows(version_id: int, budget: int | None = None):

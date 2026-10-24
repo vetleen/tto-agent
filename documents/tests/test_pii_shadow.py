@@ -50,6 +50,9 @@ class ShapeTests(SimpleTestCase):
         self.assertTrue(all(q.type == "predicate" for q in questions))
         self.assertTrue(questions[0].instructions.startswith("The text contains personal identity data"))
         self.assertTrue(questions[0].instructions.endswith("."))
+        gated = {q.name: q.instructions for q in questions}
+        self.assertTrue(gated["pii_special_category"].startswith("The text contains GDPR Article 9"))
+        self.assertTrue(gated["pii_criminal_offence"].startswith("The text contains GDPR Article 10"))
 
     def test_input_is_the_pii_prompt_plus_the_window(self):
         messages = build_input("Alice Smith, born 1980.")
