@@ -505,3 +505,75 @@ class PIIReviewEvent(models.Model):
 
     def __str__(self) -> str:
         return f"PIIReviewEvent {self.id} ({self.action})"
+
+
+class PIIScanShadowRun(models.Model):
+    """One nightly (or manual) PII shadow comparison run (documents/services/pii_shadow.py).
+
+    ``trace_id`` is the ``LLMCallLog.trace_id`` of every decisions and reviewer call
+    the run made, so its cost can be summed; ``summary`` holds the counters the run
+    logged at the end (the report reads them from here).
+    """
+
+    run_date = models.DateField(db_index=True)
+    trace_id = models.CharField(max_length=64)
+    started_at = models.DateTimeField(auto_now_add=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    summary = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["-started_at"]
+
+    def __str__(self) -> str:
+        return f"PIIScanShadowRun {self.run_date} ({self.trace_id})"
+
+
+class PIIScanShadowResult(models.Model):
+    """One PII window's shadow comparison: the decisions quick pathway's probability
+    per GDPR category next to what production recorded for the window (the Art. 9/10
+    review event, if any) and for the version (its PII tags), plus the blind PII
+    review of a quick-only gated positive.
+
+    Ids and numbers only — never window text (the report fetches previews live).
+    ``version_id``/``document_id`` are plain ints so rows outlive deleted versions.
+    """
+
+    run_date = models.DateField(db_index=True)
+    trace_id = models.CharField(max_length=64, blank=True, default="")
+    org_id = models.IntegerField(null=True, blank=True)
+    version_id = models.BigIntegerField()
+    document_id = models.BigIntegerField(null=True, blank=True)
+    window_index = models.PositiveIntegerField()
+    chunk_index_from = models.PositiveIntegerField()
+    chunk_index_to = models.PositiveIntegerField()
+    window_tokens = models.PositiveIntegerField()
+    window_chars = models.PositiveIntegerField()
+    # Decisions quick pathway: {category: probability}; None = the endpoint refused.
+    quick_probabilities = models.JSONField(default=dict, blank=True)
+    quick_pathway = models.CharField(max_length=12)  # quick | structured | mixed
+    # Production, this window (PIIReviewEvent): the classifier's Art. 9/10 candidate
+    # flags and the reviewer's verdict. Empty when the classifier raised none here.
+    prod_candidates = models.JSONField(default=list, blank=True)
+    prod_action = models.CharField(max_length=20, blank=True, default="")  # confirmed | dismissed | fallback | ""
+    prod_article_9 = models.BooleanField(null=True, blank=True)
+    prod_article_10 = models.BooleanField(null=True, blank=True)
+    # Production, this version: the PII category tags (denormalised per row).
+    prod_version_categories = models.JSONField(default=list, blank=True)
+    # Blind PII review of the quick-only gated positives of this window:
+    # reviewed | no_model | error | not_reviewed | "" (nothing to review).
+    blind_review = models.CharField(max_length=24, blank=True, default="")
+    blind_candidates = models.JSONField(default=list, blank=True)
+    blind_article_9 = models.BooleanField(null=True, blank=True)
+    blind_article_10 = models.BooleanField(null=True, blank=True)
+    blind_confidence = models.FloatField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["run_date", "version_id", "window_index"], name="documents_piishadow_day_win",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"PIIScanShadowResult {self.run_date} version={self.version_id} window={self.window_index}"

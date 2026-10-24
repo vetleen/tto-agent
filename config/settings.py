@@ -1010,6 +1010,14 @@ CLASSIFIER_SHADOW_FAMILIES = [
 CLASSIFIER_SHADOW_MAX_PER_DAY = _env_int("CLASSIFIER_SHADOW_MAX_PER_DAY", "2000")  # per family
 CLASSIFIER_SHADOW_MAX_REVIEWS_PER_DAY = _env_int("CLASSIFIER_SHADOW_MAX_REVIEWS_PER_DAY", "30")  # all families
 
+# Nightly shadow comparison of the PII category classifier against the decisions
+# service (documents/services/pii_shadow.py): yesterday's READY versions re-windowed
+# exactly like production, ten predicates per window; quick-only Art. 9/10 positives
+# get one blind PII review. Writes only its own tables + LLMCallLog rows.
+PII_SHADOW_ENABLED = _get_env_bool(os.environ.get("PII_SHADOW_ENABLED"), True)
+PII_SHADOW_MAX_WINDOWS = _env_int("PII_SHADOW_MAX_WINDOWS", "500")  # one quick call each
+PII_SHADOW_MAX_REVIEWS = _env_int("PII_SHADOW_MAX_REVIEWS", "20")
+
 # Transcription settings
 TRANSCRIPTION_DEFAULT_MODEL = os.environ.get("TRANSCRIPTION_DEFAULT_MODEL", "openai/gpt-4o-mini-transcribe")
 # Per-path defaults. When unset, fall back to TRANSCRIPTION_DEFAULT_MODEL.
@@ -1150,6 +1158,15 @@ CELERY_BEAT_SCHEDULE = {
     "shadow-chunk-scan-nightly": {
         "task": "guardrails.tasks.shadow_chunk_scan_nightly",
         "schedule": crontab(hour=2, minute=37),
+    },
+    # Shadow-compare yesterday's PII scans against the decisions service
+    # (documents.services.pii_shadow). 02:52 UTC: its own entry (independent kill
+    # switch and failure domain from the chunk shadow); at most PII_SHADOW_MAX_WINDOWS
+    # quick calls (~3 s each cold, less once the long prompt is cached), so it finishes
+    # well before the 03:45 worker restart.
+    "shadow-pii-scan-nightly": {
+        "task": "documents.tasks.shadow_pii_scan_nightly",
+        "schedule": crontab(hour=2, minute=52),
     },
     # Restart the worker dyno in the quiet early morning (03:45 UTC ≈ 04:45/
     # 05:45 Oslo) so each business day starts from the lean boot footprint

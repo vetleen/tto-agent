@@ -752,3 +752,22 @@ def prune_document_versions() -> int:
     if pruned:
         logger.info("prune_document_versions: dropped %s version(s)", pruned)
     return pruned
+
+
+@shared_task(bind=True)
+def shadow_pii_scan_nightly(self) -> dict | str:
+    """Nightly shadow comparison of yesterday's PII scans against the decisions
+    service (documents.services.pii_shadow). A plain task, not DocumentPipelineTask:
+    it holds no document slot and never touches versions, tags or review events.
+    No retries — a partial night is completed by the next ``pii_shadow_report --run``.
+    """
+    from datetime import timedelta
+
+    from django.conf import settings
+    from django.utils import timezone
+
+    if not settings.PII_SHADOW_ENABLED:
+        return "disabled"
+    from documents.services.pii_shadow import run_pii_shadow_for_day
+
+    return run_pii_shadow_for_day(timezone.localdate() - timedelta(days=1))
