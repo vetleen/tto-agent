@@ -16,6 +16,7 @@ class GuardrailEventAdmin(admin.ModelAdmin):
         "id", "created_at", "user", "organization", "thread", "llm_call_log",
         "trigger_source", "check_type", "tags", "confidence", "severity",
         "action_taken", "raw_input", "reviewer_output", "related_event",
+        "chunk_id", "version_id",
     )
     ordering = ("-created_at",)
 

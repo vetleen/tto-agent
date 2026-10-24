@@ -189,6 +189,8 @@ def _scan_chunks_for_version(version) -> None:
                 confidence=result.confidence,
                 severity="high",
                 action_taken="blocked",
+                chunk_id=chunk["id"],
+                version_id=version.id,
             )
             # Event before state: a crash between the two duplicates the event
             # on retry rather than losing it.
@@ -203,6 +205,8 @@ def _scan_chunks_for_version(version) -> None:
                 confidence=result.confidence,
                 severity="low",
                 action_taken="escalated",
+                chunk_id=chunk["id"],
+                version_id=version.id,
             )
             _set_chunk_scan_state([chunk["id"]], ScanState.HEURISTIC_DONE)
         else:
@@ -470,6 +474,7 @@ def _decide_flagged_chunk(
         and reviewer_budget is not None
         and reviewer_budget["remaining"] > 0
     )
+    chunk_ref = {"chunk_id": chunk["id"], "version_id": version.id if version else None}
 
     escalation_event = None
     if can_review:
@@ -482,6 +487,7 @@ def _decide_flagged_chunk(
             severity="medium",
             action_taken="escalated",
             reviewer_output=result.reasoning,
+            **chunk_ref,
         )
         neighbor_context = (
             _build_neighbor_context(version.id, chunk["chunk_index"]) if version else ""
@@ -525,6 +531,7 @@ def _decide_flagged_chunk(
                     action_taken="blocked",
                     related_event=escalation_event,
                     reviewer_output=decision.reasoning,
+                    **chunk_ref,
                 )
             else:
                 # Reviewer overruled the classifier — keep the chunk retrievable,
@@ -539,6 +546,7 @@ def _decide_flagged_chunk(
                     action_taken="dismissed",
                     related_event=escalation_event,
                     reviewer_output=decision.reasoning,
+                    **chunk_ref,
                 )
             return
         # decision is None -> reviewer errored; fall through to the threshold below.
@@ -561,6 +569,7 @@ def _decide_flagged_chunk(
             severity="medium",
             action_taken="blocked",
             related_event=escalation_event,
+            **chunk_ref,
         )
     else:
         # Below the quarantine threshold: record without acting, so the threshold
@@ -574,6 +583,7 @@ def _decide_flagged_chunk(
             severity="low",
             action_taken="logged",
             related_event=escalation_event,
+            **chunk_ref,
         )
 
 
@@ -680,12 +690,14 @@ def _log_chunk_event(
     document, chunk_text: str, check_type: str, tags: list[str],
     confidence: float, severity: str, action_taken: str,
     related_event=None, reviewer_output: str | None = None,
+    *, chunk_id: int | None = None, version_id: int | None = None,
 ):
     """Create and return a GuardrailEvent for a document chunk scan.
 
     ``related_event`` links a terminal reviewer/threshold event back to the
     classifier ``escalated`` event it resolves; ``reviewer_output`` stores the
-    classifier or reviewer reasoning for audit/tuning.
+    classifier or reviewer reasoning for audit/tuning. ``chunk_id``/``version_id``
+    tie the event to its chunk so per-chunk verdicts can be joined back later.
     """
     from guardrails.models import GuardrailEvent
 
@@ -700,6 +712,8 @@ def _log_chunk_event(
         raw_input=chunk_text[:2000],
         related_event=related_event,
         reviewer_output=reviewer_output,
+        chunk_id=chunk_id,
+        version_id=version_id,
     )
 
 

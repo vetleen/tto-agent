@@ -77,6 +77,29 @@ class GuardrailEventModelTest(TestCase):
         self.assertEqual(e2.related_event, e1)
         self.assertEqual(list(e1.escalations.all()), [e2])
 
+    def test_chunk_reference_round_trips(self):
+        """document_chunk events can name their chunk; other events leave it empty."""
+        event = GuardrailEvent.objects.create(
+            user=self.user,
+            trigger_source="document_chunk",
+            check_type="classifier",
+            tags=[],
+            severity="low",
+            action_taken="logged",
+            raw_input="chunk text",
+            chunk_id=123456789012,
+            version_id=42,
+        )
+        event.refresh_from_db()
+        self.assertEqual(event.chunk_id, 123456789012)
+        self.assertEqual(event.version_id, 42)
+        other = GuardrailEvent.objects.create(
+            user=self.user, trigger_source="user_message", check_type="heuristic",
+            tags=[], severity="low", action_taken="logged", raw_input="msg",
+        )
+        self.assertIsNone(other.chunk_id)
+        self.assertIsNone(other.version_id)
+
 
 class MembershipSuspensionTest(TestCase):
     def setUp(self):

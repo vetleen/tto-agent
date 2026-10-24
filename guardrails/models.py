@@ -83,6 +83,11 @@ class GuardrailEvent(models.Model):
         blank=True,
         related_name="escalations",
     )
+    # Which chunk a document_chunk event is about. Plain ints, not FKs, so the
+    # audit row outlives a deleted chunk/version (precedent: PIIReviewEvent.org_id).
+    # Lets per-chunk verdicts be joined back (guardrails/shadow.py).
+    chunk_id = models.BigIntegerField(null=True, blank=True, db_index=True)
+    version_id = models.BigIntegerField(null=True, blank=True)
     retain_until = models.DateTimeField(null=True, blank=True, db_index=True)
 
     def save(self, *args, **kwargs):
