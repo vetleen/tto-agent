@@ -253,6 +253,7 @@ def review_flagged_chunk(
     neighbor_context: str,
     org_id: int | None,
     user_id: int | None = None,
+    context=None,
 ) -> ChunkReviewDecision | None:
     """Layer 2 reviewer for a document chunk the cheap classifier flagged.
 
@@ -265,7 +266,9 @@ def review_flagged_chunk(
     ``classifier_result`` is the per-chunk classification (a ``ChunkClassification``
     or ``ClassifierResult`` — only ``concern_tags``/``confidence``/``reasoning`` are
     read). ``neighbor_context`` is raw text describing the surrounding chunks; it is
-    wrapped as untrusted data here.
+    wrapped as untrusted data here. ``context`` (a ``RunContext``) lets a caller
+    group this call's ``LLMCallLog`` row under its own trace_id; by default a fresh
+    context for ``user_id`` is created.
     """
     from core.preferences import resolve_org_feature_model
     from llm.types import ChatRequest, Message, RunContext
@@ -296,7 +299,7 @@ def review_flagged_chunk(
         f"{_wrap_untrusted(neighbor_context or '(none)', nonce)}"
     )
 
-    context = RunContext.create(user_id=user_id)
+    context = context or RunContext.create(user_id=user_id)
     request = ChatRequest(
         messages=[
             Message(role="system", content=_CHUNK_REVIEWER_SYSTEM_PROMPT),

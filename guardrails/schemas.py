@@ -6,6 +6,14 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+# The classifier's concern vocabulary; shared with the decisions shadow so both
+# systems pick from the same options (guardrails/shadow.py).
+CONCERN_TAGS = (
+    "prompt_injection", "jailbreak", "data_extraction",
+    "social_engineering", "encoding_bypass", "delimiter_injection",
+)
+_CONCERN_TAGS_DESCRIPTION = "Standardized concern tags: " + ", ".join(CONCERN_TAGS)
+
 
 class ClassifierResult(BaseModel):
     """Layer 1 cheap model classifier output (single chunk)."""
@@ -13,10 +21,7 @@ class ClassifierResult(BaseModel):
     is_suspicious: bool = Field(description="Whether the input appears suspicious")
     concern_tags: list[str] = Field(
         default_factory=list,
-        description=(
-            "Standardized concern tags: prompt_injection, jailbreak, "
-            "data_extraction, social_engineering, encoding_bypass, delimiter_injection"
-        ),
+        description=_CONCERN_TAGS_DESCRIPTION,
     )
     confidence: float = Field(
         ge=0.0, le=1.0,
@@ -32,10 +37,7 @@ class ChunkClassification(BaseModel):
     is_suspicious: bool = Field(description="Whether the chunk appears suspicious")
     concern_tags: list[str] = Field(
         default_factory=list,
-        description=(
-            "Standardized concern tags: prompt_injection, jailbreak, "
-            "data_extraction, social_engineering, encoding_bypass, delimiter_injection"
-        ),
+        description=_CONCERN_TAGS_DESCRIPTION,
     )
     confidence: float = Field(
         ge=0.0, le=1.0,

@@ -56,6 +56,31 @@ class ScanDocumentChunksTest(TestCase):
         ).count()
         self.assertEqual(quarantined, 0)
 
+    @patch("core.preferences.resolve_org_feature_model", return_value="test/model")
+    @patch("llm.get_llm_service")
+    def test_run_batch_classifier_sends_shared_system_prompt(self, mock_get_service, _resolve):
+        """The classifier's system message is the module constant the decisions
+        shadow reuses, so both pathways see identical instructions."""
+        from guardrails.schemas import BatchClassifierResult, ChunkClassification
+        from guardrails.tasks import CHUNK_SCAN_SYSTEM_PROMPT, scan_document_version
+
+        self._create_chunk(0, "Normal patent text.")
+        mock_service = MagicMock()
+        mock_service.run_structured.return_value = (
+            BatchClassifierResult(results=[ChunkClassification(
+                chunk_index=0, is_suspicious=False, concern_tags=[], confidence=0.05, reasoning="ok",
+            )]),
+            None,
+        )
+        mock_get_service.return_value = mock_service
+
+        scan_document_version(self.version.id)
+
+        request = mock_service.run_structured.call_args.args[0]
+        self.assertEqual(request.messages[0].role, "system")
+        self.assertEqual(request.messages[0].content, CHUNK_SCAN_SYSTEM_PROMPT)
+        self.assertIn("UNTRUSTED document content", CHUNK_SCAN_SYSTEM_PROMPT)
+
     def test_heuristic_quarantine(self):
         """Chunks with high-confidence heuristic matches should be quarantined."""
         from guardrails.tasks import scan_document_version

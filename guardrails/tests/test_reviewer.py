@@ -268,6 +268,38 @@ class ReviewFlaggedChunkTests(TestCase):
         )
         self.assertIsNone(decision)
 
+    @override_settings(LLM_DEFAULT_TOP_MODEL="test-top-model")
+    @patch("guardrails.reviewer._get_llm_service")
+    def test_review_flagged_chunk_uses_given_context(self, mock_get_service):
+        """A caller-supplied RunContext (e.g. the shadow run's trace_id) reaches
+        the request; without one a fresh context for user_id is built."""
+        from guardrails.reviewer import review_flagged_chunk
+        from guardrails.schemas import ChunkReviewDecision
+        from llm.types import RunContext
+
+        captured = []
+
+        def fake(request, schema):
+            captured.append(request.context)
+            return (ChunkReviewDecision(action="allow", confidence=0.9, severity="low", reasoning="ok"), None)
+
+        svc = MagicMock()
+        svc.run_structured.side_effect = fake
+        mock_get_service.return_value = svc
+
+        shadow_context = RunContext(trace_id="shadow-20261023-abc")
+        review_flagged_chunk(
+            chunk_text="x", classifier_result=self._classifier_result(),
+            document_title="d", neighbor_context="", org_id=None, context=shadow_context,
+        )
+        review_flagged_chunk(
+            chunk_text="x", classifier_result=self._classifier_result(),
+            document_title="d", neighbor_context="", org_id=None, user_id=7,
+        )
+        self.assertIs(captured[0], shadow_context)
+        self.assertEqual(captured[1].user_id, "7")
+        self.assertNotEqual(captured[1].trace_id, "shadow-20261023-abc")
+
 
 class ReviewFlaggedSkillContentTests(TestCase):
     """Unit tests for review_flagged_skill_content (skill-aware Layer 2)."""
