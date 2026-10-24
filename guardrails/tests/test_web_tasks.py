@@ -142,6 +142,47 @@ class WebScanTests(TransactionTestCase):
         scan_web_content_task(None, self.user.pk, None, "web_fetch")
         mock_scan.assert_not_called()
 
+    @patch("guardrails.shadow_classifier.run_classifier_shadow")
+    @patch("guardrails.classifier.classify_web_content_sync", return_value=_clean())
+    def test_clean_scan_is_shadowed(self, _mock_classify, mock_shadow):
+        from chat.models import ChatThread
+
+        thread = ChatThread.objects.create(created_by=self.user)
+        _scan_web_content("benign article text", self.user.pk, str(thread.id), "brave_search")
+        mock_shadow.assert_called_once()
+        args, kwargs = mock_shadow.call_args
+        self.assertEqual(args, ("web_content", "benign article text"))
+        self.assertFalse(kwargs["prod"].flagged)
+        self.assertEqual(kwargs["prod"].review, "")
+        self.assertEqual(kwargs["org_id"], self.org.pk)
+        self.assertEqual(kwargs["user_id"], self.user.pk)
+        self.assertEqual(kwargs["conversation_id"], str(thread.id))
+        self.assertEqual(kwargs["subject"], {"source_label": "brave_search", "thread_id": str(thread.id)})
+
+    @patch("guardrails.shadow_classifier.run_classifier_shadow")
+    @patch("guardrails.reviewer.review_flagged_web_content")
+    @patch("guardrails.classifier.classify_web_content_sync", return_value=_flagged())
+    def test_flagged_scan_is_shadowed_with_the_reviewer_verdict(self, _mock_classify, mock_review, mock_shadow):
+        mock_review.return_value = WebReviewDecision(action="allow", confidence=0.9, severity="low", reasoning="x")
+        _scan_web_content("an article about jailbreaks", self.user.pk, None, "web_fetch")
+        prod = mock_shadow.call_args.kwargs["prod"]
+        self.assertTrue(prod.flagged)
+        self.assertEqual(prod.review, "allow")
+        self.assertEqual(prod.tags, ["prompt_injection"])
+        self.assertAlmostEqual(prod.confidence, 0.8)
+        self.assertIsNone(mock_shadow.call_args.kwargs["conversation_id"])
+        # Production's own events are unaffected by the shadow.
+        self.assertEqual(self._events().count(), 2)
+
+    @patch("guardrails.shadow_classifier.run_classifier_shadow")
+    @patch(
+        "guardrails.classifier.classify_web_content_sync",
+        side_effect=GuardrailModelUnavailableError("no model"),
+    )
+    def test_no_classifier_verdict_means_no_shadow(self, _mock_classify, mock_shadow):
+        _scan_web_content("anything", self.user.pk, None, "web_fetch")
+        mock_shadow.assert_not_called()
+
     @patch("guardrails.reviewer.review_flagged_web_content")
     def test_record_returns_the_production_verdict(self, mock_review):
         """The verdict string feeds the shadow comparison: reviewer action, or

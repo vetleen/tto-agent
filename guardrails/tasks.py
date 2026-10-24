@@ -808,9 +808,32 @@ def _scan_web_content(text: str, user_id: int, thread_id, source_label: str) -> 
         logger.debug(
             "scan_web_content_task: clean source=%s user_id=%s", source_label, user_id,
         )
-        return
+        prod_review = ""
+    else:
+        prod_review = _record_flagged_web_content(text, user_id, thread_id, org_id, source_label, result)
 
-    _record_flagged_web_content(text, user_id, thread_id, org_id, source_label, result)
+    # Shadow comparison against the decisions service (guardrails/shadow_classifier.py):
+    # inline here because the fetched text exists nowhere else, and this task is
+    # already off the request path. Never raises; never changes the verdict above.
+    _shadow_web_content(
+        text, result, prod_review, org_id=org_id, user_id=user_id, thread_id=thread_id,
+        source_label=source_label,
+    )
+
+
+def _shadow_web_content(text, result, prod_review, *, org_id, user_id, thread_id, source_label) -> None:
+    from guardrails.shadow_classifier import ProdOutcome, run_classifier_shadow
+
+    thread = str(thread_id) if thread_id else None
+    run_classifier_shadow(
+        "web_content", text,
+        prod=ProdOutcome(
+            flagged=bool(result.is_suspicious), confidence=result.confidence,
+            tags=list(result.concern_tags or []), review=prod_review,
+        ),
+        org_id=org_id, user_id=user_id, conversation_id=thread,
+        subject={"source_label": source_label, "thread_id": thread},
+    )
 
 
 def _record_flagged_web_content(

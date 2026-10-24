@@ -246,7 +246,7 @@ class ScanOutcomeTests(_GateTestBase):
         )
         seen = {}
 
-        def record(text, user, org_id, label):
+        def record(text, user, org_id, label, **kwargs):
             seen["user"] = user
             seen["org_id"] = org_id
             return CLEAN_GUARDRAIL

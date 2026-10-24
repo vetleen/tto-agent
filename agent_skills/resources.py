@@ -369,10 +369,11 @@ def extract_text(data: bytes, ext: str) -> str:
 
 # --- scanning --------------------------------------------------------------
 
-def _scan_text_guardrail(text, user, org_id, label) -> tuple[str, str, list]:
+def _scan_text_guardrail(text, user, org_id, label, *, subject=None) -> tuple[str, str, list]:
     """Adversarial/prompt-injection scan of a text blob. Returns
     ``(action, detail, tags)`` where action is ``"allow"`` or ``"quarantine"``.
     Logs GuardrailEvents (trigger_source=skill_resource); NEVER suspends a user.
+    ``subject`` (ids only: skill/resource) is recorded by the shadow comparison.
     """
     from guardrails.classifier import (
         GuardrailModelUnavailableError,
@@ -386,7 +387,7 @@ def _scan_text_guardrail(text, user, org_id, label) -> tuple[str, str, list]:
     # ``user`` may be None (an org skill with no creator, scanned by the worker or
     # a management command): the scan still runs; only the event log is skipped.
     uid = getattr(user, "pk", None)
-    for window in _windows(text, _SCAN_WINDOW_CHARS):
+    for index, window in enumerate(_windows(text, _SCAN_WINDOW_CHARS)):
         hres = heuristic_scan(window)
         if hres.should_block:
             _log_guardrail(
@@ -403,6 +404,7 @@ def _scan_text_guardrail(text, user, org_id, label) -> tuple[str, str, list]:
             )
             continue
         if not cres.is_suspicious:
+            _shadow_skill_window(window, index, cres, "", subject=subject, label=label, uid=uid, org_id=org_id)
             continue
 
         decision = review_flagged_skill_content(
@@ -412,18 +414,38 @@ def _scan_text_guardrail(text, user, org_id, label) -> tuple[str, str, list]:
             quarantine = cres.confidence >= 0.9
             severity, reasoning, check = "medium", cres.reasoning, "classifier"
             confidence = cres.confidence
+            prod_review = "threshold_quarantine" if quarantine else "threshold_logged"
         else:
             quarantine = decision.action == "quarantine"
             severity, reasoning, check = decision.severity, decision.reasoning, "llm_review"
             confidence = decision.confidence
+            prod_review = decision.action
         _log_guardrail(
             _create_event_sync, user, org_id, check, cres.concern_tags,
             confidence, severity, "blocked" if quarantine else "dismissed",
             window, reviewer_output=reasoning,
         )
+        _shadow_skill_window(window, index, cres, prod_review, subject=subject, label=label, uid=uid, org_id=org_id)
         if quarantine:
             return "quarantine", detail, list(cres.concern_tags)
     return "allow", "", []
+
+
+def _shadow_skill_window(window, index, cres, prod_review, *, subject, label, uid, org_id) -> None:
+    """Shadow comparison of one classified window against the decisions service
+    (guardrails/shadow_classifier.py). Inline: this already runs on the worker.
+    Never raises; never changes the verdict."""
+    from guardrails.shadow_classifier import ProdOutcome, run_classifier_shadow
+
+    run_classifier_shadow(
+        "skill_content", window,
+        prod=ProdOutcome(
+            flagged=bool(cres.is_suspicious), confidence=cres.confidence,
+            tags=list(cres.concern_tags or []), review=prod_review,
+        ),
+        org_id=org_id, user_id=uid, conversation_id=None,
+        subject={**(subject or {}), "label": label, "window": index},
+    )
 
 
 def _log_guardrail(
@@ -515,7 +537,10 @@ def scan_resource(resource: SkillResource, user) -> None:
 
     try:
         if text.strip():
-            g_action, g_detail, _ = _scan_text_guardrail(text, user, org_id, resource.name)
+            g_action, g_detail, _ = _scan_text_guardrail(
+                text, user, org_id, resource.name,
+                subject={"resource_id": resource.pk, "skill_id": resource.skill_id},
+            )
             pii_cats, pii_quar, pii_reason, pii_detail = _scan_text_pii(
                 text, user, org_id, resource.name
             )
@@ -956,7 +981,9 @@ def _scan_blob(
 
     title = f"{skill.name}: {label}"
     reasons: list[str] = []
-    g_action, _, _ = _scan_text_guardrail(blob, user, org_id, title)
+    g_action, _, _ = _scan_text_guardrail(
+        blob, user, org_id, title, subject={"skill_id": skill.pk, "blob": label},
+    )
     if g_action == "quarantine":
         reasons.append(f"“{label}” was flagged as adversarial content.")
     else:
