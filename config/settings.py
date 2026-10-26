@@ -1156,15 +1156,17 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": 300.0,
     },
     # Shadow-compare yesterday's chunk scans against the decisions service
-    # (guardrails.shadow). Crontabs are UTC: 02:37 UTC = 03:37/04:37 Oslo — after
-    # the 02:00 Oslo pg:backup, clear of prune-document-versions (03:22) and the
-    # worker restart (03:45). Bounded by GUARDRAIL_SHADOW_MAX_CHUNKS/REVIEWS.
+    # (guardrails.shadow). Beat crontabs run in TIME_ZONE (Europe/Oslo): Celery falls
+    # back to Django's TIME_ZONE when CELERY_TIMEZONE is unset, and the first run rows
+    # confirmed it (02:37 Oslo = 01:37 UTC in winter). So: after the 02:00 Oslo
+    # pg:backup, clear of prune-document-versions (03:22) and the worker restart
+    # (03:45). Bounded by GUARDRAIL_SHADOW_MAX_CHUNKS/REVIEWS.
     "shadow-chunk-scan-nightly": {
         "task": "guardrails.tasks.shadow_chunk_scan_nightly",
         "schedule": crontab(hour=2, minute=37),
     },
     # Shadow-compare yesterday's PII scans against the decisions service
-    # (documents.services.pii_shadow). 02:52 UTC: its own entry (independent kill
+    # (documents.services.pii_shadow). 02:52 Oslo: its own entry (independent kill
     # switch and failure domain from the chunk shadow); at most PII_SHADOW_MAX_WINDOWS
     # quick calls (~3 s each cold, less once the long prompt is cached), so it finishes
     # well before the 03:45 worker restart.
@@ -1172,8 +1174,8 @@ CELERY_BEAT_SCHEDULE = {
         "task": "documents.tasks.shadow_pii_scan_nightly",
         "schedule": crontab(hour=2, minute=52),
     },
-    # Restart the worker dyno in the quiet early morning (03:45 UTC ≈ 04:45/
-    # 05:45 Oslo) so each business day starts from the lean boot footprint
+    # Restart the worker dyno in the quiet early morning (03:45 Oslo — crontabs
+    # follow TIME_ZONE) so each business day starts from the lean boot footprint
     # instead of yesterday's memory high-water mark. Scheduled clear of
     # prune-document-versions (03:22) so the shutdown never interrupts it.
     # No-op outside Heroku; see core.tasks.restart_worker_nightly.

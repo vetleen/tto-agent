@@ -119,7 +119,8 @@ Request-too-large and 400s raise instead. Quick calls write their own `LLMCallLo
 `params["_log_metadata"]`. An application is one small function with its own `feature_key`; no
 existing classifier has been moved onto it yet.
 
-**Chunk-scan shadow** (`guardrails/shadow.py`, beat task `shadow_chunk_scan_nightly`, 02:37 UTC): the
+**Chunk-scan shadow** (`guardrails/shadow.py`, beat task `shadow_chunk_scan_nightly`, 02:37 Europe/Oslo —
+beat crontabs follow Django's `TIME_ZONE`, not UTC): the
 first evidence-gathering step. Every night it re-runs yesterday's document chunks through the quick
 pathway with the chunk scan's own batching, system prompt (`CHUNK_SCAN_SYSTEM_PROMPT`) and concern
 tags (`CONCERN_TAGS`), compares against production's per-chunk verdicts (`GuardrailEvent.chunk_id`),
@@ -145,7 +146,7 @@ kill switch `CLASSIFIER_SHADOW_ENABLED` (forced off under `manage.py test`; hook
 `override_settings`). Report: `manage.py classifier_shadow_report [--family …] [--disagreements]`.
 Never changes a verdict, never writes a `GuardrailEvent`.
 
-**PII shadow** (`documents/services/pii_shadow.py`, beat task `shadow_pii_scan_nightly`, 02:52 UTC):
+**PII shadow** (`documents/services/pii_shadow.py`, beat task `shadow_pii_scan_nightly`, 02:52 Europe/Oslo):
 re-windows yesterday's READY versions exactly like the PII scan (`pii_scan.iter_pii_windows` +
 `pii_window_text`, the same head/tail truncation) and asks the quick pathway ten predicates per
 window, worded from `PIICategoryOutput`'s field descriptions. Production stores only the per-version
