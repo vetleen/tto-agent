@@ -76,6 +76,18 @@
       "description": "Max app-side connections to the in-dyno PgBouncer (cheap; lets app concurrency exceed the real pool size).",
       "value": "100"
     },
+    "PGBOUNCER_LOG_CONNECTIONS": {
+      "description": "0 = don't log every client connect. conn_max_age=0 opens one per request, so this was ~20% of the Papertrail quota with no information.",
+      "value": "0"
+    },
+    "PGBOUNCER_LOG_DISCONNECTIONS": {
+      "description": "0 = don't log every client disconnect (same reason as PGBOUNCER_LOG_CONNECTIONS). Pooler errors stay logged.",
+      "value": "0"
+    },
+    "PGBOUNCER_STATS_PERIOD": {
+      "description": "Seconds between PgBouncer's stats log lines (buildpack default 60).",
+      "value": "600"
+    },
     "CELERY_WORKER_CONCURRENCY": {
       "description": "Celery threads-pool worker thread count.",
       "value": "8"

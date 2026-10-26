@@ -427,7 +427,9 @@ connections ≈ `2 × pool_size`:
 
 Config vars (set **per app** — staging and production separately; `pipelines:promote`
 does not copy them): `PGBOUNCER_POOL_MODE=transaction`, `PGBOUNCER_DEFAULT_POOL_SIZE`
-(per table), `PGBOUNCER_MAX_CLIENT_CONN=100`. With PgBouncer in front,
+(per table), `PGBOUNCER_MAX_CLIENT_CONN=100`, and for log volume
+`PGBOUNCER_LOG_CONNECTIONS=0`, `PGBOUNCER_LOG_DISCONNECTIONS=0`, `PGBOUNCER_STATS_PERIOD=600`
+(per-connection lines were ~20% of the 10 MB/day Papertrail quota). With PgBouncer in front,
 `CELERY_WORKER_CONCURRENCY` can be raised for throughput without increasing real DB
 connections (the pool size is the real ceiling). Check live usage with `heroku pg:info`.
 
@@ -637,6 +639,8 @@ See `.env.example` for the full list with comments. Key production variables:
 | `PGBOUNCER_POOL_MODE` | Heroku | In-dyno PgBouncer mode; keep `transaction` (see Database) |
 | `PGBOUNCER_DEFAULT_POOL_SIZE` | Heroku | Real PG conns per dyno (5 = essential-0, 10 = essential-2) |
 | `PGBOUNCER_MAX_CLIENT_CONN` | Heroku | Max app→local-pgbouncer conns (default 100) |
+| `PGBOUNCER_LOG_CONNECTIONS` / `_LOG_DISCONNECTIONS` | Heroku | `0`: no per-connection log lines (log volume; see Database) |
+| `PGBOUNCER_STATS_PERIOD` | Heroku | Seconds between PgBouncer stats lines; `600` |
 | `DOCUMENT_UPLOAD_MAX_SIZE_BYTES` | No | Max data-room upload size (default: 50 MB) |
 | `SKILL_RESOURCE_IMAGE_MAX_SIZE_BYTES` | No | Max skill-resource image upload (default: 25 MB; downscaled at ingest) |
 | `SKILL_RESOURCE_PDF_MAX_SIZE_BYTES` | No | Max skill-resource PDF upload (default: 15 MB) |
