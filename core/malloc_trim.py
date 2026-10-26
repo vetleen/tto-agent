@@ -86,6 +86,17 @@ def _read_rss_kb() -> int | None:
     return None
 
 
+# A trim that frees less than this is logged at DEBUG: almost every trim frees
+# a few MB ("491->491MB"), and those lines were ~2% of prod's daily Papertrail
+# quota while saying nothing. The rare large release stays visible at INFO.
+_LOG_RELEASE_MIN_KB = 16 * 1024
+
+
+def _log_release(label: str, rss_kb: int, after_kb: int) -> None:
+    level = logging.INFO if rss_kb - after_kb >= _LOG_RELEASE_MIN_KB else logging.DEBUG
+    logger.log(level, "%s released RSS %.0f->%.0fMB", label, rss_kb / 1024, after_kb / 1024)
+
+
 # --- Task-triggered trim (Celery worker) -----------------------------------
 # The periodic daemon below is web-only (see _should_start). The worker instead
 # trims after each task via maybe_trim(), wired to Celery's task_postrun in
@@ -120,10 +131,7 @@ def maybe_trim(threshold_mb: float = 700.0, min_interval_s: float = 15.0) -> boo
         if trim_malloc() and rss is not None:
             after = _read_rss_kb()
             if after is not None and after < rss:
-                logger.info(
-                    "malloc_trim (task) released RSS %.0f->%.0fMB",
-                    rss / 1024, after / 1024,
-                )
+                _log_release("malloc_trim (task)", rss, after)
             return True
         return False
     except Exception:  # noqa: BLE001 — never break the caller (a Celery task)
@@ -177,10 +185,7 @@ class _Trimmer:
                 if trim_malloc() and rss is not None:
                     after = _read_rss_kb()
                     if after is not None and after < rss:
-                        logger.info(
-                            "malloc_trim released RSS %.0f->%.0fMB",
-                            rss / 1024, after / 1024,
-                        )
+                        _log_release("malloc_trim", rss, after)
             except Exception:  # noqa: BLE001 — never let the daemon die
                 logger.exception("malloc_trim tick failed")
 

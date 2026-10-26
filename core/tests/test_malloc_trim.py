@@ -100,6 +100,17 @@ class MaybeTrimTests(SimpleTestCase):
             self.assertFalse(malloc_trim.maybe_trim(threshold_mb=700, min_interval_s=1000))
             trim.assert_called_once()
 
+    def test_small_release_logs_at_debug_large_at_info(self):
+        for after_mb, level in ((795, "DEBUG"), (600, "INFO")):
+            with self.subTest(after_mb=after_mb), \
+                 mock.patch.object(malloc_trim, "_read_rss_kb", side_effect=[800 * 1024, after_mb * 1024]), \
+                 mock.patch.object(malloc_trim, "trim_malloc", return_value=True), \
+                 self.assertLogs("core.malloc_trim", level="DEBUG") as logs:
+                malloc_trim._last_maybe_trim = malloc_trim.time.monotonic() - 10_000
+                self.assertTrue(malloc_trim.maybe_trim(threshold_mb=700, min_interval_s=0))
+            self.assertEqual([r.levelname for r in logs.records], [level])
+            self.assertIn(f"released RSS 800->{after_mb}MB", logs.output[0])
+
     def test_never_raises_into_task(self):
         with mock.patch.object(malloc_trim, "_read_rss_kb", side_effect=RuntimeError("boom")):
             self.assertFalse(malloc_trim.maybe_trim(min_interval_s=0))
