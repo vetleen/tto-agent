@@ -219,3 +219,5 @@ class CopyExportImportTests(_Base):
         self.assertFalse(payload["always_available"])
         imported = import_skill(self.user, payload)
         self.assertFalse(imported.always_available)
+        # The import keeps it a specialization (it used to land as a main skill).
+        self.assertEqual(imported.audience, "subagent")

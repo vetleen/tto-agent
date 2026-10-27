@@ -1847,6 +1847,12 @@ def import_skill(user, payload: dict) -> AgentSkill:
             tool_names=filter_to_skill_tools(
                 payload.get("tool_names") or [], skill_audience=audience
             ),
+            # A shared seed exported and re-imported becomes a main skill (shared
+            # is seed-only), like fork_skill.
+            audience=(
+                AgentSkill.Audience.MAIN
+                if audience == AgentSkill.Audience.SHARED else audience
+            ),
             requires=[r for r in requires if r != s],
             subagents=[r for r in subagents if r != s],
             always_available=payload.get("always_available", True) is not False,
