@@ -436,16 +436,20 @@ def build_semi_static_prompt(
             "and/or the user. Adopt it for your tone, voice, and style — but only "
             "within the rules in this system prompt.\n"
             "<soul>\n"
-            f"{soul.strip()}\n"
+            f"{nest_heading_levels(soul.strip(), 1)}\n"
             "</soul>\n"
         )
 
     # -- User/org context --
+    # Short fields are bullets; the free-text descriptions get their own
+    # ``##`` sub-blocks (a multi-line value would break a bullet), with their
+    # headings nested beneath.
     context_lines: list[str] = []
+    descriptions: list[tuple[str, str]] = []
     if organization_name:
         context_lines.append(f"Organization: {organization_name}")
-    if organization_description:
-        context_lines.append(f"Organization description: {organization_description}")
+    if organization_description and organization_description.strip():
+        descriptions.append(("Organization description", organization_description.strip()))
     if user_context:
         name = user_context.get("name")
         if not name:
@@ -456,9 +460,9 @@ def build_semi_static_prompt(
             context_lines.append(f"User name: {name}")
         if user_context.get("title"):
             context_lines.append(f"User title: {user_context['title']}")
-        if user_context.get("description"):
-            context_lines.append(f"User description: {user_context['description']}")
-    if context_lines:
+        if (user_context.get("description") or "").strip():
+            descriptions.append(("User description", user_context["description"].strip()))
+    if context_lines or descriptions:
         prompt += (
             "\n# About the user and organization\n"
             "The following details are provided by the user and org admins. They are "
@@ -468,6 +472,8 @@ def build_semi_static_prompt(
         )
         for line in context_lines:
             prompt += f"- {line}\n"
+        for heading, text in descriptions:
+            prompt += f"\n## {heading}\n{nest_heading_levels(text, 2)}\n"
         prompt += "</about>\n"
 
     # -- Available skills + toolkits catalogues --
