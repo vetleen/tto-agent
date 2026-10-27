@@ -11,6 +11,7 @@ from agent_skills.seed_skills.image_generation_tools import IMAGE_GENERATION_TOO
 from agent_skills.seed_skills.patent_searcher import PATENT_SEARCHER
 from agent_skills.seed_skills.researcher import RESEARCHER
 from agent_skills.seed_skills.skill_creator import SKILL_CREATOR
+from agent_skills.seed_skills.skill_management_tools import SKILL_MANAGEMENT_TOOLS
 from agent_skills.seed_skills.slide_deck_tools import SLIDE_DECK_TOOLS
 from agent_skills.seed_skills.web_deep_researcher import WEB_DEEP_RESEARCHER
 from agent_skills.seed_skills.web_research_tools import WEB_RESEARCH_TOOLS
@@ -21,7 +22,7 @@ SYSTEM_SKILLS = [
     PATENT_SEARCHER,
     # Toolkits (kind="toolkit"): slugs end in ``_tools``.
     IMAGE_GENERATION_TOOLS, ASSISTANT_LOOP_TOOLS, CANVAS_TOOLS, DATA_ROOM_TOOLS,
-    WEB_RESEARCH_TOOLS, SLIDE_DECK_TOOLS,
+    WEB_RESEARCH_TOOLS, SLIDE_DECK_TOOLS, SKILL_MANAGEMENT_TOOLS,
 ]
 
 # Cross-app seed skill from the meetings app. Wrapped in try/except so

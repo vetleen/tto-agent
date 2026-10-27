@@ -60,6 +60,25 @@ class SeedCoreSkillsTest(TestCase):
         for tool in ("web_search", "web_fetch", "web_search_read", "web_image_view"):
             self.assertIn(tool, skill.tool_names)
 
+    def test_skill_management_tools_seeded(self):
+        skill = self._get("skill_management_tools")
+        self.assertIsNotNone(skill)
+        self.assertEqual(skill.audience, "main")
+        self.assertEqual(skill.kind, AgentSkill.Kind.TOOLKIT)
+        for tool in (
+            "skill_create", "skill_edit", "skill_delete", "skill_field_save",
+            "skill_field_load", "skill_resource_list", "skill_resource_save",
+            "skill_resource_attach", "skill_resource_update", "skill_resource_delete",
+            "skill_tool_list", "skill_tool_inspect",
+        ):
+            self.assertIn(tool, skill.tool_names)
+
+    def test_skill_creator_requires_toolkits_not_tools(self):
+        """Skill Creator gets the skill tools through the toolkit, not tool_names."""
+        skill = self._get("skill-creator")
+        self.assertEqual(skill.tool_names, [])
+        self.assertEqual(skill.requires, ["canvas_tools", "skill_management_tools"])
+
 
 class SeedGraphTests(TestCase):
     """Seed-level invariants of the toolkit / ``requires`` model: toolkits are
@@ -78,6 +97,7 @@ class SeedGraphTests(TestCase):
             sorted([
                 "assistant_loop_tools", "canvas_tools", "data_room_tools",
                 "image_generation_tools", "web_research_tools", "slide_deck_tools",
+                "skill_management_tools",
             ]),
         )
         for data in toolkits:
@@ -112,7 +132,7 @@ class SeedGraphTests(TestCase):
         for slug in ("skill-creator", "web-deep-researcher-2", "web-deep-researcher",
                      "meeting-summarizer"):
             row = AgentSkill.objects.get(slug=slug, level="system")
-            self.assertEqual(row.requires, ["canvas_tools"], slug)
+            self.assertIn("canvas_tools", row.requires, slug)
         for slug in ("researcher", "web-researcher", "patent-searcher"):
             row = AgentSkill.objects.get(slug=slug, level="system")
             self.assertEqual(row.requires, [], slug)

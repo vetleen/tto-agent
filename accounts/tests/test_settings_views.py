@@ -718,13 +718,15 @@ class OrgSkillsUpdateTests(TestCase):
         self.client.login(email=self.admin_user.email, password=self.password)
         response = self.client.post(
             self.url,
-            json.dumps({"slug": "skill-creator", "tool": "skill_create", "enabled": False}),
+            json.dumps({
+                "slug": "skill_management_tools", "tool": "skill_create", "enabled": False,
+            }),
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 200)
         self.org.refresh_from_db()
         self.assertFalse(
-            self.org.preferences["skills"]["skill-creator"]["tools"]["skill_create"]
+            self.org.preferences["skills"]["skill_management_tools"]["tools"]["skill_create"]
         )
 
     def test_non_admin_gets_403(self):

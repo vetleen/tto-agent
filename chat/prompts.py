@@ -516,7 +516,7 @@ def build_semi_static_prompt(
         prompt += (
             "\n# Toolkits available to this user\n"
             "Toolkits unlock extra tools (the canvas, web research, data rooms, image "
-            "generation, slide decks, loops). Attach one with "
+            "generation, slide decks, loops, skill authoring). Attach one with "
             "`chat_skill_attach(skill_slugs=[\"<slug>\"])` exactly like a skill, BEFORE "
             "calling any of its tools — its tools and instructions are live from your "
             "next step. Be eager to attach the toolkit a task calls for. Detach it with "

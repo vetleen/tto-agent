@@ -398,21 +398,8 @@ Repeat until the user is satisfied.
 7. **Generalize, don't overfit.** Make instructions that handle the class
    of problem, not specific instances.
    """,
-    # Description/instructions are drafted in canvases: the canvas toolkit
-    # comes along with the skill.
-    "requires": ["canvas_tools"],
-    "tool_names": [
-        "skill_create",
-        "skill_edit",
-        "skill_delete",
-        "skill_field_save",
-        "skill_field_load",
-        "skill_resource_list",
-        "skill_resource_save",
-        "skill_resource_attach",
-        "skill_resource_update",
-        "skill_resource_delete",
-        "skill_tool_list",
-        "skill_tool_inspect",
-    ],
+    # Description/instructions are drafted in canvases, and the skill tools live
+    # in their own toolkit: both toolkits come along with the skill.
+    "requires": ["canvas_tools", "skill_management_tools"],
+    "tool_names": [],
 }
