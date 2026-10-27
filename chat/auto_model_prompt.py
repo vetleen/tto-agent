@@ -7,14 +7,13 @@ keys in sync with that table (a test pins it).
 """
 
 ROUTER_PROMPT = """\
-You route requests in an AI assistant for a technology transfer office (TTO).
-Users are TTO staff: business developers, IP lawyers, patent and licensing
-specialists, project managers. They ask about inventions, patents, licensing,
-agreements, funding applications, start-ups and market analysis, often over
+You route requests in an AI assistant for knowledge workers.
+Users ask about business problems they encounter, like patents, licensing,
+agreements, funding applications, report writing, business strategy and market analysis, often over
 documents they have uploaded.
 
 Your job: pick the category that best describes what the assistant must do to
-answer the user's LATEST message well. Each category runs on a model chosen by
+answer the user's *LATEST* message well. Each category runs on a model chosen by
 the organisation; stronger categories cost more and are slower. You do not
 answer the request.
 
@@ -35,9 +34,7 @@ How to choose:
 - "mid" is the default. Pick it for ordinary questions, explanations, everyday
   tasks and anything that doesn't clearly fit elsewhere. Most requests belong
   here.
-- Escalate to a stronger category only on clear signals: the request asks for
-  a long or polished text, careful reading of long or dense material, expert
-  judgement (legal, IP, strategic), multi-source research, or slides.
+- Escalate to a stronger category only on clear signals.
 - Pick "cheap" only when almost no thinking is needed: greetings, thanks,
   acknowledgements, a one-step operation in the app (attach a skill, put text
   in the canvas, rename something), or a question about how the app itself
@@ -68,7 +65,7 @@ CATEGORY_DEFINITIONS: dict[str, str] = {
     ),
     "top": (
         "Unusually hard or open-ended problems that need the strongest model "
-        "but fit none of the specific categories below."
+        "but fit none of the specific categories below. Rare."
     ),
     "short_writing": (
         "Writing a short text from scratch or editing one: a LinkedIn post, a "
@@ -77,27 +74,25 @@ CATEGORY_DEFINITIONS: dict[str, str] = {
     "writing": (
         "Drafting or substantially revising a longer or polished text: a "
         "report, an application section, an agreement or term sheet, a "
-        "letter, a skill or template."
+        "letter, a skill or template. Where writing skill matters."
     ),
     "light_reading": (
         "Finding, summarising or extracting information from documents when "
-        "the answer is mostly on the page: what a file says, key dates, a "
+        "the answer is mostly on the page: what a file says, fact finding, a "
         "summary."
     ),
     "difficult_reading": (
         "Close reading of long, dense or technical material where details "
-        "matter: contracts, patent claims, consortium agreements, full "
-        "applications."
+        "matter: contracts, patent claims."
     ),
     "light_analysis": (
         "Straightforward analysis from given facts: simple comparisons, "
-        "calculations, tables, checklists, project plans and timelines."
+        "calculations, tables, checklists, project plans and timelines. "
+        "Simple, straight-forward topics. Fill in this GAP analysis."
     ),
     "complex_analysis": (
-        "Multi-step reasoning and expert judgement: legal or IP assessments, "
-        "ownership and rights analysis, gap analysis or evaluation of an "
-        "application, comparing an answer against a benchmark, strategy and "
-        "negotiation positions."
+        "Multi-step reasoning and expert judgement where details matter: "
+        "legal work, IP work, strategy and negotiation positions, deeply technical issues or difficult comparisons and so on."
     ),
     "research": (
         "Searching for and synthesising information from outside sources: "
