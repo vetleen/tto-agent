@@ -8,7 +8,8 @@ Listing only: ``chat_subagent_create`` accepts any enabled specialization.
 import json
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
+from django.urls import reverse
 
 from accounts.models import Membership, Organization
 from agent_skills.models import MAX_SUBAGENTS, AgentSkill
@@ -221,3 +222,108 @@ class CopyExportImportTests(_Base):
         self.assertFalse(imported.always_available)
         # The import keeps it a specialization (it used to land as a main skill).
         self.assertEqual(imported.audience, "subagent")
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class DetailPageTests(_Base):
+    """The Sub-agents picker (playbooks) and the Availability toggle
+    (specializations) on the skill detail page."""
+
+    def setUp(self):
+        super().setUp()
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+        self.playbook = AgentSkill.objects.create(
+            slug="prior-art", name="Prior Art", instructions="x", level="user",
+            created_by=self.user, subagents=["patent-searcher"],
+        )
+        self.client.force_login(self.user)
+
+    def _detail(self, skill):
+        return self.client.get(reverse("agent_skills_detail", kwargs={"skill_id": skill.id}))
+
+    def test_playbook_shows_picker_with_skills_only_specializations(self):
+        response = self._detail(self.playbook)
+        self.assertTrue(response.context["show_subagents"])
+        self.assertFalse(response.context["show_availability"])
+        offered = [s["slug"] for s in response.context["available_subagents"]]
+        # Always-available researcher is not offered; all tiers a user skill
+        # may name are.
+        self.assertEqual(sorted(offered), ["my-spec", "org-spec", "patent-searcher"])
+        self.assertContains(response, 'id="subagents-section"')
+
+    def test_specialization_shows_availability_and_who_names_it(self):
+        response = self._detail(self.sys_spec)
+        self.assertFalse(response.context["show_subagents"])
+        self.assertTrue(response.context["show_availability"])
+        self.assertEqual([s.slug for s in response.context["named_by"]], ["prior-art"])
+        self.assertContains(response, 'id="availability-section"')
+
+    def test_toolkit_has_neither(self):
+        toolkit = AgentSkill.objects.create(
+            slug="canvas_tools", name="Canvas Tools", instructions="i",
+            level="system", kind="toolkit",
+        )
+        response = self._detail(toolkit)
+        self.assertFalse(response.context["show_subagents"])
+        self.assertFalse(response.context["show_availability"])
+
+    def test_subagents_endpoint_keeps_allowed_slugs_and_reports_unmet(self):
+        response = self.client.post(
+            reverse("agent_skills_subagents_save", kwargs={"skill_id": self.playbook.id}),
+            {"subagents_json": json.dumps(["my-spec", "nope", "patent-searcher"])},
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["subagents"], ["my-spec", "patent-searcher"])
+        # my-spec is unscanned, so it isn't offered.
+        self.assertEqual([u["slug"] for u in data["unmet"]], ["my-spec"])
+        self.playbook.refresh_from_db()
+        self.assertEqual(self.playbook.subagents, ["my-spec", "patent-searcher"])
+
+    def test_subagents_endpoint_refuses_read_only_skill(self):
+        sys_pb = AgentSkill.objects.create(
+            slug="sys-pb", name="Sys PB", instructions="i", level="system",
+        )
+        # System playbooks are opt-in per org (hidden → 404 otherwise).
+        self.org.preferences["skills"]["sys-pb"] = {"enabled": True}
+        self.org.save(update_fields=["preferences"])
+        response = self.client.post(
+            reverse("agent_skills_subagents_save", kwargs={"skill_id": sys_pb.id}),
+            {"subagents_json": json.dumps(["patent-searcher"])},
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_full_save_carries_subagents(self):
+        self.client.post(
+            reverse("agent_skills_save", kwargs={"skill_id": self.playbook.id}),
+            {
+                "action": "save", "name": "Prior Art", "instructions": "x",
+                "subagents_json": json.dumps(["org-spec"]),
+            },
+        )
+        self.playbook.refresh_from_db()
+        self.assertEqual(self.playbook.subagents, ["org-spec"])
+
+    def test_availability_endpoint_toggles(self):
+        url = reverse("agent_skills_availability_save", kwargs={"skill_id": self.user_spec.id})
+        response = self.client.post(url, {"always_available": "1"})
+        self.assertEqual(response.json(), {
+            "ok": True, "always_available": True, "named_by_count": 0,
+        })
+        self.user_spec.refresh_from_db()
+        self.assertTrue(self.user_spec.always_available)
+        self.client.post(url, {"always_available": "0"})
+        self.user_spec.refresh_from_db()
+        self.assertFalse(self.user_spec.always_available)
+
+    def test_availability_endpoint_rejects_playbook(self):
+        response = self.client.post(
+            reverse("agent_skills_availability_save", kwargs={"skill_id": self.playbook.id}),
+            {"always_available": "0"},
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_list_marks_skills_only_rows(self):
+        response = self.client.get(reverse("agent_skills_list") + "?tab=subagent")
+        self.assertContains(response, "through-skills-pill")

@@ -248,186 +248,261 @@
     });
   }
 
-  // ----- Requires (toolkits attached automatically with this skill) -----
-  // Same anatomy as the tools picker: a hidden JSON input of slugs, chips,
-  // and a checkbox modal listing the available toolkits. The section is only
-  // rendered for playbooks of the main audience, so every element is optional.
-  var requiresInput = document.getElementById("requires-json");
-  var requiresChipsEl = document.getElementById("requires-chips");
-  var requires = [];
-  if (requiresInput) {
+  // ----- Slug pickers: Requires (toolkits) and Sub-agents (specializations) -----
+  // Same anatomy as the tools picker: a hidden JSON input of slugs, chips, and
+  // a checkbox modal. Element ids derive from ``prefix`` (requires-json,
+  // requires-chips, requires-picker-modal, …). Each list saves straight away
+  // (Apply, a click outside the picker, or a chip's ×) rather than waiting for
+  // the page's Save; the hidden input stays in sync, so a later full Save
+  // writes the same list. Sections render only where they apply, so every
+  // element is optional. ``unmetId`` names a json_script of
+  // [{slug, name, reason}] — those chips render greyed with the reason.
+  function initSlugPicker(opts) {
+    var p = opts.prefix;
+    var input = document.getElementById(p + "-json");
+    var chipsEl = document.getElementById(p + "-chips");
+    var section = document.getElementById(p + "-section");
+    if (!input || !section) return;
+    var slugs = [];
     try {
-      requires = JSON.parse(requiresInput.value || "[]");
+      slugs = JSON.parse(input.value || "[]");
     } catch (e) {
-      requires = [];
+      slugs = [];
     }
-  }
-
-  function syncRequiresInput() {
-    if (requiresInput) requiresInput.value = JSON.stringify(requires);
-  }
-
-  // Requires are saved straight away (Apply, a click outside the picker, or a
-  // chip's ×) rather than waiting for the page's Save. The hidden input stays
-  // in sync, so a later full Save writes the same list.
-  var requiresSection = document.getElementById("requires-section");
-  var requiresSaveUrl = requiresSection ? requiresSection.getAttribute("data-save-url") : "";
-  var savedRequires = JSON.stringify(requires);
-
-  function saveRequires() {
-    var payload = JSON.stringify(requires);
-    if (!editable || !requiresSaveUrl || payload === savedRequires) return;
-    var errorEl = document.getElementById("requires-save-error");
-    var csrfEl = form.querySelector("[name=csrfmiddlewaretoken]");
-    var body = new FormData();
-    body.append("requires_json", payload);
-    fetch(requiresSaveUrl, {
-      method: "POST",
-      body: body,
-      credentials: "same-origin",
-      headers: {
-        "X-CSRFToken": csrfEl ? csrfEl.value : "",
-        "X-Requested-With": "XMLHttpRequest",
-      },
-    })
-      .then(function (r) {
-        if (!r.ok) throw new Error("HTTP " + r.status);
-        return r.json();
-      })
-      .then(function (data) {
-        // The server drops unknown slugs: show what was actually stored.
-        requires = data.requires || [];
-        savedRequires = JSON.stringify(requires);
-        syncRequiresInput();
-        renderRequiresChips();
-        if (errorEl) errorEl.classList.add("hidden");
-      })
-      .catch(function () {
-        if (errorEl) errorEl.classList.remove("hidden");
-      });
-  }
-
-  function requiresPickerCard(slug) {
-    return document.querySelector(
-      '.requires-picker-checkbox[data-skill-slug="' + cssEscape(slug) + '"]'
-    );
-  }
-
-  function renderRequiresChips() {
-    if (!requiresChipsEl) return;
-    requiresChipsEl.innerHTML = "";
-    if (!requires.length) {
-      var empty = document.createElement("p");
-      empty.className = "text-xs text-body italic";
-      empty.textContent = "No toolkits required.";
-      requiresChipsEl.appendChild(empty);
-      return;
+    var unmet = {};
+    function setUnmet(list) {
+      unmet = {};
+      (list || []).forEach(function (u) { unmet[u.slug] = u; });
     }
-    var tmpl = document.getElementById("requires-chip-template");
-    requires.forEach(function (slug) {
-      var node = tmpl.content.firstElementChild.cloneNode(true);
-      var cb = requiresPickerCard(slug);
-      var label = cb ? cb.getAttribute("data-skill-name") || slug : slug;
-      node.querySelector(".tool-chip-name").textContent = label;
-      node.setAttribute("title", slug);
-      var removeBtn = node.querySelector(".remove-tool-btn");
-      if (!editable) {
-        removeBtn.remove();
-      } else {
-        removeBtn.addEventListener("click", function () {
-          requires = requires.filter(function (s) { return s !== slug; });
-          syncRequiresInput();
-          renderRequiresChips();
-          saveRequires();
+    var unmetEl = opts.unmetId ? document.getElementById(opts.unmetId) : null;
+    if (unmetEl) {
+      try { setUnmet(JSON.parse(unmetEl.textContent || "[]")); } catch (e) { setUnmet([]); }
+    }
+    var saveUrl = section.getAttribute("data-save-url") || "";
+    var saved = JSON.stringify(slugs);
+
+    function sync() {
+      input.value = JSON.stringify(slugs);
+    }
+
+    function card(slug) {
+      return document.querySelector(
+        "." + p + '-picker-checkbox[data-skill-slug="' + cssEscape(slug) + '"]'
+      );
+    }
+
+    function save() {
+      var payload = JSON.stringify(slugs);
+      if (!editable || !saveUrl || payload === saved) return;
+      var errorEl = document.getElementById(p + "-save-error");
+      var csrfEl = form.querySelector("[name=csrfmiddlewaretoken]");
+      var body = new FormData();
+      body.append(opts.field, payload);
+      fetch(saveUrl, {
+        method: "POST",
+        body: body,
+        credentials: "same-origin",
+        headers: {
+          "X-CSRFToken": csrfEl ? csrfEl.value : "",
+          "X-Requested-With": "XMLHttpRequest",
+        },
+      })
+        .then(function (r) {
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          return r.json();
+        })
+        .then(function (data) {
+          // The server drops slugs it won't keep: show what was actually stored.
+          slugs = data[opts.key] || [];
+          saved = JSON.stringify(slugs);
+          if (data.unmet) setUnmet(data.unmet);
+          sync();
+          renderChips();
+          if (errorEl) errorEl.classList.add("hidden");
+        })
+        .catch(function () {
+          if (errorEl) errorEl.classList.remove("hidden");
         });
+    }
+
+    function renderChips() {
+      if (!chipsEl) return;
+      chipsEl.innerHTML = "";
+      if (!slugs.length) {
+        var empty = document.createElement("p");
+        empty.className = "text-xs text-body italic";
+        empty.textContent = opts.emptyText;
+        chipsEl.appendChild(empty);
+        return;
       }
-      requiresChipsEl.appendChild(node);
+      var tmpl = document.getElementById(p + "-chip-template");
+      slugs.forEach(function (slug) {
+        var node = tmpl.content.firstElementChild.cloneNode(true);
+        var cb = card(slug);
+        var u = unmet[slug];
+        var label = cb ? cb.getAttribute("data-skill-name") || slug : (u && u.name) || slug;
+        node.querySelector(".tool-chip-name").textContent = label;
+        node.setAttribute("title", slug);
+        if (u && opts.unmetLabel) {
+          node.classList.add("opacity-60");
+          node.setAttribute("title", slug + " — " + opts.unmetLabel(u));
+        }
+        var removeBtn = node.querySelector(".remove-tool-btn");
+        if (!editable) {
+          removeBtn.remove();
+        } else {
+          removeBtn.addEventListener("click", function () {
+            slugs = slugs.filter(function (s) { return s !== slug; });
+            sync();
+            renderChips();
+            save();
+          });
+        }
+        chipsEl.appendChild(node);
+      });
+    }
+
+    var applyBtn = document.getElementById("apply-" + p + "-picker");
+    var openBtn = document.getElementById("open-" + p + "-picker");
+    var search = document.getElementById(p + "-picker-search");
+    var countEl = document.getElementById(p + "-picker-count");
+    var modalId = p + "-picker-modal";
+
+    function updateCount() {
+      if (!countEl) return;
+      var n = document.querySelectorAll("." + p + "-picker-checkbox:checked").length;
+      countEl.textContent =
+        n === 0 ? "No " + opts.plural + " selected"
+          : n === 1 ? "1 " + opts.singular + " selected"
+            : n + " " + opts.plural + " selected";
+    }
+
+    function filterCards() {
+      var q = search ? search.value.trim().toLowerCase() : "";
+      var anyVisible = false;
+      document.querySelectorAll("#" + p + "-picker-list [data-" + p + "-card]").forEach(function (c) {
+        var cb = c.querySelector("." + p + "-picker-checkbox");
+        var hay = cb
+          ? ((cb.getAttribute("data-skill-slug") || "") + " " + (cb.getAttribute("data-skill-name") || "")).toLowerCase()
+          : "";
+        var descEl = c.querySelector("p");
+        if (descEl) hay += " " + descEl.textContent.toLowerCase();
+        var match = hay.indexOf(q) !== -1;
+        c.style.display = match ? "flex" : "none";
+        if (match) anyVisible = true;
+      });
+      var nr = document.getElementById(p + "-picker-noresults");
+      if (nr) nr.style.display = (q !== "" && !anyVisible) ? "" : "none";
+    }
+
+    if (search) search.addEventListener("input", filterCards);
+    document.querySelectorAll("." + p + "-picker-checkbox").forEach(function (cb) {
+      cb.addEventListener("change", updateCount);
     });
+
+    if (openBtn) {
+      openBtn.addEventListener("click", function () {
+        document.querySelectorAll("." + p + "-picker-checkbox").forEach(function (cb) {
+          cb.checked = slugs.indexOf(cb.getAttribute("data-skill-slug")) !== -1;
+        });
+        if (search) search.value = "";
+        filterCards();
+        updateCount();
+      });
+    }
+
+    function apply() {
+      var picked = [];
+      document.querySelectorAll("." + p + "-picker-checkbox:checked").forEach(function (cb) {
+        picked.push(cb.getAttribute("data-skill-slug"));
+      });
+      slugs = picked;
+      sync();
+      renderChips();
+      save();
+    }
+
+    // A click outside the picker (on the modal's backdrop area) keeps the
+    // selection, like Apply; Flowbite closes the modal itself. Cancel, × and
+    // Escape still discard it.
+    var modalEl = document.getElementById(modalId);
+    if (modalEl) {
+      modalEl.addEventListener("click", function (e) {
+        if (e.target === modalEl) apply();
+      });
+    }
+
+    if (applyBtn) {
+      applyBtn.addEventListener("click", function () {
+        apply();
+        if (modalEl && window.FlowbiteInstances) {
+          var instance = window.FlowbiteInstances.getInstance("Modal", modalId);
+          if (instance) instance.hide();
+        } else if (modalEl) {
+          modalEl.classList.add("hidden");
+          modalEl.setAttribute("aria-hidden", "true");
+          document.body.classList.remove("overflow-hidden");
+          var backdrop = document.querySelector("[modal-backdrop]");
+          if (backdrop) backdrop.remove();
+        }
+      });
+    }
+
+    renderChips();
   }
 
-  var applyRequiresPickerBtn = document.getElementById("apply-requires-picker");
-  var openRequiresPickerBtn = document.getElementById("open-requires-picker");
-  var requiresPickerSearch = document.getElementById("requires-picker-search");
-  var requiresPickerCount = document.getElementById("requires-picker-count");
-
-  function updateRequiresPickerCount() {
-    if (!requiresPickerCount) return;
-    var n = document.querySelectorAll(".requires-picker-checkbox:checked").length;
-    requiresPickerCount.textContent =
-      n === 0 ? "No toolkits selected" : n === 1 ? "1 toolkit selected" : n + " toolkits selected";
-  }
-
-  function filterRequiresCards() {
-    var q = requiresPickerSearch ? requiresPickerSearch.value.trim().toLowerCase() : "";
-    var anyVisible = false;
-    document.querySelectorAll("#requires-picker-list [data-requires-card]").forEach(function (card) {
-      var cb = card.querySelector(".requires-picker-checkbox");
-      var hay = cb
-        ? ((cb.getAttribute("data-skill-slug") || "") + " " + (cb.getAttribute("data-skill-name") || "")).toLowerCase()
-        : "";
-      var descEl = card.querySelector("p");
-      if (descEl) hay += " " + descEl.textContent.toLowerCase();
-      var match = hay.indexOf(q) !== -1;
-      card.style.display = match ? "flex" : "none";
-      if (match) anyVisible = true;
-    });
-    var nr = document.getElementById("requires-picker-noresults");
-    if (nr) nr.style.display = (q !== "" && !anyVisible) ? "" : "none";
-  }
-
-  if (requiresPickerSearch) {
-    requiresPickerSearch.addEventListener("input", filterRequiresCards);
-  }
-  document.querySelectorAll(".requires-picker-checkbox").forEach(function (cb) {
-    cb.addEventListener("change", updateRequiresPickerCount);
+  initSlugPicker({
+    prefix: "requires", field: "requires_json", key: "requires",
+    emptyText: "No toolkits required.", singular: "toolkit", plural: "toolkits",
+  });
+  initSlugPicker({
+    prefix: "subagents", field: "subagents_json", key: "subagents",
+    emptyText: "No sub-agents.", singular: "sub-agent", plural: "sub-agents",
+    unmetId: "subagents-unmet",
+    unmetLabel: function (u) {
+      return u.reason === "unapproved"
+        ? "hasn't passed the safety scan, so it isn't offered"
+        : "disabled or unavailable, so it isn't offered";
+    },
   });
 
-  if (openRequiresPickerBtn) {
-    openRequiresPickerBtn.addEventListener("click", function () {
-      document.querySelectorAll(".requires-picker-checkbox").forEach(function (cb) {
-        cb.checked = requires.indexOf(cb.getAttribute("data-skill-slug")) !== -1;
+  // ----- Availability (sub-agent specializations) -----
+  // Saves straight away, like the slug pickers.
+  var availabilitySection = document.getElementById("availability-section");
+  if (availabilitySection && editable) {
+    var availabilityUrl = availabilitySection.getAttribute("data-save-url");
+    var availabilityHint = document.getElementById("availability-hint");
+    var availabilityError = document.getElementById("availability-save-error");
+    availabilitySection.querySelectorAll("input[name=always_available]").forEach(function (radio) {
+      radio.addEventListener("change", function () {
+        var csrfEl = form.querySelector("[name=csrfmiddlewaretoken]");
+        var body = new FormData();
+        body.append("always_available", radio.value);
+        fetch(availabilityUrl, {
+          method: "POST",
+          body: body,
+          credentials: "same-origin",
+          headers: {
+            "X-CSRFToken": csrfEl ? csrfEl.value : "",
+            "X-Requested-With": "XMLHttpRequest",
+          },
+        })
+          .then(function (r) {
+            if (!r.ok) throw new Error("HTTP " + r.status);
+            return r.json();
+          })
+          .then(function (data) {
+            if (availabilityHint) {
+              availabilityHint.classList.toggle(
+                "hidden", !!data.always_available || !!data.named_by_count
+              );
+            }
+            if (availabilityError) availabilityError.classList.add("hidden");
+          })
+          .catch(function () {
+            if (availabilityError) availabilityError.classList.remove("hidden");
+          });
       });
-      if (requiresPickerSearch) requiresPickerSearch.value = "";
-      filterRequiresCards();
-      updateRequiresPickerCount();
-    });
-  }
-
-  function applyRequiresPicker() {
-    var picked = [];
-    document.querySelectorAll(".requires-picker-checkbox:checked").forEach(function (cb) {
-      picked.push(cb.getAttribute("data-skill-slug"));
-    });
-    requires = picked;
-    syncRequiresInput();
-    renderRequiresChips();
-    saveRequires();
-  }
-
-  // A click outside the picker (on the modal's backdrop area) keeps the
-  // selection, like Apply; Flowbite closes the modal itself. Cancel, × and
-  // Escape still discard it.
-  var requiresModalEl = document.getElementById("requires-picker-modal");
-  if (requiresModalEl) {
-    requiresModalEl.addEventListener("click", function (e) {
-      if (e.target === requiresModalEl) applyRequiresPicker();
-    });
-  }
-
-  if (applyRequiresPickerBtn) {
-    applyRequiresPickerBtn.addEventListener("click", function () {
-      applyRequiresPicker();
-      var modal = document.getElementById("requires-picker-modal");
-      if (modal && window.FlowbiteInstances) {
-        var instance = window.FlowbiteInstances.getInstance("Modal", "requires-picker-modal");
-        if (instance) instance.hide();
-      } else if (modal) {
-        modal.classList.add("hidden");
-        modal.setAttribute("aria-hidden", "true");
-        document.body.classList.remove("overflow-hidden");
-        var backdrop = document.querySelector("[modal-backdrop]");
-        if (backdrop) backdrop.remove();
-      }
     });
   }
 
@@ -682,7 +757,6 @@
 
   // ----- Initial render -----
   renderToolChips();
-  renderRequiresChips();
   pollScanStatus();
 
   // Mount CM editors over the instructions/description fields. Template rows are

@@ -29,6 +29,7 @@
     <input type="hidden" name="action" id="skill-form-action" value="save">
     <input type="hidden" name="tool_names_json" id="tool-names-json" value="{{ tool_names_json }}">
     {% if show_requires %}<input type="hidden" name="requires_json" id="requires-json" value="{{ requires_json }}">{% endif %}
+    {% if show_subagents %}<input type="hidden" name="subagents_json" id="subagents-json" value="{{ subagents_json }}">{% endif %}
 
     {# ----- Header card ----- #}
     <section class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
@@ -189,6 +190,60 @@
         Add individual tool
       </button>
       {% endif %}
+    </section>
+    {% endif %}
+
+    {# ----- Sub-agents (specializations this playbook makes available) ----- #}
+    {% if show_subagents %}
+    {{ subagents_unmet|json_script:"subagents-unmet" }}
+    <section id="subagents-section" data-save-url="{% url 'agent_skills_subagents_save' skill_id=skill.id %}">
+      <div class="flex items-center justify-between gap-3 mb-3">
+        <div class="min-w-0">
+          <h2 class="text-base font-semibold text-heading">Sub-agents</h2>
+          <p class="mt-0.5 text-sm text-body">Sub-agent specializations {{ assistant_name }} is told about while this skill is attached. Changes here are saved right away.</p>
+          <p id="subagents-save-error" class="hidden mt-1 text-xs text-fg-danger-strong">Couldn't save the sub-agents. Try again, or use Save below.</p>
+        </div>
+        {% if editable %}
+        <button type="button" id="open-subagents-picker" data-modal-target="subagents-picker-modal" data-modal-show="subagents-picker-modal" class="shrink-0 inline-flex items-center gap-1.5 bg-neutral-primary-soft hover:bg-neutral-secondary border border-default text-heading shadow-xs font-medium rounded-base text-xs px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand">
+          <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+          Add sub-agent
+        </button>
+        {% endif %}
+      </div>
+      <div class="rounded-base border border-default bg-neutral-primary-soft p-5">
+        <div id="subagents-chips" class="flex flex-wrap gap-2 min-h-[2rem]">
+          {# Populated by JS from subagents-json #}
+        </div>
+      </div>
+    </section>
+    {% endif %}
+
+    {# ----- Availability (sub-agent specializations) ----- #}
+    {% if show_availability %}
+    <section id="availability-section" data-save-url="{% url 'agent_skills_availability_save' skill_id=skill.id %}">
+      <h2 class="text-base font-semibold text-heading">Availability</h2>
+      <p class="mt-0.5 mb-3 text-sm text-body">When {{ assistant_name }} is told it can delegate to this sub-agent. Changes here are saved right away.</p>
+      <div class="rounded-base border border-default bg-neutral-primary-soft p-5 space-y-3">
+        <div class="flex items-start">
+          <input id="availability-always" type="radio" name="always_available" value="1" {% if skill.always_available %}checked{% endif %} {% if not editable %}disabled{% endif %} class="mt-0.5 w-4 h-4 text-brand bg-neutral-secondary-medium border-default-medium focus:ring-brand focus:ring-2">
+          <label for="availability-always" class="ms-2 text-sm">
+            <span class="font-medium text-heading">Always available</span>
+            <span class="block text-xs text-body">Offered in every chat. Best for general-purpose sub-agents.</span>
+          </label>
+        </div>
+        <div class="flex items-start">
+          <input id="availability-skills" type="radio" name="always_available" value="0" {% if not skill.always_available %}checked{% endif %} {% if not editable %}disabled{% endif %} class="mt-0.5 w-4 h-4 text-brand bg-neutral-secondary-medium border-default-medium focus:ring-brand focus:ring-2">
+          <label for="availability-skills" class="ms-2 text-sm">
+            <span class="font-medium text-heading">Available through skills</span>
+            <span class="block text-xs text-body">Offered only while a skill that lists it under Sub-agents is attached.</span>
+          </label>
+        </div>
+      </div>
+      <p id="availability-hint" class="{% if skill.always_available or named_by %}hidden {% endif %}mt-2 text-xs text-fg-warning">No skill makes this sub-agent available yet. Add it under Sub-agents on a skill's page.</p>
+      {% if named_by %}
+      <p class="mt-2 text-xs text-body">Listed by: {% for s in named_by %}<a href="{% url 'agent_skills_detail' skill_id=s.id %}" class="text-fg-accent hover:underline">{{ s.name }}</a>{% if not forloop.last %}, {% endif %}{% endfor %}</p>
+      {% endif %}
+      <p id="availability-save-error" class="hidden mt-1 text-xs text-fg-danger-strong">Couldn't save. Try again.</p>
     </section>
     {% endif %}
 
@@ -474,6 +529,52 @@
     <span class="tool-chip inline-flex items-center gap-1.5 bg-neutral-secondary-soft border border-default text-heading text-xs rounded-base px-2.5 py-1" title="">
       <span class="tool-chip-name"></span>
       <button type="button" class="remove-tool-btn text-body hover:text-fg-danger" aria-label="Remove toolkit">&times;</button>
+    </span>
+  </template>
+  {% endif %}
+
+  {# ----- Sub-agents picker modal (same anatomy as the Requires picker) ----- #}
+  {% if show_subagents %}
+  <div id="subagents-picker-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed top-0 left-0 right-0 z-50 hidden w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] max-h-full">
+    <div class="wf-toolmodal" style="position:relative;width:600px;max-width:100%;margin:auto;background:var(--color-neutral-primary-medium);border:1px solid var(--color-default-subtle);border-radius:12px;box-shadow:var(--shadow-xl);overflow:hidden;">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--color-default-subtle);">
+        <h2 style="margin:0;font-family:var(--font-serif);font-size:20px;font-weight:600;color:var(--color-heading);letter-spacing:-0.01em;">Sub-agents</h2>
+        <button type="button" data-modal-hide="subagents-picker-modal" class="wf-toolclose" aria-label="Close" style="display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border:0;background:transparent;color:var(--color-body-subtle);border-radius:5px;cursor:pointer;"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg></button>
+      </div>
+      <div style="padding:18px 22px 6px;">
+        <div style="position:relative;display:flex;align-items:center;">
+          <span style="position:absolute;left:12px;color:var(--color-fg-disabled);display:inline-flex;pointer-events:none;"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg></span>
+          <input id="subagents-picker-search" type="text" placeholder="Search sub-agents" autocomplete="off" style="width:100%;height:38px;font-family:var(--font-sans);font-size:14px;color:var(--color-heading);background:var(--color-neutral-primary-soft);border:1px solid var(--color-brand-subtle);border-radius:8px;padding:0 12px 0 36px;box-shadow:var(--shadow-inset);">
+        </div>
+        <p style="font-size:12.5px;color:var(--color-body-subtle);margin:10px 0 0;">Only sub-agents set to “Available through skills” are listed — the others are offered in every chat already.</p>
+      </div>
+      <div id="subagents-picker-list" class="wf-toollist" style="max-height:360px;overflow-y:auto;padding:8px 22px 12px;display:flex;flex-direction:column;gap:8px;">
+        {% for sa in available_subagents %}
+        <label class="wf-tool-card" data-subagents-card style="display:flex;align-items:flex-start;gap:12px;width:100%;text-align:left;padding:13px 14px;border:1px solid var(--color-default-subtle);background:var(--color-neutral-primary-soft);border-radius:8px;cursor:pointer;">
+          <input type="checkbox" data-skill-slug="{{ sa.slug }}" data-skill-name="{{ sa.name }}" class="subagents-picker-checkbox">
+          <span style="flex:1;min-width:0;">
+            <span style="display:block;font-size:14px;font-weight:500;color:var(--color-heading);">{% if sa.emoji %}{{ sa.emoji }} {% endif %}{{ sa.name }} <code class="wf-mono" style="font-size:12px;color:var(--color-body-subtle);">{{ sa.slug }}</code></span>
+            <p style="display:block;font-size:12.5px;color:var(--color-body-subtle);line-height:1.45;margin:3px 0 0;">{{ sa.description|truncatechars:160 }}</p>
+          </span>
+        </label>
+        {% empty %}
+        <p style="font-size:13px;color:var(--color-body);padding:6px 2px;">No sub-agents are set to “Available through skills”.</p>
+        {% endfor %}
+        <p id="subagents-picker-noresults" style="display:none;font-size:13px;color:var(--color-body-subtle);padding:6px 2px;">No sub-agents match your search.</p>
+      </div>
+      <div class="wf-soft-panel" style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 22px;border-top:1px solid var(--color-default-subtle);">
+        <span id="subagents-picker-count" style="font-size:12px;color:var(--color-body-subtle);">No sub-agents selected</span>
+        <div style="display:flex;gap:10px;">
+          <button type="button" data-modal-hide="subagents-picker-modal" class="wf-toolbtn-ghost" style="height:40px;padding:0 14px;border:0;border-radius:8px;background:transparent;font-family:var(--font-sans);font-size:14px;font-weight:500;color:var(--color-body);cursor:pointer;">Cancel</button>
+          <button type="button" id="apply-subagents-picker" class="wf-toolbtn-primary" style="height:40px;padding:0 16px;border:0;border-radius:8px;font-family:var(--font-sans);font-size:14px;font-weight:600;color:var(--color-on-brand);background:var(--color-brand);cursor:pointer;">Apply</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <template id="subagents-chip-template">
+    <span class="tool-chip inline-flex items-center gap-1.5 bg-neutral-secondary-soft border border-default text-heading text-xs rounded-base px-2.5 py-1" title="">
+      <span class="tool-chip-name"></span>
+      <button type="button" class="remove-tool-btn text-body hover:text-fg-danger" aria-label="Remove sub-agent">&times;</button>
     </span>
   </template>
   {% endif %}

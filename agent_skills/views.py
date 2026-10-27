@@ -30,6 +30,7 @@ from agent_skills.services import (
     get_user_skill_prefs,
     shadowing_default,
     skill_requires,
+    skill_subagents,
     unmet_requirements,
     approve_skill_share,
     attach_skills_closed,
@@ -471,6 +472,12 @@ def skills_detail(request, skill_id):
         and skill.audience != AgentSkill.Audience.SUBAGENT
     )
     toolkits = _available_toolkits(request.user)
+    # Sub-agents picker (playbooks of the main audience) and the Availability
+    # toggle (sub-agent specializations).
+    from agent_skills.services import can_carry_subagents, unmet_subagents
+
+    show_subagents = can_carry_subagents(skill) and skill.audience == AgentSkill.Audience.MAIN
+    show_availability = skill.audience == AgentSkill.Audience.SUBAGENT
     return render(
         request,
         "agent_skills/skills_detail.html",
@@ -487,6 +494,18 @@ def skills_detail(request, skill_id):
             "requires_json": json.dumps(skill_requires(skill)),
             "available_toolkits": toolkits,
             "show_requires": show_requires,
+            "show_subagents": show_subagents,
+            "subagents_json": json.dumps(skill_subagents(skill)),
+            "subagents_unmet": (
+                unmet_subagents(skill, request.user) if show_subagents else []
+            ),
+            "available_subagents": (
+                _available_subagents(skill, request.user) if show_subagents else []
+            ),
+            "show_availability": show_availability,
+            "named_by": (
+                _skills_naming(skill, request.user) if show_availability else []
+            ),
             # A main playbook gets its tools from toolkits (Requires): the Tools
             # box shows only once it carries individual tools. Sub-agent skills
             # (which can't require) and toolkits always show it.
@@ -562,6 +581,34 @@ def _available_toolkits(user) -> list[dict]:
     ]
 
 
+def _available_subagents(skill, user) -> list[dict]:
+    """The specializations the Sub-agents picker offers ``skill``: the ones
+    set to "Available through skills" at a tier the skill may name
+    (``allowed_subagent_slugs``) — always-available ones are offered in every
+    chat already."""
+    from agent_skills.services import (
+        allowed_subagent_slugs,
+        specialization_always_available,
+    )
+
+    return [
+        {"slug": s.slug, "name": s.name, "emoji": s.emoji, "description": s.description}
+        for s in sorted(allowed_subagent_slugs(skill, user).values(), key=lambda s: s.name)
+        if not specialization_always_available(s)
+    ]
+
+
+def _skills_naming(specialization, user) -> list[AgentSkill]:
+    """The playbooks visible to ``user`` that list ``specialization`` under
+    Sub-agents (for the Availability section)."""
+    from agent_skills.services import skill_subagents
+
+    return [
+        s for s in sorted(get_accessible_skills(user), key=lambda s: s.name)
+        if specialization.slug in skill_subagents(s)
+    ]
+
+
 def _parse_tool_names_json(raw: str) -> list[str]:
     try:
         data = json.loads(raw or "[]")
@@ -600,6 +647,18 @@ def _clean_requires(skill: AgentSkill, request) -> list[str]:
         )
         if r in known
     ]
+
+
+def _clean_subagents_post(skill: AgentSkill, request) -> list[str]:
+    """The ``subagents_json`` POST field as a clean list for ``skill``
+    (``services.clean_subagents``: normalized, tier-checked)."""
+    from agent_skills.services import clean_subagents
+
+    kept, _dropped = clean_subagents(
+        skill, _parse_tool_names_json(request.POST.get("subagents_json", "")),
+        request.user,
+    )
+    return kept
 
 
 class SkillFormValidationError(Exception):
@@ -646,6 +705,10 @@ def _apply_skill_form(skill: AgentSkill, request) -> None:
     # unknown slugs are dropped and sub-agent skills / toolkits never carry any.
     if "requires_json" in request.POST:
         skill.requires = _clean_requires(skill, request)
+    # Sub-agents (specializations listed while the skill is attached): the
+    # same only-when-present rule; slugs the skill may not name are dropped.
+    if "subagents_json" in request.POST:
+        skill.subagents = _clean_subagents_post(skill, request)
 
     # Slug management (user tier only). The slug auto-follows the name on every
     # save unless the user froze it via the advanced editor — signalled by the
@@ -668,7 +731,7 @@ def _apply_skill_form(skill: AgentSkill, request) -> None:
         skill.slug = slug
         skill.save(update_fields=[
             "slug", "slug_customized", "name", "emoji", "description",
-            "instructions", "tool_names", "requires", "updated_at",
+            "instructions", "tool_names", "requires", "subagents", "updated_at",
         ])
         return skill
 
@@ -1309,6 +1372,45 @@ def skills_requires_save(request, skill_id):
     skill.requires = _clean_requires(skill, request)
     skill.save(update_fields=["requires", "updated_at"])
     return JsonResponse({"ok": True, "requires": skill.requires})
+
+
+@login_required
+@require_POST
+def skills_subagents_save(request, skill_id):
+    """Save just the Sub-agents list from the detail page's picker, like
+    :func:`skills_requires_save`. Returns the stored list and, per entry, why
+    it won't be offered (``unmet``). Not scanned text, so no rescan."""
+    from agent_skills.services import unmet_subagents
+
+    skill, err = _editable_skill_or_error(request, skill_id)
+    if err:
+        return err
+    skill.subagents = _clean_subagents_post(skill, request)
+    skill.save(update_fields=["subagents", "updated_at"])
+    return JsonResponse({
+        "ok": True,
+        "subagents": skill.subagents,
+        "unmet": unmet_subagents(skill, request.user),
+    })
+
+
+@login_required
+@require_POST
+def skills_availability_save(request, skill_id):
+    """Save a specialization's Availability toggle ("1" = always available,
+    "0" = through skills). Not scanned text, so no rescan."""
+    skill, err = _editable_skill_or_error(request, skill_id)
+    if err:
+        return err
+    if skill.audience != AgentSkill.Audience.SUBAGENT:
+        return JsonResponse({"ok": False, "error": "not_a_specialization"}, status=400)
+    skill.always_available = request.POST.get("always_available") != "0"
+    skill.save(update_fields=["always_available", "updated_at"])
+    return JsonResponse({
+        "ok": True,
+        "always_available": skill.always_available,
+        "named_by_count": len(_skills_naming(skill, request.user)),
+    })
 
 
 def _kind_from_post(request):

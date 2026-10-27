@@ -15,6 +15,16 @@ urlpatterns = [
         views.skills_requires_save,
         name="agent_skills_requires_save",
     ),
+    path(
+        "<uuid:skill_id>/subagents/",
+        views.skills_subagents_save,
+        name="agent_skills_subagents_save",
+    ),
+    path(
+        "<uuid:skill_id>/availability/",
+        views.skills_availability_save,
+        name="agent_skills_availability_save",
+    ),
     path("<uuid:skill_id>/copy/", views.skills_copy, name="agent_skills_copy"),
     path("<uuid:skill_id>/download/", views.skills_download, name="agent_skills_download"),
     path("<uuid:skill_id>/promote/", views.skills_promote, name="agent_skills_promote"),

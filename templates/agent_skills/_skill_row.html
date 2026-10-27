@@ -45,6 +45,9 @@ preflight's `[hidden]` rule is !important).
         {% if row.conflict_label %}
         <span class="block text-xs italic text-body-subtle mt-1 conflict-label">{{ row.conflict_label }}</span>
         {% endif %}
+        {% if row.skill.audience == "subagent" and not row.skill.always_available %}
+        <span class="mt-1 inline-block px-2 py-0.5 text-xs rounded-full border border-default text-body through-skills-pill" title="Offered only while a skill that lists it under Sub-agents is attached.">Through skills</span>
+        {% endif %}
         {% if row.requires_label %}
         <span class="block text-xs text-fg-warning mt-1 requires-label" title="A toolkit this skill needs isn't available, so the skill can't be attached.">{{ row.requires_label }}</span>
         {% endif %}
