@@ -508,6 +508,11 @@ def get_registered_model_ids() -> list[str]:
     return list(_MODELS)
 
 
+def all_reasoning_levels() -> frozenset[str]:
+    """Every reasoning level some registered model offers (provider values)."""
+    return frozenset(level for info in _MODELS.values() for level in info.reasoning_levels)
+
+
 def get_model_tier(model_id: str) -> str | None:
     info = get_model_info(model_id)
     return info.tier if info else None

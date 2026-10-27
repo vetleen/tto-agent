@@ -4687,8 +4687,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
         from chat.models import ChatAttachment, ChatCanvas, ChatThreadDataRoom, ChatThreadSkill
 
         skills = [
-            {"name": name}
-            for name in ChatThreadSkill.objects.filter(thread_id=thread_id).values_list("skill__name", flat=True)
+            {"name": name, "preferred_model_category": category, "preferred_reasoning_level": level}
+            for name, category, level in ChatThreadSkill.objects.filter(thread_id=thread_id).values_list(
+                "skill__name", "skill__preferred_model_category", "skill__preferred_reasoning_level",
+            )
         ]
         kinds = Counter()
         for filename, content_type in ChatAttachment.objects.filter(pk__in=attachment_ids).values_list(

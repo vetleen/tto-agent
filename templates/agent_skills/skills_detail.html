@@ -141,6 +141,37 @@
       <div id="instructions-preview" class="hidden w-full rounded-base wf-input px-3 py-2 text-sm text-body markdown-content overflow-y-auto" style="min-height: 14rem;"></div>
     </section>
 
+    {# ----- Model (Automatic model choice) ----- #}
+    {% if show_model %}
+    <section id="model-section">
+      <h2 class="text-base font-semibold text-heading">Model</h2>
+      <p class="mt-0.5 mb-3 text-sm text-body">
+        {% if skill.audience == "subagent" %}This sub-agent always runs on the chosen category's model, whatever model quality {{ assistant_name }} asks for.{% else %}When a chat is on Automatic, this skill makes it use the chosen category's model.{% endif %}
+        Each organization picks the model for every category in its settings.
+      </p>
+      {{ model_categories|json_script:"model-categories-data" }}
+      <div class="rounded-base border border-default bg-neutral-primary-soft p-5 flex flex-col gap-3 sm:flex-row">
+        <div class="flex-1 min-w-0">
+          <label for="skill-model-category" class="block text-xs font-medium text-body mb-1">Category</label>
+          <select name="preferred_model_category" id="skill-model-category" {% if not editable %}disabled{% endif %}
+            class="block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium disabled:opacity-60">
+            <option value="">None — {% if skill.audience == "subagent" %}use the model quality {{ assistant_name }} asks for{% else %}let Automatic decide{% endif %}</option>
+            {% for c in model_categories %}
+            <option value="{{ c.key }}" {% if skill.preferred_model_category == c.key %}selected{% endif %}>{{ c.label }}{% if c.model_display %} — {{ c.model_display }}{% endif %}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="sm:w-56">
+          <label for="skill-model-reasoning" class="block text-xs font-medium text-body mb-1">Reasoning</label>
+          <select name="preferred_reasoning_level" id="skill-model-reasoning" data-current="{{ skill.preferred_reasoning_level }}" {% if not editable %}disabled{% endif %}
+            class="block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium disabled:opacity-60">
+            <option value="">Category default</option>
+          </select>
+        </div>
+      </div>
+    </section>
+    {% endif %}
+
     {# ----- Tools ----- #}
     {# A main playbook gets tools from toolkits (Requires below): this box shows #}
     {# only once it carries individual tools; "Add individual tool" reveals it.  #}

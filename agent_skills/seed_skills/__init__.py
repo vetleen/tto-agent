@@ -113,6 +113,9 @@ def seed_system_skills():
             "subagents": list(skill_data.get("subagents", [])),
             # Specializations: listed always (default) or only through a skill.
             "always_available": skill_data.get("always_available", True),
+            # Automatic model choice: a category key (chat/auto_model.py).
+            "preferred_model_category": skill_data.get("preferred_model_category", ""),
+            "preferred_reasoning_level": skill_data.get("preferred_reasoning_level", ""),
         }
         try:
             skill = AgentSkill.objects.get(slug=skill_data["slug"], level="system")

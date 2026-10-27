@@ -478,6 +478,8 @@ def skills_detail(request, skill_id):
 
     show_subagents = can_carry_subagents(skill) and skill.audience == AgentSkill.Audience.MAIN
     show_availability = skill.audience == AgentSkill.Audience.SUBAGENT
+    # Automatic model choice: playbooks and specializations (not toolkits).
+    show_model = skill.kind != AgentSkill.Kind.TOOLKIT
     return render(
         request,
         "agent_skills/skills_detail.html",
@@ -503,6 +505,8 @@ def skills_detail(request, skill_id):
                 _available_subagents(skill, request.user) if show_subagents else []
             ),
             "show_availability": show_availability,
+            "show_model": show_model,
+            "model_categories": _model_category_options(request.user) if show_model else [],
             "named_by": (
                 _skills_naming(skill, request.user) if show_availability else []
             ),
@@ -669,6 +673,29 @@ class SkillFormValidationError(Exception):
     """
 
 
+def _model_category_options(user) -> list[dict]:
+    """The Model section's choices: each Automatic category with the model and
+    reasoning levels the viewer's org runs it on (levels re-checked at use)."""
+    from chat.auto_model import AUTO_CATEGORIES, resolve_category
+    from core.preferences import get_preferences
+    from llm.display import get_display_name, get_thinking_levels, reasoning_level_label
+
+    prefs = get_preferences(user)
+    options = []
+    for cat in AUTO_CATEGORIES:
+        model, level = resolve_category(prefs, cat.key)
+        options.append({
+            "key": cat.key,
+            "label": cat.label,
+            "model_display": get_display_name(model) if model else "",
+            "default_label": reasoning_level_label(level) if level else "model default",
+            "levels": [
+                {"value": lv, "label": reasoning_level_label(lv)} for lv in get_thinking_levels(model)
+            ] if model else [],
+        })
+    return options
+
+
 def _apply_skill_form(skill: AgentSkill, request) -> None:
     """Update fields, tools, and templates from POST data on ``skill``.
 
@@ -709,6 +736,14 @@ def _apply_skill_form(skill: AgentSkill, request) -> None:
     # same only-when-present rule; slugs the skill may not name are dropped.
     if "subagents_json" in request.POST:
         skill.subagents = _clean_subagents_post(skill, request)
+    # Automatic model choice: the same only-when-present rule.
+    if "preferred_model_category" in request.POST:
+        from agent_skills.services import clean_model_prefs
+
+        skill.preferred_model_category, skill.preferred_reasoning_level = clean_model_prefs(
+            request.POST.get("preferred_model_category"),
+            request.POST.get("preferred_reasoning_level"),
+        )
 
     # Slug management (user tier only). The slug auto-follows the name on every
     # save unless the user froze it via the advanced editor — signalled by the
@@ -731,7 +766,8 @@ def _apply_skill_form(skill: AgentSkill, request) -> None:
         skill.slug = slug
         skill.save(update_fields=[
             "slug", "slug_customized", "name", "emoji", "description",
-            "instructions", "tool_names", "requires", "subagents", "updated_at",
+            "instructions", "tool_names", "requires", "subagents",
+            "preferred_model_category", "preferred_reasoning_level", "updated_at",
         ])
         return skill
 

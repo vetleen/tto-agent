@@ -782,3 +782,38 @@
     maxHeight: "20rem",
   });
 })();
+
+// ----- Model section (Automatic model choice) -----
+// The reasoning choices follow the selected category's model for this org.
+(function () {
+  var catSel = document.getElementById('skill-model-category');
+  var lvlSel = document.getElementById('skill-model-reasoning');
+  var dataEl = document.getElementById('model-categories-data');
+  if (!catSel || !lvlSel || !dataEl) return;
+  var cats = {};
+  try {
+    JSON.parse(dataEl.textContent).forEach(function (c) { cats[c.key] = c; });
+  } catch (e) { return; }
+
+  function render(keepValue) {
+    var cat = cats[catSel.value];
+    var current = keepValue ? lvlSel.dataset.current || '' : '';
+    lvlSel.innerHTML = '';
+    var first = document.createElement('option');
+    first.value = '';
+    first.textContent = cat ? 'Category default (' + cat.default_label + ')' : 'Category default';
+    lvlSel.appendChild(first);
+    (cat ? cat.levels : []).forEach(function (lv) {
+      var opt = document.createElement('option');
+      opt.value = lv.value;
+      opt.textContent = lv.label;
+      lvlSel.appendChild(opt);
+    });
+    lvlSel.value = current;
+    if (lvlSel.value !== current) lvlSel.value = '';
+    if (!catSel.disabled) lvlSel.disabled = !cat || !cat.levels.length;
+  }
+
+  render(true);
+  catSel.addEventListener('change', function () { render(false); });
+})();

@@ -91,6 +91,29 @@ def skill_subagents(skill) -> list[str]:
     )
 
 
+def clean_model_prefs(category, level) -> tuple[str, str]:
+    """A skill's Automatic model preference, validated: a known category key
+    (chat.auto_model.AUTO_CATEGORIES) or "", and a reasoning level some model
+    offers or "" (re-checked against the category's actual model at use)."""
+    from chat.auto_model import CATEGORIES_BY_KEY
+    from llm.model_registry import all_reasoning_levels
+
+    category = str(category or "").strip()
+    if category not in CATEGORIES_BY_KEY:
+        return "", ""
+    level = str(level or "").strip()
+    return category, (level if level in all_reasoning_levels() else "")
+
+
+def skill_model_prefs(skill) -> dict:
+    """The model-preference fields to carry when copying/exporting *skill*."""
+    category, level = clean_model_prefs(
+        getattr(skill, "preferred_model_category", ""),
+        getattr(skill, "preferred_reasoning_level", ""),
+    )
+    return {"preferred_model_category": category, "preferred_reasoning_level": level}
+
+
 def specialization_always_available(skill) -> bool:
     """Whether a specialization is listed to the orchestrator without a skill
     naming it. ``shared`` seeds always are."""
@@ -988,6 +1011,7 @@ def fork_skill(
                 if new_audience != AgentSkill.Audience.SUBAGENT else []
             ),
             always_available=specialization_always_available(source_skill),
+            **skill_model_prefs(source_skill),
             audience=new_audience,
             level="user",
             created_by=user,
@@ -1201,6 +1225,7 @@ def promote_skill_to_org(
                 if new_audience != AgentSkill.Audience.SUBAGENT else []
             ),
             always_available=specialization_always_available(source_skill),
+            **skill_model_prefs(source_skill),
             audience=new_audience,
             level="org",
             organization=organization,
@@ -1619,6 +1644,7 @@ def export_skill(skill: AgentSkill) -> dict:
         "requires": skill_requires(skill),
         "subagents": skill_subagents(skill),
         "always_available": specialization_always_available(skill),
+        **skill_model_prefs(skill),
         "resources": resources,
     }
 
@@ -1742,6 +1768,10 @@ def _normalize_skill_payload(entry: dict) -> dict:
         "requires": requires,
         "subagents": subagents,
         "always_available": always_available,
+        **dict(zip(
+            ("preferred_model_category", "preferred_reasoning_level"),
+            clean_model_prefs(entry.get("preferred_model_category"), entry.get("preferred_reasoning_level")),
+        )),
         "resources": resources,
     }
 
@@ -1856,6 +1886,8 @@ def import_skill(user, payload: dict) -> AgentSkill:
             requires=[r for r in requires if r != s],
             subagents=[r for r in subagents if r != s],
             always_available=payload.get("always_available", True) is not False,
+            preferred_model_category=payload.get("preferred_model_category", ""),
+            preferred_reasoning_level=payload.get("preferred_reasoning_level", ""),
             level="user",
             created_by=user,
             parent=None,

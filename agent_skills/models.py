@@ -92,6 +92,13 @@ class AgentSkill(models.Model):
     # False = listed only while an attached skill names it in ``subagents``.
     # Not an access gate: chat_subagent_create accepts any enabled one.
     always_available = models.BooleanField(default=True)
+    # Automatic model choice (chat/auto_model.py): a category key from
+    # AUTO_CATEGORIES ("" = none) and an optional reasoning level, used only
+    # while the level is one the category's model offers. A main-audience
+    # skill steers Automatic chats it is attached to; a specialization always
+    # runs on it, whatever model_tier the orchestrator asks for.
+    preferred_model_category = models.CharField(max_length=32, blank=True, default="", db_default="")
+    preferred_reasoning_level = models.CharField(max_length=16, blank=True, default="", db_default="")
     audience = models.CharField(
         max_length=10, choices=Audience.choices, default=Audience.MAIN
     )
