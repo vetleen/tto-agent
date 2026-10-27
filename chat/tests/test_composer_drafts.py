@@ -152,3 +152,14 @@ class DiscardAttachmentTests(TestCase):
         client.force_login(self.user)
         self.assertEqual(client.post(self._url(att)).status_code, 403)
         self.assertTrue(ChatAttachment.objects.filter(id=att.id).exists())
+
+
+@override_settings(**_SETTINGS)
+class SidebarUntitledThreadTests(TestCase):
+    def test_untitled_thread_reads_new_chat(self):
+        user = _user("sidebar@example.com")
+        self.client.force_login(user)
+        thread = ChatThread.objects.create(created_by=user)
+        resp = self.client.get(reverse("chat_home"))
+        self.assertContains(resp, 'title="New chat"')
+        self.assertNotContains(resp, f"Thread {thread.id}")
