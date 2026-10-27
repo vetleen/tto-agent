@@ -540,3 +540,66 @@ class RequiresAttachTests(TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("budget", result["message"])
         self.assertEqual(_attached_ids(self.thread), [])
+
+
+class AttachSubagentsUnlockedTests(TestCase):
+    """A playbook naming skills-only specializations in ``subagents`` reports
+    them as ``subagents_unlocked`` when it is newly attached."""
+
+    def setUp(self):
+        AgentSkill.objects.all().delete()
+        self.user = User.objects.create_user(email="unlock@example.com", password="pass")
+        self.spec = AgentSkill.objects.create(
+            slug="patent-searcher", name="Patent Searcher", description="Searches.",
+            instructions="x", level="user", created_by=self.user,
+            audience="subagent", always_available=False,
+        )
+        self.generic = AgentSkill.objects.create(
+            slug="researcher", name="Researcher", instructions="x", level="user",
+            created_by=self.user, audience="subagent",
+        )
+        _approve(self.spec)
+        _approve(self.generic)
+        self.playbook = AgentSkill.objects.create(
+            slug="prior-art", name="Prior Art", instructions="Search.", level="user",
+            created_by=self.user, subagents=["patent-searcher", "researcher"],
+        )
+        self.other = AgentSkill.objects.create(
+            slug="other-art", name="Other Art", instructions="Also.", level="user",
+            created_by=self.user, subagents=["patent-searcher"],
+        )
+        _approve(self.playbook)
+        _approve(self.other)
+        self.thread = ChatThread.objects.create(created_by=self.user, title="t")
+        self.tool = AttachSkillsTool()
+        self.tool.context = _ctx(self.user, self.thread)
+
+    def _attach(self, *slugs):
+        return json.loads(self.tool._run(skill_slugs=list(slugs)))
+
+    def test_reports_skills_only_specializations(self):
+        result = self._attach("prior-art")
+        self.assertEqual(result["status"], "ok")
+        # The always-available researcher is already listed: not reported.
+        self.assertEqual(result["subagents_unlocked"], [
+            {"slug": "patent-searcher", "name": "Patent Searcher", "description": "Searches."},
+        ])
+
+    def test_not_reported_when_an_attached_skill_already_unlocked_it(self):
+        ChatThreadSkill.objects.create(thread=self.thread, skill=self.other)
+        result = self._attach("prior-art")
+        self.assertEqual(result["added"], ["prior-art"])
+        self.assertEqual(result["subagents_unlocked"], [])
+
+    def test_unapproved_specialization_not_reported(self):
+        AgentSkill.objects.filter(pk=self.spec.pk).update(
+            scan_state=AgentSkill.ScanState.UNSCANNED,
+        )
+        result = self._attach("prior-art")
+        self.assertEqual(result["subagents_unlocked"], [])
+
+    def test_reattach_reports_nothing(self):
+        self._attach("prior-art")
+        result = self._attach("prior-art")
+        self.assertTrue(result["no_change"])
+        self.assertEqual(result["subagents_unlocked"], [])

@@ -1995,6 +1995,33 @@ def _skill_entry(skill, attached_by: str) -> dict:
     }
 
 
+def _subagents_unlocked(user, added, already_attached) -> list[dict]:
+    """The skills-only specializations the newly ``added`` skills make
+    available that no ``already_attached`` skill had unlocked — so the agent
+    learns about them mid-turn from the attach result (the prompt's
+    specializations block only refreshes next turn). Always-available,
+    disabled and unapproved specializations are left out."""
+    from agent_skills.services import skill_subagents
+
+    before = {slug for s in already_attached for slug in skill_subagents(s)}
+    wanted = [
+        slug for s in added for slug in skill_subagents(s) if slug not in before
+    ]
+    if not wanted:
+        return []
+    from core.preferences import get_preferences
+
+    entries = {e["slug"]: e for e in get_preferences(user).allowed_specializations}
+    out: list[dict] = []
+    for slug in dict.fromkeys(wanted):
+        e = entries.get(slug)
+        # Unapproved: chat_subagent_create would refuse it (scan gate).
+        if e is None or e.get("always_available", True) or e.get("approved") is False:
+            continue
+        out.append({"slug": slug, "name": e["name"], "description": e["description"]})
+    return out
+
+
 def _live(row) -> bool:
     """Whether an attachment row's skill is still usable (rows survive a
     soft-delete / deactivation; see _resolve_thread_template)."""
@@ -2117,7 +2144,9 @@ class AttachSkillsTool(ContextAwareTool):
         "away. You may attach any number of skills as long as their combined size "
         "fits the thread's skill budget. A skill that requires a toolkit (e.g. "
         "canvas_tools) attaches it automatically — the result's auto_attached says "
-        "which. To remove a skill you attached earlier, use chat_skill_detach; "
+        "which. A skill can also make sub-agent specializations available: the "
+        "result's subagents_unlocked lists them (pass the slug as type= to "
+        "chat_subagent_create). To remove a skill you attached earlier, use chat_skill_detach; "
         "skills the user attached can't be detached by you."
     )
     args_schema: type[BaseModel] = AttachSkillsInput
@@ -2296,6 +2325,9 @@ class AttachSkillsTool(ContextAwareTool):
             for dep, reqs in auto_map.items()
             if any(r in added_slugs for r in reqs)
         }
+        subagents_unlocked = _subagents_unlocked(
+            user, added, [r.skill for r in live_rows]
+        )
         return json.dumps({
             "status": "ok",
             "no_change": no_change,
@@ -2305,6 +2337,7 @@ class AttachSkillsTool(ContextAwareTool):
             ),
             "added": [s.slug for s in added],
             "auto_attached": auto_attached,
+            "subagents_unlocked": subagents_unlocked,
         })
 
 
