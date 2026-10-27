@@ -93,9 +93,12 @@ _HTML_PARSER = "lxml"
 # bounded (_DEFAULT_MAX_RESPONSE_BYTES), but the bs4/lxml tree plus trafilatura's
 # and readability's own trees run many times the HTML size: four ~1.4M-char
 # EUR-Lex pages parsed together added ~320 MB RSS in 4 s on staging (2026-10-10).
-# HTML over the cap is truncated before parsing (article content sits near the
-# top of the document); the extracted text is capped separately
-# (WEB_FETCH_MAX_CONTENT_CHARS). Overridable via settings.WEB_FETCH_MAX_PARSE_BYTES.
+# HTML over the cap is truncated before parsing, so content past it is lost. Do
+# not assume the article sits near the top: navigation-heavy sites emit their
+# menus first (an EPO EPC rule page is 662k chars with the rule text starting at
+# char ~635k), so lowering this cap silently drops the content of such pages.
+# The extracted text is capped separately (WEB_FETCH_MAX_CONTENT_CHARS).
+# Overridable via settings.WEB_FETCH_MAX_PARSE_BYTES.
 _DEFAULT_MAX_PARSE_BYTES = 3_000_000
 
 
@@ -1073,7 +1076,7 @@ def _fetch_uncached(url: str, cache, cache_key: str, context=None) -> dict:
     raw_html = response.text
 
     # The parse trees are many times the HTML size, so cap the HTML handed to the
-    # parser; the article content sits near the top, so truncation loses little.
+    # parser. Content past the cap is lost (see _DEFAULT_MAX_PARSE_BYTES).
     # INFO: routine for huge regulation/database pages, not actionable.
     max_parse = _max_parse_bytes()
     if len(raw_html) > max_parse:
