@@ -264,15 +264,25 @@ def _annotate_skills(
     return rows
 
 
-def _available_skill_tools(skill_audience: str | None = None) -> list[dict]:
-    """Return [{name, description}] for tools registered with section='skills'.
+def _available_skill_tools(
+    skill_audience: str | None = None, *, toolkits: list[dict] | None = None,
+) -> list[dict]:
+    """Return [{name, description, toolkits}] for tools registered with
+    section='skills'.
 
     When ``skill_audience`` is given, only tools a skill of that audience may
     carry are offered (so the picker on a sub-agent skill won't list main-only
-    management tools).
+    management tools). ``toolkits`` (the picker's toolkit dicts, given for a
+    main playbook) fills each tool's ``toolkits`` with the names of the
+    toolkits that already grant it, so the picker can point at Requires.
     """
     from agent_skills.services import skill_tool_audience_ok
     from llm.tools.registry import get_tool_registry
+
+    covering: dict[str, list[str]] = {}
+    for tk in toolkits or []:
+        for name in tk.get("tool_names") or []:
+            covering.setdefault(name, []).append(tk["name"])
 
     registry = get_tool_registry()
     return sorted(
@@ -280,6 +290,7 @@ def _available_skill_tools(skill_audience: str | None = None) -> list[dict]:
             {
                 "name": tool.name,
                 "description": tool.description or "",
+                "toolkits": covering.get(tool.name, []),
             }
             for tool in registry.list_tools_by_section("skills").values()
             if skill_audience is None
@@ -453,6 +464,13 @@ def skills_detail(request, skill_id):
         for s in AgentSkill.objects.filter(q, is_active=True).values("slug", "name"):
             override_slug_map[s["slug"]] = s["name"]
 
+    # Requires picker: toolkits attached automatically with this skill. Only
+    # playbooks of the main audience carry requirements.
+    show_requires = (
+        skill.kind != AgentSkill.Kind.TOOLKIT
+        and skill.audience != AgentSkill.Audience.SUBAGENT
+    )
+    toolkits = _available_toolkits(request.user)
     return render(
         request,
         "agent_skills/skills_detail.html",
@@ -466,20 +484,21 @@ def skills_detail(request, skill_id):
             "scan_pill": _scan_pill(True, approval),
             "resource_count_cap": RESOURCE_COUNT_CAP,
             "tool_names_json": json.dumps(list(skill.tool_names or [])),
-            # Requires picker: toolkits attached automatically with this skill.
-            # Only playbooks of the main audience carry requirements.
             "requires_json": json.dumps(skill_requires(skill)),
-            "available_toolkits": _available_toolkits(request.user),
-            "show_requires": (
-                skill.kind != AgentSkill.Kind.TOOLKIT
-                and skill.audience != AgentSkill.Audience.SUBAGENT
-            ),
+            "available_toolkits": toolkits,
+            "show_requires": show_requires,
+            # A main playbook gets its tools from toolkits (Requires): the Tools
+            # box shows only once it carries individual tools. Sub-agent skills
+            # (which can't require) and toolkits always show it.
+            "show_tools": not show_requires or bool(skill.tool_names),
             "editable": editable,
             "can_delete": not is_review and can_delete_skill(request.user, skill),
             "is_review": is_review,
             "is_pending_share": skill.level == "user" and bool(skill.share_requested_org_id),
             "is_maintainer": skill.level == "org" and skill.maintainer_id == request.user.pk,
-            "available_tools": _available_skill_tools(skill.audience),
+            "available_tools": _available_skill_tools(
+                skill.audience, toolkits=toolkits if show_requires else None,
+            ),
             "is_org_admin": is_org_admin,
             "user_org": org,
             "colleague_count": colleague_count,
@@ -534,7 +553,10 @@ def _available_toolkits(user) -> list[dict]:
     for themselves is still a valid requirement — the row then says it's
     disabled)."""
     return [
-        {"slug": s.slug, "name": s.name, "emoji": s.emoji, "description": s.description}
+        {
+            "slug": s.slug, "name": s.name, "emoji": s.emoji,
+            "description": s.description, "tool_names": list(s.tool_names or []),
+        }
         for s in sorted(get_accessible_skills(user), key=lambda s: s.name)
         if s.kind == AgentSkill.Kind.TOOLKIT
     ]

@@ -199,8 +199,12 @@
     cb.addEventListener("change", updateToolPickerCount);
   });
 
-  if (openToolPickerBtn) {
-    openToolPickerBtn.addEventListener("click", function () {
+  // A main playbook hides the Tools box until it has individual tools; the
+  // "Add individual tool" link under Requires opens the same picker.
+  var addIndividualToolBtn = document.getElementById("add-individual-tool");
+  [openToolPickerBtn, addIndividualToolBtn].forEach(function (btn) {
+    if (!btn) return;
+    btn.addEventListener("click", function () {
       // Pre-check existing tools.
       document.querySelectorAll(".tool-picker-checkbox").forEach(function (cb) {
         cb.checked = toolNames.indexOf(cb.getAttribute("data-tool-name")) !== -1;
@@ -209,7 +213,7 @@
       filterToolCards();
       updateToolPickerCount();
     });
-  }
+  });
 
   if (applyToolPickerBtn) {
     applyToolPickerBtn.addEventListener("click", function () {
@@ -220,6 +224,12 @@
       toolNames = picked;
       syncToolNamesInput();
       renderToolChips();
+      // Picked tools on a playbook: show the Tools box (it stays until reload).
+      var toolsSection = document.getElementById("tools-section");
+      if (toolNames.length && toolsSection && toolsSection.hidden) {
+        toolsSection.hidden = false;
+        if (addIndividualToolBtn) addIndividualToolBtn.hidden = true;
+      }
       // Hide modal via Flowbite if present.
       var modal = document.getElementById("tool-picker-modal");
       if (modal && window.FlowbiteInstances) {

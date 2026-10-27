@@ -247,6 +247,39 @@ class RequiresPickerTests(TestCase):
         spec.refresh_from_db()
         self.assertEqual(spec.requires, [])
 
+    def test_playbook_without_tools_hides_tools_box(self):
+        response = self._detail(self.playbook)
+        self.assertFalse(response.context["show_tools"])
+        self.assertContains(response, '<section id="tools-section" hidden>')
+        self.assertContains(response, 'id="add-individual-tool"')
+
+    def test_playbook_with_tools_shows_tools_box(self):
+        AgentSkill.objects.filter(pk=self.playbook.pk).update(tool_names=["canvas_write"])
+        response = self._detail(self.playbook)
+        self.assertTrue(response.context["show_tools"])
+        self.assertContains(response, '<section id="tools-section">')
+        self.assertNotContains(response, 'id="add-individual-tool"')
+
+    def test_subagent_skill_always_shows_tools_box(self):
+        spec = AgentSkill.objects.create(
+            slug="spec", name="Spec", instructions="i", level="user",
+            created_by=self.user, audience="subagent",
+        )
+        response = self._detail(spec)
+        self.assertTrue(response.context["show_tools"])
+        self.assertContains(response, '<section id="tools-section">')
+        self.assertNotContains(response, 'id="add-individual-tool"')
+        # A sub-agent skill can't require toolkits: no "Part of …" pointers.
+        self.assertNotContains(response, "tool-toolkit-note")
+
+    def test_picker_marks_tools_a_toolkit_covers(self):
+        response = self._detail(self.playbook)
+        by_name = {t["name"]: t for t in response.context["available_tools"]}
+        self.assertEqual(by_name["canvas_write"]["toolkits"], ["Canvas Tools"])
+        self.assertContains(
+            response, "Part of Canvas Tools — add the toolkit under Requires instead."
+        )
+
     def test_requires_endpoint_saves_only_requires(self):
         """The picker saves straight away: known slugs only, other fields untouched."""
         self.playbook.requires = []
