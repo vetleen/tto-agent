@@ -247,6 +247,48 @@ class RequiresPickerTests(TestCase):
         spec.refresh_from_db()
         self.assertEqual(spec.requires, [])
 
+    def test_requires_endpoint_saves_only_requires(self):
+        """The picker saves straight away: known slugs only, other fields untouched."""
+        self.playbook.requires = []
+        self.playbook.save(update_fields=["requires"])
+        response = self.client.post(
+            reverse("agent_skills_requires_save", kwargs={"skill_id": self.playbook.id}),
+            {"requires_json": json.dumps(["canvas_tools", "no_such_tools"])},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"ok": True, "requires": ["canvas_tools"]})
+        self.playbook.refresh_from_db()
+        self.assertEqual(self.playbook.requires, ["canvas_tools"])
+        self.assertEqual(self.playbook.instructions, "draft")
+        self.assertEqual(self.playbook.name, "Mine")
+
+    def test_requires_endpoint_refuses_read_only_skill(self):
+        sys_pb = AgentSkill.objects.create(
+            slug="sys-pb", name="Sys PB", instructions="i", level="system",
+        )
+        self.org.preferences = {"skills": {"sys-pb": {"enabled": True}}}
+        self.org.save(update_fields=["preferences"])
+        response = self.client.post(
+            reverse("agent_skills_requires_save", kwargs={"skill_id": sys_pb.id}),
+            {"requires_json": json.dumps(["canvas_tools"])},
+        )
+        self.assertEqual(response.status_code, 403)
+        sys_pb.refresh_from_db()
+        self.assertEqual(sys_pb.requires, [])
+
+    def test_requires_endpoint_clears_for_toolkit(self):
+        """A toolkit never carries requirements, even through this endpoint."""
+        mine_toolkit = AgentSkill.objects.create(
+            slug="my_tools", name="My Tools", instructions="i", level="user",
+            created_by=self.user, kind="toolkit",
+        )
+        self.client.post(
+            reverse("agent_skills_requires_save", kwargs={"skill_id": mine_toolkit.id}),
+            {"requires_json": json.dumps(["canvas_tools"])},
+        )
+        mine_toolkit.refresh_from_db()
+        self.assertEqual(mine_toolkit.requires, [])
+
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
 class ToolkitActionsHiddenTests(TestCase):

@@ -184,7 +184,8 @@
       var descEl = card.querySelector("p");
       var desc = descEl ? descEl.textContent.toLowerCase() : "";
       var match = name.indexOf(q) !== -1 || desc.indexOf(q) !== -1;
-      card.style.display = match ? "" : "none";
+      // "flex", not "": the card's layout is its inline display:flex.
+      card.style.display = match ? "flex" : "none";
       if (match) anyVisible = true;
     });
     var nr = document.getElementById("tool-picker-noresults");
@@ -256,6 +257,46 @@
     if (requiresInput) requiresInput.value = JSON.stringify(requires);
   }
 
+  // Requires are saved straight away (Apply, a click outside the picker, or a
+  // chip's ×) rather than waiting for the page's Save. The hidden input stays
+  // in sync, so a later full Save writes the same list.
+  var requiresSection = document.getElementById("requires-section");
+  var requiresSaveUrl = requiresSection ? requiresSection.getAttribute("data-save-url") : "";
+  var savedRequires = JSON.stringify(requires);
+
+  function saveRequires() {
+    var payload = JSON.stringify(requires);
+    if (!editable || !requiresSaveUrl || payload === savedRequires) return;
+    var errorEl = document.getElementById("requires-save-error");
+    var csrfEl = form.querySelector("[name=csrfmiddlewaretoken]");
+    var body = new FormData();
+    body.append("requires_json", payload);
+    fetch(requiresSaveUrl, {
+      method: "POST",
+      body: body,
+      credentials: "same-origin",
+      headers: {
+        "X-CSRFToken": csrfEl ? csrfEl.value : "",
+        "X-Requested-With": "XMLHttpRequest",
+      },
+    })
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        // The server drops unknown slugs: show what was actually stored.
+        requires = data.requires || [];
+        savedRequires = JSON.stringify(requires);
+        syncRequiresInput();
+        renderRequiresChips();
+        if (errorEl) errorEl.classList.add("hidden");
+      })
+      .catch(function () {
+        if (errorEl) errorEl.classList.remove("hidden");
+      });
+  }
+
   function requiresPickerCard(slug) {
     return document.querySelector(
       '.requires-picker-checkbox[data-skill-slug="' + cssEscape(slug) + '"]'
@@ -287,6 +328,7 @@
           requires = requires.filter(function (s) { return s !== slug; });
           syncRequiresInput();
           renderRequiresChips();
+          saveRequires();
         });
       }
       requiresChipsEl.appendChild(node);
@@ -316,7 +358,7 @@
       var descEl = card.querySelector("p");
       if (descEl) hay += " " + descEl.textContent.toLowerCase();
       var match = hay.indexOf(q) !== -1;
-      card.style.display = match ? "" : "none";
+      card.style.display = match ? "flex" : "none";
       if (match) anyVisible = true;
     });
     var nr = document.getElementById("requires-picker-noresults");
@@ -341,15 +383,30 @@
     });
   }
 
+  function applyRequiresPicker() {
+    var picked = [];
+    document.querySelectorAll(".requires-picker-checkbox:checked").forEach(function (cb) {
+      picked.push(cb.getAttribute("data-skill-slug"));
+    });
+    requires = picked;
+    syncRequiresInput();
+    renderRequiresChips();
+    saveRequires();
+  }
+
+  // A click outside the picker (on the modal's backdrop area) keeps the
+  // selection, like Apply; Flowbite closes the modal itself. Cancel, × and
+  // Escape still discard it.
+  var requiresModalEl = document.getElementById("requires-picker-modal");
+  if (requiresModalEl) {
+    requiresModalEl.addEventListener("click", function (e) {
+      if (e.target === requiresModalEl) applyRequiresPicker();
+    });
+  }
+
   if (applyRequiresPickerBtn) {
     applyRequiresPickerBtn.addEventListener("click", function () {
-      var picked = [];
-      document.querySelectorAll(".requires-picker-checkbox:checked").forEach(function (cb) {
-        picked.push(cb.getAttribute("data-skill-slug"));
-      });
-      requires = picked;
-      syncRequiresInput();
-      renderRequiresChips();
+      applyRequiresPicker();
       var modal = document.getElementById("requires-picker-modal");
       if (modal && window.FlowbiteInstances) {
         var instance = window.FlowbiteInstances.getInstance("Modal", "requires-picker-modal");

@@ -10,6 +10,11 @@ urlpatterns = [
     path("scan-status/", views.skills_scan_status, name="agent_skills_scan_status"),
     path("<uuid:skill_id>/", views.skills_detail, name="agent_skills_detail"),
     path("<uuid:skill_id>/save/", views.skills_save, name="agent_skills_save"),
+    path(
+        "<uuid:skill_id>/requires/",
+        views.skills_requires_save,
+        name="agent_skills_requires_save",
+    ),
     path("<uuid:skill_id>/copy/", views.skills_copy, name="agent_skills_copy"),
     path("<uuid:skill_id>/download/", views.skills_download, name="agent_skills_download"),
     path("<uuid:skill_id>/promote/", views.skills_promote, name="agent_skills_promote"),

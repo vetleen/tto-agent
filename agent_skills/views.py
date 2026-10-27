@@ -560,6 +560,26 @@ def _filter_skill_tools(tool_names: list[str], skill_audience: str | None = None
     return filter_to_skill_tools(tool_names, skill_audience=skill_audience)
 
 
+def _clean_requires(skill: AgentSkill, request) -> list[str]:
+    """The ``requires_json`` POST field as a clean requires list for ``skill``:
+    unknown slugs are dropped and sub-agent skills / toolkits never carry any."""
+    from agent_skills.services import normalize_requires
+
+    if (
+        skill.audience == AgentSkill.Audience.SUBAGENT
+        or skill.kind == AgentSkill.Kind.TOOLKIT
+    ):
+        return []
+    known = {s.slug for s in get_accessible_skills(request.user)}
+    return [
+        r for r in normalize_requires(
+            _parse_tool_names_json(request.POST.get("requires_json", "")),
+            own_slug=skill.slug,
+        )
+        if r in known
+    ]
+
+
 class SkillFormValidationError(Exception):
     """Raised by ``_apply_skill_form`` when the submitted form is invalid.
 
@@ -603,22 +623,7 @@ def _apply_skill_form(skill: AgentSkill, request) -> None:
     # form carried the field, so a POST without it leaves the list alone;
     # unknown slugs are dropped and sub-agent skills / toolkits never carry any.
     if "requires_json" in request.POST:
-        from agent_skills.services import normalize_requires
-
-        if (
-            skill.audience == AgentSkill.Audience.SUBAGENT
-            or skill.kind == AgentSkill.Kind.TOOLKIT
-        ):
-            skill.requires = []
-        else:
-            known = {s.slug for s in get_accessible_skills(request.user)}
-            skill.requires = [
-                r for r in normalize_requires(
-                    _parse_tool_names_json(request.POST.get("requires_json", "")),
-                    own_slug=skill.slug,
-                )
-                if r in known
-            ]
+        skill.requires = _clean_requires(skill, request)
 
     # Slug management (user tier only). The slug auto-follows the name on every
     # save unless the user froze it via the advanced editor — signalled by the
@@ -1266,6 +1271,20 @@ def _editable_skill_or_error(request, skill_id):
     if not can_edit_skill(request.user, skill):
         return None, JsonResponse({"ok": False, "error": "forbidden"}, status=403)
     return skill, None
+
+
+@login_required
+@require_POST
+def skills_requires_save(request, skill_id):
+    """Save just the Requires list, straight from the detail page's picker
+    (Apply, a click outside the modal, or a chip's ×) — no full-form Save.
+    Requirements aren't scanned text, so no rescan."""
+    skill, err = _editable_skill_or_error(request, skill_id)
+    if err:
+        return err
+    skill.requires = _clean_requires(skill, request)
+    skill.save(update_fields=["requires", "updated_at"])
+    return JsonResponse({"ok": True, "requires": skill.requires})
 
 
 def _kind_from_post(request):

@@ -163,11 +163,12 @@
 
     {# ----- Requires (toolkits) — playbooks of the main audience only ----- #}
     {% if show_requires %}
-    <section id="requires-section">
+    <section id="requires-section" data-save-url="{% url 'agent_skills_requires_save' skill_id=skill.id %}">
       <div class="flex items-center justify-between gap-3 mb-3">
         <div class="min-w-0">
           <h2 class="text-base font-semibold text-heading">Requires</h2>
-          <p class="mt-0.5 text-sm text-body">Toolkits this skill needs. They are attached automatically whenever the skill is attached.</p>
+          <p class="mt-0.5 text-sm text-body">Toolkits this skill needs. They are attached automatically whenever the skill is attached. Changes here are saved right away.</p>
+          <p id="requires-save-error" class="hidden mt-1 text-xs text-fg-danger-strong">Couldn't save the toolkits. Try again, or use Save below.</p>
         </div>
         {% if editable %}
         <button type="button" id="open-requires-picker" data-modal-target="requires-picker-modal" data-modal-show="requires-picker-modal" class="shrink-0 inline-flex items-center gap-1.5 bg-neutral-primary-soft hover:bg-neutral-secondary border border-default text-heading shadow-xs font-medium rounded-base text-xs px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-brand">
@@ -364,19 +365,20 @@
     html:not(.dark) .wf-toollist::-webkit-scrollbar-thumb { background: var(--color-paper-300); border-radius: 999px; border: 3px solid var(--color-neutral-primary-soft); }
     #tool-picker-search:focus { outline: none; border-color: var(--color-brand); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-brand) 22%, transparent); }
     .wf-tool-card:hover { border-color: var(--color-brand-subtle); }
-    .wf-tool-card:has(.tool-picker-checkbox:checked) { border-color: var(--color-brand-subtle); background: var(--color-brand-softer); }
-    .wf-tool-card:has(.tool-picker-checkbox:focus-visible) { box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-brand) 22%, transparent); }
-    .tool-picker-checkbox {
+    #requires-picker-search:focus { outline: none; border-color: var(--color-brand); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-brand) 22%, transparent); }
+    .wf-tool-card:has(.tool-picker-checkbox:checked, .requires-picker-checkbox:checked) { border-color: var(--color-brand-subtle); background: var(--color-brand-softer); }
+    .wf-tool-card:has(.tool-picker-checkbox:focus-visible, .requires-picker-checkbox:focus-visible) { box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-brand) 22%, transparent); }
+    .tool-picker-checkbox, .requires-picker-checkbox {
       appearance: none; -webkit-appearance: none;
       width: 18px; height: 18px; border-radius: 3px; flex-shrink: 0; margin: 1px 0 0; cursor: pointer;
       border: 1.5px solid var(--color-default); background-color: var(--color-neutral-primary-soft);
       background-repeat: no-repeat; background-position: center; background-size: 13px;
     }
-    .tool-picker-checkbox:checked {
+    .tool-picker-checkbox:checked, .requires-picker-checkbox:checked {
       border-color: var(--color-brand); background-color: var(--color-brand);
       background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E");
     }
-    .tool-picker-checkbox:focus-visible { outline: none; }
+    .tool-picker-checkbox:focus-visible, .requires-picker-checkbox:focus-visible { outline: none; }
     .wf-toolbtn-primary:hover { background: var(--color-brand-strong); }
     .wf-toolbtn-ghost:hover { background: var(--color-neutral-secondary-soft); }
     .wf-toolclose:hover { background: var(--color-neutral-secondary-soft); color: var(--color-heading); }
