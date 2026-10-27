@@ -17,6 +17,9 @@ PATENT_SEARCHER = {
     "name": "Patent Searcher",
     "emoji": "📜",
     "audience": "subagent",
+    # Specific, not generic: listed only while a playbook names it in
+    # ``subagents`` (e.g. a prior-art skill).
+    "always_available": False,
     "description": (
         "A focused patent-search worker on EPO/Espacenet. Give it a clear task with a brief — a "
         "search table, or a question about specific patents. It sizes and runs the searches, "

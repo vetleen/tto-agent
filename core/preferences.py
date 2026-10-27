@@ -503,6 +503,8 @@ def get_preferences(user) -> ResolvedPreferences:
         get_subagent_skills,
         skill_enabled_by_default,
         skill_requires,
+        skill_subagents,
+        specialization_always_available,
         unmet_requirements,
     )
 
@@ -556,6 +558,11 @@ def get_preferences(user) -> ResolvedPreferences:
                 "kind": skill.kind,
                 "requires": skill_requires(skill),
                 "requires_unmet": [],
+                # Playbooks: the specializations listed while it is attached.
+                # Specializations: whether they're listed without one
+                # (agent_skills.services.visible_specializations).
+                "subagents": skill_subagents(skill),
+                "always_available": specialization_always_available(skill),
             })
         # Why a skill can't be attached because of what it requires — a
         # requirement that isn't in this list (org/user-disabled, missing) or

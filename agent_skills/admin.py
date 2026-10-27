@@ -49,7 +49,14 @@ class AgentSkillAdmin(admin.ModelAdmin):
             "fields": ("level", "audience", "kind", "organization", "created_by", "parent"),
         }),
         # requires: slugs attached automatically with this skill (toolkits).
-        ("Configuration", {"fields": ("instructions", "tool_names", "requires", "is_active")}),
+        # subagents: specializations listed while this playbook is attached;
+        # always_available: a specialization listed without one.
+        ("Configuration", {
+            "fields": (
+                "instructions", "tool_names", "requires", "subagents",
+                "always_available", "is_active",
+            ),
+        }),
         # standing_token_count is what the chat_skill_attach token budget
         # (SKILL_ATTACH_TOKEN_BUDGET, 60k) sums across attached skills.
         ("Scan / approval", {

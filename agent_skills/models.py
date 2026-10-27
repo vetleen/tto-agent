@@ -24,6 +24,10 @@ MAX_TEMPLATE_CHARS = MAX_RESOURCE_CHARS
 # Upper bound on the number of slugs a skill may list in ``requires``.
 MAX_REQUIRES = 10
 
+# Upper bound on the number of specialization slugs a skill may list in
+# ``subagents``.
+MAX_SUBAGENTS = 10
+
 
 def skill_resource_upload_path(instance: "SkillResource", filename: str) -> str:
     """Storage path for a resource's original (native) file — PDF/image bytes."""
@@ -80,6 +84,14 @@ class AgentSkill(models.Model):
     # user's available set; the thread's attached set is kept closed under it
     # (see agent_skills.services.expand_required_skills). Main audience only.
     requires = models.JSONField(default=list, blank=True)
+    # Slugs of sub-agent specializations this playbook makes available: while
+    # it is attached, the orchestrator is told about them even when they are
+    # not ``always_available``. Main-audience playbooks only.
+    subagents = models.JSONField(default=list, blank=True)
+    # Sub-agent specializations only. True = always listed to the orchestrator;
+    # False = listed only while an attached skill names it in ``subagents``.
+    # Not an access gate: chat_subagent_create accepts any enabled one.
+    always_available = models.BooleanField(default=True)
     audience = models.CharField(
         max_length=10, choices=Audience.choices, default=Audience.MAIN
     )

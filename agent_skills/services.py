@@ -14,6 +14,7 @@ from agent_skills.models import (
     MAX_INSTRUCTIONS_CHARS,
     MAX_REQUIRES,
     MAX_RESOURCE_CHARS,
+    MAX_SUBAGENTS,
     AgentSkill,
     SkillResource,
 )
@@ -33,12 +34,13 @@ _LEVEL_ORDER = {"system": 0, "org": 1, "user": 2}
 _REQUIRES_SLUG_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
 
 
-def normalize_requires(raw, *, own_slug: str = "") -> list[str]:
+def normalize_requires(raw, *, own_slug: str = "", cap: int = MAX_REQUIRES) -> list[str]:
     """Normalize a ``requires`` value from any write path (form, import, tool).
 
     Total — never raises: anything that is not a list yields ``[]``; entries
     are stripped, lower-cased, validated against the slug shape, de-duplicated
-    keep-first, kept from naming the skill itself, and capped at ``MAX_REQUIRES``.
+    keep-first, kept from naming the skill itself, and capped at ``cap``
+    (``MAX_REQUIRES``). :func:`normalize_subagents` reuses it.
     """
     if not isinstance(raw, (list, tuple)):
         return []
@@ -52,7 +54,7 @@ def normalize_requires(raw, *, own_slug: str = "") -> list[str]:
         if not _REQUIRES_SLUG_RE.match(slug):
             continue
         out.append(slug)
-        if len(out) >= MAX_REQUIRES:
+        if len(out) >= cap:
             break
     return out
 
@@ -62,6 +64,119 @@ def skill_requires(skill) -> list[str]:
     return normalize_requires(
         getattr(skill, "requires", None), own_slug=getattr(skill, "slug", "") or ""
     )
+
+
+def normalize_subagents(raw, *, own_slug: str = "") -> list[str]:
+    """Normalize a ``subagents`` value (specialization slugs) — the same rules
+    as :func:`normalize_requires`, capped at ``MAX_SUBAGENTS``."""
+    return normalize_requires(raw, own_slug=own_slug, cap=MAX_SUBAGENTS)
+
+
+def can_carry_subagents(skill) -> bool:
+    """Only main/shared-audience playbooks name specializations: a toolkit
+    unlocks tools, and a sub-agent can't spawn sub-agents."""
+    return (
+        getattr(skill, "audience", "main") != AgentSkill.Audience.SUBAGENT
+        and getattr(skill, "kind", "playbook") != AgentSkill.Kind.TOOLKIT
+    )
+
+
+def skill_subagents(skill) -> list[str]:
+    """The normalized ``subagents`` list of a skill (read side); always empty
+    for a skill that can't carry one."""
+    if not can_carry_subagents(skill):
+        return []
+    return normalize_subagents(
+        getattr(skill, "subagents", None), own_slug=getattr(skill, "slug", "") or ""
+    )
+
+
+def specialization_always_available(skill) -> bool:
+    """Whether a specialization is listed to the orchestrator without a skill
+    naming it. ``shared`` seeds always are."""
+    if getattr(skill, "audience", "") == AgentSkill.Audience.SHARED:
+        return True
+    return bool(getattr(skill, "always_available", True))
+
+
+def visible_specializations(entries, attached_skills) -> list[dict]:
+    """The specialization entries (``ResolvedPreferences.allowed_specializations``)
+    the orchestrator is told about on a thread: the always-available ones plus
+    those an attached skill names in ``subagents``. Order kept.
+
+    Listing only — ``chat_subagent_create`` still accepts any entry.
+    """
+    unlocked = {slug for s in (attached_skills or []) for slug in skill_subagents(s)}
+    return [
+        e for e in (entries or [])
+        if e.get("always_available", True) or e.get("slug") in unlocked
+    ]
+
+
+def allowed_subagent_slugs(skill, user) -> dict[str, AgentSkill]:
+    """``{slug: specialization}`` a skill may name in ``subagents``: the
+    sub-agent-audience skills ``user`` can access, at a tier no wider than the
+    skill's own — a system playbook names system specializations, an org
+    playbook system or org ones, a user playbook any the user can see (so
+    colleagues are never pointed at someone's personal specialization)."""
+    if not can_carry_subagents(skill):
+        return {}
+    max_rank = _LEVEL_ORDER.get(getattr(skill, "level", "user"), 2)
+    out: dict[str, AgentSkill] = {}
+    for s in get_accessible_skills(user):
+        if s.audience not in (AgentSkill.Audience.SUBAGENT, AgentSkill.Audience.SHARED):
+            continue
+        if _LEVEL_ORDER.get(s.level, 0) > max_rank:
+            continue
+        # Same slug at several tiers: keep the most specific allowed one.
+        prev = out.get(s.slug)
+        if prev is None or _LEVEL_ORDER.get(s.level, 0) > _LEVEL_ORDER.get(prev.level, 0):
+            out[s.slug] = s
+    return out
+
+
+def clean_subagents(skill, raw, user) -> tuple[list[str], list[str]]:
+    """Normalize ``raw`` for ``skill`` and keep only slugs it may name
+    (:func:`allowed_subagent_slugs`). Returns ``(kept, dropped)``."""
+    if not can_carry_subagents(skill):
+        requested = normalize_subagents(raw, own_slug=getattr(skill, "slug", "") or "")
+        return [], requested
+    requested = normalize_subagents(raw, own_slug=skill.slug)
+    allowed = allowed_subagent_slugs(skill, user)
+    kept = [r for r in requested if r in allowed]
+    return kept, [r for r in requested if r not in allowed]
+
+
+def unmet_subagents(skill, user) -> list[dict]:
+    """Why each of ``skill``'s ``subagents`` won't be offered to the user's
+    orchestrator: ``[{"slug", "name", "reason"}]`` with reason
+    ``"unavailable"`` (disabled by the org/user, or gone) or ``"unapproved"``
+    (hasn't passed the safety scan). Empty when every one is usable."""
+    slugs = skill_subagents(skill)
+    if not slugs:
+        return []
+    from agent_skills.resources import bulk_skill_approval
+
+    pool = {s.slug: s for s in get_subagent_skills(user)}
+    present = [pool[s] for s in slugs if s in pool]
+    approval = bulk_skill_approval(user, present) if present else {}
+    out: list[dict] = []
+    for slug in slugs:
+        target = pool.get(slug)
+        if target is None:
+            out.append({"slug": slug, "name": slug, "reason": "unavailable"})
+        elif (approval.get(str(target.id)) or {}).get("approved", True) is False:
+            out.append({"slug": slug, "name": target.name, "reason": "unapproved"})
+    nameless = [u["slug"] for u in out if u["reason"] == "unavailable"]
+    if nameless:
+        names = dict(
+            AgentSkill.objects.filter(slug__in=nameless, deleted_at__isnull=True)
+            .order_by("-level").values_list("slug", "name")
+        )
+        for u in out:
+            if u["reason"] == "unavailable" and u["slug"] in names:
+                u["name"] = names[u["slug"]]
+    return out
 
 
 def toolkit_tool_index(skills) -> dict[str, list]:
@@ -868,6 +983,11 @@ def fork_skill(
             instructions=source_skill.instructions,
             tool_names=list(source_skill.tool_names or []),
             requires=skill_requires(source_skill),
+            subagents=(
+                skill_subagents(source_skill)
+                if new_audience != AgentSkill.Audience.SUBAGENT else []
+            ),
+            always_available=specialization_always_available(source_skill),
             audience=new_audience,
             level="user",
             created_by=user,
@@ -1076,6 +1196,11 @@ def promote_skill_to_org(
             instructions=source_skill.instructions,
             tool_names=list(source_skill.tool_names or []),
             requires=skill_requires(source_skill),
+            subagents=(
+                skill_subagents(source_skill)
+                if new_audience != AgentSkill.Audience.SUBAGENT else []
+            ),
+            always_available=specialization_always_available(source_skill),
             audience=new_audience,
             level="org",
             organization=organization,
@@ -1492,6 +1617,8 @@ def export_skill(skill: AgentSkill) -> dict:
         "instructions": _lines(skill.instructions),
         "tool_names": list(skill.tool_names or []),
         "requires": skill_requires(skill),
+        "subagents": skill_subagents(skill),
+        "always_available": specialization_always_available(skill),
         "resources": resources,
     }
 
@@ -1546,6 +1673,13 @@ def _normalize_skill_payload(entry: dict) -> dict:
         normalize_requires(entry.get("requires"), own_slug=slug)
         if audience != AgentSkill.Audience.SUBAGENT else []
     )
+    # Specializations a playbook makes available; kept verbatim (resolution
+    # is graceful at use time — an unknown slug just lists nothing).
+    subagents = (
+        normalize_subagents(entry.get("subagents"), own_slug=slug)
+        if audience != AgentSkill.Audience.SUBAGENT else []
+    )
+    always_available = entry.get("always_available", True) is not False
 
     # v2 uses ``resources`` (with a ``kind``); fall back to a v1 ``templates``
     # list, mapping each entry to kind=template.
@@ -1606,6 +1740,8 @@ def _normalize_skill_payload(entry: dict) -> dict:
         "instructions": instructions,
         "tool_names": tool_names,
         "requires": requires,
+        "subagents": subagents,
+        "always_available": always_available,
         "resources": resources,
     }
 
@@ -1690,6 +1826,10 @@ def import_skill(user, payload: dict) -> AgentSkill:
         normalize_requires(payload.get("requires"))
         if audience != AgentSkill.Audience.SUBAGENT else []
     )
+    subagents = (
+        normalize_subagents(payload.get("subagents"))
+        if audience != AgentSkill.Audience.SUBAGENT else []
+    )
 
     # ``kind`` is deliberately not taken from the payload: toolkits are
     # seed-only, so an import is always a playbook.
@@ -1708,6 +1848,8 @@ def import_skill(user, payload: dict) -> AgentSkill:
                 payload.get("tool_names") or [], skill_audience=audience
             ),
             requires=[r for r in requires if r != s],
+            subagents=[r for r in subagents if r != s],
+            always_available=payload.get("always_available", True) is not False,
             level="user",
             created_by=user,
             parent=None,

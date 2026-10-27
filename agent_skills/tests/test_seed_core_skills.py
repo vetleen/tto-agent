@@ -137,6 +137,25 @@ class SeedGraphTests(TestCase):
             row = AgentSkill.objects.get(slug=slug, level="system")
             self.assertEqual(row.requires, [], slug)
 
+    def test_specialization_availability(self):
+        # Generic specializations are always listed; the patent searcher only
+        # through a playbook that names it.
+        for slug in ("researcher", "web-researcher"):
+            row = AgentSkill.objects.get(slug=slug, level="system")
+            self.assertTrue(row.always_available, slug)
+        row = AgentSkill.objects.get(slug="patent-searcher", level="system")
+        self.assertFalse(row.always_available)
+
+    def test_seed_subagents_name_known_specializations(self):
+        seeds = self._seeds()
+        specs = {s["slug"] for s in seeds if s.get("audience") in ("subagent", "shared")}
+        for data in seeds:
+            for slug in data.get("subagents") or []:
+                self.assertIn(slug, specs, f"{data['slug']} names unknown {slug}")
+            if data.get("subagents"):
+                self.assertNotEqual(data.get("audience", "main"), "subagent", data["slug"])
+                self.assertNotEqual(data.get("kind", "playbook"), "toolkit", data["slug"])
+
     def test_requires_graph_is_acyclic(self):
         graph = {s["slug"]: list(s.get("requires") or []) for s in self._seeds()}
 

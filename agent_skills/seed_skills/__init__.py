@@ -109,6 +109,10 @@ def seed_system_skills():
             "kind": skill_data.get("kind", AgentSkill.Kind.PLAYBOOK),
             # Slugs attached automatically with this skill (e.g. canvas_tools).
             "requires": list(skill_data.get("requires", [])),
+            # Specializations this playbook makes available while attached.
+            "subagents": list(skill_data.get("subagents", [])),
+            # Specializations: listed always (default) or only through a skill.
+            "always_available": skill_data.get("always_available", True),
         }
         try:
             skill = AgentSkill.objects.get(slug=skill_data["slug"], level="system")
