@@ -589,6 +589,9 @@ def get_preferences(user) -> ResolvedPreferences:
                 # (agent_skills.services.visible_specializations).
                 "subagents": skill_subagents(skill),
                 "always_available": specialization_always_available(skill),
+                # Automatic model category (chat/auto_model.py); a
+                # specialization with one runs on it, ignoring model_tier.
+                "preferred_model_category": skill.preferred_model_category,
             })
         # Why a skill can't be attached because of what it requires — a
         # requirement that isn't in this list (org/user-disabled, missing) or

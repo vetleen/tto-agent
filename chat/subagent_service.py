@@ -137,6 +137,22 @@ def resolve_subagent_model(tier: str, prefs: ResolvedPreferences) -> str:
     return slot_model.get(tier) or prefs.mid_model
 
 
+def specialization_model(skill, prefs: ResolvedPreferences) -> tuple[str | None, str | None]:
+    """(model, reasoning level) a specialization always runs on, or (None, None).
+
+    A specialization naming an Automatic category (chat/auto_model.py) runs on
+    the org's model for that category — with the skill's own reasoning level
+    when that model offers it, else the category's — whatever ``model_tier``
+    the orchestrator asked for.
+    """
+    from chat.auto_model import CATEGORIES_BY_KEY, resolve_category
+
+    category = getattr(skill, "preferred_model_category", "") if skill is not None else ""
+    if category not in CATEGORIES_BY_KEY:
+        return None, None
+    return resolve_category(prefs, category, getattr(skill, "preferred_reasoning_level", "") or None)
+
+
 def subagent_thinking_level(prefs: ResolvedPreferences, tier: str, model: str) -> str | None:
     """The org's reasoning level for a sub-agent of *tier* running on *model*.
 
@@ -622,6 +638,11 @@ def run_subagent(run_id: uuid.UUID) -> None:
                 "longer available; running without it",
                 run_id, run.skill_slug,
             )
+        # A specialization with a model category overrides the requested tier.
+        spec_model, spec_level = specialization_model(specialization_skill, prefs)
+        if spec_model:
+            model = spec_model
+            run.model_used = model
 
         # Auto-load the first template (name-ordered, matching the prompt's
         # bullet list) into the working canvas as a starting point. Persisted
@@ -737,7 +758,9 @@ def run_subagent(run_id: uuid.UUID) -> None:
         }
         # Org-chosen reasoning level for this tier; absent = registry default
         # (LLMService._apply_default_reasoning).
-        thinking_level = subagent_thinking_level(prefs, run.model_tier, model)
+        thinking_level = (
+            spec_level if spec_model else subagent_thinking_level(prefs, run.model_tier, model)
+        )
         if thinking_level:
             params["thinking_level"] = thinking_level
 

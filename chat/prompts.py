@@ -546,10 +546,15 @@ def build_semi_static_prompt(
             "optionally pass `type=\"<slug>\"` to give it one of the following "
             "specializations — extra instructions and tools for a focused role. "
             "Pick one when the task fits; otherwise omit `type` for a "
-            "general-purpose sub-agent with no special tools.\n"
+            "general-purpose sub-agent with no special tools. A specialization "
+            "marked (own model) runs on its configured model: omit `model_tier` "
+            "for it.\n"
         )
         for s in specializations:
-            prompt += _catalogue_line(s) + "\n"
+            line = _catalogue_line(s)
+            if s.get("preferred_model_category"):
+                line += " (own model)"
+            prompt += line + "\n"
 
     # -- Attached skills / toolkits sections --
     origins = skill_origins or {}

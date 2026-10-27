@@ -156,7 +156,9 @@ _MODEL_TIER_DESCRIPTION = (
     'Model quality, chosen by task complexity: "low" for especially simple, well-defined '
     'tasks (lookups, narrow searches, simple summaries); "medium" (default) for most '
     'tasks (research, analysis); "high" only for tasks that require exceptional '
-    "intelligence (note: rarely relevant)."
+    "intelligence (note: rarely relevant). Only for general-purpose sub-agents: a "
+    "specialization marked \"own model\" in your instructions runs on its configured "
+    "model, so omit model_tier for it."
 )
 
 
@@ -191,7 +193,7 @@ class CreateSubagentInput(ReasonBaseModel):
             "other attachment. Sharing an email also shares the files attached to it."
         ),
     )
-    model_tier: str = Field(default=DEFAULT_SUBAGENT_TIER, description=_MODEL_TIER_DESCRIPTION)
+    model_tier: str | None = Field(default=None, description=_MODEL_TIER_DESCRIPTION)
     round_budget: Literal["quick", "standard", "deep"] = Field(
         default="standard", description=_ROUND_BUDGET_DESCRIPTION,
     )
@@ -354,7 +356,7 @@ class CreateSubagentTool(ContextAwareTool):
     def _run(
         self,
         prompt: str,
-        model_tier: str = DEFAULT_SUBAGENT_TIER,
+        model_tier: str | None = None,
         **kwargs,
     ) -> str:
         from core.preferences import get_preferences

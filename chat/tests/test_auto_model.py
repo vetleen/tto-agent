@@ -254,3 +254,21 @@ class RouterInputTests(TestCase):
         self.assertNotIn("first_user_message", data)
         self.assertNotIn("earlier_user_messages", data)
         self.assertNotIn("last_assistant_message_head", data)
+
+
+class SpecializationModelTests(SimpleTestCase):
+    def test_category_overrides_tier(self):
+        from chat.subagent_service import specialization_model
+
+        prefs = _prefs(light_reading=LUNA)
+        skill = SimpleNamespace(preferred_model_category="light_reading", preferred_reasoning_level="low")
+        self.assertEqual(specialization_model(skill, prefs), (LUNA, "low"))
+        skill.preferred_reasoning_level = ""
+        self.assertEqual(specialization_model(skill, prefs), (LUNA, None))
+
+    def test_no_category_keeps_tier(self):
+        from chat.subagent_service import specialization_model
+
+        self.assertEqual(specialization_model(None, _prefs()), (None, None))
+        skill = SimpleNamespace(preferred_model_category="", preferred_reasoning_level="")
+        self.assertEqual(specialization_model(skill, _prefs()), (None, None))
