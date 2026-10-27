@@ -188,6 +188,16 @@ and a skill's `level` (system/org/user):
   are "specializations" the orchestrator attaches by passing `type=<slug>` to
   `chat_subagent_create`. `shared` is seed-only (no UI to author it). A skill may only list
   tools whose audience is compatible (`skill_tool_audience_ok` in `agent_skills/services.py`).
+- **Specialization availability** — `AgentSkill.always_available` (default True) vs
+  "Available through skills": a skills-only specialization is *listed* in the orchestrator's
+  semi-static "# Sub-agent specializations" block only while an attached main playbook names
+  it in `AgentSkill.subagents` (`services.visible_specializations`; the block already changes
+  on attach/detach, so no new cache breaks). `chat_skill_attach` reports newly unlocked ones as
+  `subagents_unlocked` (mid-turn: the prompt can't change). **Listing only, not a gate:**
+  `chat_subagent_create(type=…)` accepts any enabled specialization (`allowed_specializations`
+  is unchanged). Tier rule (`allowed_subagent_slugs`): a system playbook names system
+  specializations, an org playbook system/org, a user playbook any the user can see. Patent
+  Searcher seeds skills-only; Researcher/Web Researcher stay always.
 
 Resolution lives in `core/preferences.py` (`allowed_tools` / `allowed_subagent_tools`,
 `allowed_skills` / `allowed_specializations`) and `chat/subagent_service.py`
