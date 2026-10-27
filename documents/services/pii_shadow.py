@@ -59,9 +59,18 @@ PATHWAY_QUICK = "quick"
 # ---------------------------------------------------------------------------
 
 
+QUESTION_STEM = "The text clearly contains personal data relating to identifiable natural persons, of this kind: "
+QUESTION_TAIL = " Generic, organisational or hypothetical data does not count; when in doubt, answer no."
+
+
 def build_questions() -> list[Question]:
     """One predicate per GDPR category, worded from the production schema's own
-    field descriptions (``PIICategoryOutput``) so both systems judge the same thing."""
+    field descriptions (``PIICategoryOutput``) so both systems judge the same thing.
+
+    The descriptions alone ("Financial and business data: business information, …")
+    leave out the system prompt's "relating to identifiable natural persons", so every
+    question states it, with one bar for all ten categories: "clearly" (no recall
+    preference for Art. 9/10 — a fixed line, revisit if it misses cases)."""
     from llm.types.structured import PIICategoryOutput
 
     questions = []
@@ -71,7 +80,10 @@ def build_questions() -> list[Question]:
         # data" → "personal …") but leave acronyms alone ("GDPR Article 9 …").
         if len(description) > 1 and description[0].isupper() and description[1].islower():
             description = description[0].lower() + description[1:]
-        questions.append(Question(type="predicate", name=category, instructions=f"The text contains {description}."))
+        questions.append(Question(
+            type="predicate", name=category,
+            instructions=f"{QUESTION_STEM}{description}.{QUESTION_TAIL}",
+        ))
     return questions
 
 
