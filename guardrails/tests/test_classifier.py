@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 from asgiref.sync import async_to_sync
+from django.conf import settings
 from django.test import TestCase, override_settings
 
 from guardrails.classifier import (
@@ -242,6 +243,8 @@ class ClassifySoulSyncTest(TestCase):
         self.assertIn("personality", system_msg)
         # The SOUL prompt must explicitly permit legitimate persona/style config.
         self.assertIn("ALLOW", system_msg)
+        # The assistant's own name is not an identity replacement (2026-10-27 false positive).
+        self.assertIn(f"its name is {settings.ASSISTANT_NAME}", " ".join(system_msg.split()))
 
 
 class ClassifyOrgDescriptionSyncTest(TestCase):
