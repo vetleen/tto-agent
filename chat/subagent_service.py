@@ -7,6 +7,7 @@ import uuid
 
 from django.utils import timezone
 
+from chat.services import nest_heading_levels
 from core.preferences import MIN_CONTEXT_TOKENS, SUBAGENT_TIER_FEATURES, ResolvedPreferences
 
 logger = logging.getLogger(__name__)
@@ -372,7 +373,9 @@ def build_result_notice(run, *, untouched: bool | None = None) -> str:
     read_call = f'chat_subagent_report_read(run_id="{short_id}")'
     cap = int(getattr(settings, "SUBAGENT_RESULT_INLINE_MAX_TOKENS", 2_000))
     text, source = report_source(run, untouched=untouched)
-    final = (run.result or "").strip()
+    # The notice has no heading of its own; keep a report-style "# Findings"
+    # from reading as a top-level section of the message.
+    final = nest_heading_levels((run.result or "").strip(), 1)
 
     lines = [result_header(run)]
     if source == "canvas":
@@ -546,7 +549,7 @@ def task_message(run) -> str:
     progress = run_progress(previous)
     lines = [
         "# Original task",
-        run.prompt,
+        nest_heading_levels(run.prompt, 1),
         "",
         "# Continuing earlier work",
         f"This is a continuation of the original task above. A previous sub-agent {outcome}"
@@ -554,9 +557,12 @@ def task_message(run) -> str:
         "carried over to you as a starting point. Continue where it left off.",
     ]
     if previous.result:
-        lines += ["", "## Its final reply", previous.result.strip()]
+        lines += ["", "## Its final reply", nest_heading_levels(previous.result.strip(), 2)]
     if run.continuation_instructions:
-        lines += ["", "## Direction from the orchestrator", run.continuation_instructions]
+        lines += [
+            "", "## Direction from the orchestrator",
+            nest_heading_levels(run.continuation_instructions, 2),
+        ]
     return "\n".join(lines)
 
 

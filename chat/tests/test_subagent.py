@@ -813,8 +813,9 @@ class ResultHeaderTests(TestCase):
 
     def _run(self, **kw):
         now = timezone.now()
+        kw.setdefault("prompt", "t")
         return SubAgentRun.objects.create(
-            thread=self.thread, user=self.user, prompt="t", status=SubAgentRun.Status.COMPLETED,
+            thread=self.thread, user=self.user, status=SubAgentRun.Status.COMPLETED,
             started_at=now - timedelta(seconds=252), completed_at=now, **kw,
         )
 
@@ -884,6 +885,20 @@ class ResultHeaderTests(TestCase):
         self.assertIn("## Its final reply\nSummary. Not covered: Y.", message)
         self.assertIn("## Direction from the orchestrator\nFocus on Y.", message)
         self.assertEqual(task_message(previous), "t")
+
+    def test_continuation_nests_embedded_headings(self):
+        from chat.subagent_service import task_message
+
+        previous = self._run(round_budget="quick", rounds_used=4, prompt="# Goal\nFind X.",
+                             result="# Report\nFound X.\n## Not covered\nY.")
+        run = self._run(round_budget="quick", continued_from=previous, chain_depth=1,
+                        prompt="# Goal\nFind X.", continuation_instructions="# Next\nDo Y.")
+        message = task_message(run)
+        self.assertTrue(message.startswith("# Original task\n## Goal\nFind X.\n\n# Continuing"))
+        self.assertIn("## Its final reply\n### Report\nFound X.\n#### Not covered\nY.", message)
+        self.assertIn("## Direction from the orchestrator\n### Next\nDo Y.", message)
+        # A first run's task is the whole message: left as written.
+        self.assertEqual(task_message(previous), "# Goal\nFind X.")
 
     @patch("llm.get_llm_service")
     @patch("core.preferences.get_preferences")
@@ -2082,6 +2097,16 @@ class ResultNoticeTests(TestCase):
         self.assertIn("The answer is 42.", notice)
         self.assertNotIn("cut at", notice)
         self.assertNotIn("chat_subagent_report_read", notice)
+
+    def test_final_message_headings_are_nested(self):
+        from chat.subagent_service import build_result_notice
+
+        result = "# Findings\nA.\n## Gaps\nB.\n```\n# code\n```"
+        notice = build_result_notice(self._run(result=result))
+        self.assertIn("## Findings\nA.\n### Gaps\nB.\n```\n# code\n```", notice)
+        self.assertNotIn("\n# Findings", notice)
+        with_canvas = build_result_notice(self._run(canvas="report", canvas_title="R", result=result))
+        self.assertIn("Accompanying message:\n## Findings\nA.\n### Gaps", with_canvas)
 
 
 class ReadSubagentReportToolTests(TestCase):
