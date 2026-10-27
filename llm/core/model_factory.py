@@ -147,12 +147,13 @@ def _get_provider_kwargs(provider: str, api_model: str) -> dict[str, Any]:
             # caller during tool loops. Request their encrypted representation
             # so the provider wrapper can preserve it in Message metadata.
             kwargs["include"] = ["reasoning.encrypted_content"]
-            # Extended prompt cache retention: keep cached prefixes warm up to
-            # 24h (vs the in-memory default of ~5-10 min). Same per-token
-            # pricing as in-memory; the longer window amortizes the 1.25x
-            # cache-write over more reads. model_kwargs values are merged into
-            # the top-level Responses payload, where OpenAI expects
-            # prompt_cache_retention.
+            # Extended prompt cache retention (up to 24h instead of in-memory's
+            # ~5-10 min) with no cache-write charge. This parameter only
+            # applies to models before GPT-5.6 (here: GPT-5.4 Nano). GPT-5.6+
+            # and GPT-6 use prompt_cache_options.ttl instead: "30m" (default,
+            # writes billed at 1.25x input) or "12h" (2.5x), so they run on
+            # the 30m default. model_kwargs values are merged into the
+            # top-level Responses payload.
             kwargs["model_kwargs"] = {"prompt_cache_retention": "24h"}
     return kwargs
 
