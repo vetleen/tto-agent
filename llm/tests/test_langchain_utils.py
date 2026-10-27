@@ -324,6 +324,15 @@ class AnthropicHistoryBreakpointTests(TestCase):
         # The prefix up to and including the read breakpoint is identical.
         self.assertEqual(lc3[:3], lc2[:3])
 
+    def test_history_breakpoints_use_the_1h_ttl(self):
+        history = [Message(role="user", content="Q1"), Message(role="assistant", content="A1"),
+                   Message(role="user", content="Q2"), Message(role="assistant", content="A2")]
+        lc = to_langchain_messages(self._turn(history, "Q3"), provider="anthropic")
+        controls = [b["cache_control"] for m in lc if isinstance(m.content, list)
+                    for b in m.content if isinstance(b, dict) and "cache_control" in b]
+        self.assertEqual(len(controls), 3)  # system + read (A1) + write (A2)
+        self.assertTrue(all(c == {"type": "ephemeral", "ttl": "1h"} for c in controls))
+
     def test_tool_results_and_call_only_turns_are_skipped(self):
         from llm.types.messages import ToolCall
 

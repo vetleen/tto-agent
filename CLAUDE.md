@@ -265,7 +265,9 @@ dropped (the model can always call the tool again):
   views each file with the tool (a normal, stubbable tool result). Without the tool the
   old inline expansion (`_enrich_with_attachments`) still applies.
 - The Anthropic adapter keeps the 1h breakpoint on the FIRST system message (the static
-  prompt); the summary system message follows it (`llm/core/langchain_utils.py`).
+  prompt); the summary system message follows it (`llm/core/langchain_utils.py`). The two
+  history breakpoints around the turn anchor are 1h too (`_HISTORY_BREAKPOINT`: users pause
+  5–60 min between turns); only the automatic end breakpoint stays 5m.
 - **Mid-turn** (`llm/pipelines/edit_points.py`, driven from `simple_chat.py`): the tool loop
   is **append-only between edit points** — every provider, main agent and sub-agents alike.
   Each request must extend the previous one byte-for-byte (prompt cache; Anthropic

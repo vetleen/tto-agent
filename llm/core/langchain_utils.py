@@ -56,7 +56,13 @@ def parse_tool_calls_from_ai_message(ai_message: object) -> list[ToolCall] | Non
 # message on the next turn, so the request's tail is never a reusable cache
 # entry; the history breakpoints are placed relative to it instead.
 TURN_ANCHOR_KEY = "wf_turn_anchor"
-_HISTORY_BREAKPOINT = {"type": "ephemeral"}
+# 1h, not the default 5m: users often pause 5-60 min between turns, and a 5m
+# entry is gone by then (prod 2026-10: ~20% hit after such a gap vs ~70% under
+# 5 min). A 1h write costs 2x input instead of 1.25x, but only the newest
+# exchange is written each turn while the whole history is re-read. Anthropic
+# requires longer TTLs before shorter ones; the automatic end breakpoint (5m)
+# always comes after these.
+_HISTORY_BREAKPOINT = {"type": "ephemeral", "ttl": "1h"}
 
 
 def _with_cache_breakpoint(msg):
