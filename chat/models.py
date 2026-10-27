@@ -48,6 +48,13 @@ class ChatThread(models.Model):
     # core.preferences.resolve_thread_model.
     model = models.CharField(max_length=128, blank=True, default="")
 
+    # Automatic model choice state (chat/auto_model.py), its own column so it
+    # never races writes to ``metadata``. Keys: enabled (thread is on
+    # Automatic), category, model + thinking_level (the last turn's),
+    # last_turn_at (ISO) and summary_up_to (the summary cutoff at that turn's
+    # end) — the last two decide whether the provider cache is still warm.
+    auto_route = models.JSONField(null=True, blank=True)
+
     # Generic per-thread context bag for features like edit-in-chat.
     # Known keys:
     #   - source_skill_id (str UUID): the skill being edited (or its fork)

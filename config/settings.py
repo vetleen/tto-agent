@@ -988,6 +988,19 @@ DECISIONS_STRUCTURED_BATCH_SIZE = _env_int("DECISIONS_STRUCTURED_BATCH_SIZE", "2
 # trying either pathway. 0 = no cap.
 DECISIONS_MAX_INPUT_TOKENS = _env_int("DECISIONS_MAX_INPUT_TOKENS", "100000")
 
+# Automatic model choice (chat/auto_model.py). A thread re-routes only at a cache
+# boundary: its first turn, after a history summarise, or once the provider's
+# prompt cache has gone cold since the last turn — these TTLs, keyed by
+# ModelInfo.provider (providers not listed count as always cold).
+AUTO_MODEL_CACHE_TTL_SECONDS = {
+    "anthropic": _env_int("AUTO_MODEL_CACHE_TTL_ANTHROPIC", "3600"),
+    "openai": _env_int("AUTO_MODEL_CACHE_TTL_OPENAI", "1800"),
+    "google_genai": _env_int("AUTO_MODEL_CACHE_TTL_GEMINI", "300"),
+}
+# Wait this long for the routing decision (quick calls take 1–3.5 s), then run
+# the turn on the fallback category instead. Never blocks the socket.
+AUTO_MODEL_ROUTE_TIMEOUT_SECONDS = _env_int("AUTO_MODEL_ROUTE_TIMEOUT_SECONDS", "5")
+
 # Nightly shadow comparison of the chunk-scan classifier against the decisions
 # service (guardrails/shadow.py). Reads yesterday's chunks and events; writes only
 # its own tables + LLMCallLog rows. The caps bound one night's spend.
