@@ -2700,7 +2700,7 @@
         if (!r.ok) throw new Error("Couldn't start a new chat.");
         return r.json();
       }).then(function(data) {
-        activeThreadId = data.thread_id;
+        adoptThreadId(data.thread_id);
         addThreadToSidebar(data.thread_id, 'New chat');
         return doUpload(data.thread_id);
       }).catch(function(err) {
@@ -3158,6 +3158,12 @@
   const maxReconnectDelayMs = 30000;
   let streamingTimeout = null;
   let activeThreadId = THREAD_ID || null;
+  // A thread created in-page (first attachment, first message, canvas import) becomes
+  // the page's thread: the URL follows it so a reload or back/forward lands on it.
+  function adoptThreadId(threadId) {
+    activeThreadId = threadId;
+    try { history.replaceState(null, "", CHAT_HOME + "?thread=" + threadId); } catch (e) {}
+  }
   let currentStreamingElement = null;
   let accumulatedContent = "";
   let currentThinkingBlock = null;
@@ -3723,7 +3729,7 @@
     }
     if (et === "canvas.checkpoints") { renderCheckpointHistory(data.checkpoints || []); return; }
     if (et === "thread.created") {
-      activeThreadId = data.thread_id;
+      adoptThreadId(data.thread_id);
       adoptReasoningStateForCreatedThread(data.thread_id);
       persistReasoningLevel();
       addThreadToSidebar(data.thread_id, "New chat");
@@ -6298,7 +6304,7 @@
           if (!r.ok) throw new Error("Couldn't start a new chat.");
           return r.json();
         }).then(function(data) {
-          activeThreadId = data.thread_id;
+          adoptThreadId(data.thread_id);
           addThreadToSidebar(data.thread_id, "New chat");
           canvasUpdateExportLink();
           // Join the thread's socket group so the import result is pushed here too.
