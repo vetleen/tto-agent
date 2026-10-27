@@ -1878,10 +1878,65 @@
   window.addEventListener('load', function() { if (!userTookOverScroll) scrollToBottom(); });
 
   function autoResize(ta) { ta.style.height = 'auto'; const h = Math.min(Math.max(ta.scrollHeight, 40), 200); ta.style.height = h + 'px'; ta.style.overflowY = ta.scrollHeight > 200 ? 'auto' : 'hidden'; }
+  // -- Composer drafts: unsent text survives navigation, per thread --
+  // localStorage, keyed by thread id ("new" before the first message or attachment
+  // creates one; adoptThreadId moves it). Best-effort: storage can be unavailable.
+  var DRAFT_PREFIX = "wf_chat_draft:";
+  var DRAFT_MAX_AGE_MS = 30 * 24 * 3600 * 1000;
+  var draftTimer = null;
+  function draftKey(threadId) { return DRAFT_PREFIX + (threadId || "new"); }
+  // Only called from events/timers, after activeThreadId (declared further down) exists.
+  function currentDraftKey() { return draftKey(activeThreadId); }
+  function draftRead(key) {
+    try { var d = JSON.parse(localStorage.getItem(key) || "null"); return d && typeof d.text === "string" ? d.text : ""; } catch (e) { return ""; }
+  }
+  function draftWrite(key, text) {
+    try {
+      if (text && text.trim()) localStorage.setItem(key, JSON.stringify({ text: text, ts: Date.now() }));
+      else localStorage.removeItem(key);
+    } catch (e) {}
+  }
+  function draftSaveNow() {
+    if (draftTimer) { clearTimeout(draftTimer); draftTimer = null; }
+    if (input) draftWrite(currentDraftKey(), input.value);
+  }
+  function draftScheduleSave() {
+    if (draftTimer) clearTimeout(draftTimer);
+    draftTimer = setTimeout(draftSaveNow, 400);
+  }
+  // The text was sent (or handed off): forget it, and cancel a pending save.
+  function draftClear() {
+    if (draftTimer) { clearTimeout(draftTimer); draftTimer = null; }
+    draftWrite(currentDraftKey(), "");
+  }
+  function draftForgetThread(threadId) { draftWrite(draftKey(threadId), ""); }
+  function draftAdopt(threadId) {
+    var text = draftRead(draftKey(null));
+    if (text) { draftWrite(draftKey(threadId), text); draftWrite(draftKey(null), ""); }
+  }
+  (function draftPruneOld() {
+    try {
+      var now = Date.now(), stale = [];
+      for (var i = 0; i < localStorage.length; i++) {
+        var k = localStorage.key(i);
+        if (!k || k.indexOf(DRAFT_PREFIX) !== 0) continue;
+        var d = null;
+        try { d = JSON.parse(localStorage.getItem(k) || "null"); } catch (e) {}
+        if (!d || !d.ts || now - d.ts > DRAFT_MAX_AGE_MS) stale.push(k);
+      }
+      stale.forEach(function(k) { localStorage.removeItem(k); });
+    } catch (e) {}
+  })();
+  // Flush only a pending save: a cleared draft (sent, /loop hand-off) must not be
+  // written back from whatever is still in the input.
+  window.addEventListener('pagehide', function() { if (draftTimer) draftSaveNow(); });
+
   if (input) {
-    input.addEventListener('input', function() { autoResize(input); syncSendReady(); });
+    input.addEventListener('input', function() { autoResize(input); syncSendReady(); draftScheduleSave(); });
     input.addEventListener('keydown', function(e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!input.disabled && !locked) form.dispatchEvent(new Event('submit')); } });
+    // A branch's seeded text wins over a stored draft.
     if (DRAFT_INPUT && !input.value) { input.value = DRAFT_INPUT; }
+    if (!input.value) { input.value = draftRead(draftKey(THREAD_ID)); }
     autoResize(input); syncSendReady();
   }
 
@@ -3161,6 +3216,7 @@
   // A thread created in-page (first attachment, first message, canvas import) becomes
   // the page's thread: the URL follows it so a reload or back/forward lands on it.
   function adoptThreadId(threadId) {
+    if (!activeThreadId) draftAdopt(threadId);
     activeThreadId = threadId;
     try { history.replaceState(null, "", CHAT_HOME + "?thread=" + threadId); } catch (e) {}
   }
@@ -4076,6 +4132,7 @@
       var rest = text.replace(/^\/loop\s*/i, "");
       // In a thread that is itself a loop, a bare /loop edits that loop.
       var threadLoopId = "{{ thread_loop_id|escapejs }}";
+      draftClear();
       if (!rest && threadLoopId) { window.location = "{% url 'loops_list' %}?edit=" + encodeURIComponent(threadLoopId); return; }
       var params = new URLSearchParams({ "new": "1" });
       var m = rest.match(/^(\d+)\s*([smhd])\b\s*(.*)$/i);
@@ -4093,6 +4150,7 @@
     if (text.startsWith("/")) {
       input.value = ""; autoResize(input);
       if (ws && ws.readyState === WebSocket.OPEN) {
+        draftClear();
         input.disabled = true; button.disabled = true; locked = true;
         button.classList.remove("is-ready");
         button.innerHTML = '<svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>';
@@ -4162,6 +4220,8 @@
     // Force scroll to absolute bottom so user sees their message + Wilfred's spinner
     scrollContainer.scrollTop = scrollContainer.scrollHeight;
     if (ws && ws.readyState === WebSocket.OPEN) {
+      // Sent: forget the draft. On a dead socket the stored copy stays as the backup.
+      draftClear();
       canvasAutoSaveBeforeChat();
       var payload = { type: "chat.message", content: text, thread_id: activeThreadId || "", data_room_ids: attachedDataRoomIds, skill_ids: activeSkillIds, model: selectedModel, thinking_level: thinkingLevel };
       if (sendAttachmentIds.length > 0) payload.attachment_ids = sendAttachmentIds;
@@ -4454,7 +4514,7 @@
     if (action === "delete") {
       if (!confirm("Delete this chat? This can't be undone.")) return;
       fetch(`/chat/threads/${menuThreadId}/delete/`, { method: "POST", headers: {"X-CSRFToken": getCSRFToken()} }).then(function(res) {
-        if (!res.ok) return; removeThreadLi(menuThreadId);
+        if (!res.ok) return; removeThreadLi(menuThreadId); draftForgetThread(menuThreadId);
         if (activeThreadId === menuThreadId) window.location.href = CHAT_HOME;
       });
     }
