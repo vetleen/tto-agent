@@ -4605,7 +4605,17 @@
   // The initial scroll now runs in hydrateInitialMessages(), after markdown rendering
   // has settled every message's height — a fixed timer here raced hydration and landed
   // long threads in the wrong place.
-  window.addEventListener("beforeunload", disconnect);
+  // Leaving loses nothing (drafts and unsent files persist), except an upload still
+  // in flight: only then ask the browser to confirm.
+  window.addEventListener("beforeunload", function(e) {
+    if (inflightUploads.length) { e.preventDefault(); e.returnValue = ""; }
+  });
+  // Close the socket on pagehide, not beforeunload: a cancelled "Leave site?" must
+  // keep the page connected.
+  window.addEventListener("pagehide", disconnect);
+  // Back/forward cache restore: the socket is closed and the thread may have moved
+  // on. Reload; the draft and unsent files come back with the page.
+  window.addEventListener("pageshow", function(e) { if (e.persisted) window.location.reload(); });
 
   // --- "Show earlier messages": prepend the previous page of turns ---
   var showMoreBtn = document.getElementById("show-more-btn");
