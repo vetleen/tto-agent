@@ -21,6 +21,7 @@
         <li><a href="#subagents" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Sub-agents</a></li>
         <li><a href="#pii" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">PII classification</a></li>
         <li><a href="#decisions" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Decisions</a></li>
+        {% if auto_model_rows %}<li><a href="#auto-model" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Automatic model choice</a></li>{% endif %}
         <li><a href="#context" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Context window</a></li>
         <li><a href="#skills" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Skills</a></li>
         <li><a href="#styles" class="settings-nav block rounded-md border-l-2 border-transparent px-3 py-1.5 text-body hover:text-heading hover:bg-neutral-secondary-soft transition-colors">Document styles</a></li>
@@ -151,8 +152,11 @@
                 class="org-feature-model-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
               >
                 <option value="">Use organization default {{ feature.default_slot }} model (recommended)</option>
+                {% if feature.key == "chat" %}
+                <option value="auto" data-keep="1" {% if chat_auto_default %}selected{% endif %}>Automatic — picks a model per request (see Automatic model choice)</option>
+                {% endif %}
                 {% for model in feature.eligible_models %}
-                <option value="{{ model }}" {% if feature.current == model %}selected{% endif %}>{{ model }}</option>
+                <option value="{{ model }}" {% if feature.current == model %}{% if feature.key != "chat" or not chat_auto_default %}selected{% endif %}{% endif %}>{{ model }}</option>
                 {% endfor %}
               </select>
             </div>
@@ -544,6 +548,60 @@
           </div>
         </div>
       </section>
+
+      <!-- Automatic model choice -->
+      {% if auto_model_rows %}
+      <section id="auto-model" class="scroll-mt-24">
+        <div class="mb-3">
+          <h2 class="text-base font-semibold text-heading">Automatic model choice</h2>
+          <p class="mt-0.5 text-sm text-body">When a chat is set to Automatic, each request is sorted into one of these categories and runs on its model and reasoning level. Most requests use Default. Skills and sub-agent specializations can name a category too.</p>
+        </div>
+        <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
+          <div class="divide-y divide-default">
+            {% for row in auto_model_rows %}
+            <div class="px-5 py-4">
+              <label class="block text-sm font-medium text-heading" for="org-feature-model-{{ row.key }}">{{ row.label }}</label>
+              <p class="text-xs text-body mt-0.5">{{ row.desc }}</p>
+              <div class="mt-2 flex flex-col gap-2 sm:flex-row">
+                <div class="flex-1 min-w-0">
+                  <span class="block text-xs font-medium text-body mb-1">Model</span>
+                  <select
+                    id="org-feature-model-{{ row.key }}"
+                    data-feature="{{ row.key }}"
+                    aria-label="{{ row.label }}"
+                    class="org-feature-model-select block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+                  >
+                    <option value="">Use organization default {{ row.default_slot }} model (recommended)</option>
+                    {% for model in row.eligible_models %}
+                    <option value="{{ model }}" {% if row.current == model %}selected{% endif %}>{{ model }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div class="sm:w-56">
+                  <label class="block text-xs font-medium text-body mb-1" for="feature-reasoning-{{ row.key }}">Reasoning</label>
+                  <select
+                    id="feature-reasoning-{{ row.key }}"
+                    data-feature="{{ row.key }}"
+                    class="org-feature-reasoning-select block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium disabled:opacity-60"
+                    {% if not row.reasoning.levels %}disabled{% endif %}
+                  >
+                    {% if row.reasoning.levels %}
+                    <option value="">Model default ({{ row.reasoning.default_label }})</option>
+                    {% for opt in row.reasoning.level_options %}
+                    <option value="{{ opt.value }}" {% if row.reasoning.current == opt.value %}selected{% endif %}>{{ opt.label }}</option>
+                    {% endfor %}
+                    {% else %}
+                    <option value="">Not adjustable</option>
+                    {% endif %}
+                  </select>
+                </div>
+              </div>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+      </section>
+      {% endif %}
 
       <!-- Context Window Limit -->
       <section id="context" class="scroll-mt-24">
@@ -993,7 +1051,10 @@
   function repopulateModelSelects(allowedSet) {
     function rebuild(sel, fullList) {
       var prev = sel.value;
-      while (sel.options.length > 1) { sel.remove(1); }
+      // Keep the placeholder and any fixed option (data-keep, e.g. "Automatic").
+      for (var i = sel.options.length - 1; i >= 1; i--) {
+        if (!sel.options[i].dataset.keep) sel.remove(i);
+      }
       (fullList || []).forEach(function(mid) {
         if (!allowedSet.has(mid)) return;
         var opt = document.createElement('option');

@@ -20,7 +20,14 @@ from accounts.views._builders import (
 )
 from accounts.views._helpers import org_admin_required
 from core.http import parse_json_object
-from core.preferences import DECISIONS_QUICK_PREF, SUBAGENT_TIER_FEATURES, SUBAGENT_TIERS
+from chat.auto_model import AUTO_CATEGORIES, AUTO_MODEL_ID
+from chat.auto_model import AUTO_FEATURE_KEYS as _AUTO_FEATURE_KEYS
+from core.preferences import (
+    CHAT_AUTO_DEFAULT_PREF,
+    DECISIONS_QUICK_PREF,
+    SUBAGENT_TIER_FEATURES,
+    SUBAGENT_TIERS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -445,6 +452,7 @@ def org_settings_page(request):
         "subagent_high": ("High-quality sub-agents", f"Used rarely, only for tasks that need exceptional intelligence. {django_settings.ASSISTANT_NAME} picks the model quality for each sub-agent."),
         "decisions_quick": ("Quick decisions model", "Answers structured yes/no, multiple-choice and scoring questions through OpenAI's Decisions endpoint — fast and cheap. Only models that endpoint accepts are offered."),
         "decisions_structured": ("Structured decisions model", "Answers the same questions with a normal structured-output call. Used for every decision when quick decisions are off, and as the fallback when they fail or are unavailable."),
+        **{c.feature_key: (c.label, c.desc) for c in AUTO_CATEGORIES},
     }
     org_features = build_feature_rows(
         "org", org_feature_models, effective_org_allowed, _ORG_FEATURE_META
@@ -466,6 +474,13 @@ def org_settings_page(request):
     decisions_structured_row = decisions_rows.get("decisions_structured")
     if decisions_structured_row is not None:
         decisions_structured_row["reasoning"] = _feature_reasoning_row(org, "decisions_structured")
+    # Automatic model choice: one model + reasoning row per routing category,
+    # in its own section (chat.auto_model.AUTO_CATEGORIES order).
+    _auto_rows = {r["key"]: r for r in org_features if r["key"] in _AUTO_FEATURE_KEYS}
+    org_features = [r for r in org_features if r["key"] not in _AUTO_FEATURE_KEYS]
+    auto_model_rows = [_auto_rows[k] for k in _AUTO_FEATURE_KEYS if k in _auto_rows]
+    for row in auto_model_rows:
+        row["reasoning"] = _feature_reasoning_row(org, row["key"])
 
     # Full (allowed-independent) eligible model lists per tier and per feature.
     # The Model-defaults and Feature-override dropdowns are server-rendered only
@@ -567,6 +582,8 @@ def org_settings_page(request):
         "org_features": org_features,
         "subagent_model_rows": subagent_model_rows,
         "decisions": decisions,
+        "auto_model_rows": auto_model_rows,
+        "chat_auto_default": bool(org_prefs.get(CHAT_AUTO_DEFAULT_PREF, False)),
         "tiers": build_tier_rows(system_defaults, effective_org_allowed),
         "model_options_json": json.dumps(model_options),
     })
@@ -1825,6 +1842,18 @@ def org_feature_model_update(request):
     if fdef.scope != "org":
         return JsonResponse({"error": "This feature is not org-configurable"}, status=400)
 
+    # The chat default may be "Automatic": a flat flag beside the concrete chat
+    # model (which keeps resolving for loops, titles, etc.).
+    if model == AUTO_MODEL_ID:
+        if feature != "chat":
+            return JsonResponse({"error": "Automatic is only available for chat"}, status=400)
+
+        def mutate_auto(prefs):
+            prefs[CHAT_AUTO_DEFAULT_PREF] = True
+
+        update_org_preferences(membership.org_id, mutate_auto)
+        return JsonResponse({"ok": True, "feature": feature, "model": model})
+
     if model:
         org_allowed = (membership.org.preferences or {}).get("allowed_models") or []
         system_models = get_allowed_models()
@@ -1837,6 +1866,8 @@ def org_feature_model_update(request):
     tier = next((t for t, f in SUBAGENT_TIER_FEATURES.items() if f == feature), None)
 
     def mutate(prefs):
+        if feature == "chat":
+            prefs.pop(CHAT_AUTO_DEFAULT_PREF, None)
         feature_models = prefs.get("feature_models", {})
         feature_models[feature] = model
         prefs["feature_models"] = feature_models

@@ -75,6 +75,13 @@ class ResolvedPreferences:
     transcription_language: str = "auto"
     allow_agent_attach_skills: bool = True
     feature_models: dict[str, str] = field(default_factory=dict)
+    # Raw org reasoning pins, prefs["feature_reasoning"]: {feature_key: {"model",
+    # "level"}}. Read through resolve_org_feature_reasoning-style checks (the
+    # pin applies only while the feature still runs on that model).
+    feature_reasoning: dict[str, dict] = field(default_factory=dict)
+    # Org default chat model is "Automatic" (CHAT_AUTO_DEFAULT_PREF). The
+    # concrete feature_models["chat"] still resolves as usual.
+    chat_auto_default: bool = False
     warnings: list[str] = field(default_factory=list)
 
 
@@ -169,7 +176,26 @@ FEATURE_DEFAULTS: dict[str, FeatureDefault] = {
     # (DECISIONS_QUICK_PREF) is off, the fallback when quick fails.
     "decisions_quick": FeatureDefault("cheap", "org", required_capability="decisions"),
     "decisions_structured": FeatureDefault("cheap", "org", reasoning_control=True),
+    # Automatic model choice (chat/auto_model.py): one feature per routing
+    # category, each with a pinned reasoning level. Keys are
+    # f"auto_{category}" for chat.auto_model.AUTO_CATEGORIES.
+    "auto_cheap": FeatureDefault("cheap", "org", reasoning_control=True),
+    "auto_mid": FeatureDefault("mid", "org", reasoning_control=True),
+    "auto_top": FeatureDefault("primary", "org", reasoning_control=True),
+    "auto_short_writing": FeatureDefault("mid", "org", reasoning_control=True),
+    "auto_writing": FeatureDefault("primary", "org", reasoning_control=True),
+    "auto_light_reading": FeatureDefault("mid", "org", reasoning_control=True),
+    "auto_difficult_reading": FeatureDefault("primary", "org", reasoning_control=True),
+    "auto_light_analysis": FeatureDefault("mid", "org", reasoning_control=True),
+    "auto_complex_analysis": FeatureDefault("primary", "org", reasoning_control=True),
+    "auto_research": FeatureDefault("primary", "org", reasoning_control=True),
+    "auto_slide_design": FeatureDefault("primary", "org", reasoning_control=True),
 }
+
+# Org pref (flat key in Organization.preferences): new chats default to the
+# "Automatic" model choice. feature_models["chat"] stays a concrete model so
+# every other consumer of the chat default is unaffected.
+CHAT_AUTO_DEFAULT_PREF = "chat_auto_default"
 
 # Org pref (flat key in Organization.preferences): route decisions through the
 # quick pathway when a capable model is allowed. Default on.
@@ -669,6 +695,11 @@ def get_preferences(user) -> ResolvedPreferences:
         transcription_language=resolved_language,
         allow_agent_attach_skills=allow_agent_attach_skills,
         feature_models=feature_models,
+        feature_reasoning={
+            k: v for k, v in (org_prefs.get("feature_reasoning") or {}).items()
+            if isinstance(v, dict)
+        },
+        chat_auto_default=bool(org_prefs.get(CHAT_AUTO_DEFAULT_PREF, False)),
         warnings=warnings,
     )
 

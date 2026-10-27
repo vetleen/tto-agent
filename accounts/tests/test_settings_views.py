@@ -333,6 +333,36 @@ class OrgSettingsAccessTests(TestCase):
         self.assertContains(response, "Quick decisions via OpenAI (recommended)")
         self.assertContains(response, 'id="feature-reasoning-decisions_structured"')
 
+    @patch("llm.service.policies.get_allowed_models", return_value=[
+        "openai/gpt-5.6-sol", "openai/gpt-6-luna",
+    ])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_auto_model_rows_rendered(self, mock_reg, mock_models):
+        from chat.auto_model import AUTO_FEATURE_KEYS
+
+        mock_reg.return_value.list_tools.return_value = {}
+        self.org.preferences = {"chat_auto_default": True}
+        self.org.save(update_fields=["preferences"])
+        self.client.login(email=self.admin_user.email, password=self.password)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, 200)
+        rows = response.context["auto_model_rows"]
+        # One row per category, in table order, each with a reasoning control.
+        self.assertEqual([r["key"] for r in rows], list(AUTO_FEATURE_KEYS))
+        by_key = {r["key"]: r for r in rows}
+        self.assertEqual(by_key["auto_mid"]["default_slot"], "mid")
+        self.assertEqual(by_key["auto_writing"]["default_slot"], "primary")
+        self.assertEqual(by_key["auto_writing"]["reasoning"]["feature"], "auto_writing")
+        # Not in the generic feature list.
+        feature_keys = {row["key"] for row in response.context["org_features"]}
+        self.assertFalse(feature_keys & set(AUTO_FEATURE_KEYS))
+        self.assertIn("chat", feature_keys)
+        self.assertTrue(response.context["chat_auto_default"])
+        self.assertContains(response, 'id="feature-reasoning-auto_complex_analysis"')
+        self.assertContains(response, '<option value="auto" data-keep="1" selected>')
+
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.6-sol"])
     @patch("llm.tools.registry.get_tool_registry")
     def test_decisions_quick_row_absent_without_capable_system_model(self, mock_reg, mock_models):
@@ -1859,6 +1889,37 @@ class OrgFeatureModelUpdateTests(TestCase):
         self.assertEqual(
             self.org.preferences["feature_models"]["chat"], "openai/gpt-5.6-sol"
         )
+
+    @patch("llm.service.policies.get_allowed_models", return_value=[
+        "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
+        "openai/gpt-5.6-sol", "openai/gpt-5.6-luna",
+    ])
+    def test_chat_default_automatic_sets_and_clears_flag(self, mock_models):
+        self.client.login(email=self.admin_user.email, password=self.password)
+
+        def post(feature, model):
+            return self.client.post(
+                self.url, json.dumps({"feature": feature, "model": model}), content_type="application/json",
+            )
+
+        self.org.preferences = {"feature_models": {"chat": "openai/gpt-5.4"}}
+        self.org.save(update_fields=["preferences"])
+        response = post("chat", "auto")
+        self.assertEqual(response.status_code, 200)
+        self.org.refresh_from_db()
+        self.assertTrue(self.org.preferences["chat_auto_default"])
+        # The concrete chat model is untouched: everything else still resolves it.
+        self.assertEqual(self.org.preferences["feature_models"]["chat"], "openai/gpt-5.4")
+
+        response = post("chat", "openai/gpt-5.6-sol")
+        self.assertEqual(response.status_code, 200)
+        self.org.refresh_from_db()
+        self.assertNotIn("chat_auto_default", self.org.preferences)
+        self.assertEqual(self.org.preferences["feature_models"]["chat"], "openai/gpt-5.6-sol")
+
+        # Automatic is only a chat choice.
+        response = post("auto_writing", "auto")
+        self.assertEqual(response.status_code, 400)
 
     @patch("llm.service.policies.get_allowed_models", return_value=[
         "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
