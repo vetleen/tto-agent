@@ -224,7 +224,11 @@ class EditSkillInput(ReasonBaseModel):
             "automatically with the skill), tool_names (individual tools). On a main "
             "skill prefer requires: require a whole toolkit (e.g. canvas_tools) rather "
             "than copying its tools into tool_names. Use tool_names on a sub-agent "
-            "skill (it can't require toolkits) or for a skill tool no toolkit covers."
+            "skill (it can't require toolkits) or for a skill tool no toolkit covers. "
+            "subagents (main skills): slugs of sub-agent specializations offered to "
+            "the orchestrator while the skill is attached. always_available "
+            "(sub-agent skills, bool): true = offered in every chat; false = only "
+            "through a skill that lists it under subagents."
         ),
     )
     text_edits: list[TextEdit] = Field(
@@ -583,8 +587,10 @@ class EditSkillTool(ContextAwareTool):
     start_label: str = "Editing skill..."
     end_label: str = "Updated skill"
     description: str = (
-        "Edit a skill's name, slug, requires (toolkits) or tool_names, or apply "
-        "find-replace edits to its description/instructions. Resources are managed "
+        "Edit a skill's name, slug, requires (toolkits), tool_names, subagents "
+        "(specializations it makes available) or always_available (sub-agent "
+        "skills), or apply find-replace edits to its description/instructions. "
+        "Resources are managed "
         "with the skill_resource_* tools."
     )
     args_schema: type[BaseModel] = EditSkillInput
@@ -708,6 +714,20 @@ class EditSkillTool(ContextAwareTool):
             requires_dropped = [r for r in requested if r not in kept]
             skill.requires = kept
             update_fields.append("requires")
+        subagents_dropped: list[str] = []
+        if "subagents" in updates:
+            # Specializations listed to the orchestrator while this playbook is
+            # attached. Slugs the skill may not name (unknown, wrong tier, or on
+            # a toolkit / sub-agent skill) are dropped and reported.
+            from agent_skills.services import clean_subagents
+
+            skill.subagents, subagents_dropped = clean_subagents(
+                skill, updates["subagents"], user,
+            )
+            update_fields.append("subagents")
+        if "always_available" in updates and skill.audience == "subagent":
+            skill.always_available = bool(updates["always_available"])
+            update_fields.append("always_available")
         # NOTE: is_active is deliberately NOT editable here. Every skill lookup
         # (list, detail, this tool's own resolution) filters is_active=True, so
         # deactivating would make the skill invisible and unrecoverable outside
@@ -783,6 +803,10 @@ class EditSkillTool(ContextAwareTool):
             "tool_names": skill.tool_names,
             "requires": skill.requires,
             **({"requires_dropped": requires_dropped} if requires_dropped else {}),
+            "subagents": skill.subagents,
+            **({"subagents_dropped": subagents_dropped} if subagents_dropped else {}),
+            **({"always_available": skill.always_available}
+               if skill.audience == "subagent" else {}),
             "edits_applied": applied,
             "edits_failed": failed,
             "scan_state": scan_state,

@@ -153,6 +153,37 @@ class EditSkillToolTests(TestCase):
         self.assertEqual(result["requires"], [])
         self.assertNotIn("requires_dropped", result)
 
+    def test_subagents_keeps_specializations_and_reports_dropped(self):
+        AgentSkill.objects.create(
+            slug="patent-searcher", name="Patent Searcher", instructions="i",
+            level="user", created_by=self.user, audience="subagent",
+            always_available=False,
+        )
+        result = json.loads(self.tool._run(
+            skill_slug="editable",
+            updates={"subagents": ["patent-searcher", "editable", "nope"]},
+        ))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["subagents"], ["patent-searcher"])
+        self.assertEqual(result["subagents_dropped"], ["nope"])
+        self.assertNotIn("always_available", result)
+        self.skill.refresh_from_db()
+        self.assertEqual(self.skill.subagents, ["patent-searcher"])
+
+    def test_always_available_on_specialization_only(self):
+        result = json.loads(self.tool._run(
+            skill_slug="editable", updates={"always_available": False},
+        ))
+        self.skill.refresh_from_db()
+        self.assertTrue(self.skill.always_available)  # a playbook: ignored
+        AgentSkill.objects.filter(pk=self.skill.pk).update(audience="subagent")
+        result = json.loads(self.tool._run(
+            skill_slug="editable", updates={"always_available": False},
+        ))
+        self.assertFalse(result["always_available"])
+        self.skill.refresh_from_db()
+        self.assertFalse(self.skill.always_available)
+
     def test_new_slug_is_slugified(self):
         """A raw new_slug with spaces/uppercase is slugified before saving."""
         result = json.loads(self.tool._run(
