@@ -8,6 +8,7 @@ DEEP_RESEARCHER = {
     "slug": "web-deep-researcher-2",
     "name": "Web Deep Researcher 2",
     "emoji": "🔎",
+    "preferred_model_category": "complex_analysis",
     "description": """\
 Conduct deep, multi-source web research. Use when the user asks for deep research, \
 comprehensive research, a thorough investigation, or anything like that. This skill \
