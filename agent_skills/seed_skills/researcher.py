@@ -8,6 +8,7 @@ RESEARCHER = {
     "slug": "researcher",
     "name": "Researcher",
     "emoji": "🔍",
+    "preferred_model_category": "light_analysis",
     "audience": "subagent",
     "description": (
         "A focused research worker for one delegated research question. Plans its "

@@ -16,6 +16,7 @@ PATENT_SEARCHER = {
     "slug": "patent-searcher",
     "name": "Patent Searcher",
     "emoji": "📜",
+    "preferred_model_category": "light_analysis",
     "audience": "subagent",
     # Specific, not generic: listed only while a playbook names it in
     # ``subagents`` (e.g. a prior-art skill).

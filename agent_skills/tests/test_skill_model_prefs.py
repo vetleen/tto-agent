@@ -28,6 +28,15 @@ class CleanModelPrefsTests(TestCase):
         self.assertEqual(clean_model_prefs("", "high"), ("", ""))
         self.assertEqual(clean_model_prefs(None, None), ("", ""))
 
+    def test_seed_preferences_are_valid(self):
+        from agent_skills.seed_skills import SYSTEM_SKILLS
+
+        seeded = {s["slug"]: s.get("preferred_model_category", "") for s in SYSTEM_SKILLS}
+        for slug, category in seeded.items():
+            self.assertEqual(clean_model_prefs(category, "")[0], category, slug)
+        self.assertEqual(seeded["researcher"], "light_analysis")
+        self.assertEqual(seeded["meeting-summarizer"], "writing")
+
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
 class SkillModelPrefsTests(TestCase):

@@ -6,6 +6,7 @@ SKILL_CREATOR = {
     "slug": "skill-creator",
     "name": "Skill Creator",
     "emoji": "🧩",
+    "preferred_model_category": "complex_analysis",
     "description": """\
 Create a new agent skill or improve existing ones.\
 
