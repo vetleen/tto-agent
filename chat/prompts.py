@@ -15,11 +15,12 @@ The prompt is split into three tiers for prefix-based prompt caching:
 
 from __future__ import annotations
 
-import re
 from typing import Any, TypedDict
 
 from django.conf import settings as django_settings
 from django.utils import timezone
+
+from chat.services import nest_heading_levels
 
 
 class RuntimeStats(TypedDict, total=False):
@@ -312,12 +313,12 @@ def _render_one_skill(skill: Any, attached_by: str | None = None) -> str:
     origin; it is passed in rather than read off the skill so rendering stays
     query-free (and safe on the consumer's event loop).
 
-    The skill's own headings are deepened by two levels so they nest under the
-    ``## {name}`` heading instead of competing with the prompt's top-level
-    sections. Used for each entry of the ``# Relevant skills`` section, so the
-    rendering is identical whether one or several skills are attached.
+    The skill's own headings are nested under ``## Skill instructions:`` (its
+    shallowest heading becomes ``###``) instead of competing with the prompt's
+    top-level sections. Used for each entry of the ``# Relevant skills`` section,
+    so the rendering is identical whether one or several skills are attached.
     """
-    deepened = re.sub(r"^(#+)", r"##\1", skill.instructions, flags=re.MULTILINE)
+    deepened = nest_heading_levels(skill.instructions, 2)
     block = f"## {skill.name}\n"
     # The slug is what the agent needs to reference this skill again (the
     # available-skills catalogue excludes attached skills, so it appears nowhere

@@ -353,6 +353,9 @@ class BuildSubagentSystemPromptTests(TestCase):
         self.assertIn("Your specialization: Web Researcher", prompt)
         self.assertIn("Search a lot.", prompt)
         self.assertIn("Researches the web", prompt)
+        # Nested under "## Specialization instructions:".
+        self.assertIn("\n### Method\n", prompt)
+        self.assertNotIn("\n# Method\n", prompt)
 
 
 class SpecializationsCatalogueTests(TestCase):

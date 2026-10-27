@@ -542,6 +542,20 @@ def normalize_heading_levels(markdown: str) -> str:
     ``#`` comment inside code is never mistaken for a heading. Returns the input
     unchanged when there are no headings or the top level is already ``#``.
     """
+    return nest_heading_levels(markdown, 0)
+
+
+def nest_heading_levels(markdown: str, parent_level: int) -> str:
+    """Shift ATX headings so the shallowest becomes ``parent_level + 1``.
+
+    Used to nest user/model-written markdown under a prompt section (e.g. a
+    skill under ``## Skill instructions:`` → ``parent_level=2``) so its headings
+    don't compete with the prompt's own sections. The whole text moves by one
+    delta, preserving its hierarchy; levels past 6 clamp to ``######``. Fenced
+    code is skipped and only real headings (``#`` run followed by a space or
+    end of line) match, so ``# comment`` in code and ``#hashtag`` stay as they
+    are. Returns the input unchanged when it has no headings.
+    """
     if not markdown or "#" not in markdown:
         return markdown
 
@@ -555,16 +569,16 @@ def normalize_heading_levels(markdown: str) -> str:
         if m:
             min_level = min(min_level, len(m.group(2)))
 
-    if min_level >= 7 or min_level == 1:
+    shift = parent_level + 1 - min_level
+    if min_level >= 7 or shift == 0:
         return markdown
 
-    shift = min_level - 1
     out = []
     for line, in_code in _iter_markdown_lines_skipping_code(lines):
         m = None if in_code else _ATX_HEADING_RE.match(line)
         if m:
             indent, hashes, rest = m.group(1), m.group(2), m.group(3)
-            new_level = max(1, len(hashes) - shift)
+            new_level = min(6, max(1, len(hashes) + shift))
             out.append(f"{indent}{'#' * new_level}{rest}")
         else:
             out.append(line)

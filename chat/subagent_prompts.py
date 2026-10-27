@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from django.conf import settings as django_settings
+
+from chat.services import nest_heading_levels
 
 
 def _render_specialization(skill) -> str:
@@ -16,7 +17,7 @@ def _render_specialization(skill) -> str:
     cannot talk to the user and works in a single working canvas (its first
     template is auto-loaded there) rather than the multi-canvas review UI.
     """
-    deepened = re.sub(r"^(#+)", r"##\1", skill.instructions, flags=re.MULTILINE)
+    deepened = nest_heading_levels(skill.instructions, 2)
     block = f"\n# Your specialization: {skill.name}\n"
     block += (
         "You have been spawned as a specialized sub-agent. Follow these "

@@ -1,7 +1,7 @@
-"""Tests for chat.services.normalize_heading_levels."""
+"""Tests for chat.services.normalize_heading_levels / nest_heading_levels."""
 from django.test import SimpleTestCase
 
-from chat.services import normalize_heading_levels
+from chat.services import nest_heading_levels, normalize_heading_levels
 
 
 class NormalizeHeadingLevelsTests(SimpleTestCase):
@@ -52,3 +52,43 @@ class NormalizeHeadingLevelsTests(SimpleTestCase):
     def test_empty_and_none_safe(self):
         self.assertEqual(normalize_heading_levels(""), "")
         self.assertEqual(normalize_heading_levels(None), None)
+
+
+class NestHeadingLevelsTests(SimpleTestCase):
+    def test_h1_root_nests_under_parent(self):
+        self.assertEqual(nest_heading_levels("# A\n## B", 2), "### A\n#### B")
+
+    def test_h2_root_lands_at_same_level(self):
+        # The shallowest heading becomes parent + 1 whatever it started at.
+        self.assertEqual(nest_heading_levels("## A\n### B", 2), "### A\n#### B")
+
+    def test_deep_root_is_promoted(self):
+        self.assertEqual(nest_heading_levels("#### A\n##### B", 1), "## A\n### B")
+
+    def test_noop_when_already_nested(self):
+        src = "## A\n\nBody.\n\n### B"
+        self.assertEqual(nest_heading_levels(src, 1), src)
+
+    def test_clamps_at_h6(self):
+        out = nest_heading_levels("# A\n## B\n#### C\n###### D", 2)
+        self.assertEqual(out, "### A\n#### B\n###### C\n###### D")
+
+    def test_skips_fenced_code(self):
+        src = "# A\n\n```python\n# comment\n```\n\n~~~\n## also code\n~~~"
+        out = nest_heading_levels(src, 2)
+        self.assertEqual(out, "### A\n\n```python\n# comment\n```\n\n~~~\n## also code\n~~~")
+
+    def test_ignores_non_heading_hashes(self):
+        src = "# A\n#hashtag\n#!/bin/sh\n#123"
+        self.assertEqual(nest_heading_levels(src, 1), "## A\n#hashtag\n#!/bin/sh\n#123")
+
+    def test_preserves_indent(self):
+        self.assertEqual(nest_heading_levels("   # A", 1), "   ## A")
+
+    def test_noop_without_headings(self):
+        src = "Plain text.\n#hashtag"
+        self.assertEqual(nest_heading_levels(src, 2), src)
+
+    def test_empty_and_none_safe(self):
+        self.assertEqual(nest_heading_levels("", 2), "")
+        self.assertIsNone(nest_heading_levels(None, 2))

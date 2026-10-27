@@ -262,6 +262,14 @@ class BuildSystemPromptTests(TestCase):
             if line.strip() == "# Top heading" or line.strip() == "## Top heading":
                 self.fail("Expected '# Top heading' to be deepened to '### Top heading'")
 
+    def test_skill_headers_nest_from_any_root_and_skip_code(self):
+        skill = self._make_skill(
+            "Code Skill",
+            "## Steps\n```bash\n# a shell comment\n```\n#hashtag\n### Detail",
+        )
+        prompt = build_system_prompt(skills=[skill])
+        self.assertIn("### Steps\n```bash\n# a shell comment\n```\n#hashtag\n#### Detail", prompt)
+
     def test_no_skill_no_skill_section(self):
         prompt = build_system_prompt()
         self.assertNotIn("# Relevant skill", prompt)
