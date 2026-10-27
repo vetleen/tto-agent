@@ -906,6 +906,8 @@
 {{ model_guide|json_script:"model-guide-data" }}
 {# Active sub-agent runs for the sub-agent panel (rows + timers) #}
 {{ subagent_panel|json_script:"subagent-panel-data" }}
+{# Unsent composer files, restored as pills #}
+{{ pending_attachments|json_script:"pending-attachments-data" }}
 <style>
   .mg-help-btn { display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; margin-left:6px; border:0; border-radius:999px; background:transparent; color:var(--color-body-subtle); cursor:pointer; }
   .mg-help-btn:hover { background:var(--color-neutral-tertiary); color:var(--color-heading); }
@@ -2616,6 +2618,11 @@
     // An email's split-out files go with it.
     if (pill && pill.dataset.childIds) pill.dataset.childIds.split(',').forEach(dropPendingAttachment);
     if (pill) pill.remove();
+    // Delete the unsent row too, or it comes back as a pill on the next load
+    // (the server takes an email's split-out files with it).
+    fetch('/chat/api/attachments/' + id + '/discard/', {
+      method: 'POST', headers: { 'X-CSRFToken': getCSRFToken() },
+    }).catch(function() {});
   }
 
   // A file split out of an uploaded email (chat/email_attachments.py): it rides
@@ -2660,6 +2667,21 @@
     var pill = btn.closest('.image-pill');
     if (pill) removeImagePill(pill.getAttribute('data-attachment-id'));
   });
+
+  // Files uploaded into this thread's composer but never sent come back as pills
+  // (chat_home's pending_attachments, upload-response entries, parents first).
+  (function restoreUnsentAttachments() {
+    var el = document.getElementById('pending-attachments-data');
+    var atts = [];
+    try { atts = JSON.parse(el ? el.textContent : '[]') || []; } catch (e) {}
+    atts.forEach(function(att) {
+      if (att.parent_id) { addEmailChildAttachment(att); return; }
+      pendingAttachmentIds.push(att.id);
+      pendingAttachmentNames.push(att.filename);
+      pendingAttachmentTypes.push(att.content_type);
+      addAttachmentPill(att.id, att.filename, att.content_type, att.processing_state || 'ready');
+    });
+  })();
 
   // Upload promises still in flight. The submit handler waits for these before
   // snapshotting attachment ids, so a message never silently drops a file

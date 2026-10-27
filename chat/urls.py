@@ -20,6 +20,7 @@ urlpatterns = [
     path("api/threads/<uuid:thread_id>/attachments/upload/", views.upload_attachments, name="chat_upload_attachments"),
     path("api/threads/<uuid:thread_id>/attachments/<uuid:attachment_id>/reattach/", views.reattach_attachment, name="chat_reattach_attachment"),
     path("api/attachments/<uuid:attachment_id>/status/", views.attachment_status, name="chat_attachment_status"),
+    path("api/attachments/<uuid:attachment_id>/discard/", views.discard_attachment, name="chat_discard_attachment"),
     path("api/canvas-imports/<uuid:job_id>/status/", views.canvas_import_status, name="chat_canvas_import_status"),
     path("api/threads/<uuid:thread_id>/canvas/save-to-data-room/", views.canvas_save_to_data_room, name="canvas_save_to_data_room"),
     path("api/threads/<uuid:thread_id>/canvas/<int:canvas_id>/save-to-data-room/", views.canvas_save_to_data_room, name="canvas_save_to_data_room_by_id"),

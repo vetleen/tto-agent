@@ -973,6 +973,9 @@ def chat_home(request):
         draft_input = thread.metadata.pop("draft_input")
         thread.save(update_fields=["metadata"])
 
+    # Files uploaded into the composer but not sent yet come back as pills.
+    pending_attachments = _unsent_attachments(thread, request.user) if thread else []
+
     # Model picker default: the loaded thread's effective model (honoring its
     # stored choice, with tier fallback), or the organization's chat default for
     # a new thread.
@@ -1033,6 +1036,7 @@ def chat_home(request):
             "thread_cost_usd": thread_cost_usd,
             "pending_initial_turn": pending_initial_turn,
             "draft_input": draft_input,
+            "pending_attachments": pending_attachments,
             "allow_agent_attach_skills": prefs.allow_agent_attach_skills,
             "active_subagent_count": active_subagent_count,
             "waiting_subagent_count": waiting_subagent_count,
@@ -2107,6 +2111,49 @@ def canvas_import_status(request, job_id):
         resp["canvas"] = canvas_updated_payload(job.canvas, job=job)
         resp["thread_title"] = job.thread_title or ""
     return JsonResponse(resp)
+
+
+def _unsent_attachments(thread, user) -> list[dict]:
+    """The composer's unsent files: rows not yet linked to a message, uploaded since
+    the thread's latest message (older unlinked rows are leftovers from pills removed
+    before an earlier send). Same entries as the upload response, parents before
+    their email children."""
+    from chat.email_attachments import attachment_json
+    from chat.models import ChatMessage
+
+    rows = ChatAttachment.objects.filter(thread=thread, uploaded_by=user, message__isnull=True)
+    last_message_at = (
+        ChatMessage.objects.filter(thread=thread)
+        .order_by("-created_at").values_list("created_at", flat=True).first()
+    )
+    if last_message_at:
+        rows = rows.filter(created_at__gt=last_message_at)
+    return [attachment_json(a) for a in rows.order_by("created_at", "email_ordinal")]
+
+
+@login_required
+@require_POST
+def discard_attachment(request, attachment_id):
+    """Remove an unsent file from the composer (the pill's "x"), with the files split
+    out of it when it is an email. A file already sent with a message is kept: 404."""
+    att = get_object_or_404(
+        ChatAttachment,
+        id=attachment_id,
+        uploaded_by=request.user,
+        thread__created_by=request.user,
+        message__isnull=True,
+    )
+    # Descendants first: ``parent`` is SET_NULL, so a nested email's files would
+    # otherwise survive as top-level rows and come back as pills.
+    ids, frontier = [att.id], [att.id]
+    while frontier:
+        frontier = list(
+            ChatAttachment.objects.filter(parent_id__in=frontier, message__isnull=True)
+            .values_list("id", flat=True)
+        )
+        ids.extend(frontier)
+    ChatAttachment.objects.filter(id__in=ids).delete()  # post_delete removes each file
+    return JsonResponse({"ok": True})
 
 
 @login_required
