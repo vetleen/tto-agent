@@ -64,6 +64,20 @@ def skill_requires(skill) -> list[str]:
     )
 
 
+def toolkit_tool_index(skills) -> dict[str, list]:
+    """``{tool_name: [toolkit, …]}`` over the toolkits among ``skills``, in the
+    given order: which toolkit(s) already grant a tool. Lets the skill picker
+    and the authoring tools steer a main skill to ``requires`` the toolkit
+    instead of copying its tools into ``tool_names``."""
+    index: dict[str, list] = {}
+    for skill in skills:
+        if getattr(skill, "kind", "") != AgentSkill.Kind.TOOLKIT:
+            continue
+        for name in skill.tool_names or []:
+            index.setdefault(name, []).append(skill)
+    return index
+
+
 def _requires_pool(available) -> dict:
     """``{slug: skill}`` from a list of skills or an existing map."""
     if isinstance(available, dict):

@@ -1136,13 +1136,15 @@ def skills_edit_in_chat(request, skill_id):
 
     tier_label = _LEVEL_DISPLAY.get(target.level, target.level)
     tools_label = ", ".join(target.tool_names) if target.tool_names else "none"
+    requires_label = ", ".join(skill_requires(target)) or "none"
     seed_content = (
         f"The user opened this thread to edit the **{target.name}** skill "
         f"({tier_label} tier, slug `{target.slug}`). I've pre-loaded its "
         f"description and instructions into canvases titled "
         f"\"{target.name} \u2014 description\" and \"{target.name} \u2014 instructions\" "
         f"— both are ready for editing. "
-        f"Current name: \"{target.name}\". Current tools: {tools_label}. "
+        f"Current name: \"{target.name}\". Required toolkits: {requires_label}. "
+        f"Current tools: {tools_label}. "
         f"The user can edit any of these via chat or the canvases. "
         f"Greet the user warmly and ask what they'd like to change about "
         f"the {target.name} skill. Don't list everything — just open the "

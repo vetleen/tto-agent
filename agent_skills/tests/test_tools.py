@@ -92,6 +92,24 @@ class CreateSkillToolTests(TestCase):
         skill = AgentSkill.objects.get(created_by=self.user)
         self.assertEqual(len(skill.name), 255)
 
+    @patch("agent_skills.tools._generate_emoji_for_skill", return_value="")
+    def test_create_defaults_to_main_audience(self, mock_gen):
+        result = json.loads(self.tool._run(name="Main One"))
+        self.assertEqual(result["audience"], "main")
+        self.assertEqual(AgentSkill.objects.get(created_by=self.user).audience, "main")
+
+    @patch("agent_skills.tools._generate_emoji_for_skill", return_value="")
+    def test_create_subagent_specialization(self, mock_gen):
+        result = json.loads(self.tool._run(name="Prior Art Digger", audience="subagent"))
+        self.assertEqual(result["audience"], "subagent")
+        self.assertEqual(AgentSkill.objects.get(created_by=self.user).audience, "subagent")
+
+    @patch("agent_skills.tools._generate_emoji_for_skill", return_value="")
+    def test_create_unknown_audience_falls_back_to_main(self, mock_gen):
+        """The service guards the value even if schema validation is bypassed."""
+        result = json.loads(self.tool._run(name="Odd", audience="shared"))
+        self.assertEqual(result["audience"], "main")
+
 
 class EditSkillToolTests(TestCase):
     def setUp(self):
@@ -112,6 +130,28 @@ class EditSkillToolTests(TestCase):
         self.assertEqual(result["name"], "Renamed")
         self.skill.refresh_from_db()
         self.assertEqual(self.skill.name, "Renamed")
+
+    def test_requires_keeps_known_slugs_and_reports_dropped(self):
+        AgentSkill.objects.create(
+            slug="canvas_tools", name="Canvas Tools", instructions="i",
+            level="system", kind="toolkit", tool_names=["canvas_write"],
+        )
+        result = json.loads(self.tool._run(
+            skill_slug="editable", updates={"requires": ["canvas_tools", "no_such_tools"]},
+        ))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["requires"], ["canvas_tools"])
+        self.assertEqual(result["requires_dropped"], ["no_such_tools"])
+        self.skill.refresh_from_db()
+        self.assertEqual(self.skill.requires, ["canvas_tools"])
+
+    def test_requires_cleared_on_subagent_skill(self):
+        AgentSkill.objects.filter(pk=self.skill.pk).update(audience="subagent")
+        result = json.loads(self.tool._run(
+            skill_slug="editable", updates={"requires": ["canvas_tools"]},
+        ))
+        self.assertEqual(result["requires"], [])
+        self.assertNotIn("requires_dropped", result)
 
     def test_new_slug_is_slugified(self):
         """A raw new_slug with spaces/uppercase is slugified before saving."""
@@ -541,6 +581,17 @@ class ListSkillToolsToolTests(TestCase):
             self.assertIn("name", tool_entry)
             self.assertIn("description", tool_entry)
 
+    def test_lists_toolkits_and_marks_covered_tools(self):
+        """Seeded toolkits are listed, and a tool a toolkit grants names it."""
+        result = json.loads(self.tool._run())
+        toolkits = {t["slug"]: t for t in result["toolkits"]}
+        self.assertIn("skill_management_tools", toolkits)
+        self.assertIn("skill_create", toolkits["skill_management_tools"]["tool_names"])
+        by_name = {t["name"]: t for t in result["tools"]}
+        self.assertEqual(by_name["skill_create"]["toolkit"], "skill_management_tools")
+        self.assertIsNone(by_name["patent_epoops_search"]["toolkit"])
+        self.assertIn("require the toolkit", result["note"])
+
 
 class InspectToolToolTests(TestCase):
     def setUp(self):
@@ -558,6 +609,14 @@ class InspectToolToolTests(TestCase):
     def test_inspect_nonexistent_tool(self):
         result = json.loads(self.tool._run(tool_name="no_such_tool"))
         self.assertEqual(result["status"], "error")
+
+    def test_inspect_names_covering_toolkit(self):
+        result = json.loads(self.tool._run(tool_name="canvas_write"))
+        self.assertEqual(result["toolkit"], "canvas_tools")
+        self.assertIn("hint", result)
+        result = json.loads(self.tool._run(tool_name="patent_epoops_search"))
+        self.assertIsNone(result["toolkit"])
+        self.assertNotIn("hint", result)
 
 
 class ViewTemplateToolTests(TestCase):

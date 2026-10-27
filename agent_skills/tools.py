@@ -174,6 +174,14 @@ def load_skill_field_into_canvas(thread_id, skill, field_name: str, *, canvas_na
 
 class CreateSkillInput(ReasonBaseModel):
     name: str = Field(description="Name for the new skill.")
+    audience: Literal["main", "subagent"] = Field(
+        default="main",
+        description=(
+            "'main' (default): a skill for you, the main assistant. 'subagent': a "
+            "sub-agent specialization, given to a sub-agent with "
+            "chat_subagent_create(type=<slug>). Fixed at creation."
+        ),
+    )
 
 
 class SaveCanvasToSkillFieldInput(ReasonBaseModel):
@@ -211,7 +219,13 @@ class EditSkillInput(ReasonBaseModel):
     skill_slug: str = Field(description="Slug of the skill to edit.")
     updates: dict = Field(
         default_factory=dict,
-        description="Optional keys: name, new_slug, tool_names.",
+        description=(
+            "Optional keys: name, new_slug, requires (toolkit slugs attached "
+            "automatically with the skill), tool_names (individual tools). On a main "
+            "skill prefer requires: require a whole toolkit (e.g. canvas_tools) rather "
+            "than copying its tools into tool_names. Use tool_names on a sub-agent "
+            "skill (it can't require toolkits) or for a skill tool no toolkit covers."
+        ),
     )
     text_edits: list[TextEdit] = Field(
         default_factory=list,
@@ -352,12 +366,14 @@ class CreateSkillTool(ContextAwareTool):
     start_label: str = "Creating skill..."
     end_label: str = "Created skill"
     description: str = (
-        "Create a new user-level skill. Returns the slug and ID of the created skill."
+        "Create a new user-level skill — for you (audience='main', the default) or a "
+        "sub-agent specialization (audience='subagent'). Returns the slug and ID of "
+        "the created skill."
     )
     args_schema: type[BaseModel] = CreateSkillInput
     section: str = "skills"
 
-    def _run(self, name: str, **kwargs) -> str:
+    def _run(self, name: str, audience: str = "main", **kwargs) -> str:
         from agent_skills.services import create_user_skill
 
         user_id = self.context.user_id if self.context else None
@@ -374,7 +390,7 @@ class CreateSkillTool(ContextAwareTool):
 
         # Cap at the CharField limit, mirroring the create form — an over-long
         # name raises a DataError on Postgres (invisible on SQLite).
-        skill = create_user_skill(user, name[:255])
+        skill = create_user_skill(user, name[:255], audience=audience)
 
         # Best-effort emoji auto-pick. Any failure leaves emoji empty; the
         # user can still set one manually via the skill detail form.
@@ -401,6 +417,7 @@ class CreateSkillTool(ContextAwareTool):
             "name": skill.name,
             "emoji": skill.emoji,
             "id": str(skill.id),
+            "audience": skill.audience,
         })
 
 
@@ -566,9 +583,9 @@ class EditSkillTool(ContextAwareTool):
     start_label: str = "Editing skill..."
     end_label: str = "Updated skill"
     description: str = (
-        "Edit a skill's name, slug, or tool_names, or apply find-replace edits "
-        "to its description/instructions. Resources are managed with the "
-        "skill_resource_* tools."
+        "Edit a skill's name, slug, requires (toolkits) or tool_names, or apply "
+        "find-replace edits to its description/instructions. Resources are managed "
+        "with the skill_resource_* tools."
     )
     args_schema: type[BaseModel] = EditSkillInput
     section: str = "skills"
@@ -674,16 +691,22 @@ class EditSkillTool(ContextAwareTool):
                 updates["tool_names"], skill_audience=skill.audience
             )
             update_fields.append("tool_names")
+        requires_dropped: list[str] = []
         if "requires" in updates:
             # Slugs of skills (typically toolkits) attached automatically with
             # this one. Main-audience only: a sub-agent specialization can't
-            # attach toolkits, so the field is cleared there.
-            from agent_skills.services import normalize_requires
+            # attach toolkits, so the field is cleared there. Slugs the user
+            # can't see are dropped (as on the skill page) and reported.
+            from agent_skills.services import get_accessible_skills, normalize_requires
 
-            skill.requires = (
-                normalize_requires(updates["requires"], own_slug=skill.slug)
-                if skill.audience != "subagent" else []
-            )
+            if skill.audience == "subagent":
+                requested, kept = [], []
+            else:
+                requested = normalize_requires(updates["requires"], own_slug=skill.slug)
+                known = {s.slug for s in get_accessible_skills(user)}
+                kept = [r for r in requested if r in known]
+            requires_dropped = [r for r in requested if r not in kept]
+            skill.requires = kept
             update_fields.append("requires")
         # NOTE: is_active is deliberately NOT editable here. Every skill lookup
         # (list, detail, this tool's own resolution) filters is_active=True, so
@@ -758,6 +781,8 @@ class EditSkillTool(ContextAwareTool):
             "id": str(skill.id),
             "is_active": skill.is_active,
             "tool_names": skill.tool_names,
+            "requires": skill.requires,
+            **({"requires_dropped": requires_dropped} if requires_dropped else {}),
             "edits_applied": applied,
             "edits_failed": failed,
             "scan_state": scan_state,
@@ -1854,6 +1879,26 @@ class SkillResourceDeleteTool(ContextAwareTool):
         })
 
 
+_TOOLKIT_HINT = (
+    "On a main skill, require the toolkit (requires) instead of listing its tools "
+    "in tool_names. A sub-agent skill can't require toolkits, so it lists tools."
+)
+
+
+def _toolkits_for_context(context) -> list:
+    """The toolkits visible to the calling user (none without a user)."""
+    from django.contrib.auth import get_user_model
+
+    from agent_skills.models import AgentSkill
+    from agent_skills.services import get_accessible_skills
+
+    user_id = context.user_id if context else None
+    user = get_user_model().objects.filter(pk=user_id).first() if user_id else None
+    if user is None:
+        return []
+    return [s for s in get_accessible_skills(user) if s.kind == AgentSkill.Kind.TOOLKIT]
+
+
 class ListSkillToolsTool(ContextAwareTool):
     """List skill-specific tools that can be attached to a skill."""
 
@@ -1862,27 +1907,40 @@ class ListSkillToolsTool(ContextAwareTool):
     start_label: str = "Listing skill tools..."
     end_label: str = "Listed skill tools"
     description: str = (
-        "List all skill-specific tools — the tools that must be explicitly "
-        "attached to a skill via tool_names. Use this to discover which "
-        "tools a skill can use."
+        "List the toolkits and all skill-specific tools a skill can be given. A main "
+        "skill gets a toolkit via requires; tool_names lists individual tools. Each "
+        "tool shows the toolkit that already grants it, if any."
     )
     args_schema: type[BaseModel] = ReasonBaseModel
     section: str = "skills"
 
     def _run(self, **kwargs) -> str:
+        from agent_skills.services import toolkit_tool_index
+
+        toolkits = _toolkits_for_context(self.context)
+        index = toolkit_tool_index(toolkits)
         registry = get_tool_registry()
         all_tools = registry.list_tools()
         skill_tools = []
         for name, tool in sorted(all_tools.items()):
             if getattr(tool, "section", "chat") == "skills":
+                covering = index.get(name)
                 skill_tools.append({
                     "name": name,
                     "description": tool.description or "",
+                    "toolkit": covering[0].slug if covering else None,
                 })
         return json.dumps({
             "status": "ok",
+            "toolkits": [
+                {"slug": t.slug, "name": t.name, "tool_names": list(t.tool_names or [])}
+                for t in toolkits
+            ],
             "tools": skill_tools,
-            "note": "Only available when explicitly listed in a skill's tool_names.",
+            "note": (
+                "A tool is only available to a skill that lists it in tool_names or "
+                "requires a toolkit that grants it. " + _TOOLKIT_HINT
+            ),
         })
 
 
@@ -1901,6 +1959,8 @@ class InspectToolTool(ContextAwareTool):
     section: str = "skills"
 
     def _run(self, tool_name: str, **kwargs) -> str:
+        from agent_skills.services import toolkit_tool_index
+
         registry = get_tool_registry()
         tool = registry.get_tool(tool_name)
         if not tool:
@@ -1908,12 +1968,17 @@ class InspectToolTool(ContextAwareTool):
                 "status": "error",
                 "message": f"Tool '{tool_name}' not found.",
             })
-        return json.dumps({
+        covering = toolkit_tool_index(_toolkits_for_context(self.context)).get(tool.name)
+        result = {
             "status": "ok",
             "name": tool.name,
             "description": tool.description,
             "section": getattr(tool, "section", "chat"),
-        })
+            "toolkit": covering[0].slug if covering else None,
+        }
+        if covering:
+            result["hint"] = _TOOLKIT_HINT
+        return json.dumps(result)
 
 
 def _skill_entry(skill, attached_by: str) -> dict:
