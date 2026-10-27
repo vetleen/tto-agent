@@ -1054,6 +1054,8 @@
 
   // -- Model selector state --
   const MODEL_CHOICES = JSON.parse('{{ model_choices_json|escapejs }}');
+  const AUTO_MODEL_ID = "auto";
+  const AUTO_MODEL_LABEL = "Automatic";
   const DEFAULT_MODEL = "{{ default_model|escapejs }}";
   const DEFAULT_MODEL_DISPLAY = "{{ default_model_display|escapejs }}";
   // New threads use the organization's chat default. A loaded thread's manual
@@ -2785,6 +2787,7 @@
   // only for unrated models).
   // Price is 1-5 filled "$" right-aligned in a fixed column.
   function modelMetaHtml(m) {
+    if (m.id === AUTO_MODEL_ID) return '<span class="text-xs text-body-subtle">Picks per request</span>';
     var html = '';
     if (m.capability_level > 0) {
       var stars = '';
@@ -2806,7 +2809,8 @@
     MODEL_CHOICES.forEach(function(m) {
       var btn = document.createElement('button');
       btn.type = 'button';
-      btn.className = 'flex items-center justify-between w-full px-3 py-1.5 text-sm text-body hover:bg-neutral-tertiary hover:text-heading';
+      btn.className = 'flex items-center justify-between w-full px-3 py-1.5 text-sm text-body hover:bg-neutral-tertiary hover:text-heading' +
+        (m.id === AUTO_MODEL_ID ? ' border-b border-default' : '');
       btn.setAttribute('data-model-id', m.id);
       if (m.meta_tooltip) btn.title = m.meta_tooltip;
       btn.innerHTML = '<span class="truncate min-w-0">' + escapeHtml(m.display_name) + '</span>' +
@@ -3527,6 +3531,20 @@
       return;
     }
     if (et === "provider_retry") { showProviderRetry(data.data || {}); return; }
+    if (et === "turn.auto_routed") {
+      // Automatic picked this turn's model: a quiet line under the reply.
+      ensureBubble();
+      var routeBody = currentStreamingElement.querySelector(".wmsg__body");
+      var oldRoute = routeBody && routeBody.querySelector(".wmsg__route");
+      if (oldRoute) oldRoute.remove();
+      var copyBtn = routeBody && routeBody.querySelector(":scope > .copy-msg-btn");
+      if (routeBody) {
+        var routeHtml = autoRouteChipHtml(data.data || {});
+        if (copyBtn) copyBtn.insertAdjacentHTML("beforebegin", routeHtml);
+        else routeBody.insertAdjacentHTML("beforeend", routeHtml);
+      }
+      return;
+    }
     if (et === "turn.condensing_history") {
       // The history no longer fits: the server folds older rounds into the
       // conversation summary before the turn starts. Same spinner retitle.
@@ -3737,10 +3755,12 @@
       // Update thread cost and sub-agent status
       updateThreadCost(data.thread_cost_usd);
       setSubagentRuns(data.subagent_runs, data.server_now);
-      // Restore the thread's model into the picker.
-      if (data.model) {
-        selectedModel = data.model;
-        if (modelSelectorLabel && data.model_display) modelSelectorLabel.textContent = data.model_display;
+      // Restore the thread's model into the picker ("Automatic" when the
+      // thread routes itself; data.model is then its last concrete model).
+      if (data.model || data.auto) {
+        selectedModel = data.auto ? AUTO_MODEL_ID : data.model;
+        var shownName = data.auto ? AUTO_MODEL_LABEL : data.model_display;
+        if (modelSelectorLabel && shownName) modelSelectorLabel.textContent = shownName;
         if (typeof renderModelOptions === 'function') renderModelOptions();
         if (typeof updateReasoningControl === 'function') updateReasoningControl();
       }
@@ -3958,6 +3978,20 @@
   function startStreamingTimeout() { clearTimeout(streamingTimeout); streamingTimeout = setTimeout(function() { finishStreaming("{{ assistant_name|escapejs }} took too long to respond. Please try again."); enableInput(); }, STREAM_TIMEOUT_MS); }
 
   const WAITING_INDICATOR_HTML = `<div class="waiting-indicator flex items-center gap-1.5 text-xs text-body/70 mt-1"><svg class="w-3 h-3 animate-spin shrink-0" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><span>Thinking...</span></div>`;
+
+  // "Auto · Opus 5.5 · Writing" under an Automatic reply (the server renders
+  // the same line from message.metadata.auto_route on reload).
+  function autoRouteChipHtml(r) {
+    var parts = ["Auto", r.model_display || r.model || ""];
+    if (r.category_label) parts.push(r.category_label);
+    var tip = "Model chosen automatically";
+    if (r.thinking_label) tip += " · reasoning: " + r.thinking_label;
+    if (r.source === "cached") tip += " · kept the previous model while its prompt cache is warm";
+    else if (r.source === "skill") tip += " · preferred by an attached skill";
+    else if (r.source === "fallback") tip += " · default (the automatic choice was unavailable)";
+    return '<div class="wmsg__route self-start mt-1 text-xs text-body/40" title="' + escapeHtml(tip) + '">' +
+      escapeHtml(parts.filter(Boolean).join(" · ")) + '</div>';
+  }
 
   function createAssistantBubble() {
     const div = document.createElement("div"); div.className = "wmsg"; div.setAttribute("data-role", "assistant");

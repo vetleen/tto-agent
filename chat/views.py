@@ -12,6 +12,7 @@ from django.http import FileResponse, Http404, HttpResponseBadRequest, JsonRespo
 from django.shortcuts import get_object_or_404, render
 from django.views.decorators.http import require_http_methods, require_POST
 
+from chat.auto_model import AUTO_MODEL_ID
 from chat.models import ChatAttachment, ChatCanvas, ChatThread, ThreadTask
 from documents.models import DataRoom, DataRoomDocument, DataRoomDocumentTag
 
@@ -947,6 +948,19 @@ def chat_home(request):
         }
         for m in prefs.allowed_models
     ]
+    # "Automatic" (chat/auto_model.py) heads the picker. No reasoning control:
+    # each category carries its own level.
+    model_choices.insert(0, {
+        "id": AUTO_MODEL_ID,
+        "display_name": "Automatic",
+        "supports_thinking": False,
+        "supports_vision": True,
+        "thinking_levels": [],
+        "default_thinking_level": None,
+        "price_level": 0,
+        "capability_level": 0,
+        "meta_tooltip": "Picks a model for each request from your organization's Automatic model choices",
+    })
 
     pending_initial_turn = bool(
         thread and (thread.metadata or {}).get("pending_initial_turn")
@@ -968,6 +982,15 @@ def chat_home(request):
     effective_model = (
         resolve_thread_model(thread.model, prefs) if thread else preferred_chat_model
     )
+    # Automatic: the thread is on it, or it never ran and the org defaults to it.
+    thread_auto = (
+        bool((thread.auto_route or {}).get("enabled"))
+        or (thread.auto_route is None and not thread.model and prefs.chat_auto_default)
+    ) if thread else prefs.chat_auto_default
+    if thread_auto:
+        effective_model = AUTO_MODEL_ID
+    if prefs.chat_auto_default:
+        preferred_chat_model = AUTO_MODEL_ID
 
     from chat.services import MAX_ATTACHMENT_SIZE, max_size_for_content_type
 
@@ -1003,9 +1026,9 @@ def chat_home(request):
             # org's enabled models (rendered via json_script).
             "model_guide": build_model_guide(prefs.allowed_models),
             "default_model": effective_model,
-            "default_model_display": get_display_name(effective_model),
+            "default_model_display": "Automatic" if effective_model == AUTO_MODEL_ID else get_display_name(effective_model),
             "preferred_chat_model": preferred_chat_model,
-            "preferred_chat_model_display": get_display_name(preferred_chat_model),
+            "preferred_chat_model_display": "Automatic" if preferred_chat_model == AUTO_MODEL_ID else get_display_name(preferred_chat_model),
             "thread_tasks_json": thread_tasks_json,
             "thread_cost_usd": thread_cost_usd,
             "pending_initial_turn": pending_initial_turn,

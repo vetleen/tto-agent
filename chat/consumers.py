@@ -53,6 +53,9 @@ class _TurnState:
     # attachments_not_ready so their markers say "still processing".
     attachment_ids: list = field(default_factory=list)
     attachments_not_ready: set = field(default_factory=set)
+    # Automatic model choice: the turn's chat.auto_model.RouteDecision, once
+    # routed (logged on the turn's LLMCallLog and shown under the reply).
+    auto_route: object | None = None
 
 
 # Seconds between processing-state polls while a turn waits for its attachments
@@ -1397,10 +1400,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
             from core.preferences import resolve_thread_model
             from llm.display import get_display_name
 
-            stored_model = await self._get_thread_stored_model(thread_id)
+            stored_model, auto_state = await self._get_thread_model_state(thread_id)
             effective_model = (
                 resolve_thread_model(stored_model, self.resolved_prefs)
                 if self.resolved_prefs else ""
+            )
+            # Automatic: the thread is on it, or it has never run and the org
+            # defaults new chats to it.
+            thread_auto = bool((auto_state or {}).get("enabled")) or bool(
+                auto_state is None and not stored_model
+                and self.resolved_prefs and self.resolved_prefs.chat_auto_default
             )
 
             await self.send(text_data=json.dumps({
@@ -1415,6 +1424,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "server_now": subagent_panel["server_now"],
                 "model": effective_model,
                 "model_display": get_display_name(effective_model) if effective_model else "",
+                "auto": thread_auto,
             }))
             if canvases_data:
                 await self.send(text_data=json.dumps({
@@ -2347,6 +2357,17 @@ class ChatConsumer(AsyncWebsocketConsumer):
             if model and thread.model != model:
                 await self._persist_thread_model(thread, model)
 
+            # Automatic model choice: route in parallel with the rest of turn
+            # start; _stream_and_finalize awaits the decision before assembly.
+            # A concrete model request turns Automatic off for the thread.
+            auto_route_task = None
+            if prefs and self._wants_auto_model(thread, requested_model, prefs):
+                auto_route_task = asyncio.create_task(
+                    self._route_auto_turn(thread, prefs, model, turn)
+                )
+            elif requested_model and (thread.auto_route or {}).get("enabled"):
+                await self._update_auto_route(thread, enabled=False, category=None)
+
             max_context_tokens = prefs.max_context_tokens if prefs else None
 
             # A server-seeded continuation (e.g. a background sub-agent finished)
@@ -2373,6 +2394,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     history_mode=history_mode,
                     turn=turn,
                     seed_mode=seed_mode,
+                    auto_route_task=auto_route_task,
                 )
             )
 
@@ -2398,7 +2420,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
     async def _stream_and_finalize(
         self, thread, *,
         content, requested_model, thinking_level, resolved_model,
-        max_context_tokens, history_mode, turn, seed_mode,
+        max_context_tokens, history_mode, turn, seed_mode, auto_route_task=None,
     ):
         """Wait for a turn slot, assemble inputs, stream, and post-process.
 
@@ -2459,6 +2481,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     self._cancel_event = None
                 return
 
+            # Automatic: the route ran alongside the attachment hold. Outside the
+            # gate (it can take a few seconds) and before assembly (history
+            # budgets depend on the model). _route_auto_turn never raises.
+            if auto_route_task is not None:
+                decision = await auto_route_task
+                auto_route_task = None
+                resolved_model = decision.model
+                try:
+                    thinking_level = _resolve_reasoning_level(resolved_model, decision.thinking_level)
+                except ValueError:
+                    thinking_level = _resolve_reasoning_level(resolved_model, None)
+                await self._apply_auto_route(thread, decision, thinking_level, turn)
+
             async with turn_gate.slot(self.user.pk, on_queued=_on_queued):
                 if queue_hb is not None:
                     queue_hb.cancel()
@@ -2508,6 +2543,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 # any intercepted content. Runs here on the normal path and again in
                 # `finally` (idempotent) so a stop/disconnect race can't skip redaction.
                 await self._finalize_guardrail(thread, turn)
+                # When and on what this turn ran: the next turn's cache-warmth
+                # check (chat.auto_model.is_cache_warm). Manual turns too, so
+                # switching to Automatic keeps a warm model.
+                await self._record_turn_end(thread, resolved_model, thinking_level)
             # --- slot released here ---
 
             if self._stopped or turn.guardrail_intercepted:
@@ -2574,6 +2613,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             # cancellation, and awaiting there can be interrupted by a second one.
             if queue_hb is not None:
                 queue_hb.cancel()
+            if auto_route_task is not None:
+                auto_route_task.cancel()  # turn ended before it was awaited
             # Redaction of guardrail-intercepted content must run even when the
             # turn was stopped / cancelled / disconnected mid-flight (the try above
             # returns early on stop). Idempotent via turn.guardrail_redacted.
@@ -3207,6 +3248,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "_cancel_event": turn.cancel_event,
             },
         )
+        if turn.auto_route is not None:
+            request.params["_log_metadata"] = {"auto_route": turn.auto_route.log_metadata()}
 
         service = get_llm_service()
         from chat.repetition_guard import is_degenerate
@@ -3500,6 +3543,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     replay = build_assistant_replay(resolved_model, replay_blocks, accumulated_content)
                     if replay:
                         metadata["replay"] = replay
+                    if turn is not None and turn.auto_route is not None:
+                        metadata["auto_route"] = self._auto_route_display(turn.auto_route, thinking_level)
                     # Any turn whose prompt replayed sub-agent outcomes is their
                     # report — seeded continuations and manual user turns alike
                     # (otherwise the post-stream claim would fire a redundant
@@ -4580,6 +4625,147 @@ class ChatConsumer(AsyncWebsocketConsumer):
         return ChatThread.objects.filter(pk=thread_id).values_list(
             "model", flat=True,
         ).first() or ""
+
+    @database_sync_to_async
+    def _get_thread_model_state(self, thread_id):
+        """(stored model, auto_route state) for the picker on thread load."""
+        from chat.models import ChatThread
+
+        row = ChatThread.objects.filter(pk=thread_id).values_list("model", "auto_route").first()
+        return (row[0] or "", row[1]) if row else ("", None)
+
+    # --- Automatic model choice (chat/auto_model.py) ---
+
+    @staticmethod
+    def _wants_auto_model(thread, requested_model, prefs) -> bool:
+        """Whether this turn runs on Automatic.
+
+        The client sends ``model: "auto"``. Messages without a model (server
+        seeds) follow the thread: on Automatic if it already is, or if it has
+        never run on a model and the org defaults new chats to Automatic.
+        """
+        from chat.auto_model import AUTO_MODEL_ID
+
+        if requested_model == AUTO_MODEL_ID:
+            return True
+        if requested_model:
+            return False
+        state = thread.auto_route or {}
+        if state.get("enabled"):
+            return True
+        return bool(not state and not thread.model and prefs.chat_auto_default)
+
+    async def _route_auto_turn(self, thread, prefs, provisional_model, turn):
+        """Run chat.auto_model.route_turn for this turn (never raises)."""
+        from chat.auto_model import DEFAULT_CATEGORY, RouteDecision, resolve_category, route_turn
+
+        try:
+            skills, facts = await self._auto_route_inputs(thread.id, list(turn.attachment_ids))
+            return await route_turn(
+                thread_id=thread.id,
+                org_id=await self._get_org_id(),
+                prefs=prefs,
+                state=thread.auto_route,
+                thread_model=provisional_model,
+                summary_up_to=thread.summary_up_to_message_id,
+                skills=skills,
+                facts=facts,
+            )
+        except Exception:
+            logger.exception("auto_model: routing crashed thread=%s", thread.id)
+            model, level = resolve_category(prefs, DEFAULT_CATEGORY)
+            return RouteDecision(model, level, DEFAULT_CATEGORY, "fallback")
+
+    @database_sync_to_async
+    def _auto_route_inputs(self, thread_id, attachment_ids):
+        """The thread's attached skills and the turn facts the router sees."""
+        from collections import Counter
+
+        from django.db.models import Sum
+        from django.db.models.functions import Length
+
+        from chat.models import ChatAttachment, ChatCanvas, ChatThreadDataRoom, ChatThreadSkill
+
+        skills = [
+            {"name": name}
+            for name in ChatThreadSkill.objects.filter(thread_id=thread_id).values_list("skill__name", flat=True)
+        ]
+        kinds = Counter()
+        for filename, content_type in ChatAttachment.objects.filter(pk__in=attachment_ids).values_list(
+            "original_filename", "content_type",
+        ):
+            ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+            kinds["image" if (content_type or "").startswith("image/") else (ext or "file")] += 1
+        canvases = ChatCanvas.objects.filter(thread_id=thread_id)
+        facts = {
+            "attachments": dict(kinds),
+            "data_rooms": ChatThreadDataRoom.objects.filter(thread_id=thread_id).count(),
+            "canvases": canvases.count(),
+            "canvas_chars": canvases.aggregate(n=Sum(Length("content")))["n"] or 0,
+            "skills": [s["name"] for s in skills],
+        }
+        return skills, facts
+
+    @staticmethod
+    def _auto_route_display(decision, thinking_level) -> dict:
+        """The chip under an Automatic reply (also saved on the message)."""
+        from chat.auto_model import CATEGORIES_BY_KEY
+        from llm.display import get_display_name, reasoning_level_label
+
+        cat = CATEGORIES_BY_KEY.get(decision.category or "")
+        return {
+            "model": decision.model,
+            "model_display": get_display_name(decision.model),
+            "category": decision.category,
+            "category_label": cat.label if cat else "",
+            "thinking_level": thinking_level,
+            "thinking_label": reasoning_level_label(thinking_level) if thinking_level else "",
+            "source": decision.source,
+        }
+
+    async def _apply_auto_route(self, thread, decision, thinking_level, turn):
+        """Adopt a route: persist model + state, tell the client, tag the turn."""
+        turn.auto_route = decision
+        if decision.model and thread.model != decision.model:
+            await self._persist_thread_model(thread, decision.model)
+        await self._update_auto_route(
+            thread, enabled=True, category=decision.category,
+            model=decision.model, thinking_level=thinking_level,
+        )
+        await self._sink.send_event({
+            "event_type": "turn.auto_routed",
+            "data": self._auto_route_display(decision, thinking_level),
+        })
+
+    @database_sync_to_async
+    def _update_auto_route(self, thread, **changes):
+        """Merge *changes* into ChatThread.auto_route (direct UPDATE: no retain bump)."""
+        from chat.models import ChatThread
+
+        stored = ChatThread.objects.filter(pk=thread.id).values_list("auto_route", flat=True).first()
+        state = {**(stored or {}), **changes}
+        ChatThread.objects.filter(pk=thread.id).update(auto_route=state)
+        thread.auto_route = state
+
+    async def _record_turn_end(self, thread, model, thinking_level):
+        from django.utils import timezone
+
+        from chat.models import ChatThread
+
+        def _summary_cutoff():
+            return ChatThread.objects.filter(pk=thread.id).values_list(
+                "summary_up_to_message_id", flat=True,
+            ).first()
+
+        try:
+            summary_up_to = await database_sync_to_async(_summary_cutoff)()
+            await self._update_auto_route(
+                thread, model=model, thinking_level=thinking_level,
+                last_turn_at=timezone.now().isoformat(),
+                summary_up_to=str(summary_up_to) if summary_up_to else None,
+            )
+        except Exception:
+            logger.exception("auto_model: failed to record turn end thread=%s", thread.id)
 
     @database_sync_to_async
     def _redact_messages(self, thread, *, redact_user=True, redact_assistant=True, from_message_id=None):
