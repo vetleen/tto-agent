@@ -476,6 +476,11 @@
     .wf-toolbtn-ghost:hover { background: var(--color-neutral-secondary-soft); }
     .wf-toolclose:hover { background: var(--color-neutral-secondary-soft); color: var(--color-heading); }
   </style>
+  {# Read-only pages render no open button, so Flowbite would never register the  #}
+  {# picker modals and logs an error for each × / Cancel (data-modal-hide). A    #}
+  {# hidden data-modal-target stub registers them; the modals stay rendered     #}
+  {# because the chips read their labels from the picker cards.                 #}
+  {% if not editable %}<span hidden data-modal-target="tool-picker-modal"></span>{% endif %}
   <div id="tool-picker-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed top-0 left-0 right-0 z-50 hidden w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] max-h-full">
     <div class="wf-toolmodal" style="position:relative;width:600px;max-width:100%;margin:auto;background:var(--color-neutral-primary-medium);border:1px solid var(--color-default-subtle);border-radius:12px;box-shadow:var(--shadow-xl);overflow:hidden;">
       {# Header #}
@@ -521,6 +526,7 @@
 
   {# ----- Requires picker modal (same anatomy as the tool picker) ----- #}
   {% if show_requires %}
+  {% if not editable %}<span hidden data-modal-target="requires-picker-modal"></span>{% endif %}
   <div id="requires-picker-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed top-0 left-0 right-0 z-50 hidden w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] max-h-full">
     <div class="wf-toolmodal" style="position:relative;width:600px;max-width:100%;margin:auto;background:var(--color-neutral-primary-medium);border:1px solid var(--color-default-subtle);border-radius:12px;box-shadow:var(--shadow-xl);overflow:hidden;">
       <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--color-default-subtle);">
@@ -566,6 +572,7 @@
 
   {# ----- Sub-agents picker modal (same anatomy as the Requires picker) ----- #}
   {% if show_subagents %}
+  {% if not editable %}<span hidden data-modal-target="subagents-picker-modal"></span>{% endif %}
   <div id="subagents-picker-modal" role="dialog" aria-modal="true" tabindex="-1" aria-hidden="true" class="fixed top-0 left-0 right-0 z-50 hidden w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] max-h-full">
     <div class="wf-toolmodal" style="position:relative;width:600px;max-width:100%;margin:auto;background:var(--color-neutral-primary-medium);border:1px solid var(--color-default-subtle);border-radius:12px;box-shadow:var(--shadow-xl);overflow:hidden;">
       <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--color-default-subtle);">

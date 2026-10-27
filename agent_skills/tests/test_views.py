@@ -527,6 +527,26 @@ class SkillsDetailViewTests(TestCase):
         self.assertContains(response, 'id="instructions-preview-btn"')
         self.assertContains(response, 'id="description-preview-btn"')
 
+    def test_read_only_page_registers_picker_modals(self):
+        # No open button on a read-only page, so a hidden data-modal-target stub
+        # registers the modal with Flowbite (else its × / Cancel log errors).
+        system_skill = AgentSkill.objects.create(
+            slug="sys", name="System Skill", instructions="# hi", level="system",
+        )
+        self.client.force_login(self.user)
+        response = self.client.get(
+            reverse("agent_skills_detail", kwargs={"skill_id": system_skill.id})
+        )
+        self.assertContains(response, '<span hidden data-modal-target="tool-picker-modal"></span>')
+        self.assertNotContains(response, 'id="open-tool-picker"')
+
+    def test_editable_page_has_no_modal_stub(self):
+        self.client.force_login(self.user)
+        response = self.client.get(
+            reverse("agent_skills_detail", kwargs={"skill_id": self.skill.id})
+        )
+        self.assertNotContains(response, "<span hidden data-modal-target=")
+
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
 class SkillsSaveViewTests(TestCase):
