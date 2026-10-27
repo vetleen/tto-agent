@@ -58,8 +58,8 @@ class ThreadChunkUsageInline(admin.TabularInline):
 
 @admin.register(ChatThread)
 class ChatThreadAdmin(admin.ModelAdmin):
-    list_display = ("id", "created_by", "cost_usd", "created_at", "updated_at")
-    list_filter = ("created_at",)
+    list_display = ("id", "created_by", "thread_model", "cost_usd", "created_at", "updated_at")
+    list_filter = ("created_at", "model")
     search_fields = ("title",)
     readonly_fields = ("id", "created_at", "updated_at")
     inlines = [ChatThreadDataRoomInline, ThreadTaskInline, SubAgentRunInline, ThreadChunkUsageInline, ChatMessageInline]
@@ -79,6 +79,11 @@ class ChatThreadAdmin(admin.ModelAdmin):
         if obj._cost_usd is None:
             return "-"
         return f"${obj._cost_usd:.4f}"
+
+    @admin.display(description="Model", ordering="model")
+    def thread_model(self, obj):
+        # Empty → the thread follows the user's preferred chat model.
+        return obj.model or "(user default)"
 
 
 class CanvasCheckpointInline(admin.TabularInline):
