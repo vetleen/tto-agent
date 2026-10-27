@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 from readability import Document as ReadabilityDocument
 
 from llm.tools._text_cleaning import normalize_text
+from llm.tools._throttle import deadline_capped_wait, wait_budget
 from llm.tools.interfaces import ContextAwareTool, ReasonBaseModel
 
 logger = logging.getLogger(__name__)
@@ -549,6 +550,24 @@ _JINA_BODY_ERROR_RE = re.compile(r"Target URL returned error\s+\d{3}", re.IGNORE
 # this runs inside an interactive chat turn, so no long waits.
 _JINA_503_BACKOFF = [3, 8]
 
+# A Jina request waits at most this long (socket timeout and body download);
+# Jina's own server-side page-load wait (X-Timeout) stays 5 s under it.
+_JINA_TIMEOUT_SECONDS = 30
+# Under a call deadline (sub-agent tools, WILFRED-9T) the Jina request only gets
+# what the call has left, minus time for extraction and the content scan that
+# run after it; with less than _JINA_MIN_SECONDS to spare it isn't started.
+_JINA_DEADLINE_RESERVE_SECONDS = 5
+_JINA_MIN_SECONDS = 5
+
+
+def _jina_timeout(context=None) -> float | None:
+    """Seconds a Jina request may take now, or None when there's no time for one."""
+    budget = wait_budget(context)
+    if budget is None:
+        return float(_JINA_TIMEOUT_SECONDS)
+    timeout = min(float(_JINA_TIMEOUT_SECONDS), budget - _JINA_DEADLINE_RESERVE_SECONDS)
+    return timeout if timeout >= _JINA_MIN_SECONDS else None
+
 # Markdown image syntax ``![alt](url)`` — stripped from Jina body text (the
 # images are surfaced separately via the data.images summary).
 _MD_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
@@ -568,10 +587,19 @@ def _fetch_via_jina(url: str, context=None, reason: str = "") -> dict | None:
 
     resp = None
     for attempt in range(1 + len(_JINA_503_BACKOFF)):
+        timeout = _jina_timeout(context)
+        if timeout is None:
+            # Starting now would overrun the call's deadline; the caller
+            # returns its original error instead.
+            logger.info(
+                "web_fetch: skipping Jina for url=%s, %.0fs left on the call",
+                url, wait_budget(context) or 0,
+            )
+            return None
         try:
             resp = requests.get(
                 f"{base_url}/{url}",
-                timeout=30,
+                timeout=timeout,
                 headers={
                     "Authorization": f"Bearer {api_key}",
                     "Accept": "application/json",
@@ -585,7 +613,7 @@ def _fetch_via_jina(url: str, context=None, reason: str = "") -> dict | None:
                     # X-Retain-Images:none SUPPRESSES this summary, so it's gone;
                     # inline image markdown is stripped from the text below.
                     "X-With-Images-Summary": "true",
-                    "X-Timeout": "25",
+                    "X-Timeout": str(max(1, int(timeout) - 5)),
                 },
                 stream=True,
             )
@@ -593,17 +621,24 @@ def _fetch_via_jina(url: str, context=None, reason: str = "") -> dict | None:
             # Trusted host — no SSRF pinning needed, but still cap the body so
             # a huge page can't OOM the worker. _ResponseTooLarge is an
             # Exception, so it's caught here and the fallback declines gracefully.
-            _enforce_size_and_buffer(resp, _jina_max_response_bytes())
+            _enforce_size_and_buffer(resp, _jina_max_response_bytes(), max_seconds=timeout)
             break
         except requests.exceptions.HTTPError as e:
             status = getattr(getattr(e, "response", None), "status_code", None)
             if status == 503 and attempt < len(_JINA_503_BACKOFF):
+                nap, may_retry = deadline_capped_wait(_JINA_503_BACKOFF[attempt], context)
+                if may_retry:
+                    logger.info(
+                        "web_fetch: Jina 503 for url=%s (attempt %d), retrying",
+                        url, attempt + 1,
+                    )
+                    time.sleep(nap)
+                    continue
                 logger.info(
-                    "web_fetch: Jina 503 for url=%s (attempt %d), retrying",
+                    "web_fetch: Jina 503 for url=%s (attempt %d), no time left on the call to retry",
                     url, attempt + 1,
                 )
-                time.sleep(_JINA_503_BACKOFF[attempt])
-                continue
+                return None
             # 401/402 (bad key / account out of tokens) kill the fallback for
             # every URL — keep those at WARNING so a dead fallback doesn't go
             # unnoticed again. Anything else (422/404/451, post-retry 5xx) is

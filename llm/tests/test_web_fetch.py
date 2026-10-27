@@ -1359,6 +1359,72 @@ class JinaFallbackTests(TestCase):
         mock_sleep.assert_any_call(3)
         mock_sleep.assert_any_call(8)
 
+    @patch("llm.tools.web_fetch.requests.get")
+    @patch("llm.tools.web_fetch._pinned_get")
+    def test_jina_no_deadline_keeps_full_timeout(self, mock_pinned, mock_requests_get):
+        """Main-agent calls have no call deadline: the Jina request keeps 30 s."""
+        mock_pinned.side_effect = req_lib.exceptions.Timeout("timed out")
+        mock_requests_get.return_value = _mock_jina_response("Content from Jina")
+        self.tool.invoke({"url": "https://example.com/slow"})
+
+        call = mock_requests_get.call_args
+        self.assertEqual(call.kwargs["timeout"], 30)
+        self.assertEqual(call.kwargs["headers"]["X-Timeout"], "25")
+
+    @patch("llm.tools.web_fetch.requests.get")
+    @patch("llm.tools.web_fetch._pinned_get")
+    def test_jina_timeout_clipped_to_call_deadline(self, mock_pinned, mock_requests_get):
+        """A sub-agent call with 20 s left gives Jina 15 s (5 s held back for the scan)."""
+        from llm.tools._throttle import set_call_deadline
+
+        set_call_deadline(20.0)
+        self.addCleanup(set_call_deadline, None)
+        mock_pinned.side_effect = req_lib.exceptions.Timeout("timed out")
+        mock_requests_get.return_value = _mock_jina_response("Content from Jina")
+        result = self.tool.invoke({"url": "https://example.com/slow"})
+
+        self.assertIn("Content from Jina", result)
+        call = mock_requests_get.call_args
+        self.assertAlmostEqual(call.kwargs["timeout"], 15.0, delta=1.0)
+        self.assertIn(call.kwargs["headers"]["X-Timeout"], ("9", "10"))
+
+    @patch("llm.tools.web_fetch.requests.get")
+    @patch("llm.tools.web_fetch._pinned_get")
+    def test_jina_skipped_when_call_deadline_nearly_spent(self, mock_pinned, mock_requests_get):
+        """Too little time left on the call: no Jina request, the original error comes back."""
+        from llm.tools._throttle import set_call_deadline
+
+        set_call_deadline(8.0)
+        self.addCleanup(set_call_deadline, None)
+        mock_pinned.side_effect = req_lib.exceptions.Timeout("timed out")
+        result = self.tool.invoke({"url": "https://example.com/slow"})
+
+        mock_requests_get.assert_not_called()
+        self.assertIn("timed out", result)
+        self.assertNotIn("(fetched via Jina Reader)", result)
+
+    @patch("llm.tools.web_fetch.time.sleep")
+    @patch("llm.tools.web_fetch.requests.get")
+    @patch("llm.tools.web_fetch._pinned_get")
+    def test_jina_503_backoff_stops_at_deadline(self, mock_pinned, mock_requests_get, mock_sleep):
+        """After a 503 backoff the call has too little left for another Jina try."""
+        from llm.tools._throttle import call_deadline_remaining, set_call_deadline
+
+        set_call_deadline(12.0)
+        self.addCleanup(set_call_deadline, None)
+        # The patched sleep spends the call's time like a real one would.
+        mock_sleep.side_effect = lambda s: set_call_deadline(call_deadline_remaining() - s)
+        mock_pinned.side_effect = req_lib.exceptions.ConnectionError("refused")
+        unavailable = _mock_response(status_code=503, content_type=None)
+        unavailable.raise_for_status.side_effect = req_lib.exceptions.HTTPError(response=unavailable)
+        mock_requests_get.return_value = unavailable
+
+        result = self.tool.invoke({"url": "https://example.com/cold"})
+
+        self.assertEqual(mock_requests_get.call_count, 1)
+        mock_sleep.assert_called_once_with(3)
+        self.assertIn("Connection", result)
+
     @override_settings(JINA_API_KEY="")
     @patch("llm.tools.web_fetch._pinned_get")
     def test_jina_not_attempted_without_api_key(self, mock_pinned):
