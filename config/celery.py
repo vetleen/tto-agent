@@ -109,7 +109,7 @@ def trim_worker_memory_after_task(**kwargs):
 
     The web dyno has a periodic malloc_trim daemon; the Celery worker has none,
     so this is its per-task equivalent. Threshold- and rate-limited inside
-    ``core.malloc_trim.maybe_trim`` (a no-op off glibc / when RSS is lean)."""
+    ``core.malloc_trim.maybe_trim`` (a no-op off glibc / when RSS + swap is lean)."""
     from core.malloc_trim import maybe_trim
     maybe_trim(
         _env_float("WORKER_MALLOC_TRIM_THRESHOLD_MB", 700.0),

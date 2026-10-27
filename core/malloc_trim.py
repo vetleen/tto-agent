@@ -7,11 +7,13 @@ turn briefly holds thousands of langchain message chunks (~280 MB); the chunks a
 freed the moment the turn ends, but RSS stayed pinned at ~577 MB (over the 512 MB
 web-dyno cap → sustained R14) because glibc never released the arenas.
 
-A small daemon reads RSS every ``MALLOC_TRIM_INTERVAL`` seconds and, when it's
-above ``MALLOC_TRIM_THRESHOLD_MB``, calls ``malloc_trim(0)`` to release free arena
-memory back to the OS — dropping RSS back toward baseline after each peak. The
-threshold means idle/lean periods pay nothing (no lock contention when there's
-nothing to release).
+A small daemon reads the RSS + swap footprint every ``MALLOC_TRIM_INTERVAL``
+seconds and, when it's above ``MALLOC_TRIM_THRESHOLD_MB``, calls ``malloc_trim(0)``
+to release free arena memory back to the OS — dropping memory back toward baseline
+after each peak. The gate includes swap because Heroku counts it against the quota
+and idle pages get swapped out (RSS alone then looks lean while the dyno is near
+R14). The threshold means idle/lean periods pay nothing (no lock contention when
+there's nothing to release).
 
 Linux/glibc only (no-op elsewhere). Runs on the long-lived web (daphne) process;
 skips Celery, the test runner, and management/release commands. Disable by setting
@@ -74,16 +76,29 @@ def trim_malloc() -> bool:
         return False
 
 
-def _read_rss_kb() -> int | None:
-    """Return VmRSS in kB from ``/proc/self/status`` (Linux), else ``None``."""
+def _read_footprint_kb() -> int | None:
+    """Return VmRSS + VmSwap in kB from ``/proc/self/status`` (Linux), else ``None``.
+
+    The gate is the footprint, not RSS alone: Heroku counts swap against the
+    dyno's memory quota (R14), and an idle process gets its cold pages swapped
+    out — prod worker 2026-10-27: RSS 383 MB + swap 575 MB, so an RSS-only gate
+    skipped the trim while the quota-relevant total sat at ~990 MB. A trim
+    releases free pages whether resident or swapped (it frees their swap slots).
+    A missing VmSwap line counts as 0; a missing VmRSS returns ``None``.
+    """
+    rss = swap = None
     try:
         with open("/proc/self/status", "r") as fh:
             for line in fh:
                 if line.startswith("VmRSS:"):
-                    return int(line.split(":", 1)[1].strip().split()[0])
+                    rss = int(line.split(":", 1)[1].strip().split()[0])
+                elif line.startswith("VmSwap:"):
+                    swap = int(line.split(":", 1)[1].strip().split()[0])
     except (OSError, ValueError):
-        pass
-    return None
+        return None
+    if rss is None:
+        return None
+    return rss + (swap or 0)
 
 
 # A trim that frees less than this is logged at DEBUG: almost every trim frees
@@ -92,9 +107,9 @@ def _read_rss_kb() -> int | None:
 _LOG_RELEASE_MIN_KB = 16 * 1024
 
 
-def _log_release(label: str, rss_kb: int, after_kb: int) -> None:
-    level = logging.INFO if rss_kb - after_kb >= _LOG_RELEASE_MIN_KB else logging.DEBUG
-    logger.log(level, "%s released RSS %.0f->%.0fMB", label, rss_kb / 1024, after_kb / 1024)
+def _log_release(label: str, before_kb: int, after_kb: int) -> None:
+    level = logging.INFO if before_kb - after_kb >= _LOG_RELEASE_MIN_KB else logging.DEBUG
+    logger.log(level, "%s released RSS+swap %.0f->%.0fMB", label, before_kb / 1024, after_kb / 1024)
 
 
 # --- Task-triggered trim (Celery worker) -----------------------------------
@@ -110,17 +125,18 @@ _last_maybe_trim = 0.0
 
 
 def maybe_trim(threshold_mb: float = 700.0, min_interval_s: float = 15.0) -> bool:
-    """Trim glibc arenas back to the OS iff RSS is elevated and we haven't
-    trimmed in the last ``min_interval_s`` seconds. For per-event callers (the
-    Celery ``task_postrun`` hook) that have no periodic daemon.
+    """Trim glibc arenas back to the OS iff the RSS + swap footprint is
+    elevated and we haven't trimmed in the last ``min_interval_s`` seconds. For
+    per-event callers (the Celery ``task_postrun`` hook) that have no periodic
+    daemon.
 
     Returns ``True`` iff a trim was actually performed. Best-effort — a
     diagnostics/ops helper must never raise into the task path.
     """
     global _last_maybe_trim
     try:
-        rss = _read_rss_kb()
-        if rss is not None and rss < threshold_mb * 1024:
+        before = _read_footprint_kb()
+        if before is not None and before < threshold_mb * 1024:
             return False  # lean: nothing worth releasing, pay nothing
         now = time.monotonic()
         with _maybe_trim_lock:
@@ -128,10 +144,10 @@ def maybe_trim(threshold_mb: float = 700.0, min_interval_s: float = 15.0) -> boo
                 return False  # trimmed recently (a concurrent caller has it)
             _last_maybe_trim = now
         # Release the Python lock before the C call (glibc takes its own lock).
-        if trim_malloc() and rss is not None:
-            after = _read_rss_kb()
-            if after is not None and after < rss:
-                _log_release("malloc_trim (task)", rss, after)
+        if trim_malloc() and before is not None:
+            after = _read_footprint_kb()
+            if after is not None and after < before:
+                _log_release("malloc_trim (task)", before, after)
             return True
         return False
     except Exception:  # noqa: BLE001 — never break the caller (a Celery task)
@@ -177,15 +193,15 @@ class _Trimmer:
         while True:
             time.sleep(self.interval)
             try:
-                rss = _read_rss_kb()
-                # If RSS is unreadable, trim unconditionally (safe); otherwise only
-                # when elevated, so lean/idle periods incur no trim.
-                if rss is not None and rss < self.threshold_kb:
+                before = _read_footprint_kb()
+                # If memory is unreadable, trim unconditionally (safe); otherwise
+                # only when elevated, so lean/idle periods incur no trim.
+                if before is not None and before < self.threshold_kb:
                     continue
-                if trim_malloc() and rss is not None:
-                    after = _read_rss_kb()
-                    if after is not None and after < rss:
-                        _log_release("malloc_trim", rss, after)
+                if trim_malloc() and before is not None:
+                    after = _read_footprint_kb()
+                    if after is not None and after < before:
+                        _log_release("malloc_trim", before, after)
             except Exception:  # noqa: BLE001 — never let the daemon die
                 logger.exception("malloc_trim tick failed")
 

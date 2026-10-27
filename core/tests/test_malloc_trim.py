@@ -79,21 +79,30 @@ class MaybeTrimTests(SimpleTestCase):
         # block the first call on a freshly-booted host (monotonic() may be small).
         malloc_trim._last_maybe_trim = malloc_trim.time.monotonic() - 10_000
 
-    def test_skips_when_rss_below_threshold(self):
-        with mock.patch.object(malloc_trim, "_read_rss_kb", return_value=100 * 1024), \
+    def test_skips_when_footprint_below_threshold(self):
+        with mock.patch.object(malloc_trim, "_read_footprint_kb", return_value=100 * 1024), \
              mock.patch.object(malloc_trim, "trim_malloc") as trim:
             self.assertFalse(malloc_trim.maybe_trim(threshold_mb=700, min_interval_s=0))
             trim.assert_not_called()
 
-    def test_trims_when_rss_elevated(self):
+    def test_trims_when_footprint_elevated(self):
         # First read (threshold check) is high; second (post-trim log) is lower.
-        with mock.patch.object(malloc_trim, "_read_rss_kb", side_effect=[800 * 1024, 600 * 1024]), \
+        with mock.patch.object(malloc_trim, "_read_footprint_kb", side_effect=[800 * 1024, 600 * 1024]), \
+             mock.patch.object(malloc_trim, "trim_malloc", return_value=True) as trim:
+            self.assertTrue(malloc_trim.maybe_trim(threshold_mb=700, min_interval_s=0))
+            trim.assert_called_once()
+
+    def test_trims_when_rss_lean_but_swap_heavy(self):
+        # Prod worker 2026-10-27: RSS 383 MB + swap 575 MB. An RSS-only gate saw
+        # "lean" and skipped; the quota-relevant footprint is what must decide.
+        status = "VmRSS:\t  392192 kB\nVmSwap:\t  588800 kB\n"
+        with mock.patch("builtins.open", mock.mock_open(read_data=status)), \
              mock.patch.object(malloc_trim, "trim_malloc", return_value=True) as trim:
             self.assertTrue(malloc_trim.maybe_trim(threshold_mb=700, min_interval_s=0))
             trim.assert_called_once()
 
     def test_rate_limited_within_interval(self):
-        with mock.patch.object(malloc_trim, "_read_rss_kb", return_value=800 * 1024), \
+        with mock.patch.object(malloc_trim, "_read_footprint_kb", return_value=800 * 1024), \
              mock.patch.object(malloc_trim, "trim_malloc", return_value=True) as trim:
             self.assertTrue(malloc_trim.maybe_trim(threshold_mb=700, min_interval_s=1000))
             # A second call inside the interval must not trim again.
@@ -103,14 +112,35 @@ class MaybeTrimTests(SimpleTestCase):
     def test_small_release_logs_at_debug_large_at_info(self):
         for after_mb, level in ((795, "DEBUG"), (600, "INFO")):
             with self.subTest(after_mb=after_mb), \
-                 mock.patch.object(malloc_trim, "_read_rss_kb", side_effect=[800 * 1024, after_mb * 1024]), \
+                 mock.patch.object(malloc_trim, "_read_footprint_kb", side_effect=[800 * 1024, after_mb * 1024]), \
                  mock.patch.object(malloc_trim, "trim_malloc", return_value=True), \
                  self.assertLogs("core.malloc_trim", level="DEBUG") as logs:
                 malloc_trim._last_maybe_trim = malloc_trim.time.monotonic() - 10_000
                 self.assertTrue(malloc_trim.maybe_trim(threshold_mb=700, min_interval_s=0))
             self.assertEqual([r.levelname for r in logs.records], [level])
-            self.assertIn(f"released RSS 800->{after_mb}MB", logs.output[0])
+            self.assertIn(f"released RSS+swap 800->{after_mb}MB", logs.output[0])
 
     def test_never_raises_into_task(self):
-        with mock.patch.object(malloc_trim, "_read_rss_kb", side_effect=RuntimeError("boom")):
+        with mock.patch.object(malloc_trim, "_read_footprint_kb", side_effect=RuntimeError("boom")):
             self.assertFalse(malloc_trim.maybe_trim(min_interval_s=0))
+
+
+class ReadFootprintTests(SimpleTestCase):
+    """``_read_footprint_kb``: VmRSS + VmSwap from /proc/self/status."""
+
+    def _read(self, status):
+        with mock.patch("builtins.open", mock.mock_open(read_data=status)):
+            return malloc_trim._read_footprint_kb()
+
+    def test_sums_rss_and_swap(self):
+        self.assertEqual(self._read("Name:\tpython\nVmRSS:\t  400000 kB\nVmSwap:\t  500000 kB\n"), 900000)
+
+    def test_missing_swap_counts_as_zero(self):
+        self.assertEqual(self._read("VmRSS:\t  400000 kB\n"), 400000)
+
+    def test_missing_rss_returns_none(self):
+        self.assertIsNone(self._read("VmSwap:\t  500000 kB\n"))
+
+    def test_unreadable_returns_none(self):
+        with mock.patch("builtins.open", side_effect=OSError("no /proc")):
+            self.assertIsNone(malloc_trim._read_footprint_kb())
