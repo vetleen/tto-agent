@@ -506,6 +506,11 @@ def build_semi_static_prompt(
             requires = [r for r in (s.get("requires") or []) if isinstance(r, str)]
             if requires:
                 line += " (requires: " + ", ".join(requires) + ")"
+            # Specializations attaching this skill makes available to
+            # chat_subagent_create.
+            subagents = [r for r in (s.get("subagents") or []) if isinstance(r, str)]
+            if subagents:
+                line += " (sub-agents: " + ", ".join(subagents) + ")"
             if s.get("approved", True) is False:
                 line += (
                     f" — NOT attachable yet ({_skill_scan_reason(s.get('scan_state'))}; "

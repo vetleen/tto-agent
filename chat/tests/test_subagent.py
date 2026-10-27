@@ -986,6 +986,21 @@ class CreateSubagentToolSpecializationTests(TestCase):
         run = SubAgentRun.objects.get()
         self.assertEqual(run.skill_slug, "web-researcher")
 
+    @patch("chat.tasks.run_subagent_task")
+    def test_skills_only_type_accepted_without_a_naming_skill(self, mock_task):
+        # always_available only decides what the orchestrator is told about;
+        # an enabled skills-only specialization is still accepted (lenient).
+        from agent_skills.models import AgentSkill
+
+        AgentSkill.objects.filter(slug="web-researcher").update(always_available=False)
+        mock_task.delay.return_value = MagicMock(id="celery-spec")
+        ctx = _ctx(self.user.pk, self.thread.id)
+        result = _invoke(
+            CreateSubagentTool, {"prompt": "task", "type": "web-researcher"}, ctx,
+        )
+        self.assertIn(result["status"], ("started", "queued"))
+        self.assertEqual(SubAgentRun.objects.get().skill_slug, "web-researcher")
+
 
 class CreateSubagentToolBackgroundTests(TestCase):
     def setUp(self):

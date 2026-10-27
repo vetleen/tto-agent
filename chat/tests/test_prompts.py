@@ -1334,6 +1334,15 @@ class ToolkitsCatalogueTests(TestCase):
         bullet = next(l for l in prompt.splitlines() if l.startswith("- **patent**"))
         self.assertIn("(requires: canvas_tools)", bullet)
 
+    def test_playbook_line_names_its_subagents(self):
+        entries = self._entries()
+        entries[0]["subagents"] = ["patent-searcher"]
+        prompt = build_semi_static_prompt(available_skills=entries)
+        bullet = next(l for l in prompt.splitlines() if l.startswith("- **patent**"))
+        self.assertIn("(sub-agents: patent-searcher)", bullet)
+        plain = build_semi_static_prompt(available_skills=self._entries())
+        self.assertNotIn("(sub-agents:", plain)
+
     def test_blocks_omitted_when_empty(self):
         only_toolkits = [e for e in self._entries() if e["kind"] == "toolkit"]
         prompt = build_semi_static_prompt(available_skills=only_toolkits)

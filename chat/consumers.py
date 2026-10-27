@@ -2747,9 +2747,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
             else None
         )
         # Sub-agent specializations are only actionable when the orchestrator
-        # can actually spawn sub-agents.
+        # can actually spawn sub-agents. Listed: the always-available ones plus
+        # those an attached skill names in ``subagents`` (listing only —
+        # chat_subagent_create still accepts any enabled specialization).
+        from agent_skills.services import visible_specializations
+
         specializations_for_prompt = (
-            prefs.allowed_specializations
+            visible_specializations(prefs.allowed_specializations, skill_objs)
             if prefs and self._has_tool("chat_subagent_create")
             else None
         )
