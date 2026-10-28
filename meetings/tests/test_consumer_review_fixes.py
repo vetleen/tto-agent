@@ -251,6 +251,7 @@ class StartSessionPipeLeakTests(TransactionTestCase):
         consumer, _sent, _closed = _consumer_with_send()
         consumer._model_id = "openai/gpt-4o-transcribe"
         consumer._realtime_language = ""
+        consumer._realtime_keywords = []  # normally set in connect()
 
         closed_flag = {"pipe": False}
 
