@@ -159,6 +159,31 @@ service and skip window; caps `PII_SHADOW_MAX_WINDOWS` / `_MAX_REVIEWS`, kill sw
 `PII_SHADOW_ENABLED`. Report: `manage.py pii_shadow_report [--disagreements] [--run DATE]`. The PII
 scan itself is unchanged.
 
+## Transcription
+
+Two API paths, two models (`llm/transcription_registry.py`): **file** (`/v1/audio/transcriptions`
+— uploads, the chunked live fallback, data-room audio) on `openai/gpt-transcribe`, and **live** (the
+Realtime socket) on `openai/gpt-live-transcribe`. Each names the other as its counterpart; the
+retired gpt-4o family (shutdown 2027-02-26) forwards through `TRANSCRIPTION_MODEL_REPLACEMENTS`.
+**Any code that picks a model for a path resolves it with
+`canonical_transcription_model_id(id, path="file"|"live")`** (stored meeting choices, org prefs and
+config vars may name a retired ID or the other path's model); allow-lists go through
+`normalize_transcription_model_ids`, per-meeting choice through
+`core.preferences.resolve_transcription_model(stored, prefs, path=…)`. Both services canonicalize on
+entry. No speaker labels (no successor to the diarize model). Both bill per minute and report
+`usage` as a duration. Requests send `languages=[code]` — never the singular `language` (rejected
+alongside it) — and `keywords` from `build_transcription_keywords(meeting)` (participants + agenda
+proper nouns, never the meeting name; live kill switch `MEETING_REALTIME_KEYWORDS_ENABLED`). The
+live path still sends no `prompt` (the gpt-4o models regurgitated it).
+
+**Live turns are ours to commit**: the live model rejects server VAD, so the session sends
+`turn_detection: null` and `meetings/services/turn_detector.py` (RMS vs a rolling noise floor, 200 ms
+frames) closes a turn after 600 ms of silence, at the first pause past 12 s, or at 20 s
+(`MEETING_REALTIME_TURN_*`); idle audio is cleared upstream. `OpenAIRealtimeSession` keeps all audio
+since the last commit and replays it once after a reconnect (offline commits at their byte
+boundaries), pairs acks FIFO and completions by `item_id`, and emits transcripts in commit order
+(`REORDER_WAIT_SECONDS`). Draft deltas stream before the commit.
+
 ## Chat Tool Labels
 
 Display labels are **tool metadata**, declared on the tool class (a `ContextAwareTool`

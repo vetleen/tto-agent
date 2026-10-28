@@ -125,7 +125,7 @@ Live LLM API tests: set `TEST_APIS=True` and add API keys to `.env`.
 - **URLs:** `/meetings/` (list), `/meetings/create/`, `/meetings/<uuid>/`, transcript upload/audio upload, live transcription WebSocket, "create minutes thread" that spawns a pre-attached chat thread.
 - **Transcript sources:** live WebSocket streaming, uploaded audio (transcribed asynchronously via Celery), or direct text upload.
 - **Data rooms:** Any meeting can link multiple data rooms via `MeetingDataRoom`; the chat tools then search those rooms from the minutes thread.
-- **Transcription config:** `TRANSCRIPTION_ALLOWED_MODELS`, `TRANSCRIPTION_DEFAULT_MODEL`, optional per-path overrides `TRANSCRIPTION_DEFAULT_MODEL_LIVE` / `TRANSCRIPTION_DEFAULT_MODEL_UPLOAD`. Requires `ffmpeg` (installed via Heroku apt buildpack).
+- **Transcription config:** `TRANSCRIPTION_ALLOWED_MODELS`, `TRANSCRIPTION_DEFAULT_MODEL`, optional per-path overrides `TRANSCRIPTION_DEFAULT_MODEL_LIVE` / `TRANSCRIPTION_DEFAULT_MODEL_UPLOAD`. Models: `openai/gpt-transcribe` (uploads, chunked fallback, data-room audio) and `openai/gpt-live-transcribe` (live); retired `gpt-4o-*-transcribe` IDs still work and forward to them. Live turns are committed by our own end-of-speech detector (`MEETING_REALTIME_TURN_*`). Requires `ffmpeg` (installed via Heroku apt buildpack).
 
 ## LLM app
 
@@ -167,6 +167,8 @@ Use `.env` (from `.env.example`). Key variables:
 | `LLM_DEFAULT_CHEAP_MODEL` | Default model for cheap/fast tasks (low-quality sub-agents) |
 | `LLM_REQUEST_TIMEOUT`, `LLM_MAX_RETRIES` | Request timeout (seconds) and retry count |
 | `TRANSCRIPTION_ALLOWED_MODELS`, `TRANSCRIPTION_DEFAULT_MODEL` | Transcription model allowlist and default (meetings) |
+| `MEETING_REALTIME_TURN_SILENCE_MS`, `MEETING_REALTIME_TURN_MAX_MS`, `MEETING_REALTIME_TURN_RMS_FLOOR` | Live transcription turn detection: pause that ends a turn (600), turn cap (20000), RMS speech floor (0.002) |
+| `MEETING_REALTIME_KEYWORDS_ENABLED` | Seed live transcription with participant/agenda keywords (default `True`) |
 | `TEST_APIS` | Set `True` for live LLM API tests |
 | `EMAIL_VERIFICATION_REQUIRED`, `DJANGO_EMAIL_BACKEND` | Auth and email |
 | `SENTRY_DSN`, `SENTRY_ENVIRONMENT` | Optional error tracking / performance monitoring |

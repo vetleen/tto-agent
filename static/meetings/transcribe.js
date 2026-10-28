@@ -1672,9 +1672,10 @@
     }
 
     function applyCapabilityGating(modelChoice) {
-      // Disable the live Start button and show the diarize banner when the
-      // selected model doesn't support live streaming. The server re-enforces
-      // this — the gating is a UX affordance, not a security boundary.
+      // Disable the live Start button and show the upload-only banner when
+      // the selected model doesn't support live streaming (the element id is
+      // historical). The server re-enforces this — the gating is a UX
+      // affordance, not a security boundary.
       const supportsLive = !!(modelChoice && modelChoice.supports_live_streaming);
       const diarizeBanner = document.getElementById('diarize-live-banner');
       if (transcribeBtn) {
