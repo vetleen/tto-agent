@@ -12,6 +12,7 @@ WEB_RESEARCHER = {
     "slug": "web-researcher",
     "name": "Web Researcher",
     "emoji": "🔍",
+    "preferred_model_category": "research",
     "audience": "subagent",
     "description": (
         "A focused web-research worker. Runs several searches based on the orchestrator's prompt "

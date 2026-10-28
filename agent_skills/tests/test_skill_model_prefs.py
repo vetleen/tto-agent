@@ -34,7 +34,8 @@ class CleanModelPrefsTests(TestCase):
         seeded = {s["slug"]: s.get("preferred_model_category", "") for s in SYSTEM_SKILLS}
         for slug, category in seeded.items():
             self.assertEqual(clean_model_prefs(category, "")[0], category, slug)
-        self.assertEqual(seeded["researcher"], "light_analysis")
+        self.assertEqual(seeded["researcher"], "research")
+        self.assertEqual(seeded["web-researcher"], "research")
         self.assertEqual(seeded["meeting-summarizer"], "writing")
 
 
