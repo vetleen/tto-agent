@@ -19,13 +19,16 @@ backends can conform):
 * ``TranscriptCompleted(item_id, text, usage)`` — finalized utterance.
 * ``SessionError(code, message, fatal)`` — recoverable or terminal.
 * ``SessionStatus(state)`` — e.g. ``"connected"``, ``"reconnecting"``.
-* ``SessionActivity(kind)`` — upstream VAD liveness (``"speech_started"``,
-  ``"speech_stopped"``, ``"committed"``); proves the provider hears audio
-  even while a long utterance is still open and no text has streamed yet.
+* ``SessionActivity(kind)`` — turn liveness (``"speech_started"``,
+  ``"speech_stopped"``, ``"committed"``); lets the client tell an open
+  utterance apart from a stalled pipeline.
 
-The OpenAI implementation handles reconnect with exponential backoff
-and replays the last few seconds of PCM from a bounded ring buffer so
-short outages don't drop audio.
+Turn boundaries are decided here, not by the provider: ``TurnDetector``
+(``meetings/services/turn_detector.py``) watches the PCM we forward and the
+session sends ``input_audio_buffer.commit`` at the end of each turn, because
+the realtime transcription models don't support server VAD. Audio sent since
+the last commit is kept so a reconnect can replay it without losing or
+duplicating a turn.
 """
 from __future__ import annotations
 
@@ -41,8 +44,21 @@ from dataclasses import dataclass
 from typing import AsyncIterator, Optional
 
 from llm.transcription_registry import get_transcription_model_info
+from meetings.services.turn_detector import (
+    PCM_BYTES_PER_SECOND,
+    TurnDecision,
+    TurnDetector,
+    config_from_settings,
+)
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _CommitMeta:
+    """What our side knows about one commit, keyed by item_id once acked."""
+    start_bytes: int
+    turn_bytes: int
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +80,8 @@ class TranscriptCompleted:
     # Seconds of audio that preceded this utterance's start (not its end).
     # ``None`` if the provider couldn't determine it; the consumer falls back.
     start_offset_seconds: float | None = None
+    # Seconds of audio the commit covered (what the provider transcribed).
+    duration_seconds: float | None = None
 
 
 @dataclass
@@ -80,12 +98,12 @@ class SessionStatus:
 
 @dataclass
 class SessionActivity:
-    """Provider-side VAD lifecycle, forwarded as a liveness signal.
+    """Turn lifecycle, forwarded as a liveness signal.
 
-    Server VAD holds a monologue open and emits nothing until a ~600 ms pause,
-    so a client watching only for transcript text sees a silent pipeline for
-    the whole utterance. These low-frequency events (three per utterance) let
-    it tell "still listening" apart from "stalled".
+    ``speech_started`` / ``speech_stopped`` come from our own turn detector
+    (they prove the ffmpeg pipe hears audio); ``committed`` is the provider's
+    ack of a commit (it proves the upstream socket is alive). Three per
+    utterance, so the client can tell "still listening" apart from "stalled".
     """
     kind: str  # "speech_started" | "speech_stopped" | "committed"
 
@@ -95,10 +113,9 @@ SessionEvent = (
 )
 
 
-# Server "error" events that are expected and harmless under server-VAD. The
-# server auto-commits the input buffer when it detects end-of-speech, so the
-# defensive commit we send in finalize() frequently finds an already-empty
-# buffer. That surfaces as an ``invalid_request_error`` but is not a failure —
+# Server "error" events that are expected and harmless. A commit of a buffer
+# under 100 ms (e.g. a turn whose audio was all replayed into a socket that
+# then dropped) surfaces as an ``invalid_request_error`` but is not a failure —
 # swallowing it keeps a benign race from tearing down the realtime session.
 _BENIGN_ERROR_CODES = frozenset({"input_audio_buffer_commit_empty"})
 
@@ -116,10 +133,12 @@ class UnsupportedModelError(RealtimeSessionError):
 # ---------------------------------------------------------------------------
 
 
-# Retained audio for replay after reconnect. At 24kHz mono PCM16 that's
-# 24000 * 2 = 48_000 bytes/sec. 5s = 240 KB — bounded and small.
-_REPLAY_BUFFER_SECONDS = 5
-_REPLAY_BUFFER_BYTES = 24_000 * 2 * _REPLAY_BUFFER_SECONDS
+# Uncommitted audio kept for replay after a reconnect. A turn is at most the
+# detector's hard cap (~20 s) and idle audio is cleared after ~15 s, so this
+# only fills up during a long outage; then the oldest audio is dropped.
+# At 24kHz mono PCM16 that's 48_000 bytes/sec: 60 s ≈ 2.9 MB.
+_UNCOMMITTED_BUFFER_SECONDS = 60
+_UNCOMMITTED_BUFFER_BYTES = PCM_BYTES_PER_SECOND * _UNCOMMITTED_BUFFER_SECONDS
 
 # Reconnect schedule: cap at 4s so we recover quickly, max 8 attempts per
 # meeting before giving up. The counter resets after 60s of success so a
@@ -216,18 +235,26 @@ class OpenAIRealtimeSession:
         self._reconnect_task: Optional[asyncio.Task] = None
         self._closed = False
         self._session_id: str | None = None
-        self._replay_buffer: deque[bytes] = deque()
-        self._replay_bytes = 0
-        # Utterance start-offset tracking. _pcm_bytes_sent is a monotonic count of
-        # audio forwarded; each speech_started snapshots it so the matching
-        # .completed reports where the utterance BEGAN, not where it ended.
-        # FIFO-paired in event-arrival order.
+        # Turn detection: decides where each utterance ends (see module doc).
+        self._turn = TurnDetector(config=config_from_settings())
+        # Audio sent since the last commit/clear, replayed on reconnect. While
+        # the socket is down, commits the detector decides are recorded as
+        # byte boundaries in this buffer and sent during the replay.
+        self._uncommitted: deque[bytes] = deque()
+        self._uncommitted_bytes = 0
+        self._offline_commits: deque[tuple[int, _CommitMeta]] = deque()
+        # Set from just before a reconnect's _open() until its replay has
+        # caught up; send_pcm only buffers meanwhile.
+        self._replaying = False
+        # _pcm_bytes_sent is a monotonic count of audio forwarded — the meeting
+        # timeline that start offsets are measured on.
         self._pcm_bytes_sent = 0
-        self._speech_start_offsets: deque[int] = deque()
-        # Monotonic count of server events received. finalize() snapshots this,
-        # sends the commit, then waits for it to advance so the server's
-        # post-commit transcription has a chance to arrive before teardown.
-        self._server_event_count = 0
+        # Commits sent but not yet acked (FIFO: acks arrive in commit order),
+        # then keyed by the item_id the ack names. Completions are looked up
+        # by item_id, so they pair correctly even when they arrive out of order.
+        self._pending_commits: deque[_CommitMeta] = deque()
+        self._items: dict[str, _CommitMeta] = {}
+        self._warned_server_vad = False
         # Utterance bookkeeping for a clean Stop: every committed buffer should
         # produce one transcription. finalize() waits until completed catches up
         # to committed so the trailing utterance isn't dropped when the user
@@ -275,14 +302,18 @@ class OpenAIRealtimeSession:
             raise RealtimeSessionError("session is closed")
         if not self._api_key:
             raise RealtimeSessionError("OPENAI_API_KEY is not set")
-        # Drop any utterance-start offsets left pending from a dropped connection
-        # so a reconnect can't pair the next utterance with a stale offset. The
-        # byte counter keeps running to preserve a continuous meeting timeline.
-        self._speech_start_offsets.clear()
         # Commits orphaned by the dropped socket can never produce a .completed
         # on the new one. Reset the pairing so finalize()'s committed-vs-completed
         # wait doesn't stall on ghosts and burn its full timeout on every Stop
-        # after a reconnect.
+        # after a reconnect. The byte counter keeps running to preserve a
+        # continuous meeting timeline.
+        lost = len(self._pending_commits) + max(0, self._committed_count - self._completed_count)
+        if lost:
+            logger.warning(
+                "OpenAIRealtimeSession: %d committed turn(s) lost with the dropped socket", lost,
+            )
+        self._pending_commits.clear()
+        self._items.clear()
         self._committed_count = 0
         self._completed_count = 0
         ws = await self._ws_connect_factory(self._api_key, _REALTIME_WS_URL)
@@ -295,9 +326,10 @@ class OpenAIRealtimeSession:
     async def _send_session_update(self) -> None:
         """Configure the session for transcription-only (GA Realtime shape).
 
-        Tells OpenAI which transcription model to use, what audio format
-        we'll send (PCM16 @ 24kHz), and how to detect speech boundaries
-        (server-side VAD with a ~600ms silence gap for utterance end).
+        Tells OpenAI which transcription model to use and what audio format
+        we'll send (PCM16 @ 24kHz). ``turn_detection`` is an explicit null:
+        we commit each turn ourselves (the session defaults to server VAD
+        otherwise, which the live transcription models reject).
 
         GA nests everything under ``session.audio.input`` and expects the
         audio format as an object (``{"type": "audio/pcm", "rate": 24000}``)
@@ -317,12 +349,7 @@ class OpenAIRealtimeSession:
         audio_input_cfg: dict = {
             "format": {"type": "audio/pcm", "rate": 24000},
             "transcription": transcription_cfg,
-            "turn_detection": {
-                "type": "server_vad",
-                "threshold": 0.5,
-                "prefix_padding_ms": 200,
-                "silence_duration_ms": 600,
-            },
+            "turn_detection": None,
             # far_field: meetings are typically captured by a laptop or
             # conference-room mic at a distance, not a close-talking headset
             # (which is what near_field is tuned for per OpenAI's docs).
@@ -391,7 +418,6 @@ class OpenAIRealtimeSession:
             pass
 
     async def _dispatch_server_event(self, evt_type: str, event: dict) -> None:
-        self._server_event_count += 1
         if evt_type in ("session.created", "session.updated"):
             session = event.get("session") or {}
             echoed_language = None
@@ -405,27 +431,24 @@ class OpenAIRealtimeSession:
                 evt_type, self._session_id, echoed_language or "auto",
             )
             return
-        # VAD lifecycle — low frequency (per utterance) and the clearest signal
-        # of whether the server is actually hearing speech. If these never fire
-        # on real audio, the PCM we're sending is bad; if they fire but no
-        # transcript follows, the problem is downstream. Cheap, decisive.
-        if evt_type in (
-            "input_audio_buffer.speech_started",
-            "input_audio_buffer.speech_stopped",
-            "input_audio_buffer.committed",
-        ):
-            logger.info("OpenAIRealtimeSession: VAD %s", evt_type)
-            if evt_type == "input_audio_buffer.speech_started":
-                # Snapshot how much audio preceded this utterance so the matching
-                # .completed (FIFO) can report its START offset, not its end.
-                self._speech_start_offsets.append(self._pcm_bytes_sent)
-            elif evt_type == "input_audio_buffer.committed":
-                # One committed buffer ⇒ one transcription owed. finalize() waits
-                # for completed to catch up so Stop doesn't drop it.
-                self._committed_count += 1
-            # Forward as liveness so the consumer/client can tell a long open
-            # utterance (no text yet, by design) from a stalled pipeline.
-            await self._events.put(SessionActivity(kind=evt_type.rsplit(".", 1)[-1]))
+        if evt_type == "input_audio_buffer.committed":
+            # Acks arrive in commit order, so the oldest unacked commit is the
+            # one this ack names. One committed buffer ⇒ one transcription
+            # owed; finalize() waits for completed to catch up.
+            item_id = event.get("item_id", "") or ""
+            meta = self._pending_commits.popleft() if self._pending_commits else None
+            if meta is not None and item_id:
+                self._items[item_id] = meta
+            self._committed_count += 1
+            logger.info("OpenAIRealtimeSession: committed (item=%s)", item_id or "-")
+            # Forward as liveness: proves the upstream socket answers.
+            await self._events.put(SessionActivity(kind="committed"))
+            return
+        if evt_type in ("input_audio_buffer.speech_started", "input_audio_buffer.speech_stopped"):
+            # Server VAD is off (turn_detection null); our detector owns turns.
+            if not self._warned_server_vad:
+                self._warned_server_vad = True
+                logger.warning("OpenAIRealtimeSession: unexpected server VAD event %s — ignored", evt_type)
             return
         if evt_type == "conversation.item.input_audio_transcription.delta":
             item_id = event.get("item_id", "") or ""
@@ -440,22 +463,24 @@ class OpenAIRealtimeSession:
             usage = None
             if isinstance(usage_obj, dict) and usage_obj:
                 usage = {
+                    "type": usage_obj.get("type"),
+                    "seconds": usage_obj.get("seconds"),
                     "input_tokens": usage_obj.get("input_tokens"),
                     "output_tokens": usage_obj.get("output_tokens"),
                     "total_tokens": usage_obj.get("total_tokens"),
                 }
-            # Pair this completion with the offset captured at its speech_started
-            # (FIFO); fall back to the current count if the start was missed.
-            # 24kHz mono PCM16 → 24000 * 2 = 48000 bytes/sec.
-            if self._speech_start_offsets:
-                start_bytes = self._speech_start_offsets.popleft()
-            else:
-                start_bytes = self._pcm_bytes_sent
+            # Pair by item_id with what we knew at commit time; fall back to
+            # the current position if the ack was missed.
+            meta = self._items.pop(item_id, None)
+            if meta is None:
+                logger.info("OpenAIRealtimeSession: completion for unknown item %s", item_id or "-")
+            start_bytes = meta.start_bytes if meta else self._pcm_bytes_sent
             await self._events.put(TranscriptCompleted(
                 item_id=item_id,
                 text=text,
                 usage=usage,
-                start_offset_seconds=start_bytes / (24_000 * 2),
+                start_offset_seconds=start_bytes / PCM_BYTES_PER_SECOND,
+                duration_seconds=(meta.turn_bytes / PCM_BYTES_PER_SECOND) if meta else None,
             ))
             self._completed_count += 1
             return
@@ -472,11 +497,9 @@ class OpenAIRealtimeSession:
                 event.get("item_id", "") or "", message,
             )
             # The commit will never complete — advance the completed counter so
-            # finalize() doesn't stall, and drop the FIFO-paired start offset so
-            # the next utterance doesn't inherit a stale one.
+            # finalize() doesn't stall.
             self._completed_count += 1
-            if self._speech_start_offsets:
-                self._speech_start_offsets.popleft()
+            self._items.pop(event.get("item_id", "") or "", None)
             await self._events.put(SessionError(
                 code="utterance_failed",
                 message=message or "One utterance could not be transcribed.",
@@ -546,24 +569,64 @@ class OpenAIRealtimeSession:
             pass
         self._ws = None
 
+        self._replaying = True
         try:
             await self._open()
         except Exception as exc:
+            self._replaying = False
             logger.warning("OpenAIRealtimeSession: reconnect failed (%s); scheduling retry", exc)
             self._reconnect_task = asyncio.create_task(self._try_reconnect())
             return
 
-        # Replay the last few seconds of PCM so the remote side doesn't lose
-        # audio that was in flight around the disconnect. Duplication at
-        # utterance boundaries is acceptable — the VAD will coalesce.
-        for frame in list(self._replay_buffer):
-            try:
-                await self._send_audio_frame(frame)
-            except Exception:
-                break
+        await self._replay_uncommitted()
 
         self._last_reconnect_success = time.monotonic()
         await self._events.put(SessionStatus(state="connected"))
+
+    async def _replay_uncommitted(self) -> None:
+        """Send the audio no commit has covered yet to the fresh socket.
+
+        Everything since the last successful commit is replayed exactly once,
+        so nothing is lost or transcribed twice. Commits the detector decided
+        while the socket was down are sent at their byte boundaries, so turns
+        stay separate. ``send_pcm`` keeps buffering while ``_replaying`` is
+        set, and this loop drains until it has caught up, so live frames can't
+        overtake the replay.
+        """
+        replayed = 0
+        idx = 0
+        pos = 0  # bytes of the buffer's head already sent on this socket
+        try:
+            while idx < len(self._uncommitted):
+                frame = self._uncommitted[idx]
+                await self._send_audio_frame(frame)
+                idx += 1
+                pos += len(frame)
+                replayed += len(frame)
+                while self._offline_commits and self._offline_commits[0][0] <= pos:
+                    _, meta = self._offline_commits.popleft()
+                    self._pending_commits.append(meta)
+                    await self._ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
+                    # The committed head no longer needs replaying.
+                    for _ in range(idx):
+                        self._uncommitted.popleft()
+                    self._uncommitted_bytes -= pos
+                    self._offline_commits = deque(
+                        (p - pos, m) for p, m in self._offline_commits
+                    )
+                    idx = 0
+                    pos = 0
+        except Exception as exc:
+            # The new socket died too; its receive loop schedules the next
+            # reconnect, which replays from the same buffer.
+            logger.warning("OpenAIRealtimeSession: replay interrupted (%s)", exc)
+        finally:
+            self._replaying = False
+        if replayed:
+            logger.info(
+                "OpenAIRealtimeSession: replayed %.1fs of uncommitted audio",
+                replayed / PCM_BYTES_PER_SECOND,
+            )
 
     async def _send_audio_frame(self, frame: bytes) -> None:
         """Send a base64-encoded PCM frame as an ``input_audio_buffer.append`` event."""
@@ -578,21 +641,70 @@ class OpenAIRealtimeSession:
         if self._closed:
             return
         self._pcm_bytes_sent += len(frame)
-        self._remember_pcm(frame)
-        if self._ws is None:
-            return  # mid-reconnect; the ring buffer will replay once we're back.
-        try:
-            await self._send_audio_frame(frame)
-        except Exception as exc:
-            logger.warning("OpenAIRealtimeSession: append failed (%s) — dropping and triggering reconnect", exc)
-            # The recv loop will observe the close and kick off reconnect.
+        self._keep_uncommitted(frame)
+        decision = self._turn.feed(frame)
+        if decision.speech_started:
+            await self._events.put(SessionActivity(kind="speech_started"))
+        if decision.speech_stopped:
+            await self._events.put(SessionActivity(kind="speech_stopped"))
+        await self._apply_decision(decision)
 
-    def _remember_pcm(self, frame: bytes) -> None:
-        self._replay_buffer.append(frame)
-        self._replay_bytes += len(frame)
-        while self._replay_bytes > _REPLAY_BUFFER_BYTES and self._replay_buffer:
-            old = self._replay_buffer.popleft()
-            self._replay_bytes -= len(old)
+    async def _apply_decision(self, decision: TurnDecision) -> None:
+        """Send the newest buffered frame and act on the detector's decision."""
+        if self._ws is None or self._replaying:
+            # Mid-reconnect: the frame is buffered and replayed once we're
+            # back. A turn that ends now is committed during the replay.
+            if decision.commit:
+                self._offline_commits.append((self._uncommitted_bytes, self._commit_meta(decision)))
+            elif decision.clear and not self._offline_commits and not self._replaying:
+                self._drop_uncommitted()
+            return
+        frame = self._uncommitted[-1] if self._uncommitted else b""
+        try:
+            if frame:
+                await self._send_audio_frame(frame)
+            if decision.commit:
+                meta = self._commit_meta(decision)
+                self._pending_commits.append(meta)
+                try:
+                    await self._ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
+                except Exception:
+                    self._pending_commits.pop()
+                    raise
+                self._drop_uncommitted()
+            elif decision.clear:
+                await self._ws.send(json.dumps({"type": "input_audio_buffer.clear"}))
+                self._drop_uncommitted()
+        except Exception as exc:
+            # The recv loop will observe the close and kick off reconnect,
+            # which replays the buffer (and this commit, if one was due).
+            logger.warning("OpenAIRealtimeSession: send failed (%s) — will replay after reconnect", exc)
+            if decision.commit:
+                self._offline_commits.append((self._uncommitted_bytes, self._commit_meta(decision)))
+
+    def _keep_uncommitted(self, frame: bytes) -> None:
+        self._uncommitted.append(frame)
+        self._uncommitted_bytes += len(frame)
+        if self._replaying:
+            return  # the replay indexes into the buffer; trim after it.
+        while self._uncommitted_bytes > _UNCOMMITTED_BUFFER_BYTES and len(self._uncommitted) > 1:
+            old = self._uncommitted.popleft()
+            self._uncommitted_bytes -= len(old)
+            # Boundaries are offsets into the buffer; shift them with it.
+            self._offline_commits = deque(
+                (pos - len(old), meta) for pos, meta in self._offline_commits if pos - len(old) > 0
+            )
+
+    def _drop_uncommitted(self) -> None:
+        self._uncommitted.clear()
+        self._uncommitted_bytes = 0
+
+    @staticmethod
+    def _commit_meta(decision: TurnDecision) -> _CommitMeta:
+        return _CommitMeta(
+            start_bytes=decision.turn_start_bytes or 0,
+            turn_bytes=decision.turn_bytes,
+        )
 
     async def update_language(self, language: str | None) -> None:
         """Apply a new transcription language to the running session.
@@ -604,7 +716,7 @@ class OpenAIRealtimeSession:
         the config *without* a ``language`` key would not reliably clear a
         pinned one, and sending an empty value risks an
         ``invalid_request_error`` (classified fatal). The reconnect path
-        replays the last few seconds of PCM, so nothing is lost.
+        replays the uncommitted audio, so nothing is lost.
 
         Mid-reconnect (``_ws is None``) the new value is simply stored:
         ``_open()`` sends it with the next ``session.update``.
@@ -635,41 +747,34 @@ class OpenAIRealtimeSession:
             logger.warning("OpenAIRealtimeSession: reopen close failed (%s)", exc)
 
     async def finalize(self, timeout: float = 3.0) -> None:
-        """Commit any pending audio and wait for the server's final transcription.
+        """Commit the open turn and wait for every owed transcription.
 
-        Sends an ``input_audio_buffer.commit`` and then waits for the server to
-        respond (any new event) so the trailing ``.completed`` transcription of
-        whatever the user said right before Stop has a chance to arrive and be
-        persisted by the still-running receive/consume loop. ``timeout`` is a
-        hard ceiling — we never block longer than that even if the server goes
-        quiet (failsafe against a wedged socket).
+        If the uncommitted audio contains speech, the detector's open turn is
+        closed and committed; pure silence is never committed (it would only
+        bill, and invite a hallucinated tail). Then we wait until every commit
+        has been acked and transcribed, so the still-running receive/consume
+        loop can persist the trailing ``.completed`` before teardown.
+        ``timeout`` is a hard ceiling — we never block longer than that even if
+        the server goes quiet (failsafe against a wedged socket).
         """
         if self._closed or self._ws is None:
             return
-        # Snapshot the event counter BEFORE the commit so we can tell when the
-        # server has responded to it.
-        events_before = self._server_event_count
-        try:
-            await self._ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
-        except Exception as exc:
-            logger.debug("OpenAIRealtimeSession: commit raised (%s) — continuing", exc)
-            return
+        decision = self._turn.flush()
+        if decision.commit:
+            meta = self._commit_meta(decision)
+            self._pending_commits.append(meta)
+            try:
+                await self._ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
+            except Exception as exc:
+                self._pending_commits.pop()
+                logger.debug("OpenAIRealtimeSession: commit raised (%s) — continuing", exc)
+                return
+            self._drop_uncommitted()
         deadline = time.monotonic() + timeout
-        # Wait until the server has reacted to our commit AND every committed
-        # utterance has produced its transcription, so the still-running consume
-        # loop can persist the trailing ``.completed`` before teardown.
-        #
-        # Keying off the committed-vs-completed gap (not just "any event after
-        # the commit") is what fixes the Stop drop: under server-VAD the last
-        # utterance usually auto-committed already, so our manual commit gets a
-        # fast ``commit_empty`` ack while the real ``.completed`` is still in
-        # flight. The old code returned on that ack and tore the socket down
-        # before the transcript arrived. ``timeout`` is a hard ceiling so a
-        # silent/wedged socket (or a completion that never comes) can't hang us.
         while time.monotonic() < deadline:
-            server_responded = self._server_event_count > events_before
+            all_acked = not self._pending_commits
             all_transcribed = self._committed_count <= self._completed_count
-            if server_responded and all_transcribed:
+            if all_acked and all_transcribed:
                 break
             await asyncio.sleep(0.05)
 
@@ -677,7 +782,11 @@ class OpenAIRealtimeSession:
         if self._closed:
             return
         self._closed = True
-        self._speech_start_offsets.clear()
+        stats = self._turn.stats
+        logger.info(
+            "OpenAIRealtimeSession: closing (frames=%d speech_frames=%d commits=%d clears=%d noise_floor=%.4f)",
+            stats.frames, stats.speech_frames, stats.commits, stats.clears, self._turn.noise_floor,
+        )
         # Cancel a reconnect that may be sleeping in backoff so it can't wake
         # after close and reopen a fresh, leaked, billable session.
         if self._reconnect_task is not None:

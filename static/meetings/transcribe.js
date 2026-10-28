@@ -49,13 +49,13 @@
   // latency), so we give it a 3× multiplier.
   const TRANSCRIPT_STALL_MS = 30000;
   const TRANSCRIPT_STALL_CHUNKED_MS = SEGMENT_DURATION_MS * 3; // 90s
-  // While the server-side VAD has an utterance OPEN (it told us speech started
-  // and hasn't committed yet) no text can arrive by design: OpenAI transcribes
-  // per utterance, after a ~600ms pause. A monologue of 30-60s therefore looks
-  // exactly like a stall to the baseline window above. The server relays the
-  // VAD lifecycle as `session.activity`; between speech_started and the next
-  // commit we allow this much longer window before declaring a stall.
-  const TRANSCRIPT_STALL_UTTERANCE_OPEN_MS = 120000;
+  // While the server's turn detector has an utterance OPEN (it told us speech
+  // started and hasn't committed yet) final text may not arrive until the turn
+  // closes after a ~600ms pause. The server relays the turn lifecycle as
+  // `session.activity`; between speech_started and the next commit we allow
+  // this longer window before declaring a stall. Turns are capped at 20s
+  // server-side, so 45s covers the longest turn plus transcription latency.
+  const TRANSCRIPT_STALL_UTTERANCE_OPEN_MS = 45000;
   const AUTO_RECOVER_MAX = 3;
   // RMS threshold for "someone is talking". The level meter maps rms*200 to a
   // percentage bar; 0.02 RMS ≈ 4% bar, well above idle noise floor.
@@ -638,9 +638,9 @@
     //
     // Threshold is mode-aware: chunked legitimately takes >30s (30s chunk +
     // batch transcription latency) so we use a 3× multiplier. In realtime
-    // mode an OPEN upstream utterance (server VAD heard speech start, hasn't
-    // committed) legitimately produces no text for as long as the speaker
-    // goes without a pause, so the window widens until the next VAD event.
+    // mode an OPEN utterance (the turn detector heard speech start, hasn't
+    // committed) may produce no final text until the turn closes, so the
+    // window widens until the next turn event.
     let stallThreshold;
     if (liveMode === 'chunked') {
       stallThreshold = TRANSCRIPT_STALL_CHUNKED_MS;

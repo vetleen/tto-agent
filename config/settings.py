@@ -1045,6 +1045,13 @@ TRANSCRIPTION_DEFAULT_MODEL_LIVE = os.environ.get("TRANSCRIPTION_DEFAULT_MODEL_L
 TRANSCRIPTION_DEFAULT_MODEL_UPLOAD = os.environ.get("TRANSCRIPTION_DEFAULT_MODEL_UPLOAD", "")
 TRANSCRIPTION_ALLOWED_MODELS = [m.strip() for m in os.environ.get("TRANSCRIPTION_ALLOWED_MODELS", "openai/gpt-4o-transcribe,openai/gpt-4o-mini-transcribe,openai/gpt-4o-transcribe-diarize").split(",") if m.strip()]
 AUDIO_UPLOAD_MAX_SIZE_BYTES = _env_int("AUDIO_UPLOAD_MAX_SIZE_BYTES", "50000000")  # 50 MB
+# Live (realtime) transcription: we detect end of speech ourselves and commit
+# each turn (meetings/services/turn_detector.py). Pause that closes a turn,
+# hard cap on a turn's length, and the RMS floor below which audio is never
+# speech. Tunable per environment without a deploy.
+MEETING_REALTIME_TURN_SILENCE_MS = _env_int("MEETING_REALTIME_TURN_SILENCE_MS", "600")
+MEETING_REALTIME_TURN_MAX_MS = _env_int("MEETING_REALTIME_TURN_MAX_MS", "20000")
+MEETING_REALTIME_TURN_RMS_FLOOR = float(os.environ.get("MEETING_REALTIME_TURN_RMS_FLOOR", "0.002"))
 
 # Org brand-font upload (PDF export). A single font face is small; cap well below
 # image/doc uploads. Used by the font-upload endpoint and the resolver.

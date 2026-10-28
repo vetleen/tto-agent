@@ -93,6 +93,28 @@ def _run(coro):
     return asyncio.new_event_loop().run_until_complete(coro)
 
 
+_FRAME_BYTES = 9600  # 200 ms of 24 kHz PCM16, what PcmPipe forwards
+
+
+def _tone_ms(ms: int, amp: float = 0.2) -> bytes:
+    import numpy as np
+    t = np.arange(24 * ms) / 24_000
+    return (np.sin(2 * np.pi * 220 * t) * amp * 32767).astype("<i2").tobytes()
+
+
+def _silence_ms(ms: int) -> bytes:
+    return b"\x00" * (48 * ms)
+
+
+async def _send_audio(session, audio: bytes) -> None:
+    for i in range(0, len(audio), _FRAME_BYTES):
+        await session.send_pcm(audio[i:i + _FRAME_BYTES])
+
+
+def _sent_types(ws) -> list[str]:
+    return [json.loads(m).get("type") for m in ws.sent]
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -152,14 +174,18 @@ class OpenAIRealtimeSessionTests(TestCase):
         self.assertEqual(audio_input["transcription"]["model"], "gpt-4o-mini-transcribe")
         self.assertEqual(audio_input["transcription"]["language"], "en")
         self.assertIn("OncoBio Therapeutics", audio_input["transcription"]["prompt"])
-        self.assertEqual(audio_input["turn_detection"]["type"], "server_vad")
+        # We commit turns ourselves: turn_detection must be an explicit null
+        # (an omitted key leaves the session's default server VAD on).
+        self.assertIn("turn_detection", audio_input)
+        self.assertIsNone(audio_input["turn_detection"])
         # far_field: meetings are captured by laptop / room mics, not headsets.
         self.assertEqual(audio_input["noise_reduction"], {"type": "far_field"})
 
     def test_completed_reports_utterance_start_offset_not_end(self):
         """start_offset_seconds must reflect where the utterance STARTED (the
-        audio position captured at speech_started), not the larger total
-        forwarded by the time the .completed event arrives."""
+        speech onset the turn detector saw), not the larger total forwarded by
+        the time the .completed event arrives; duration_seconds is what the
+        commit covered."""
         ws = _FakeWebSocket(script=[
             {"type": "session.created", "session": {"id": "sess_1"}},
         ])
@@ -168,24 +194,20 @@ class OpenAIRealtimeSessionTests(TestCase):
             _ws_connect_factory=_factory_for(ws),
             _api_key="sk-fake",
         )
-        bytes_per_second = 24_000 * 2
 
         async def run():
             await session.connect()
-            await session._events.get()  # drain the "connected" status
-            # 1s of audio precedes this utterance.
-            await session.send_pcm(b"\x00" * bytes_per_second)
-            ws.push_server_json({"type": "input_audio_buffer.speech_started"})
-            await asyncio.sleep(0.05)  # let the recv loop snapshot the offset
-            # More audio arrives during/after the utterance.
-            await session.send_pcm(b"\x00" * bytes_per_second)
+            # 1 s of silence, 2 s of speech, then the pause that closes it.
+            await _send_audio(session, _silence_ms(1000) + _tone_ms(2000) + _silence_ms(600))
+            ws.push_server_json({"type": "input_audio_buffer.committed", "item_id": "item_1"})
+            # More audio arrives before the transcript does.
+            await _send_audio(session, _silence_ms(2000))
             ws.push_server_json({
                 "type": "conversation.item.input_audio_transcription.completed",
                 "item_id": "item_1",
                 "transcript": "hello",
+                "usage": {"type": "duration", "seconds": 4},
             })
-            # speech_started also queues a SessionActivity ahead of the
-            # completion; skip past anything that isn't the transcript.
             evt = await session._events.get()
             while not isinstance(evt, TranscriptCompleted):
                 evt = await session._events.get()
@@ -195,6 +217,9 @@ class OpenAIRealtimeSessionTests(TestCase):
         completed = _run(run())
         self.assertIsInstance(completed, TranscriptCompleted)
         self.assertAlmostEqual(completed.start_offset_seconds, 1.0)
+        self.assertAlmostEqual(completed.duration_seconds, 3.6)
+        self.assertEqual(completed.usage["seconds"], 4)
+        self.assertEqual(completed.usage["type"], "duration")
 
     def test_long_prompt_is_capped_at_1024(self):
         # OpenAI's Realtime transcription endpoint closes the session with
@@ -282,6 +307,7 @@ class OpenAIRealtimeSessionTests(TestCase):
         self.assertEqual(len(completed), 1)
         self.assertEqual(completed[0].text, "Hello world.")
         self.assertEqual(completed[0].usage, {
+            "type": None, "seconds": None,
             "input_tokens": 10, "output_tokens": 4, "total_tokens": 14,
         })
 
@@ -421,12 +447,10 @@ class OpenAIRealtimeSessionTests(TestCase):
         # (a) surface as a NON-fatal SessionError (the utterance is lost but
         # the session is healthy), (b) advance the completed counter so
         # finalize() doesn't wait out its full timeout for a .completed that
-        # will never come, and (c) drop the FIFO-paired speech-start offset so
-        # the next utterance doesn't inherit a stale one.
+        # will never come, and (c) forget the item's commit bookkeeping.
         ws = _FakeWebSocket(script=[
             {"type": "session.created", "session": {"id": "sess_1"}},
-            {"type": "input_audio_buffer.speech_started"},
-            {"type": "input_audio_buffer.committed"},
+            {"type": "input_audio_buffer.committed", "item_id": "item_1"},
             {
                 "type": "conversation.item.input_audio_transcription.failed",
                 "item_id": "item_1",
@@ -454,7 +478,7 @@ class OpenAIRealtimeSessionTests(TestCase):
         self.assertEqual(errors[0].code, "utterance_failed")
         self.assertFalse(errors[0].fatal)
         self.assertEqual(session._committed_count, session._completed_count)
-        self.assertEqual(len(session._speech_start_offsets), 0)
+        self.assertEqual(session._items, {})
 
     def test_reconnect_resets_commit_completed_pairing(self):
         # Commits orphaned by a dropped socket never produce a .completed on
@@ -559,17 +583,15 @@ class OpenAIRealtimeSessionTests(TestCase):
             for e in seen
         ))
 
-    def test_vad_lifecycle_surfaces_as_session_activity(self):
-        # Server VAD holds a monologue open and emits no text until the pause;
-        # these three events are the only proof the provider is hearing us, so
-        # they must reach the consumer (and the client's stall watchdog).
+    def test_turn_lifecycle_surfaces_as_session_activity(self):
+        # A long open utterance may produce no final text until it closes;
+        # these three events let the consumer (and the client's stall
+        # watchdog) tell "listening" from "stalled". speech_started/stopped
+        # come from our detector, committed from the server's ack.
         from meetings.services.realtime_session import SessionActivity
 
         ws = _FakeWebSocket(script=[
             {"type": "session.created", "session": {"id": "sess_1"}},
-            {"type": "input_audio_buffer.speech_started"},
-            {"type": "input_audio_buffer.speech_stopped"},
-            {"type": "input_audio_buffer.committed"},
         ])
         session = OpenAIRealtimeSession(
             model_id="openai/gpt-4o-mini-transcribe",
@@ -579,22 +601,168 @@ class OpenAIRealtimeSessionTests(TestCase):
 
         async def run():
             await session.connect()
+            await _send_audio(session, _tone_ms(1000) + _silence_ms(600))
+            ws.push_server_json({"type": "input_audio_buffer.committed", "item_id": "item_1"})
             kinds: list[str] = []
             async for evt in session.events():
                 if isinstance(evt, SessionActivity):
                     kinds.append(evt.kind)
                     if len(kinds) == 3:
                         break
-            # Snapshot before aclose(), which clears the pending offsets.
-            pending_offsets = len(session._speech_start_offsets)
+            items = dict(session._items)
             await session.aclose()
-            return kinds, pending_offsets
+            return kinds, items
 
-        kinds, pending_offsets = _run(run())
+        kinds, items = _run(run())
         self.assertEqual(kinds, ["speech_started", "speech_stopped", "committed"])
-        # Existing bookkeeping on the same branch is intact.
         self.assertEqual(session._committed_count, 1)
-        self.assertEqual(pending_offsets, 1)
+        self.assertIn("item_1", items)
+        self.assertEqual(_sent_types(ws).count("input_audio_buffer.commit"), 1)
+
+    def test_server_vad_events_are_ignored(self):
+        from meetings.services.realtime_session import SessionActivity
+
+        ws = _FakeWebSocket(script=[
+            {"type": "session.created", "session": {"id": "sess_1"}},
+            {"type": "input_audio_buffer.speech_started"},
+            {"type": "input_audio_buffer.speech_stopped"},
+            {
+                "type": "conversation.item.input_audio_transcription.completed",
+                "item_id": "item_1",
+                "transcript": "done",
+            },
+        ])
+        session = OpenAIRealtimeSession(
+            model_id="openai/gpt-4o-mini-transcribe",
+            _ws_connect_factory=_factory_for(ws),
+            _api_key="sk-fake",
+        )
+
+        async def run():
+            await session.connect()
+            seen = []
+            async for evt in session.events():
+                seen.append(evt)
+                if isinstance(evt, TranscriptCompleted):
+                    break
+            await session.aclose()
+            return seen
+
+        with self.assertLogs("meetings.services.realtime_session", level="WARNING") as logs:
+            seen = _run(run())
+        self.assertFalse(any(isinstance(e, SessionActivity) for e in seen))
+        self.assertEqual(sum("unexpected server VAD event" in line for line in logs.output), 1)
+
+    def test_speech_then_silence_sends_commit_and_silence_alone_does_not(self):
+        ws = _FakeWebSocket(script=[
+            {"type": "session.created", "session": {"id": "sess_1"}},
+        ])
+        session = OpenAIRealtimeSession(
+            model_id="openai/gpt-4o-mini-transcribe",
+            _ws_connect_factory=_factory_for(ws),
+            _api_key="sk-fake",
+        )
+
+        async def run():
+            await session.connect()
+            await _send_audio(session, _silence_ms(3000))
+            before = _sent_types(ws).count("input_audio_buffer.commit")
+            await _send_audio(session, _tone_ms(1400) + _silence_ms(600))
+            after = _sent_types(ws).count("input_audio_buffer.commit")
+            await session.aclose()
+            return before, after
+
+        before, after = _run(run())
+        self.assertEqual(before, 0)
+        self.assertEqual(after, 1)
+        # The commit follows the frame that closed the turn, never precedes it.
+        types = _sent_types(ws)
+        self.assertEqual(types[-1], "input_audio_buffer.commit")
+        self.assertEqual(session._uncommitted_bytes, 0)
+
+    def test_long_silence_is_cleared_upstream(self):
+        ws = _FakeWebSocket(script=[
+            {"type": "session.created", "session": {"id": "sess_1"}},
+        ])
+        session = OpenAIRealtimeSession(
+            model_id="openai/gpt-4o-mini-transcribe",
+            _ws_connect_factory=_factory_for(ws),
+            _api_key="sk-fake",
+        )
+
+        async def run():
+            await session.connect()
+            await _send_audio(session, _silence_ms(16_000))
+            await session.aclose()
+
+        _run(run())
+        types = _sent_types(ws)
+        self.assertEqual(types.count("input_audio_buffer.clear"), 1)
+        self.assertNotIn("input_audio_buffer.commit", types)
+        self.assertLess(session._uncommitted_bytes, 2 * 48_000)
+
+    def test_reconnect_replays_uncommitted_turn_and_commits_pending(self):
+        # A turn that ends while the socket is down is replayed on the new
+        # socket and committed at its boundary; audio after it stays
+        # uncommitted. Already-committed audio is never replayed.
+        ws1 = _FakeWebSocket(script=[
+            {"type": "session.created", "session": {"id": "sess_1"}},
+        ])
+        ws2 = _FakeWebSocket(script=[
+            {"type": "session.created", "session": {"id": "sess_2"}},
+        ])
+        sockets = iter([ws1, ws2])
+
+        async def factory(api_key: str, url: str):
+            return next(sockets)
+
+        session = OpenAIRealtimeSession(
+            model_id="openai/gpt-4o-mini-transcribe",
+            _ws_connect_factory=factory,
+            _api_key="sk-fake",
+        )
+        committed_turn = _tone_ms(1000) + _silence_ms(600)
+        offline_turn = _tone_ms(1000) + _silence_ms(600)
+        trailing = _silence_ms(400)
+
+        async def run():
+            with patch(
+                "meetings.services.realtime_session._RECONNECT_BACKOFFS",
+                (0.2,) * 8,
+            ):
+                await session.connect()
+                await _send_audio(session, committed_turn)
+                # Socket drops; audio keeps arriving during the backoff.
+                ws1._queue.put_nowait(None)
+                await asyncio.sleep(0.05)
+                await _send_audio(session, offline_turn + trailing)
+                states: list[str] = []
+                async for evt in session.events():
+                    if isinstance(evt, SessionStatus):
+                        states.append(evt.state)
+                        if states.count("connected") == 2:
+                            break
+                await session.aclose()
+
+        _run(run())
+        self.assertEqual(_sent_types(ws1).count("input_audio_buffer.commit"), 1)
+        sent2 = [json.loads(m) for m in ws2.sent]
+        types2 = [m["type"] for m in sent2]
+        self.assertEqual(types2.count("input_audio_buffer.commit"), 1)
+        replayed = b"".join(
+            base64.b64decode(m["audio"]) for m in sent2 if m["type"] == "input_audio_buffer.append"
+        )
+        self.assertEqual(replayed, offline_turn + trailing)
+        # The commit sits exactly at the offline turn's boundary.
+        commit_at = types2.index("input_audio_buffer.commit")
+        before_commit = b"".join(
+            base64.b64decode(m["audio"]) for m in sent2[:commit_at]
+            if m["type"] == "input_audio_buffer.append"
+        )
+        self.assertEqual(before_commit, offline_turn)
+        # The trailing silence was replayed but no commit covers it yet.
+        self.assertEqual(session._uncommitted_bytes, len(trailing))
+
 
     def test_update_language_resends_session_update_when_open(self):
         ws = _FakeWebSocket(script=[
@@ -782,16 +950,17 @@ class OpenAIRealtimeSessionTests(TestCase):
 
 
 class FinalizeTests(TestCase):
-    """finalize() must wait for the server's post-commit transcription so the
-    user's last utterance isn't dropped on Stop — bounded by `timeout`."""
+    """finalize() must commit the open turn and wait for the server's
+    transcription so the user's last utterance isn't dropped on Stop —
+    bounded by `timeout`."""
 
     def test_finalize_waits_for_post_commit_completed(self):
         class _CommitRespondingWS(_FakeWebSocket):
             async def send(self, payload):
                 await super().send(payload)
                 if json.loads(payload).get("type") == "input_audio_buffer.commit":
-                    # Server reacts to the commit with a final transcription —
-                    # the case the old drain loop returned too early to catch.
+                    # Server acks the commit, then sends the final transcription.
+                    self.push_server_json({"type": "input_audio_buffer.committed", "item_id": "item_final"})
                     self.push_server_json({
                         "type": "conversation.item.input_audio_transcription.completed",
                         "item_id": "item_final",
@@ -820,6 +989,7 @@ class FinalizeTests(TestCase):
 
             consumer = asyncio.create_task(consume())
             await asyncio.sleep(0.05)  # let session.created drain (queue empties)
+            await _send_audio(session, _tone_ms(1000))  # an open turn with speech
             await session.finalize(timeout=2.0)
             await session.aclose()
             await consumer
@@ -851,6 +1021,7 @@ class FinalizeTests(TestCase):
             await asyncio.sleep(0.05)
             # A short timeout keeps the test fast; the assertion is that this
             # await completes at all (no hang) and the commit was sent.
+            await _send_audio(session, _tone_ms(1000))
             await asyncio.wait_for(session.finalize(timeout=0.3), timeout=2.0)
             await session.aclose()
 
@@ -873,8 +1044,8 @@ class FinalizeTests(TestCase):
             async def send(self, payload):
                 await super().send(payload)
                 if json.loads(payload).get("type") == "input_audio_buffer.commit":
-                    # Fast ack (advances the event counter immediately)...
-                    self.push_server_json({"type": "input_audio_buffer.committed"})
+                    # Fast ack...
+                    self.push_server_json({"type": "input_audio_buffer.committed", "item_id": "item_final"})
 
                     # ...then the real transcript, well after the old settle.
                     async def _delayed():
@@ -908,6 +1079,7 @@ class FinalizeTests(TestCase):
 
             consumer = asyncio.create_task(consume())
             await asyncio.sleep(0.05)  # drain session.created
+            await _send_audio(session, _tone_ms(1000))  # an open turn with speech
             await session.finalize(timeout=2.0)
             # finalize must have blocked until the trailing .completed landed;
             # only then do we close (which would otherwise cancel the recv loop).
@@ -920,3 +1092,27 @@ class FinalizeTests(TestCase):
             any(e.text == "the trailing words." for e in completed),
             "finalize() must wait for the .completed that trails the committed ack",
         )
+
+    def test_finalize_skips_commit_when_turn_is_silent(self):
+        # Committing silence only bills and invites a hallucinated tail.
+        ws = _FakeWebSocket(script=[
+            {"type": "session.created", "session": {"id": "sess_1"}},
+        ])
+        session = OpenAIRealtimeSession(
+            model_id="openai/gpt-4o-mini-transcribe",
+            _ws_connect_factory=_factory_for(ws),
+            _api_key="sk-fake",
+        )
+
+        async def run():
+            await session.connect()
+            await _send_audio(session, _silence_ms(2000))
+            started = asyncio.get_running_loop().time()
+            await session.finalize(timeout=2.0)
+            elapsed = asyncio.get_running_loop().time() - started
+            await session.aclose()
+            return elapsed
+
+        elapsed = _run(run())
+        self.assertNotIn("input_audio_buffer.commit", _sent_types(ws))
+        self.assertLess(elapsed, 0.5)
