@@ -176,7 +176,10 @@ class OpenAIRealtimeSessionTests(TestCase):
         audio_input = cfg["audio"]["input"]
         self.assertEqual(audio_input["format"], {"type": "audio/pcm", "rate": 24000})
         self.assertEqual(audio_input["transcription"]["model"], "gpt-live-transcribe")
-        self.assertEqual(audio_input["transcription"]["language"], "en")
+        # The live model takes `languages` (a list) and rejects the singular
+        # `language` next to it.
+        self.assertEqual(audio_input["transcription"]["languages"], ["en"])
+        self.assertNotIn("language", audio_input["transcription"])
         self.assertIn("OncoBio Therapeutics", audio_input["transcription"]["prompt"])
         # We commit turns ourselves: turn_detection must be an explicit null
         # (an omitted key leaves the session's default server VAD on).
@@ -791,10 +794,10 @@ class OpenAIRealtimeSessionTests(TestCase):
         ]
         self.assertEqual(len(updates), 2)
         self.assertEqual(
-            updates[0]["session"]["audio"]["input"]["transcription"]["language"], "en",
+            updates[0]["session"]["audio"]["input"]["transcription"]["languages"], ["en"],
         )
         self.assertEqual(
-            updates[1]["session"]["audio"]["input"]["transcription"]["language"], "no",
+            updates[1]["session"]["audio"]["input"]["transcription"]["languages"], ["no"],
         )
         self.assertEqual(session.language, "no")
 
@@ -846,6 +849,7 @@ class OpenAIRealtimeSessionTests(TestCase):
         cfg = json.loads(ws2.sent[0])
         self.assertEqual(cfg["type"], "session.update")
         self.assertNotIn("language", cfg["session"]["audio"]["input"]["transcription"])
+        self.assertNotIn("languages", cfg["session"]["audio"]["input"]["transcription"])
         self.assertTrue(any("reopening to apply config" in line for line in logs.output))
         self.assertFalse(any("server closed the socket" in line for line in logs.output))
 
@@ -932,7 +936,8 @@ class OpenAIRealtimeSessionTests(TestCase):
                 "type": "session.updated",
                 "session": {
                     "id": "sess_1",
-                    "audio": {"input": {"transcription": {"language": "no"}}},
+                    # What the live model echoes (verified 2026-10-28).
+                    "audio": {"input": {"transcription": {"language": None, "languages": ["no"]}}},
                 },
             },
         ])

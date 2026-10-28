@@ -665,6 +665,7 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
             start_offset=start_offset,
             model_id=self._model_id,
             usage=completed.usage,
+            duration_seconds=getattr(completed, "duration_seconds", None),
         )
         if idx is None:
             return
@@ -679,7 +680,7 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         }))
 
     @database_sync_to_async
-    def _allocate_and_persist_segment(self, *, text, start_offset, model_id, usage):
+    def _allocate_and_persist_segment(self, *, text, start_offset, model_id, usage, duration_seconds=None):
         """Persist one realtime utterance as a MeetingTranscriptSegment row.
 
         Also writes a cost-tracking row to LLMCallLog via log_transcription_streaming
@@ -708,11 +709,9 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
                 append_segment_text_to_transcript(self.meeting_id, text)
             self._segments_total += 1
 
-            # Cost logging — never raises. Realtime is officially priced per
-            # token on the same rate card as the batch transcription model,
-            # so we reuse the existing calculator. When the server doesn't
-            # return usage (older API versions, cancelled utterances) we
-            # fall through to a None cost_usd rather than guessing.
+            # Cost logging — never raises. The live model bills per minute
+            # and each completed turn reports its billed seconds; without
+            # them we price the audio the commit covered.
             try:
                 from llm.service.logger import log_transcription_streaming
                 from llm.service.pricing import calculate_transcription_cost
@@ -721,9 +720,12 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
                 input_tokens = (usage or {}).get("input_tokens")
                 output_tokens = (usage or {}).get("output_tokens")
                 total_tokens = (usage or {}).get("total_tokens")
+                billed = (usage or {}).get("seconds")
+                if isinstance(billed, bool) or not isinstance(billed, (int, float)) or billed <= 0:
+                    billed = duration_seconds or 0.0
                 cost_usd = calculate_transcription_cost(
                     model_id,
-                    audio_duration_seconds=0.0,
+                    audio_duration_seconds=float(billed),
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                 )
@@ -732,7 +734,7 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
                     context=RunContext.create(user_id=self.user.id),
                     kind="realtime_utterance",
                     item_id="",
-                    audio_duration_seconds=0.0,
+                    audio_duration_seconds=float(billed),
                     transcript_len=len(text),
                     cost_usd=cost_usd,
                     input_tokens=input_tokens,

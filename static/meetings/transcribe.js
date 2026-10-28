@@ -818,14 +818,14 @@
   // ---------------- transcribing indicator + upload visibility ----------------
 
   // Steady-state indicator text, tuned to set the right expectation for when
-  // transcribed text shows up. Realtime transcribes per-utterance (after a
-  // pause, when the server VAD commits); chunked transcribes ~30s WebM files
-  // in batches. Both can leave the transcript blank for a stretch, so we say so.
+  // transcribed text shows up. Realtime streams draft text while someone is
+  // speaking and finalizes it at each pause; chunked transcribes ~30s files in
+  // batches and can leave the transcript blank for a stretch, so we say so.
   function transcribingBaseLabel() {
     if (liveMode === 'chunked') {
       return 'Transcribing… text will appear in roughly ~30-second batches';
     }
-    return 'Transcribing… text will appear when there is a pause';
+    return 'Transcribing… text appears as people speak';
   }
 
   function updateIndicator() {
@@ -846,10 +846,11 @@
       } else if (pendingCount > 0) {
         label = 'Transcribing… (' + pendingCount + ' segment' + (pendingCount === 1 ? '' : 's') + ' in flight)';
       } else if (transcribing && liveMode !== 'chunked' && upstreamSpeechOpenAt > 0) {
-        // The server VAD has an utterance open: text for it only arrives at
-        // the next pause. Derived from state so a completion for the previous
-        // utterance (which calls updateIndicator) doesn't flip it back.
-        label = 'Listening… text appears at the next pause';
+        // The turn detector has an utterance open: draft text streams in and
+        // is finalized at the next pause. Derived from state so a completion
+        // for the previous utterance (which calls updateIndicator) doesn't
+        // flip it back.
+        label = 'Listening… text is finalized at the next pause';
       } else {
         label = transcribingBaseLabel();
       }

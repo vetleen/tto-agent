@@ -160,7 +160,11 @@ _REALTIME_WS_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
 
 
 def _echoed_transcription_language(session: dict) -> str | None:
-    """Pull ``session.audio.input.transcription.language`` out of a server echo."""
+    """Pull the transcription language(s) out of a server echo.
+
+    The live model echoes ``languages`` (a list); the singular ``language``
+    is still read for older echoes.
+    """
     audio = session.get("audio")
     if not isinstance(audio, dict):
         return None
@@ -170,6 +174,9 @@ def _echoed_transcription_language(session: dict) -> str | None:
     transcription = audio_input.get("transcription")
     if not isinstance(transcription, dict):
         return None
+    languages = transcription.get("languages")
+    if isinstance(languages, list) and languages:
+        return ",".join(str(code) for code in languages)
     language = transcription.get("language")
     return language if isinstance(language, str) and language else None
 
@@ -205,8 +212,9 @@ class OpenAIRealtimeSession:
 
     Connects to ``wss://api.openai.com/v1/realtime?intent=transcription``
     using the process-wide ``OPENAI_API_KEY``. The transcription model
-    (``gpt-4o-mini-transcribe`` / ``gpt-4o-transcribe``) is sent inside
-    the GA ``session.update`` event, not in the URL.
+    (``gpt-live-transcribe``) is sent inside the GA ``session.update``
+    event, not in the URL. It streams deltas while a turn is still open and
+    finalizes each turn when we commit it.
 
     The ``_ws_connect_factory`` kwarg is a test seam that returns an
     awaitable which yields any websocket-like object. The interface used
@@ -367,7 +375,9 @@ class OpenAIRealtimeSession:
             # Longer prompts close the session with string_above_max_length.
             transcription_cfg["prompt"] = self.prompt[:1024]
         if self.language:
-            transcription_cfg["language"] = self.language
+            # The live model takes ``languages`` (a list) and rejects it next
+            # to the singular ``language``.
+            transcription_cfg["languages"] = [self.language]
         audio_input_cfg: dict = {
             "format": {"type": "audio/pcm", "rate": 24000},
             "transcription": transcription_cfg,

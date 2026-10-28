@@ -1167,3 +1167,37 @@ class RecomputeIncludesMarkerTests(TransactionTestCase):
             "[Transcription was interrupted for 14 seconds]\n\n"
             "Welcome back.",
         )
+
+
+class RealtimeUtteranceCostTests(TransactionTestCase):
+    """The live model bills per minute: a completed turn is priced from the
+    seconds it reports, else from the audio its commit covered."""
+
+    def setUp(self):
+        Meeting.objects.all().delete()
+        self.user = User.objects.create_user(email="rtcost@example.com", password="pw")
+        self.meeting = Meeting.objects.create(name="M", slug="m-rtcost", created_by=self.user)
+
+    async def _persist(self, usage, duration_seconds):
+        from meetings.consumers import MeetingTranscribeConsumer
+
+        consumer = MeetingTranscribeConsumer()
+        consumer.user = self.user
+        consumer.meeting_id = self.meeting.id
+        consumer._segments_total = 0  # set by connect()
+        with patch("llm.service.logger.log_transcription_streaming") as mock_log:
+            await consumer._allocate_and_persist_segment(
+                text="hello", start_offset=0.0, model_id="openai/gpt-live-transcribe",
+                usage=usage, duration_seconds=duration_seconds,
+            )
+        return mock_log.call_args.kwargs
+
+    async def test_reported_seconds_price_the_turn(self):
+        kwargs = await self._persist({"type": "duration", "seconds": 60}, 58.2)
+        self.assertAlmostEqual(float(kwargs["cost_usd"]), 0.017, places=6)
+        self.assertEqual(kwargs["audio_duration_seconds"], 60.0)
+
+    async def test_commit_duration_is_the_fallback(self):
+        kwargs = await self._persist(None, 30.0)
+        self.assertAlmostEqual(float(kwargs["cost_usd"]), 0.0085, places=6)
+        self.assertEqual(kwargs["audio_duration_seconds"], 30.0)
