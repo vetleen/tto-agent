@@ -26,6 +26,7 @@ from __future__ import annotations
 import difflib
 import logging
 import math
+import re
 import subprocess
 import time
 from dataclasses import dataclass
@@ -152,6 +153,65 @@ def build_transcription_prompt(meeting: "Meeting", prior_tail: str | None = None
         )
 
     return text
+
+
+MAX_TRANSCRIPTION_KEYWORDS = 50
+MAX_TRANSCRIPTION_KEYWORD_CHARS = 100
+_PARTICIPANT_SPLIT = re.compile(r"[,;/\n]|\s+(?:and|og|&)\s+", re.IGNORECASE)
+# Runs of capitalized words: candidate proper nouns in free text.
+_CAPITALIZED_RUN = re.compile(r"[A-ZÆØÅÄÖÜ][\wÆØÅæøåÄÖÜäöü&.'-]*(?:\s+[A-ZÆØÅÄÖÜ][\wÆØÅæøåÄÖÜäöü&.'-]*)*")
+_KEYWORD_FORBIDDEN = re.compile(r"[<>\r\n]")
+_SENTENCE_BREAK = re.compile(r"[.!?;:](?:\s+|$)|\n")
+
+
+def _looks_like_proper_noun(phrase: str) -> bool:
+    """Multi-word capitalized runs, acronyms, CamelCase, or words with digits.
+
+    A lone capitalized word is usually just a sentence start ("Discuss"),
+    so it only counts when its shape says name or term.
+    """
+    if " " in phrase:
+        return True
+    return any(c.isupper() for c in phrase[1:]) or any(c.isdigit() for c in phrase)
+
+
+def build_transcription_keywords(meeting: "Meeting") -> list[str]:
+    """Literal terms to bias transcription toward: participants' names and
+    proper nouns from the agenda and notes.
+
+    Sent as the API's ``keywords`` list (a biasing hint, not transcript-shaped
+    text, unlike ``prompt``). The meeting name is left out: auto-generated
+    names ("260630 - New meeting") carry no vocabulary and leaked into realtime
+    transcripts when seeded as a prompt. Entries are stripped of ``<``, ``>``
+    and line breaks (the API rejects them), de-duplicated case-insensitively
+    and capped.
+    """
+    candidates: list[str] = []
+    participants = (getattr(meeting, "participants", "") or "")
+    candidates.extend(_PARTICIPANT_SPLIT.split(participants))
+    for field in ("agenda", "description"):
+        text = getattr(meeting, field, "") or ""
+        # Match within sentences so a run can't swallow the next sentence's
+        # capitalized first word.
+        for sentence in _SENTENCE_BREAK.split(text):
+            candidates.extend(
+                m for m in _CAPITALIZED_RUN.findall(sentence) if _looks_like_proper_noun(m)
+            )
+
+    keywords: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        keyword = " ".join(_KEYWORD_FORBIDDEN.sub(" ", candidate or "").split()).strip(" .,:;-'")
+        if len(keyword) < 2 or len(keyword) > MAX_TRANSCRIPTION_KEYWORD_CHARS:
+            continue
+        key = keyword.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        keywords.append(keyword)
+        if len(keywords) >= MAX_TRANSCRIPTION_KEYWORDS:
+            break
+    return keywords
 
 
 # ---------------------------------------------------------------------------
@@ -473,6 +533,7 @@ def orchestrate_upload_transcription(
 
     meeting = Meeting.objects.get(pk=meeting_id)
     ctx = RunContext.create(user_id=user_id)
+    keywords = build_transcription_keywords(meeting)
 
     # Optional language hint: the meeting's own choice, else the resolved
     # user/org/system default. None = auto-detect (usually correct for
@@ -531,7 +592,7 @@ def orchestrate_upload_transcription(
         delta_buf = _PartialTranscriptFlusher(meeting_id, existing_transcript)
         result = _transcribe_with_transient_retry(
             service, temp_path, model_id, ctx, prompt,
-            language=forced_language, on_delta=delta_buf.on_delta,
+            language=forced_language, on_delta=delta_buf.on_delta, keywords=keywords,
         )
         text = result.text or ""
         combined = combine_existing_and_new_transcript(existing_transcript, text)
@@ -565,6 +626,7 @@ def orchestrate_upload_transcription(
                 service, current_path, model_id, ctx, prompt,
                 language=forced_language,
                 on_delta=delta_buf.on_delta,
+                keywords=keywords,
             )
             text = result.text or ""
             combined = combine_existing_and_new_transcript(existing_transcript, text)
@@ -641,6 +703,7 @@ def orchestrate_upload_transcription(
                     service, current_path, model_id, ctx, prompt,
                     language=forced_language,
                     on_delta=delta_buf.on_delta,
+                    keywords=keywords,
                 )
             except Exception as exc:
                 # Per-chunk failure: persist combined partial, mark FAILED, re-raise.
@@ -694,6 +757,7 @@ def _transcribe_with_transient_retry(
     *,
     language: str | None = None,
     on_delta=None,
+    keywords: list[str] | None = None,
 ):
     """Call ``service.transcribe`` with retries on transient OpenAI errors only.
 
@@ -716,6 +780,7 @@ def _transcribe_with_transient_retry(
             return service.transcribe(
                 file_path, model_id, context=context, prompt=prompt,
                 language=language, on_delta=on_delta,
+                **({"keywords": keywords} if keywords else {}),
             )
         except Exception as exc:
             last_exc = exc

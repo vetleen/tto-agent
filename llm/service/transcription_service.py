@@ -57,6 +57,7 @@ class TranscriptionService:
         prompt: str | None = None,
         language: str | None = None,
         on_delta: DeltaCallback | None = None,
+        keywords: list[str] | None = None,
     ) -> TranscriptionResult:
         """Transcribe an audio file, splitting if needed.
 
@@ -66,6 +67,11 @@ class TranscriptionService:
         ``prompt`` is forwarded to the OpenAI transcription API and biases the
         model toward proper nouns / vocabulary in the prompt. Empty / None means
         no prompt is sent.
+
+        ``keywords`` are literal terms expected in the audio (names, products),
+        sent as the API's ``keywords`` list. Entries must be single-line and
+        free of ``<`` / ``>`` (callers sanitize; see
+        ``meetings.services.audio_transcription.build_transcription_keywords``).
 
         ``language`` is an optional ISO-639-1 code (e.g. ``"en"``, ``"no"``). When
         set, skips the model's language detection pass and forces output in that
@@ -133,12 +139,12 @@ class TranscriptionService:
                 result = self._transcribe_chunked(
                     client, file_path, model_id, info, context, file_size,
                     api_limit, max_duration, prompt=prompt,
-                    language=language, on_delta=on_delta,
+                    language=language, on_delta=on_delta, keywords=keywords,
                 )
             else:
                 result = self._transcribe_single(
                     client, file_path, model_id, info, context, file_size,
-                    prompt=prompt, language=language, on_delta=on_delta,
+                    prompt=prompt, language=language, on_delta=on_delta, keywords=keywords,
                 )
         except (FileNotFoundError, ValueError):
             raise
@@ -162,10 +168,13 @@ class TranscriptionService:
         prompt: str | None = None,
         language: str | None = None,
         on_delta: DeltaCallback | None = None,
+        keywords: list[str] | None = None,
     ):
         """Transcribe a single file directly."""
         t0 = time.perf_counter()
-        response = self._call_create(client, file_path, info, prompt, language=language, on_delta=on_delta)
+        response = self._call_create(
+            client, file_path, info, prompt, language=language, on_delta=on_delta, keywords=keywords,
+        )
         duration_ms = int((time.perf_counter() - t0) * 1000)
         text = _extract_text_from_response(response)
         audio_duration = _get_audio_duration_seconds(file_path)
@@ -207,6 +216,7 @@ class TranscriptionService:
         prompt: str | None = None,
         language: str | None = None,
         on_delta: DeltaCallback | None = None,
+        keywords: list[str] | None = None,
     ):
         """Split file into segments and transcribe each.
 
@@ -246,7 +256,7 @@ class TranscriptionService:
 
                 response = self._call_create(
                     client, seg_path, info, prompt,
-                    language=language, on_delta=on_delta,
+                    language=language, on_delta=on_delta, keywords=keywords,
                 )
 
                 seg_duration_ms = int((time.perf_counter() - t0) * 1000)
@@ -301,6 +311,7 @@ class TranscriptionService:
         *,
         language: str | None = None,
         on_delta: DeltaCallback | None = None,
+        keywords: list[str] | None = None,
     ):
         """Call the OpenAI transcription API with optional prompt + graceful fallback.
 
@@ -318,9 +329,11 @@ class TranscriptionService:
         * ``languages`` — the expected spoken language as a one-item list
           (the current models replaced the singular ``language`` field, and
           reject a request carrying both). Omitted for auto-detect.
+        * ``keywords`` — literal terms expected in the audio.
 
-        If the API rejects the request because the prompt is invalid (BadRequestError
-        whose message mentions 'prompt'), retry once with prompt stripped.
+        If the API rejects the request because the prompt or the keywords are
+        invalid (BadRequestError whose message mentions 'prompt' / 'keyword'),
+        retry once with that field stripped.
         """
         kwargs: dict = {"model": info.api_model, "response_format": "json"}
 
@@ -334,6 +347,9 @@ class TranscriptionService:
 
         if language:
             kwargs["languages"] = [language]
+
+        if keywords:
+            kwargs["keywords"] = list(keywords)
 
         use_stream = bool(on_delta) and info.supports_output_streaming
         if use_stream:
@@ -351,16 +367,20 @@ class TranscriptionService:
         try:
             return _do_call()
         except Exception as exc:
-            if not prompt:
+            if not (prompt or keywords):
                 raise
             from openai import BadRequestError  # local import to keep top of file clean
-            if isinstance(exc, BadRequestError) and "prompt" in str(exc).lower():
-                logger.warning(
-                    "TranscriptionService: API rejected prompt (%s); retrying without prompt",
-                    exc,
-                )
-                kwargs.pop("prompt", None)
-                return _do_call()
+            if not isinstance(exc, BadRequestError):
+                raise
+            message = str(exc).lower()
+            for marker, kwarg in (("prompt", "prompt"), ("keyword", "keywords")):
+                if kwarg in kwargs and marker in message:
+                    logger.warning(
+                        "TranscriptionService: API rejected %s (%s); retrying without it",
+                        kwarg, exc,
+                    )
+                    kwargs.pop(kwarg)
+                    return _do_call()
             raise
 
     def _consume_streaming(self, event_stream, on_delta: DeltaCallback | None):

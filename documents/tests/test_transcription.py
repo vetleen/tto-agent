@@ -415,6 +415,32 @@ class TranscriptionPromptTests(TestCase):
         self.assertEqual(first_kwargs.get("prompt"), "some very long prompt")
         self.assertNotIn("prompt", second_kwargs)
 
+    @patch("llm.service.transcription_service.log_transcription")
+    @patch("openai.OpenAI")
+    def test_keywords_forwarded_and_dropped_on_bad_request(self, mock_openai_cls, mock_log):
+        """Keywords go out as a list; if the API rejects them, retry once
+        without them (keeping the prompt)."""
+        from openai import BadRequestError
+
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.audio.transcriptions.create.side_effect = [
+            BadRequestError(message="Invalid 'keywords'", response=MagicMock(), body=None),
+            _mock_response("recovered"),
+        ]
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            f.write(b"\x00" * 1000)
+            f.flush()
+            text = transcribe_audio(
+                Path(f.name), "openai/gpt-transcribe", prompt="ctx",
+                keywords=["OncoBio Therapeutics", "Vetle"],
+            )
+        self.assertEqual(text, "recovered")
+        first, second = (c.kwargs for c in mock_client.audio.transcriptions.create.call_args_list)
+        self.assertEqual(first["keywords"], ["OncoBio Therapeutics", "Vetle"])
+        self.assertNotIn("keywords", second)
+        self.assertEqual(second["prompt"], "ctx")
+
 
 class SplitAudioFileTests(TestCase):
     """Tests for the _split_audio_file helper."""

@@ -15,6 +15,7 @@ def transcribe_audio(
     user=None,
     prompt: str | None = None,
     language: str | None = None,
+    keywords: list[str] | None = None,
 ) -> str:
     """Transcribe an audio file, returning the transcript text.
 
@@ -26,6 +27,9 @@ def transcribe_audio(
 
     ``language`` is an optional language hint (e.g. ``"no"``). None lets the
     model auto-detect.
+
+    ``keywords`` are literal terms expected in the audio (names, products);
+    None or empty sends none.
     """
     from llm.service.transcription_service import get_transcription_service
     from llm.types.context import RunContext
@@ -33,6 +37,7 @@ def transcribe_audio(
     context = RunContext.create(user_id=user.pk if user else None)
     service = get_transcription_service()
     result = service.transcribe(
-        file_path, model_id, context=context, prompt=prompt, language=language
+        file_path, model_id, context=context, prompt=prompt, language=language,
+        **({"keywords": keywords} if keywords else {}),
     )
     return result.text

@@ -75,6 +75,7 @@ def transcribe_meeting_chunk_task(
 
         from .services.audio_transcription import (
             LIVE_PROMPT_TAIL_CHARS,
+            build_transcription_keywords,
             build_transcription_prompt,
         )
         try:
@@ -129,7 +130,10 @@ def transcribe_meeting_chunk_task(
 
         local_path = download_chunk_to_local(temp_path, mime)
         try:
-            text = transcribe_audio(local_path, model_id, user, prompt=prompt, language=language)
+            text = transcribe_audio(
+                local_path, model_id, user, prompt=prompt, language=language,
+                keywords=build_transcription_keywords(meeting),
+            )
         except Exception as exc:
             from .services.errors import classify_transcription_error, log_unmapped
 

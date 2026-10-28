@@ -1052,6 +1052,9 @@ AUDIO_UPLOAD_MAX_SIZE_BYTES = _env_int("AUDIO_UPLOAD_MAX_SIZE_BYTES", "50000000"
 MEETING_REALTIME_TURN_SILENCE_MS = _env_int("MEETING_REALTIME_TURN_SILENCE_MS", "600")
 MEETING_REALTIME_TURN_MAX_MS = _env_int("MEETING_REALTIME_TURN_MAX_MS", "20000")
 MEETING_REALTIME_TURN_RMS_FLOOR = float(os.environ.get("MEETING_REALTIME_TURN_RMS_FLOOR", "0.002"))
+# Seed live sessions with `keywords` (participants, agenda proper nouns). Kill
+# switch in case they ever leak into transcripts; uploads always send them.
+MEETING_REALTIME_KEYWORDS_ENABLED = _get_env_bool(os.environ.get("MEETING_REALTIME_KEYWORDS_ENABLED"), True)
 
 # Org brand-font upload (PDF export). A single font face is small; cap well below
 # image/doc uploads. Used by the font-upload endpoint and the resolver.

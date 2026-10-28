@@ -986,6 +986,33 @@ class RealtimePromptSeedingTests(TransactionTestCase):
         self.assertNotEqual(result["live_mode"], "chunked")
         self.assertNotIn("prompt", result)
 
+    async def _load_with_participants(self, slug):
+        import types
+
+        meeting = await database_sync_to_async(Meeting.objects.create)(
+            name="Innovasjon Norge Sync", slug=slug, created_by=self.user,
+            participants="Vetle Engesbak, Kari Nordmann", agenda="Review the EPO opposition.",
+        )
+        consumer = MeetingTranscribeConsumer()
+        consumer.user = self.user
+        prefs = types.SimpleNamespace(
+            allowed_transcription_models=["openai/gpt-transcribe", "openai/gpt-live-transcribe"],
+            transcription_model_live="openai/gpt-live-transcribe",
+            live_transcription_mode="realtime",
+        )
+        with patch("core.preferences.get_preferences", return_value=prefs):
+            return await consumer._load_and_lock_meeting(meeting.uuid)
+
+    async def test_live_keywords_seeded_from_participants_never_the_name(self):
+        result = await self._load_with_participants("rt-keywords")
+        self.assertEqual(result["model_id"], "openai/gpt-live-transcribe")
+        self.assertEqual(result["keywords"], ["Vetle Engesbak", "Kari Nordmann", "EPO"])
+
+    @override_settings(MEETING_REALTIME_KEYWORDS_ENABLED=False)
+    async def test_live_keywords_kill_switch(self):
+        result = await self._load_with_participants("rt-keywords-off")
+        self.assertEqual(result["keywords"], [])
+
     async def test_realtime_session_built_without_prompt(self):
         # gpt-4o-transcribe regurgitates a realtime `prompt` verbatim on short
         # utterances, so the session must be built with NO prompt. (Regression
@@ -1004,6 +1031,7 @@ class RealtimePromptSeedingTests(TransactionTestCase):
         consumer.meeting_uuid = str(meeting.uuid)
         consumer._model_id = "openai/gpt-4o-transcribe"
         consumer._realtime_language = "no"
+        consumer._realtime_keywords = ["Vetle Engesbak"]
         consumer._total_pcm_bytes = 0  # normally set in connect()
 
         captured: dict = {}
@@ -1057,6 +1085,7 @@ class RealtimePromptSeedingTests(TransactionTestCase):
                 self.assertIsNone(captured.get("prompt"))
                 self.assertEqual(captured.get("model_id"), "openai/gpt-4o-transcribe")
                 self.assertEqual(captured.get("language"), "no")
+                self.assertEqual(captured.get("keywords"), ["Vetle Engesbak"])
             finally:
                 await consumer._teardown_realtime()
 

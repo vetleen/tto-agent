@@ -228,6 +228,7 @@ class OpenAIRealtimeSession:
         model_id: str,
         prompt: str | None = None,
         language: str | None = None,
+        keywords: list[str] | None = None,
         _ws_connect_factory=None,   # test seam; replaces _default_ws_connect
         _api_key: str | None = None,
     ):
@@ -237,6 +238,7 @@ class OpenAIRealtimeSession:
         self.model_id = model_id
         self.prompt = prompt
         self.language = language
+        self.keywords = list(keywords or [])
         self._events: asyncio.Queue[SessionEvent] = asyncio.Queue(maxsize=256)
         info = get_transcription_model_info(model_id)
         if info is None:
@@ -378,6 +380,11 @@ class OpenAIRealtimeSession:
             # The live model takes ``languages`` (a list) and rejects it next
             # to the singular ``language``.
             transcription_cfg["languages"] = [self.language]
+        if self.keywords:
+            # Literal terms to bias toward (participants, proper nouns). A
+            # list, not transcript-shaped text, so there is nothing to echo:
+            # a silent commit with keywords set transcribed to "" (2026-10-28).
+            transcription_cfg["keywords"] = self.keywords
         audio_input_cfg: dict = {
             "format": {"type": "audio/pcm", "rate": 24000},
             "transcription": transcription_cfg,
@@ -933,6 +940,7 @@ def build_realtime_session(
     model_id: str,
     prompt: str | None = None,
     language: str | None = None,
+    keywords: list[str] | None = None,
 ) -> OpenAIRealtimeSession:
     """Return a provider-appropriate realtime transcription session.
 
@@ -952,6 +960,7 @@ def build_realtime_session(
             model_id=model_id,
             prompt=prompt,
             language=language,
+            keywords=keywords,
         )
     raise UnsupportedModelError(f"No realtime session implementation for provider {info.provider!r}")
 

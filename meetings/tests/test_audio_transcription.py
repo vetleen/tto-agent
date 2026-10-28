@@ -39,6 +39,44 @@ User = get_user_model()
 # ---------------------------------------------------------------------------
 
 
+class BuildTranscriptionKeywordsTests(TestCase):
+    def _kw(self, **fields):
+        from types import SimpleNamespace
+
+        from meetings.services.audio_transcription import build_transcription_keywords
+
+        meeting = SimpleNamespace(name="260630 - New meeting", participants="", agenda="", description="")
+        for key, value in fields.items():
+            setattr(meeting, key, value)
+        return build_transcription_keywords(meeting)
+
+    def test_participants_and_agenda_proper_nouns_never_the_name(self):
+        keywords = self._kw(
+            name="OncoBio kickoff",
+            participants="Vetle Engesbak, Kari Nordmann og Ola; Dr. X",
+            agenda="Discuss licensing with OncoBio Therapeutics. Review the EPO opposition for WP3.",
+        )
+        self.assertEqual(
+            keywords,
+            ["Vetle Engesbak", "Kari Nordmann", "Ola", "Dr. X", "OncoBio Therapeutics", "EPO", "WP3"],
+        )
+        self.assertNotIn("OncoBio kickoff", keywords)
+
+    def test_sanitized_deduplicated_and_capped(self):
+        from meetings.services.audio_transcription import MAX_TRANSCRIPTION_KEYWORDS
+
+        keywords = self._kw(participants="<Alice>, alice, Bob\r\nCarol")
+        self.assertEqual(keywords, ["Alice", "Bob", "Carol"])
+        many = self._kw(participants=", ".join(f"Person{i}" for i in range(80)))
+        self.assertEqual(len(many), MAX_TRANSCRIPTION_KEYWORDS)
+        for keyword in many:
+            self.assertFalse(set(keyword) & set("<>\r\n"))
+
+    def test_empty_meeting_has_no_keywords(self):
+        self.assertEqual(self._kw(), [])
+        self.assertEqual(self._kw(agenda="Budget review and next steps."), [])
+
+
 class BuildTranscriptionPromptTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="bp@example.com", password="pw")

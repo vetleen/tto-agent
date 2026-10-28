@@ -228,6 +228,25 @@ class OpenAIRealtimeSessionTests(TestCase):
         self.assertEqual(completed.usage["seconds"], 4)
         self.assertEqual(completed.usage["type"], "duration")
 
+    def test_keywords_in_session_update_only_when_set(self):
+        for keywords, expected in ((["OncoBio Therapeutics", "Vetle"], ["OncoBio Therapeutics", "Vetle"]), (None, None)):
+            with self.subTest(keywords=keywords):
+                ws = _FakeWebSocket(script=[{"type": "session.created", "session": {"id": "s"}}])
+                session = OpenAIRealtimeSession(
+                    model_id="openai/gpt-live-transcribe",
+                    keywords=keywords,
+                    _ws_connect_factory=_factory_for(ws),
+                    _api_key="sk-fake",
+                )
+
+                async def run():
+                    await session.connect()
+                    await session.aclose()
+
+                _run(run())
+                transcription = json.loads(ws.sent[0])["session"]["audio"]["input"]["transcription"]
+                self.assertEqual(transcription.get("keywords"), expected)
+
     def test_long_prompt_is_capped_at_1024(self):
         # OpenAI's Realtime transcription endpoint closes the session with
         # ``string_above_max_length`` if the prompt exceeds 1024 chars.

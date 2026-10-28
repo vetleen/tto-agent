@@ -163,6 +163,7 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         self._realtime_consume_task: asyncio.Task | None = None
         self._realtime_started: bool = False
         self._realtime_language: str = ""
+        self._realtime_keywords: list[str] = []
         self._total_pcm_bytes: int = 0
         self._live_segment_counter: int = 0  # counts utterances persisted in realtime mode
         # Realtime-failure bookkeeping. Counts pipe breaks + fatal upstream
@@ -233,6 +234,7 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         self._model_id = meeting["model_id"]
         self._realtime_mode = meeting.get("live_mode") or "chunked"
         self._realtime_language = meeting.get("forced_language") or ""
+        self._realtime_keywords = list(meeting.get("keywords") or [])
         self._presence_lock_key = meeting.get("presence_lock_key")
         self._live_segment_counter = self._segment_index_base
         self._group_name = f"meetings.{self.meeting_uuid}"
@@ -551,6 +553,7 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
             self._realtime_session = build_realtime_session(
                 model_id=self._model_id,
                 language=self._realtime_language or None,
+                keywords=self._realtime_keywords,
             )
             await self._realtime_session.connect()
         except Exception:
@@ -1367,6 +1370,16 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         # prior_tail): full ~30s chunks give the model enough real audio to
         # anchor on, so it transcribes rather than echoes. The realtime session
         # is therefore built with no prompt at all (see _start_realtime_session).
+        #
+        # It does get `keywords` (participants, proper nouns from the agenda):
+        # a list of literal terms, not transcript-shaped text, and never the
+        # meeting name. MEETING_REALTIME_KEYWORDS_ENABLED switches it off
+        # without a deploy if they ever leak into a transcript.
+        keywords: list[str] = []
+        if getattr(settings, "MEETING_REALTIME_KEYWORDS_ENABLED", True):
+            from .services.audio_transcription import build_transcription_keywords
+
+            keywords = build_transcription_keywords(meeting)
 
         # Transition the meeting to LIVE_TRANSCRIBING (preserve started_at on resume).
         update_fields = ["status", "transcript_source", "updated_at"]
@@ -1414,6 +1427,7 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
                 getattr(prefs, "transcription_language", "auto"),
             ),
             "presence_lock_key": presence_lock_key,
+            "keywords": keywords,
         }
 
     @database_sync_to_async
