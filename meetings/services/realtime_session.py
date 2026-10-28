@@ -59,6 +59,8 @@ class _CommitMeta:
     """What our side knows about one commit, keyed by item_id once acked."""
     start_bytes: int
     turn_bytes: int
+    # Commit order on the current socket (assigned when the commit is sent).
+    seq: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +147,10 @@ _UNCOMMITTED_BUFFER_BYTES = PCM_BYTES_PER_SECOND * _UNCOMMITTED_BUFFER_SECONDS
 # single reconnect doesn't permanently exhaust the budget.
 _RECONNECT_BACKOFFS = (0.5, 1.0, 2.0, 4.0, 4.0, 4.0, 4.0, 4.0)
 _RECONNECT_COUNTER_RESET_SECONDS = 60
+
+# How long a completion that arrived ahead of an earlier, still-outstanding
+# turn is held back so the transcript stays in spoken order.
+REORDER_WAIT_SECONDS = 8.0
 
 
 _REALTIME_WS_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
@@ -254,6 +260,12 @@ class OpenAIRealtimeSession:
         # by item_id, so they pair correctly even when they arrive out of order.
         self._pending_commits: deque[_CommitMeta] = deque()
         self._items: dict[str, _CommitMeta] = {}
+        # In-order emission (see _emit_in_order): commits are numbered from 1
+        # as they are sent; completions ahead of an outstanding turn wait here.
+        self._commit_seq = 0
+        self._next_emit_seq = 1
+        self._held: dict[int, TranscriptCompleted | None] = {}
+        self._reorder_task: Optional[asyncio.Task] = None
         self._warned_server_vad = False
         # Utterance bookkeeping for a clean Stop: every committed buffer should
         # produce one transcription. finalize() waits until completed catches up
@@ -316,6 +328,10 @@ class OpenAIRealtimeSession:
         self._items.clear()
         self._committed_count = 0
         self._completed_count = 0
+        # Lost turns will never complete: release what was waiting on them and
+        # number the new socket's commits after everything sent so far.
+        await self._flush_held()
+        self._next_emit_seq = self._commit_seq + 1
         ws = await self._ws_connect_factory(self._api_key, _REALTIME_WS_URL)
         self._ws = ws
         await self._send_session_update()
@@ -475,14 +491,15 @@ class OpenAIRealtimeSession:
             if meta is None:
                 logger.info("OpenAIRealtimeSession: completion for unknown item %s", item_id or "-")
             start_bytes = meta.start_bytes if meta else self._pcm_bytes_sent
-            await self._events.put(TranscriptCompleted(
+            completed = TranscriptCompleted(
                 item_id=item_id,
                 text=text,
                 usage=usage,
                 start_offset_seconds=start_bytes / PCM_BYTES_PER_SECOND,
                 duration_seconds=(meta.turn_bytes / PCM_BYTES_PER_SECOND) if meta else None,
-            ))
+            )
             self._completed_count += 1
+            await self._emit_in_order(meta.seq if meta else None, completed)
             return
         if evt_type == "conversation.item.input_audio_transcription.failed":
             # A committed buffer whose transcription failed server-side. Without
@@ -497,9 +514,11 @@ class OpenAIRealtimeSession:
                 event.get("item_id", "") or "", message,
             )
             # The commit will never complete — advance the completed counter so
-            # finalize() doesn't stall.
+            # finalize() doesn't stall, and let later turns past it in order.
             self._completed_count += 1
-            self._items.pop(event.get("item_id", "") or "", None)
+            failed_meta = self._items.pop(event.get("item_id", "") or "", None)
+            if failed_meta is not None:
+                await self._emit_in_order(failed_meta.seq, None)
             await self._events.put(SessionError(
                 code="utterance_failed",
                 message=message or "One utterance could not be transcribed.",
@@ -605,8 +624,7 @@ class OpenAIRealtimeSession:
                 replayed += len(frame)
                 while self._offline_commits and self._offline_commits[0][0] <= pos:
                     _, meta = self._offline_commits.popleft()
-                    self._pending_commits.append(meta)
-                    await self._ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
+                    await self._send_commit(meta)
                     # The committed head no longer needs replaying.
                     for _ in range(idx):
                         self._uncommitted.popleft()
@@ -664,13 +682,7 @@ class OpenAIRealtimeSession:
             if frame:
                 await self._send_audio_frame(frame)
             if decision.commit:
-                meta = self._commit_meta(decision)
-                self._pending_commits.append(meta)
-                try:
-                    await self._ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
-                except Exception:
-                    self._pending_commits.pop()
-                    raise
+                await self._send_commit(self._commit_meta(decision))
                 self._drop_uncommitted()
             elif decision.clear:
                 await self._ws.send(json.dumps({"type": "input_audio_buffer.clear"}))
@@ -705,6 +717,68 @@ class OpenAIRealtimeSession:
             start_bytes=decision.turn_start_bytes or 0,
             turn_bytes=decision.turn_bytes,
         )
+
+    async def _send_commit(self, meta: _CommitMeta) -> None:
+        """Send ``input_audio_buffer.commit`` and number it for in-order emission."""
+        assert self._ws is not None
+        self._commit_seq += 1
+        meta.seq = self._commit_seq
+        self._pending_commits.append(meta)
+        try:
+            await self._ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
+        except Exception:
+            self._pending_commits.pop()
+            self._commit_seq -= 1
+            raise
+
+    async def _emit_in_order(self, seq: int | None, evt: TranscriptCompleted | None) -> None:
+        """Emit completions in commit order; ``evt=None`` marks a failed turn.
+
+        Completions can arrive out of order. One that is ahead of an
+        outstanding earlier turn is held until that turn completes or fails,
+        or until ``REORDER_WAIT_SECONDS`` passes — then everything held is
+        released in order and the missing turn, if it ever arrives, is emitted
+        on its own. Unnumbered completions (ack missed) go straight out.
+        """
+        if seq is None or seq < self._next_emit_seq:
+            if evt is not None:
+                await self._events.put(evt)
+            return
+        self._held[seq] = evt
+        await self._release_held()
+        if self._held and self._reorder_task is None:
+            self._reorder_task = asyncio.create_task(self._reorder_timeout())
+
+    async def _release_held(self) -> None:
+        while self._next_emit_seq in self._held:
+            evt = self._held.pop(self._next_emit_seq)
+            self._next_emit_seq += 1
+            if evt is not None:
+                await self._events.put(evt)
+        if not self._held and self._reorder_task is not None:
+            self._reorder_task.cancel()
+            self._reorder_task = None
+
+    async def _reorder_timeout(self) -> None:
+        try:
+            await asyncio.sleep(REORDER_WAIT_SECONDS)
+        except asyncio.CancelledError:
+            return
+        self._reorder_task = None
+        if self._held:
+            logger.warning(
+                "OpenAIRealtimeSession: turn %d still untranscribed after %.0fs; releasing %d later turn(s)",
+                self._next_emit_seq, REORDER_WAIT_SECONDS, len(self._held),
+            )
+            await self._flush_held()
+
+    async def _flush_held(self) -> None:
+        """Release every held completion in commit order, skipping gaps."""
+        for seq in sorted(self._held):
+            evt = self._held.pop(seq)
+            self._next_emit_seq = max(self._next_emit_seq, seq + 1)
+            if evt is not None:
+                await self._events.put(evt)
 
     async def update_language(self, language: str | None) -> None:
         """Apply a new transcription language to the running session.
@@ -777,6 +851,8 @@ class OpenAIRealtimeSession:
             if all_acked and all_transcribed:
                 break
             await asyncio.sleep(0.05)
+        # Stop must not strand a transcript behind a turn that never came back.
+        await self._flush_held()
 
     async def aclose(self) -> None:
         if self._closed:
@@ -787,6 +863,18 @@ class OpenAIRealtimeSession:
             "OpenAIRealtimeSession: closing (frames=%d speech_frames=%d commits=%d clears=%d noise_floor=%.4f)",
             stats.frames, stats.speech_frames, stats.commits, stats.clears, self._turn.noise_floor,
         )
+        if self._reorder_task is not None:
+            self._reorder_task.cancel()
+            self._reorder_task = None
+        # Held completions are already transcribed; hand them over in order
+        # (non-blocking, like the courtesy event below).
+        for seq in sorted(self._held):
+            evt = self._held.pop(seq)
+            if evt is not None:
+                try:
+                    self._events.put_nowait(evt)
+                except asyncio.QueueFull:
+                    break
         # Cancel a reconnect that may be sleeping in backoff so it can't wake
         # after close and reopen a fresh, leaked, billable session.
         if self._reconnect_task is not None:

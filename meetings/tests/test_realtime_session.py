@@ -949,6 +949,115 @@ class OpenAIRealtimeSessionTests(TestCase):
         self.assertTrue(any("session.created (id=sess_1 language=auto)" in line for line in logs.output))
 
 
+class CompletionOrderTests(TestCase):
+    """Completions can arrive out of order; transcripts must come out in the
+    order the turns were spoken (commit order), matched by item_id."""
+
+    def _session(self, ws):
+        return OpenAIRealtimeSession(
+            model_id="openai/gpt-4o-mini-transcribe",
+            _ws_connect_factory=_factory_for(ws),
+            _api_key="sk-fake",
+        )
+
+    async def _two_turns(self, session, ws):
+        await session.connect()
+        await _send_audio(session, _silence_ms(400) + _tone_ms(1000) + _silence_ms(600))
+        await _send_audio(session, _tone_ms(1000) + _silence_ms(600))
+        ws.push_server_json({"type": "input_audio_buffer.committed", "item_id": "item_a"})
+        ws.push_server_json({"type": "input_audio_buffer.committed", "item_id": "item_b"})
+
+    @staticmethod
+    def _completed(item_id, text):
+        return {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": item_id,
+            "transcript": text,
+        }
+
+    async def _collect(self, session, n, timeout=3.0):
+        out = []
+
+        async def take():
+            async for evt in session.events():
+                if isinstance(evt, TranscriptCompleted):
+                    out.append(evt)
+                    if len(out) == n:
+                        return
+        await asyncio.wait_for(take(), timeout)
+        return out
+
+    def test_out_of_order_completions_emitted_in_commit_order(self):
+        ws = _FakeWebSocket(script=[{"type": "session.created", "session": {"id": "s"}}])
+        session = self._session(ws)
+
+        async def run():
+            await self._two_turns(session, ws)
+            ws.push_server_json(self._completed("item_b", "second"))
+            ws.push_server_json(self._completed("item_a", "first"))
+            out = await self._collect(session, 2)
+            await session.aclose()
+            return out
+
+        out = _run(run())
+        self.assertEqual([e.text for e in out], ["first", "second"])
+        self.assertLess(out[0].start_offset_seconds, out[1].start_offset_seconds)
+
+    def test_missing_completion_releases_later_turns_after_wait(self):
+        ws = _FakeWebSocket(script=[{"type": "session.created", "session": {"id": "s"}}])
+        session = self._session(ws)
+
+        async def run():
+            with patch("meetings.services.realtime_session.REORDER_WAIT_SECONDS", 0.2):
+                await self._two_turns(session, ws)
+                ws.push_server_json(self._completed("item_b", "second"))
+                out = await self._collect(session, 1)
+                # The straggler is still emitted when it finally arrives.
+                ws.push_server_json(self._completed("item_a", "late first"))
+                out += await self._collect(session, 1)
+                await session.aclose()
+                return out
+
+        out = _run(run())
+        self.assertEqual([e.text for e in out], ["second", "late first"])
+
+    def test_failed_item_advances_order(self):
+        ws = _FakeWebSocket(script=[{"type": "session.created", "session": {"id": "s"}}])
+        session = self._session(ws)
+
+        async def run():
+            await self._two_turns(session, ws)
+            ws.push_server_json(self._completed("item_b", "second"))
+            ws.push_server_json({
+                "type": "conversation.item.input_audio_transcription.failed",
+                "item_id": "item_a",
+                "error": {"message": "nope"},
+            })
+            out = await self._collect(session, 1, timeout=1.0)
+            await session.aclose()
+            return out
+
+        out = _run(run())
+        self.assertEqual([e.text for e in out], ["second"])
+
+    def test_aclose_flushes_held_completions(self):
+        ws = _FakeWebSocket(script=[{"type": "session.created", "session": {"id": "s"}}])
+        session = self._session(ws)
+
+        async def run():
+            await self._two_turns(session, ws)
+            ws.push_server_json(self._completed("item_b", "second"))
+            await asyncio.sleep(0.05)
+            await session.aclose()
+            seen = []
+            async for evt in session.events():
+                seen.append(evt)
+            return seen
+
+        seen = _run(run())
+        self.assertTrue(any(isinstance(e, TranscriptCompleted) and e.text == "second" for e in seen))
+
+
 class FinalizeTests(TestCase):
     """finalize() must commit the open turn and wait for the server's
     transcription so the user's last utterance isn't dropped on Stop —
