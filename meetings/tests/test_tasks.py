@@ -67,6 +67,8 @@ class TranscribeMeetingChunkTaskPromptTests(TestCase):
                 pass
 
         self.assertTrue(mock_transcribe.called)
+        # The retired ID is resolved to the file model before the call.
+        self.assertEqual(mock_transcribe.call_args.args[1], "openai/gpt-transcribe")
         kwargs = mock_transcribe.call_args.kwargs
         prompt = kwargs.get("prompt")
         self.assertIsNotNone(prompt)
@@ -81,6 +83,24 @@ class TranscribeMeetingChunkTaskPromptTests(TestCase):
         seg = MeetingTranscriptSegment.objects.get(meeting=self.meeting, segment_index=0)
         self.assertEqual(seg.status, MeetingTranscriptSegment.Status.READY)
         self.assertEqual(seg.text, "hello segment")
+        self.assertEqual(seg.transcription_model, "openai/gpt-transcribe")
+
+    @patch("documents.services.transcription.transcribe_audio", return_value="fallback")
+    def test_live_model_from_the_consumer_is_resolved_to_the_file_model(self, mock_transcribe):
+        # The chunked fallback inherits the session's live model; chunks go
+        # through the file endpoint.
+        path = _write_temp_audio()
+        try:
+            transcribe_meeting_chunk_task(
+                meeting_id=self.meeting.pk, segment_index=0, temp_path=path, mime="audio/ogg",
+                model_id="openai/gpt-live-transcribe", user_id=self.user.pk,
+            )
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        self.assertEqual(mock_transcribe.call_args.args[1], "openai/gpt-transcribe")
 
 
 class TranscribeMeetingChunkTaskLanguageTests(TestCase):

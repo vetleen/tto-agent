@@ -34,7 +34,10 @@ from typing import TYPE_CHECKING, Optional
 
 from django.utils import timezone
 
-from llm.transcription_registry import get_transcription_model_info
+from llm.transcription_registry import (
+    canonical_transcription_model_id,
+    get_transcription_model_info,
+)
 from llm.types.context import RunContext
 
 if TYPE_CHECKING:
@@ -461,6 +464,9 @@ def orchestrate_upload_transcription(
         from llm.service.transcription_service import get_transcription_service
         service = get_transcription_service()
 
+    # Uploads go through the file endpoint: resolve a retired or live-only ID
+    # to the model that serves it (stamped on the meeting below).
+    model_id = canonical_transcription_model_id(model_id, path="file") or model_id
     info = get_transcription_model_info(model_id)
     if info is None:
         raise ValueError(f"Unknown transcription model: {model_id}")

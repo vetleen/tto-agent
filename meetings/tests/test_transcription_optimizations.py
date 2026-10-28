@@ -47,22 +47,18 @@ class RegistryCapabilityFlagTests(TestCase):
                 self.assertIsInstance(info.supports_output_streaming, bool)
                 self.assertIsInstance(info.supports_diarization, bool)
 
-    def test_mini_and_full_4o_are_live_and_streamable(self):
-        mini = get_transcription_model_info("openai/gpt-4o-mini-transcribe")
-        full = get_transcription_model_info("openai/gpt-4o-transcribe")
-        self.assertTrue(mini.supports_live_streaming)
-        self.assertTrue(mini.supports_output_streaming)
-        self.assertFalse(mini.supports_diarization)
-        self.assertTrue(full.supports_live_streaming)
-        self.assertTrue(full.supports_output_streaming)
-        self.assertFalse(full.supports_diarization)
+    def test_file_model_is_batch_and_streamable(self):
+        info = get_transcription_model_info("openai/gpt-transcribe")
+        self.assertTrue(info.supports_file_transcription)
+        self.assertTrue(info.supports_output_streaming)
+        self.assertFalse(info.supports_live_streaming)
+        self.assertFalse(info.supports_diarization)
 
-    def test_diarize_is_batch_only(self):
-        diarize = get_transcription_model_info("openai/gpt-4o-transcribe-diarize")
-        self.assertIsNotNone(diarize)
-        self.assertFalse(diarize.supports_live_streaming)
-        self.assertFalse(diarize.supports_output_streaming)
-        self.assertTrue(diarize.supports_diarization)
+    def test_live_model_is_live_only(self):
+        info = get_transcription_model_info("openai/gpt-live-transcribe")
+        self.assertTrue(info.supports_live_streaming)
+        self.assertFalse(info.supports_file_transcription)
+        self.assertFalse(info.supports_output_streaming)
 
 
 class SpeedUpFactorTests(TestCase):

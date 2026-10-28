@@ -383,11 +383,23 @@ def org_settings_page(request):
         for tier in SUBAGENT_TIERS
     ]
 
-    from llm.transcription_registry import get_all_transcription_models
+    from llm.transcription_registry import (
+        canonical_transcription_model_id,
+        get_all_transcription_models,
+        normalize_transcription_model_ids,
+    )
 
-    system_transcription_models = list(getattr(django_settings, "TRANSCRIPTION_ALLOWED_MODELS", []))
+    # Retired IDs (stored prefs, config vars) are shown as their successors so
+    # checkboxes and selects match what get_preferences resolves.
+    system_transcription_models = normalize_transcription_model_ids(
+        getattr(django_settings, "TRANSCRIPTION_ALLOWED_MODELS", [])
+    )
     org_allowed_transcription = org_prefs.get("allowed_transcription_models")
+    if isinstance(org_allowed_transcription, list):
+        org_allowed_transcription = normalize_transcription_model_ids(org_allowed_transcription)
     org_transcription_models = org_prefs.get("transcription_models", {})
+    if not isinstance(org_transcription_models, dict):
+        org_transcription_models = {}
     transcription_model_display = {
         mid: info.display_name for mid, info in get_all_transcription_models().items()
     }
@@ -403,8 +415,12 @@ def org_settings_page(request):
     live_capable_transcription_models, upload_capable_transcription_models = (
         partition_transcription_models(effective_allowed)
     )
-    system_transcription_default_live = getattr(django_settings, "TRANSCRIPTION_DEFAULT_MODEL_LIVE", "") or ""
-    system_transcription_default_upload = getattr(django_settings, "TRANSCRIPTION_DEFAULT_MODEL_UPLOAD", "") or ""
+    system_transcription_default_live = canonical_transcription_model_id(
+        getattr(django_settings, "TRANSCRIPTION_DEFAULT_MODEL_LIVE", ""), path="live",
+    ) or ""
+    system_transcription_default_upload = canonical_transcription_model_id(
+        getattr(django_settings, "TRANSCRIPTION_DEFAULT_MODEL_UPLOAD", ""), path="file",
+    ) or ""
 
     from core.languages import TRANSCRIPTION_LANGUAGE_CHOICES
     org_transcription_language = org_prefs.get("transcription_language", "")
@@ -562,9 +578,12 @@ def org_settings_page(request):
         "subagent_budget_rows": subagent_budget_rows,
         "system_transcription_models": system_transcription_models,
         "org_allowed_transcription": org_allowed_transcription,
-        "org_transcription_default": org_transcription_models.get("default", ""),
-        "org_transcription_default_live": org_transcription_models.get("live", ""),
-        "org_transcription_default_upload": org_transcription_models.get("upload", ""),
+        "org_transcription_default": canonical_transcription_model_id(
+            org_transcription_models.get("default"), path="file") or "",
+        "org_transcription_default_live": canonical_transcription_model_id(
+            org_transcription_models.get("live"), path="live") or "",
+        "org_transcription_default_upload": canonical_transcription_model_id(
+            org_transcription_models.get("upload"), path="file") or "",
         "live_capable_transcription_models": live_capable_transcription_models,
         "upload_capable_transcription_models": upload_capable_transcription_models,
         "system_transcription_default_live": system_transcription_default_live,
@@ -1144,14 +1163,24 @@ def org_allowed_transcription_models_update(request):
     if err:
         return err
 
+    from llm.transcription_registry import normalize_transcription_model_ids
+
     models = data.get("allowed_transcription_models")
     if not isinstance(models, list) or not all(isinstance(m, str) for m in models):
         return JsonResponse({"error": "allowed_transcription_models must be a list of strings"}, status=400)
 
-    system_models = list(getattr(django_settings, "TRANSCRIPTION_ALLOWED_MODELS", []))
-    invalid = [m for m in models if m not in system_models]
+    system_models = normalize_transcription_model_ids(
+        getattr(django_settings, "TRANSCRIPTION_ALLOWED_MODELS", [])
+    )
+    invalid = [
+        m for m in models
+        if not (normalized := normalize_transcription_model_ids([m]))
+        or any(n not in system_models for n in normalized)
+    ]
     if invalid:
         return JsonResponse({"error": f"These models aren't available: {', '.join(invalid)}."}, status=400)
+    # Stored canonical, so retired IDs heal on the next save.
+    models = normalize_transcription_model_ids(models)
 
     def mutate(prefs):
         prefs["allowed_transcription_models"] = models
@@ -1168,11 +1197,16 @@ def org_transcription_model_update(request):
     """Set an organization-level default transcription model.
 
     Accepts ``kind`` in the POST body: ``default`` (generic), ``live``
-    (must be a streaming-capable model), or ``upload`` (any registered
-    transcription model, including diarize). Unknown / missing ``kind``
-    is treated as ``default``.
+    (must be a streaming-capable model), or ``upload`` (a file-transcription
+    model). Unknown / missing ``kind`` is treated as ``default``. Retired IDs
+    are stored as their successor for the kind's path.
     """
-    from llm.transcription_registry import get_transcription_model_info
+    from llm.transcription_registry import (
+        canonical_transcription_model_id,
+        get_all_transcription_models,
+        get_transcription_model_info,
+        normalize_transcription_model_ids,
+    )
 
     membership = request.org_membership
 
@@ -1187,17 +1221,30 @@ def org_transcription_model_update(request):
 
     if model:
         org_allowed = (membership.org.preferences or {}).get("allowed_transcription_models")
-        system_models = list(getattr(django_settings, "TRANSCRIPTION_ALLOWED_MODELS", []))
-        effective = [m for m in org_allowed if m in system_models] if isinstance(org_allowed, list) else system_models
-        if model not in effective:
-            return JsonResponse({"error": "Model not in allowed list"}, status=400)
-        if kind == "live":
+        system_models = normalize_transcription_model_ids(
+            getattr(django_settings, "TRANSCRIPTION_ALLOWED_MODELS", [])
+        )
+        effective = (
+            [m for m in normalize_transcription_model_ids(org_allowed) if m in system_models]
+            if isinstance(org_allowed, list) else system_models
+        )
+        path = "live" if kind == "live" else "file"
+        # A current model picked for the wrong path is a mistake worth saying
+        # so; a retired ID quietly becomes its successor for this path.
+        if model in get_all_transcription_models():
             info = get_transcription_model_info(model)
-            if info is None or not info.supports_live_streaming:
+            if kind == "live" and not info.supports_live_streaming:
                 return JsonResponse(
-                    {"error": "This model cannot be used for live transcription."},
-                    status=400,
+                    {"error": "This model cannot be used for live transcription."}, status=400,
                 )
+            if kind != "live" and not info.supports_file_transcription:
+                return JsonResponse(
+                    {"error": "This model cannot be used for file transcription."}, status=400,
+                )
+        canonical = canonical_transcription_model_id(model, path=path)
+        if not canonical or canonical not in effective:
+            return JsonResponse({"error": "Model not in allowed list"}, status=400)
+        model = canonical
 
     def mutate(prefs):
         transcription_models = prefs.get("transcription_models", {})

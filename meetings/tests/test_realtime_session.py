@@ -125,15 +125,19 @@ class FactoryTests(TestCase):
         with self.assertRaises(UnsupportedModelError):
             build_realtime_session(model_id="openai/not-a-real-model")
 
-    def test_diarize_model_rejected_for_live(self):
-        with self.assertRaises(UnsupportedModelError):
-            build_realtime_session(model_id="openai/gpt-4o-transcribe-diarize")
-
-    def test_mini_transcribe_builds_openai_session(self):
-        # Build it but don't connect — just prove the factory dispatches
-        # without touching the network.
-        sess = build_realtime_session(model_id="openai/gpt-4o-mini-transcribe")
-        self.assertIsInstance(sess, OpenAIRealtimeSession)
+    def test_retired_and_file_ids_build_a_live_session(self):
+        # Build it but don't connect — just prove the factory resolves the
+        # model serving the live path without touching the network.
+        for model_id in (
+            "openai/gpt-4o-mini-transcribe",
+            "openai/gpt-4o-transcribe-diarize",
+            "openai/gpt-transcribe",
+            "openai/gpt-live-transcribe",
+        ):
+            with self.subTest(model=model_id):
+                sess = build_realtime_session(model_id=model_id)
+                self.assertIsInstance(sess, OpenAIRealtimeSession)
+                self.assertEqual(sess.model_id, "openai/gpt-live-transcribe")
 
 
 class OpenAIRealtimeSessionTests(TestCase):
@@ -171,7 +175,7 @@ class OpenAIRealtimeSessionTests(TestCase):
         self.assertEqual(cfg["type"], "transcription")
         audio_input = cfg["audio"]["input"]
         self.assertEqual(audio_input["format"], {"type": "audio/pcm", "rate": 24000})
-        self.assertEqual(audio_input["transcription"]["model"], "gpt-4o-mini-transcribe")
+        self.assertEqual(audio_input["transcription"]["model"], "gpt-live-transcribe")
         self.assertEqual(audio_input["transcription"]["language"], "en")
         self.assertIn("OncoBio Therapeutics", audio_input["transcription"]["prompt"])
         # We commit turns ourselves: turn_detection must be an explicit null

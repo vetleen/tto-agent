@@ -24,7 +24,10 @@ from llm.service.logger import log_transcription, log_transcription_error
 # decisions service); the old private name stays for callers and tests.
 from llm.service.openai_client import get_openai_client as _get_openai_client  # noqa: F401
 from llm.service.pricing import calculate_transcription_cost
-from llm.transcription_registry import get_transcription_model_info
+from llm.transcription_registry import (
+    canonical_transcription_model_id,
+    get_transcription_model_info,
+)
 from llm.types.context import RunContext
 
 logger = logging.getLogger(__name__)
@@ -80,9 +83,14 @@ class TranscriptionService:
         if not file_path.exists():
             raise FileNotFoundError(f"Audio file not found: {file_path}")
 
+        # Resolve to the model that serves the file endpoint (a retired ID's
+        # successor, a live model's counterpart); logs carry the resolved ID.
+        model_id = canonical_transcription_model_id(model_id, path="file") or model_id
         info = get_transcription_model_info(model_id)
         if info is None:
             raise ValueError(f"Unknown transcription model: {model_id}")
+        if not info.supports_file_transcription:
+            raise ValueError(f"Model {model_id} does not support file transcription")
 
         file_size = file_path.stat().st_size
         max_size = getattr(settings, "AUDIO_UPLOAD_MAX_SIZE_BYTES", info.max_file_size_bytes)

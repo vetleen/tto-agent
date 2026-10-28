@@ -192,21 +192,22 @@ def meeting_detail(request, meeting_uuid):
         for dr, items in saved_groups_by_room.items()
     ]
 
-    # Build the transcription model picker choices: every model the user is
-    # allowed to use (per cascading prefs), with display names from the
-    # transcription registry. Default = the meeting's saved model if any,
-    # else the user's resolved transcription default.
-    from llm.transcription_registry import get_transcription_model_info
+    # Build the transcription model picker choices. The page's primary action
+    # is LIVE transcription, so the picker offers the live-capable allowed
+    # models (or, when none is allowed, the file models, with Start disabled);
+    # uploads resolve the meeting's choice to the model serving the file path.
+    # Default = the meeting's saved model (resolved for live) if any, else the
+    # user's resolved live default.
+    from llm.transcription_registry import (
+        canonical_transcription_model_id,
+        get_transcription_model_info,
+        partition_transcription_models,
+    )
 
     try:
         from core.preferences import get_preferences
         prefs = get_preferences(request.user)
         allowed_models = list(prefs.allowed_transcription_models or [])
-        # The meeting page's primary action is LIVE transcription, so default the
-        # picker to the user's resolved LIVE model (falling back to the generic
-        # default). Previously this used the generic default, which displayed the
-        # wrong model whenever a user's live default differed from their generic
-        # one (e.g. live=gpt-4o-transcribe but default=gpt-4o-mini-transcribe).
         prefs_default = prefs.transcription_model_live or prefs.transcription_model or ""
         resolved_default_language = prefs.transcription_language or "auto"
     except Exception:
@@ -214,17 +215,12 @@ def meeting_detail(request, meeting_uuid):
         prefs_default = ""
         resolved_default_language = "auto"
 
+    # The allow-list is canonical (get_preferences normalizes retired IDs and
+    # drops unknown ones), so every pool entry is registered.
+    live_pool, file_pool = partition_transcription_models(allowed_models)
     transcription_model_choices = []
-    unknown_models: list[str] = []
-    for model_id in allowed_models:
+    for model_id in (live_pool or file_pool):
         info = get_transcription_model_info(model_id)
-        if info is None:
-            # Allow-listed but not registered — almost always a typo
-            # (missing "openai/" prefix, or a model we retired). Keep the UI
-            # clean by hiding it from the dropdown and logging once per
-            # page-render so operators notice and fix the config.
-            unknown_models.append(model_id)
-            continue
         transcription_model_choices.append({
             "id": model_id,
             "display_name": info.display_name,
@@ -234,16 +230,13 @@ def meeting_detail(request, meeting_uuid):
             "supports_output_streaming": bool(info.supports_output_streaming),
             "supports_diarization": bool(info.supports_diarization),
         })
-    if unknown_models:
-        logger.warning(
-            "meeting_detail: dropping unknown transcription model ids from picker "
-            "(user=%s meeting=%s unknown=%s) — check TRANSCRIPTION_ALLOWED_MODELS / org preferences",
-            request.user.id, meeting.uuid, unknown_models,
-        )
 
     known_ids = [c["id"] for c in transcription_model_choices]
-    selected_model = meeting.transcription_model or prefs_default or (
-        known_ids[0] if known_ids else ""
+    selected_model = (
+        canonical_transcription_model_id(meeting.transcription_model, path="live")
+        or canonical_transcription_model_id(meeting.transcription_model)
+        or prefs_default
+        or (known_ids[0] if known_ids else "")
     )
     # If the saved selection is no longer valid (model retired, typo in allowed
     # list), fall back to the first known choice so the picker stays consistent
@@ -471,12 +464,15 @@ def meeting_update_metadata(request, meeting_uuid):
         new_model = (request.POST.get("transcription_model") or "").strip()
         # Validate against the user's allowed transcription models so we can't
         # be talked into using something the org has disabled.
+        from llm.transcription_registry import normalize_transcription_model_ids
+
         try:
             from core.preferences import get_preferences
             allowed = list(get_preferences(request.user).allowed_transcription_models or [])
         except Exception:
             allowed = []
-        if new_model and new_model not in allowed:
+        # A page loaded before a model was retired may still send its old ID.
+        if new_model and not any(m in allowed for m in normalize_transcription_model_ids([new_model])):
             return JsonResponse(
                 {"error": f"Model '{new_model}' is not in your allowed transcription models."},
                 status=400,
@@ -817,31 +813,28 @@ def meeting_upload_audio(request, meeting_uuid):
         messages.error(request, f"Audio file is too large (max {max_bytes // (1024 * 1024)} MB).")
         return redirect("meeting_detail", meeting_uuid=meeting.uuid)
 
-    # Pick the transcription model for the *upload* path. User's upload-
-    # specific default wins; the meeting-level override is honoured only if
-    # it's a registered model (any capability works for upload, including
-    # diarize and whisper-1).
+    # Pick the transcription model for the *upload* (file) path: the meeting's
+    # choice resolved to the model serving that path (a live model's file
+    # counterpart, a retired ID's successor), else the user's upload default,
+    # else the first file-capable allowed model.
+    from core.preferences import resolve_transcription_model
+
     try:
         from core.preferences import get_preferences
         prefs = get_preferences(request.user)
         allowed_models = list(getattr(prefs, "allowed_transcription_models", None) or [])
-        upload_default = getattr(prefs, "transcription_model_upload", "") or ""
     except Exception:
+        prefs = None
         allowed_models = []
-        upload_default = ""
     # An empty allow-list means the org has disabled transcription (see
     # core.preferences). Refuse rather than silently falling back to the system
     # default model, which would bypass that intent.
-    if not allowed_models:
+    model_id = resolve_transcription_model(
+        (meeting.transcription_model or "").strip(), prefs, path="file",
+    ) if allowed_models else ""
+    if not model_id:
         messages.error(request, "Transcription isn't enabled for your account.")
         return redirect("meeting_detail", meeting_uuid=meeting.uuid)
-    meeting_model = (meeting.transcription_model or "").strip()
-    if meeting_model and meeting_model in allowed_models:
-        model_id = meeting_model
-    elif upload_default and upload_default in allowed_models:
-        model_id = upload_default
-    else:
-        model_id = allowed_models[0]
 
     # Persist the audio so the Celery worker can read it. On Heroku (S3
     # storage) this goes to shared remote storage; locally it writes to disk.

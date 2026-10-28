@@ -400,7 +400,8 @@ class OrchestratorTests(TestCase):
         self.assertEqual(m.status, Meeting.Status.READY)
         self.assertEqual(m.transcription_chunks_total, 0)  # reset on success
         self.assertEqual(m.transcription_chunks_done, 0)
-        self.assertEqual(m.transcription_model, "openai/gpt-4o-mini-transcribe")
+        # A retired ID is stamped as the file model that actually ran.
+        self.assertEqual(m.transcription_model, "openai/gpt-transcribe")
         self.assertIn("First chunk introduction", m.transcript)
         self.assertIn("sales target review", m.transcript)
         # No duplication of the long overlap phrases.

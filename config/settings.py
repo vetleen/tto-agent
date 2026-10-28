@@ -1036,14 +1036,14 @@ PII_SHADOW_MAX_WINDOWS = _env_int("PII_SHADOW_MAX_WINDOWS", "500")  # one quick 
 PII_SHADOW_MAX_REVIEWS = _env_int("PII_SHADOW_MAX_REVIEWS", "20")
 
 # Transcription settings
-TRANSCRIPTION_DEFAULT_MODEL = os.environ.get("TRANSCRIPTION_DEFAULT_MODEL", "openai/gpt-4o-mini-transcribe")
+TRANSCRIPTION_DEFAULT_MODEL = os.environ.get("TRANSCRIPTION_DEFAULT_MODEL", "openai/gpt-transcribe")
 # Per-path defaults. When unset, fall back to TRANSCRIPTION_DEFAULT_MODEL.
-# ``TRANSCRIPTION_DEFAULT_MODEL_LIVE`` must be a streaming-capable model — the
-# preference resolver filters to live-capable candidates so an incompatible
-# value is silently replaced by the first valid option.
+# Each is resolved to the model serving its path (gpt-transcribe for files,
+# gpt-live-transcribe for live), and retired gpt-4o IDs forward to their
+# successors (llm/transcription_registry.py), so old values keep working.
 TRANSCRIPTION_DEFAULT_MODEL_LIVE = os.environ.get("TRANSCRIPTION_DEFAULT_MODEL_LIVE", "")
 TRANSCRIPTION_DEFAULT_MODEL_UPLOAD = os.environ.get("TRANSCRIPTION_DEFAULT_MODEL_UPLOAD", "")
-TRANSCRIPTION_ALLOWED_MODELS = [m.strip() for m in os.environ.get("TRANSCRIPTION_ALLOWED_MODELS", "openai/gpt-4o-transcribe,openai/gpt-4o-mini-transcribe,openai/gpt-4o-transcribe-diarize").split(",") if m.strip()]
+TRANSCRIPTION_ALLOWED_MODELS = [m.strip() for m in os.environ.get("TRANSCRIPTION_ALLOWED_MODELS", "openai/gpt-transcribe,openai/gpt-live-transcribe").split(",") if m.strip()]
 AUDIO_UPLOAD_MAX_SIZE_BYTES = _env_int("AUDIO_UPLOAD_MAX_SIZE_BYTES", "50000000")  # 50 MB
 # Live (realtime) transcription: we detect end of speech ourselves and commit
 # each turn (meetings/services/turn_detector.py). Pause that closes a turn,

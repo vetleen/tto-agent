@@ -94,19 +94,37 @@ class SetModelGuardTests(TransactionTestCase):
         await consumer._handle_set_model({"model_id": "openai/gpt-4o-transcribe"})
         self.assertTrue(any(m["type"] == "error" for m in sent))
 
-    async def test_rejects_non_streaming_model_in_realtime_mode(self):
+    async def test_rejects_model_without_an_allowed_live_model_in_realtime_mode(self):
+        # The org allows only the file model, so its live counterpart is off.
         consumer, sent, _closed = _consumer_with_send()
         consumer._realtime_started = False
         consumer._realtime_mode = "realtime"
 
         async def _allowed():
-            return ["openai/gpt-4o-transcribe-diarize"]
+            return ["openai/gpt-transcribe"]
 
         consumer._get_allowed_transcription_models = _allowed
-        await consumer._handle_set_model(
-            {"model_id": "openai/gpt-4o-transcribe-diarize"}
-        )
+        await consumer._handle_set_model({"model_id": "openai/gpt-transcribe"})
         self.assertTrue(any("does not support live streaming" in m.get("message", "") for m in sent))
+
+    async def test_file_or_retired_choice_resolves_to_the_live_model_in_realtime_mode(self):
+        consumer, sent, _closed = _consumer_with_send()
+        consumer._realtime_started = False
+        consumer._realtime_mode = "realtime"
+        consumer.meeting_id = None
+
+        async def _allowed():
+            return ["openai/gpt-transcribe", "openai/gpt-live-transcribe"]
+
+        async def _persist(model_id):
+            return None
+
+        consumer._get_allowed_transcription_models = _allowed
+        consumer._persist_meeting_model = _persist
+        for choice in ("openai/gpt-transcribe", "openai/gpt-4o-transcribe-diarize"):
+            await consumer._handle_set_model({"model_id": choice})
+            self.assertEqual(consumer._model_id, "openai/gpt-live-transcribe")
+        self.assertFalse(any(m["type"] == "error" for m in sent))
 
 
 class SetLanguageTests(TransactionTestCase):

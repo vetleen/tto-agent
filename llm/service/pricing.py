@@ -147,16 +147,13 @@ def calculate_transcription_cost(
 ) -> Optional[Decimal]:
     """Compute the USD cost of a transcription call.
 
-    Prefers token-based billing when the caller supplies both ``input_tokens``
-    and ``output_tokens`` AND the model has per-token prices configured —
-    this is the accurate path for ``gpt-4o-transcribe`` /
-    ``gpt-4o-mini-transcribe``, which return a populated ``response.usage``
-    from the OpenAI API.
-
-    Falls back to ``audio_duration_seconds * price_per_minute`` when:
-      - the caller did not (or could not) pass tokens (e.g. whisper-1's
-        ``UsageDuration`` response, or a response missing ``usage`` entirely);
-      - the registered model has no per-token pricing.
+    Uses token-based billing only when the caller supplies both
+    ``input_tokens`` and ``output_tokens`` AND the model has per-token prices
+    configured. The current models (``gpt-transcribe``,
+    ``gpt-live-transcribe``) bill per minute and report ``usage`` as a
+    duration, so they take the per-minute path:
+    ``audio_duration_seconds * price_per_minute``. Retired IDs are priced as
+    their successor.
 
     Returns *None* for unknown models or when neither pricing path is
     configured.

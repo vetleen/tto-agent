@@ -988,26 +988,34 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
                 "set_model: cannot switch models while a live session is active."
             )
             return
+        from llm.transcription_registry import (
+            canonical_transcription_model_id,
+            normalize_transcription_model_ids,
+        )
+
         try:
             allowed = await self._get_allowed_transcription_models()
         except Exception:
             allowed = []
-        if new_model not in allowed:
+        # A page loaded before a model was retired may still send its old ID.
+        if not any(m in allowed for m in normalize_transcription_model_ids([new_model])):
             await self._send_error(f"set_model: '{new_model}' is not allowed for this user")
             return
-        # In realtime mode the next frame builds the session with this model; a
-        # batch-only model would make build_realtime_session raise. Reject it here
-        # (with a clear message) rather than letting it fall back to chunked.
+        # In realtime mode the next frame builds the session with this model,
+        # resolved to the model that serves live (a file model's counterpart).
+        # Reject a choice with no allowed live model (with a clear message)
+        # rather than letting it fall back to chunked. The chunk task resolves
+        # its own file model.
         if self._realtime_mode != "chunked":
-            from llm.transcription_registry import get_transcription_model_info
-
-            info = get_transcription_model_info(new_model)
-            if info is None or not info.supports_live_streaming:
+            live_model = canonical_transcription_model_id(new_model, path="live")
+            if not live_model or live_model not in allowed:
                 await self._send_error(
                     f"set_model: '{new_model}' does not support live streaming."
                 )
                 return
-        self._model_id = new_model
+            self._model_id = live_model
+        else:
+            self._model_id = new_model
         try:
             await self._persist_meeting_model(new_model)
         except Exception:
@@ -1286,18 +1294,17 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         )
         segment_index_base = (max_existing + 1) if max_existing is not None else 0
 
-        # Pick the transcription model. Priority order for the *live* path:
-        #   1. Meeting-level override (only if it's live-capable)
-        #   2. User/org "live" default from preferences
-        #   3. First live-capable model in the allow-list
-        # This means a user whose general default is a diarize model (batch-only)
-        # still gets a working live session — the consumer picks a live-capable
-        # model from their allow-list automatically.
-        from llm.transcription_registry import get_transcription_model_info
+        # Pick the transcription model for the *live* path (core.preferences.
+        # resolve_transcription_model): the meeting's choice resolved to the
+        # model that serves live (a file model's live counterpart, a retired
+        # ID's successor), else the user/org live default, else the first
+        # live-capable allowed model. The chunked fallback resolves the same
+        # choice for the file path in its task.
+        from core.preferences import resolve_transcription_model
 
         live_mode = "chunked"
         allowed_models: list[str] = []
-        live_default = ""
+        prefs = None
         try:
             from accounts.models import (
                 invalidate_membership_cache,
@@ -1311,7 +1318,6 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
             invalidate_user_preferences_cache(self.user)
             prefs = get_preferences(self.user)
             allowed_models = list(getattr(prefs, "allowed_transcription_models", None) or [])
-            live_default = getattr(prefs, "transcription_model_live", "") or ""
             live_mode = getattr(prefs, "live_transcription_mode", "chunked") or "chunked"
         except Exception:
             pass
@@ -1327,36 +1333,19 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
             )
             return {"ok": False, "code": 4402}
 
-        def _is_live_capable(mid: str) -> bool:
-            info = get_transcription_model_info(mid)
-            return bool(info and info.supports_live_streaming)
-
-        live_capable_allowed = [m for m in allowed_models if _is_live_capable(m)]
-
         meeting_model = (meeting.transcription_model or "").strip()
-        if meeting_model and meeting_model in live_capable_allowed:
-            model_id = meeting_model
-        elif live_default and live_default in live_capable_allowed:
-            model_id = live_default
-        elif live_capable_allowed:
-            model_id = live_capable_allowed[0]
-        else:
-            # No live-capable models in the allow-list. Keep the meeting's
-            # choice (or first allowed) so the user sees a meaningful error
-            # downstream rather than silently switching providers.
-            model_id = meeting_model or allowed_models[0]
-
-        # If no live-capable model is available (e.g. org only allows diarize),
-        # force chunked mode — which will also fail, but at least with a clearer
-        # error path. Realtime is physically impossible without a capable model.
-        info = get_transcription_model_info(model_id)
-        if live_mode != "chunked" and (info is None or not info.supports_live_streaming):
-            logger.info(
-                "_load_and_lock_meeting: selected model %s cannot stream live; "
-                "forcing chunked mode for this session",
-                model_id,
-            )
-            live_mode = "chunked"
+        model_id = resolve_transcription_model(meeting_model, prefs, path="live")
+        if not model_id:
+            # No live-capable model allowed: chunked mode on the file model.
+            # Realtime is physically impossible without a capable model.
+            model_id = resolve_transcription_model(meeting_model, prefs, path="file") or allowed_models[0]
+            if live_mode != "chunked":
+                logger.info(
+                    "_load_and_lock_meeting: no live-capable model allowed; "
+                    "forcing chunked mode for this session (model=%s)",
+                    model_id,
+                )
+                live_mode = "chunked"
 
         # Seed NO prompt on the realtime path. gpt-4o-transcribe treats the
         # realtime `prompt` as a token-biasing hint, not an instruction, so on

@@ -597,182 +597,192 @@ class MaxContextTokensTest(TestCase):
 
 
 class TranscriptionModelCascadeTest(TestCase):
-    """Transcription model preferences cascade: System -> Org -> User."""
+    """Transcription model preferences cascade: System -> Org, per path.
+
+    The file path (uploads, data-room audio, the generic default) and the live
+    path each resolve from their own pool; retired gpt-4o IDs in settings or
+    org prefs forward to their successors.
+    """
+
+    FILE = "openai/gpt-transcribe"
+    LIVE = "openai/gpt-live-transcribe"
+
+    def _prefs(self, email, org_prefs=None):
+        user = _create_user(email=email)
+        if org_prefs is not None:
+            org = Organization.objects.create(name=email, slug=email.split("@")[0], preferences=org_prefs)
+            Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
+        return get_preferences(user)
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
         LLM_DEFAULT_MID_MODEL="",
         LLM_DEFAULT_CHEAP_MODEL="",
-        TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-4o-mini-transcribe",
-        TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-4o-transcribe", "openai/gpt-4o-mini-transcribe"],
+        TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-transcribe",
+        TRANSCRIPTION_DEFAULT_MODEL_LIVE="",
+        TRANSCRIPTION_DEFAULT_MODEL_UPLOAD="",
+        TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-transcribe", "openai/gpt-live-transcribe"],
     )
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
     @patch("llm.tools.registry.get_tool_registry")
-    def test_system_default(self, mock_registry, mock_allowed):
-        """Transcription model resolves to system default when no org/user prefs."""
+    def test_system_defaults_per_path(self, mock_registry, mock_allowed):
         mock_registry.return_value.list_tools.return_value = {}
-
-        user = _create_user(email="tx-default@example.com")
-        prefs = get_preferences(user)
-        self.assertEqual(prefs.transcription_model, "openai/gpt-4o-mini-transcribe")
-        self.assertEqual(
-            prefs.allowed_transcription_models,
-            ["openai/gpt-4o-transcribe", "openai/gpt-4o-mini-transcribe"],
-        )
+        prefs = self._prefs("tx-default@example.com")
+        self.assertEqual(prefs.allowed_transcription_models, [self.FILE, self.LIVE])
+        self.assertEqual(prefs.transcription_model, self.FILE)
+        self.assertEqual(prefs.transcription_model_upload, self.FILE)
+        # The generic default resolves to its live counterpart for live.
+        self.assertEqual(prefs.transcription_model_live, self.LIVE)
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
         LLM_DEFAULT_MID_MODEL="",
         LLM_DEFAULT_CHEAP_MODEL="",
+        # Production on 2026-10-28: only retired IDs in the config vars.
         TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-4o-mini-transcribe",
-        TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-4o-transcribe", "openai/gpt-4o-mini-transcribe"],
+        TRANSCRIPTION_DEFAULT_MODEL_LIVE="openai/gpt-4o-mini-transcribe",
+        TRANSCRIPTION_DEFAULT_MODEL_UPLOAD="openai/gpt-4o-transcribe-diarize",
+        TRANSCRIPTION_ALLOWED_MODELS=[
+            "openai/gpt-4o-transcribe", "openai/gpt-4o-mini-transcribe", "openai/gpt-4o-transcribe-diarize",
+        ],
     )
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
     @patch("llm.tools.registry.get_tool_registry")
-    def test_org_restricts_allowed(self, mock_registry, mock_allowed):
-        """Org restricts allowed transcription models to a subset."""
+    def test_old_env_defaults_forward_per_path(self, mock_registry, mock_allowed):
         mock_registry.return_value.list_tools.return_value = {}
+        prefs = self._prefs("tx-old-env@example.com")
+        self.assertEqual(prefs.allowed_transcription_models, [self.FILE, self.LIVE])
+        self.assertEqual(prefs.transcription_model_upload, self.FILE)
+        self.assertEqual(prefs.transcription_model_live, self.LIVE)
+        self.assertEqual(prefs.transcription_model, self.FILE)
 
-        user = _create_user(email="tx-org-restrict@example.com")
-        org = Organization.objects.create(name="TxOrg1", slug="txorg1", preferences={
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5.4",
+        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_CHEAP_MODEL="",
+        TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-transcribe",
+        TRANSCRIPTION_DEFAULT_MODEL_LIVE="",
+        TRANSCRIPTION_DEFAULT_MODEL_UPLOAD="",
+        TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-transcribe", "openai/gpt-live-transcribe"],
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_org_prefs_naming_retired_ids_forward(self, mock_registry, mock_allowed):
+        # Org 1 in production: live + default stored as retired IDs, no list.
+        mock_registry.return_value.list_tools.return_value = {}
+        prefs = self._prefs("tx-org-old@example.com", {
+            "transcription_models": {
+                "live": "openai/gpt-4o-transcribe",
+                "default": "openai/gpt-4o-mini-transcribe",
+            },
+        })
+        self.assertEqual(prefs.transcription_model_live, self.LIVE)
+        self.assertEqual(prefs.transcription_model, self.FILE)
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5.4",
+        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_CHEAP_MODEL="",
+        TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-transcribe",
+        TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-transcribe", "openai/gpt-live-transcribe"],
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_old_org_allow_list_allows_both_successors(self, mock_registry, mock_allowed):
+        mock_registry.return_value.list_tools.return_value = {}
+        prefs = self._prefs("tx-old-list@example.com", {
             "allowed_transcription_models": ["openai/gpt-4o-transcribe"],
         })
-        Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
-
-        prefs = get_preferences(user)
-        self.assertEqual(prefs.allowed_transcription_models, ["openai/gpt-4o-transcribe"])
-        # Default not in allowed => falls back to first allowed
-        self.assertEqual(prefs.transcription_model, "openai/gpt-4o-transcribe")
+        self.assertEqual(prefs.allowed_transcription_models, [self.FILE, self.LIVE])
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
         LLM_DEFAULT_MID_MODEL="",
         LLM_DEFAULT_CHEAP_MODEL="",
-        TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-4o-mini-transcribe",
-        TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-4o-transcribe", "openai/gpt-4o-mini-transcribe"],
+        TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-transcribe",
+        TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-transcribe", "openai/gpt-live-transcribe"],
+    )
+    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
+    @patch("llm.tools.registry.get_tool_registry")
+    def test_org_restricted_to_file_model_has_no_live_model(self, mock_registry, mock_allowed):
+        mock_registry.return_value.list_tools.return_value = {}
+        prefs = self._prefs("tx-file-only@example.com", {
+            "allowed_transcription_models": ["openai/gpt-transcribe"],
+        })
+        self.assertEqual(prefs.allowed_transcription_models, [self.FILE])
+        self.assertEqual(prefs.transcription_model_upload, self.FILE)
+        self.assertEqual(prefs.transcription_model_live, "")
+
+    @override_settings(
+        LLM_DEFAULT_MODEL="openai/gpt-5.4",
+        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_CHEAP_MODEL="",
+        TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-transcribe",
+        TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-transcribe", "openai/gpt-live-transcribe"],
     )
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
     @patch("llm.tools.registry.get_tool_registry")
     def test_org_empty_list_disables(self, mock_registry, mock_allowed):
-        """Org with explicitly empty allowed_transcription_models disables transcription."""
         mock_registry.return_value.list_tools.return_value = {}
-
-        user = _create_user(email="tx-org-disabled@example.com")
-        org = Organization.objects.create(name="TxOrg2", slug="txorg2", preferences={
-            "allowed_transcription_models": [],
-        })
-        Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
-
-        prefs = get_preferences(user)
+        prefs = self._prefs("tx-org-disabled@example.com", {"allowed_transcription_models": []})
         self.assertEqual(prefs.allowed_transcription_models, [])
         self.assertEqual(prefs.transcription_model, "")
+        self.assertEqual(prefs.transcription_model_live, "")
+        self.assertEqual(prefs.transcription_model_upload, "")
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
         LLM_DEFAULT_MID_MODEL="",
         LLM_DEFAULT_CHEAP_MODEL="",
-        TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-4o-mini-transcribe",
-        TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-4o-transcribe", "openai/gpt-4o-mini-transcribe"],
+        TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-transcribe",
+        TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-transcribe", "openai/gpt-live-transcribe"],
     )
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
     @patch("llm.tools.registry.get_tool_registry")
     def test_stored_user_transcription_model_is_ignored(self, mock_registry, mock_allowed):
         mock_registry.return_value.list_tools.return_value = {}
-
         user = _create_user(email="tx-user-picks@example.com")
         settings = UserSettings.objects.get(user=user)
-        settings.preferences = {
-            "transcription_models": {"default": "openai/gpt-4o-transcribe"},
-        }
+        settings.preferences = {"transcription_models": {"default": "openai/gpt-live-transcribe"}}
         settings.save()
+        self.assertEqual(get_preferences(user).transcription_model, self.FILE)
 
-        prefs = get_preferences(user)
-        self.assertEqual(prefs.transcription_model, "openai/gpt-4o-mini-transcribe")
 
-    @override_settings(
-        LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="",
-        LLM_DEFAULT_CHEAP_MODEL="",
-        TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-4o-mini-transcribe",
-        TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-4o-transcribe", "openai/gpt-4o-mini-transcribe"],
-    )
-    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
-    @patch("llm.tools.registry.get_tool_registry")
-    def test_user_picks_disallowed_falls_back(self, mock_registry, mock_allowed):
-        """User picks a disallowed model, falls back to system default."""
-        mock_registry.return_value.list_tools.return_value = {}
+class ResolveTranscriptionModelTest(TestCase):
+    """core.preferences.resolve_transcription_model — per-meeting, per-path."""
 
-        user = _create_user(email="tx-user-disallowed@example.com")
-        org = Organization.objects.create(name="TxOrg3", slug="txorg3", preferences={
-            "allowed_transcription_models": ["openai/gpt-4o-mini-transcribe"],
-        })
-        Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
+    FILE = "openai/gpt-transcribe"
+    LIVE = "openai/gpt-live-transcribe"
 
-        settings = UserSettings.objects.get(user=user)
-        settings.preferences = {
-            "transcription_models": {"default": "openai/gpt-4o-transcribe"},
-        }
-        settings.save()
+    def _prefs(self, allowed=None, live="", upload=""):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            allowed_transcription_models=[self.FILE, self.LIVE] if allowed is None else allowed,
+            transcription_model_live=live,
+            transcription_model_upload=upload,
+            transcription_model=upload,
+        )
 
-        prefs = get_preferences(user)
-        # User's choice not in org allowed, so falls back
-        self.assertEqual(prefs.transcription_model, "openai/gpt-4o-mini-transcribe")
+    def test_meeting_choice_resolves_to_the_paths_model(self):
+        from core.preferences import resolve_transcription_model
+        prefs = self._prefs(live=self.LIVE, upload=self.FILE)
+        self.assertEqual(resolve_transcription_model(self.LIVE, prefs, path="file"), self.FILE)
+        self.assertEqual(resolve_transcription_model(self.FILE, prefs, path="live"), self.LIVE)
+        self.assertEqual(
+            resolve_transcription_model("openai/gpt-4o-transcribe-diarize", prefs, path="live"), self.LIVE,
+        )
 
-    @override_settings(
-        LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="",
-        LLM_DEFAULT_CHEAP_MODEL="",
-        TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-4o-mini-transcribe",
-        TRANSCRIPTION_DEFAULT_MODEL_LIVE="",
-        TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-4o-transcribe", "openai/gpt-4o-mini-transcribe"],
-    )
-    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
-    @patch("llm.tools.registry.get_tool_registry")
-    def test_live_model_follows_org_default_when_no_live_override(self, mock_registry, mock_allowed):
-        """The live model follows the organization's general default."""
-        mock_registry.return_value.list_tools.return_value = {}
+    def test_falls_back_to_default_then_pool(self):
+        from core.preferences import resolve_transcription_model
+        self.assertEqual(
+            resolve_transcription_model("", self._prefs(upload=self.FILE), path="file"), self.FILE,
+        )
+        self.assertEqual(resolve_transcription_model("openai/typo", self._prefs(), path="live"), self.LIVE)
 
-        user = _create_user(email="tx-live-follows-default@example.com")
-        org = Organization.objects.create(name="TxDefault", slug="tx-default", preferences={
-            "allowed_transcription_models": [
-                "openai/gpt-4o-transcribe", "openai/gpt-4o-mini-transcribe"
-            ],
-            "transcription_models": {"default": "openai/gpt-4o-transcribe"},
-        })
-        Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
-
-        prefs = get_preferences(user)
-        self.assertEqual(prefs.transcription_model, "openai/gpt-4o-transcribe")
-        self.assertEqual(prefs.transcription_model_live, "openai/gpt-4o-transcribe")
-
-    @override_settings(
-        LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="",
-        LLM_DEFAULT_CHEAP_MODEL="",
-        TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-4o-mini-transcribe",
-        TRANSCRIPTION_DEFAULT_MODEL_LIVE="",
-        TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-4o-transcribe", "openai/gpt-4o-mini-transcribe"],
-    )
-    @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
-    @patch("llm.tools.registry.get_tool_registry")
-    def test_explicit_org_live_override_wins_over_default(self, mock_registry, mock_allowed):
-        """An explicit organization live override wins over its general default."""
-        mock_registry.return_value.list_tools.return_value = {}
-
-        user = _create_user(email="tx-live-override@example.com")
-        org = Organization.objects.create(name="TxLive", slug="tx-live", preferences={
-            "allowed_transcription_models": [
-                "openai/gpt-4o-transcribe", "openai/gpt-4o-mini-transcribe"
-            ],
-            "transcription_models": {
-                "default": "openai/gpt-4o-transcribe",
-                "live": "openai/gpt-4o-mini-transcribe",
-            },
-        })
-        Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
-
-        prefs = get_preferences(user)
-        self.assertEqual(prefs.transcription_model_live, "openai/gpt-4o-mini-transcribe")
+    def test_empty_when_the_path_has_no_allowed_model(self):
+        from core.preferences import resolve_transcription_model
+        self.assertEqual(resolve_transcription_model(self.FILE, self._prefs(allowed=[self.FILE]), path="live"), "")
+        self.assertEqual(resolve_transcription_model(self.LIVE, self._prefs(allowed=[]), path="file"), "")
 
 
 @override_settings(

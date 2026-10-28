@@ -2,24 +2,7 @@
 from __future__ import annotations
 
 
-def partition_transcription_models(allowed: list[str]) -> tuple[list[str], list[str]]:
-    """Split an allow-list into (live_capable, upload_capable) pools.
-
-    Each dropdown only offers options that work in its context. Unknown
-    registry entries are dropped silently (same filtering the meeting
-    picker does).
-    """
-    from llm.transcription_registry import get_transcription_model_info
-
-    live_capable = [
-        mid for mid in allowed
-        if (info := get_transcription_model_info(mid)) and info.supports_live_streaming
-    ]
-    upload_capable = [
-        mid for mid in allowed
-        if get_transcription_model_info(mid) is not None
-    ]
-    return live_capable, upload_capable
+from llm.transcription_registry import partition_transcription_models  # noqa: F401  (re-export)
 
 
 def build_feature_rows(

@@ -60,11 +60,16 @@ def transcribe_meeting_chunk_task(
     from django.contrib.auth import get_user_model
 
     from documents.services.transcription import transcribe_audio
+    from llm.transcription_registry import canonical_transcription_model_id
 
     from .models import Meeting, MeetingTranscriptSegment
 
     User = get_user_model()
     meeting_uuid = None
+    # The consumer hands over the session's (live) model; chunks go through the
+    # file endpoint, so use the model that serves it. Also heals tasks queued
+    # with a retired ID across a deploy.
+    model_id = canonical_transcription_model_id(model_id, path="file") or model_id
     try:
         from django.db.models.functions import Right
 

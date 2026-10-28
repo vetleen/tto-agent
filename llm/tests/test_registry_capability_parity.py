@@ -49,10 +49,17 @@ class ModelRegistryCapabilityTests(SimpleTestCase):
 
 
 class TranscriptionCapabilityTests(SimpleTestCase):
-    def test_chunking_strategy_matches_gpt4o_rule(self):
+    def test_every_model_serves_a_path(self):
         for model_id, info in _TRANSCRIPTION_MODELS.items():
             with self.subTest(model=model_id):
-                self.assertEqual(
-                    info.supports_chunking_strategy,
-                    info.api_model.startswith("gpt-4o"),
-                )
+                self.assertTrue(info.supports_live_streaming or info.supports_file_transcription)
+
+    def test_file_only_flags_are_off_for_live_only_models(self):
+        # Output streaming and chunking_strategy are file-endpoint parameters;
+        # a live-only model must never be routed through them.
+        for model_id, info in _TRANSCRIPTION_MODELS.items():
+            if info.supports_file_transcription:
+                continue
+            with self.subTest(model=model_id):
+                self.assertFalse(info.supports_output_streaming)
+                self.assertFalse(info.supports_chunking_strategy)

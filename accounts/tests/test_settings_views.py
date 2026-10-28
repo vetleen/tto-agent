@@ -1241,8 +1241,8 @@ class OrgSubagentBudgetsUpdateTests(TestCase):
 
 @override_settings(
     ALLOWED_HOSTS=["testserver"],
-    TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-4o-transcribe", "openai/gpt-4o-mini-transcribe"],
-    TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-4o-mini-transcribe",
+    TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-transcribe", "openai/gpt-live-transcribe"],
+    TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-transcribe",
 )
 class OrgAllowedTranscriptionModelsUpdateTests(TestCase):
     def setUp(self):
@@ -1266,12 +1266,26 @@ class OrgAllowedTranscriptionModelsUpdateTests(TestCase):
         self.client.login(email=self.admin_user.email, password=self.password)
         response = self.client.post(
             self.url,
-            json.dumps({"allowed_transcription_models": ["openai/gpt-4o-transcribe"]}),
+            json.dumps({"allowed_transcription_models": ["openai/gpt-transcribe"]}),
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 200)
         self.org.refresh_from_db()
-        self.assertEqual(self.org.preferences["allowed_transcription_models"], ["openai/gpt-4o-transcribe"])
+        self.assertEqual(self.org.preferences["allowed_transcription_models"], ["openai/gpt-transcribe"])
+
+    def test_retired_id_is_stored_as_its_successors(self):
+        self.client.login(email=self.admin_user.email, password=self.password)
+        response = self.client.post(
+            self.url,
+            json.dumps({"allowed_transcription_models": ["openai/gpt-4o-mini-transcribe"]}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.org.refresh_from_db()
+        self.assertEqual(
+            self.org.preferences["allowed_transcription_models"],
+            ["openai/gpt-transcribe", "openai/gpt-live-transcribe"],
+        )
 
     def test_reject_model_not_in_system(self):
         self.client.login(email=self.admin_user.email, password=self.password)
@@ -1313,8 +1327,8 @@ class OrgAllowedTranscriptionModelsUpdateTests(TestCase):
 
 @override_settings(
     ALLOWED_HOSTS=["testserver"],
-    TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-4o-transcribe", "openai/gpt-4o-mini-transcribe"],
-    TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-4o-mini-transcribe",
+    TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-transcribe", "openai/gpt-live-transcribe"],
+    TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-transcribe",
 )
 class OrgTranscriptionModelUpdateTests(TestCase):
     def setUp(self):
@@ -1332,12 +1346,37 @@ class OrgTranscriptionModelUpdateTests(TestCase):
         self.client.login(email=self.admin_user.email, password=self.password)
         response = self.client.post(
             self.url,
-            json.dumps({"model": "openai/gpt-4o-transcribe"}),
+            json.dumps({"model": "openai/gpt-transcribe"}),
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 200)
         self.org.refresh_from_db()
-        self.assertEqual(self.org.preferences["transcription_models"]["default"], "openai/gpt-4o-transcribe")
+        self.assertEqual(self.org.preferences["transcription_models"]["default"], "openai/gpt-transcribe")
+
+    def _post(self, model, kind):
+        self.client.login(email=self.admin_user.email, password=self.password)
+        return self.client.post(
+            self.url, json.dumps({"model": model, "kind": kind}), content_type="application/json",
+        )
+
+    def test_retired_live_id_is_stored_as_the_live_model(self):
+        response = self._post("openai/gpt-4o-mini-transcribe", "live")
+        self.assertEqual(response.status_code, 200)
+        self.org.refresh_from_db()
+        self.assertEqual(
+            self.org.preferences["transcription_models"]["live"], "openai/gpt-live-transcribe",
+        )
+
+    def test_retired_upload_id_is_stored_as_the_file_model(self):
+        response = self._post("openai/gpt-4o-transcribe-diarize", "upload")
+        self.assertEqual(response.status_code, 200)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.preferences["transcription_models"]["upload"], "openai/gpt-transcribe")
+
+    def test_current_model_for_the_wrong_path_is_rejected(self):
+        self.assertEqual(self._post("openai/gpt-transcribe", "live").status_code, 400)
+        self.assertEqual(self._post("openai/gpt-live-transcribe", "upload").status_code, 400)
+        self.assertEqual(self._post("openai/gpt-live-transcribe", "default").status_code, 400)
 
     def test_admin_clears_default(self):
         self.client.login(email=self.admin_user.email, password=self.password)
@@ -1361,8 +1400,8 @@ class OrgTranscriptionModelUpdateTests(TestCase):
 
 @override_settings(
     ALLOWED_HOSTS=["testserver"],
-    TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-4o-transcribe", "openai/gpt-4o-mini-transcribe"],
-    TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-4o-mini-transcribe",
+    TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-transcribe", "openai/gpt-live-transcribe"],
+    TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-transcribe",
 )
 class PreferencesTranscriptionModelUpdateTests(TestCase):
     def setUp(self):

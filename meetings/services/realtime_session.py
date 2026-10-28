@@ -43,7 +43,10 @@ from collections import deque
 from dataclasses import dataclass
 from typing import AsyncIterator, Optional
 
-from llm.transcription_registry import get_transcription_model_info
+from llm.transcription_registry import (
+    canonical_transcription_model_id,
+    get_transcription_model_info,
+)
 from meetings.services.turn_detector import (
     PCM_BYTES_PER_SECOND,
     TurnDecision,
@@ -220,6 +223,9 @@ class OpenAIRealtimeSession:
         _ws_connect_factory=None,   # test seam; replaces _default_ws_connect
         _api_key: str | None = None,
     ):
+        # Resolve to the model that serves the realtime socket (a retired ID's
+        # successor, a file model's counterpart).
+        model_id = canonical_transcription_model_id(model_id, path="live") or model_id
         self.model_id = model_id
         self.prompt = prompt
         self.language = language
@@ -920,10 +926,12 @@ def build_realtime_session(
 ) -> OpenAIRealtimeSession:
     """Return a provider-appropriate realtime transcription session.
 
-    The consumer calls this with whatever model the user picked. We look
-    up the provider from the registry so adding a Deepgram or
-    AssemblyAI backend later is a one-line branch.
+    The consumer calls this with whatever model the user picked, resolved to
+    the model that serves the live path. We look up the provider from the
+    registry so adding a Deepgram or AssemblyAI backend later is a one-line
+    branch.
     """
+    model_id = canonical_transcription_model_id(model_id, path="live") or model_id
     info = get_transcription_model_info(model_id)
     if info is None:
         raise UnsupportedModelError(f"Unknown transcription model: {model_id}")

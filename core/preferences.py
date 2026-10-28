@@ -241,6 +241,35 @@ def _match_allowed_model(value: str | None, allowed: list[str]) -> str | None:
     return canonical if canonical in allowed else value
 
 
+def resolve_transcription_model(stored_model: str | None, prefs, *, path: str) -> str:
+    """Return the transcription model a meeting should use on ``path``.
+
+    ``path`` is ``"live"`` (realtime socket) or ``"file"`` (uploads, the chunked
+    fallback). The meeting's stored choice wins when it (or its counterpart
+    for this path) is allowed; then the user's resolved default for the path;
+    then the first allowed model for it; ``""`` when the path has none.
+    Retired IDs resolve to their successor.
+    """
+    from llm.transcription_registry import (
+        canonical_transcription_model_id,
+        partition_transcription_models,
+    )
+
+    live_pool, file_pool = partition_transcription_models(
+        getattr(prefs, "allowed_transcription_models", None) or []
+    )
+    pool = live_pool if path == "live" else file_pool
+    default = (
+        getattr(prefs, "transcription_model_live", "") if path == "live"
+        else getattr(prefs, "transcription_model_upload", "") or getattr(prefs, "transcription_model", "")
+    )
+    for candidate in (stored_model, default):
+        resolved = canonical_transcription_model_id(candidate, path=path)
+        if resolved and resolved in pool:
+            return resolved
+    return pool[0] if pool else ""
+
+
 def resolve_thread_model(stored_model: str | None, prefs: ResolvedPreferences) -> str:
     """Return the model a thread (chat or loop) should run on.
 
@@ -362,87 +391,72 @@ def get_preferences(user) -> ResolvedPreferences:
         warnings.append("No standard-grade models (3 stars or better) in your organization's allowed list. Chat and primary features may not work correctly.")
 
     # --- Transcription model cascade ---
-    system_transcription_allowed = list(getattr(django_settings, "TRANSCRIPTION_ALLOWED_MODELS", []))
-    system_transcription_default = getattr(django_settings, "TRANSCRIPTION_DEFAULT_MODEL", "") or ""
+    # IDs are canonicalized on every side (retired gpt-4o IDs -> the current
+    # file/live models, llm/transcription_registry.py) so stored org prefs and
+    # config vars naming a retired model keep resolving.
+    from llm.transcription_registry import (
+        canonical_transcription_model_id,
+        normalize_transcription_model_ids,
+        partition_transcription_models,
+    )
+
+    system_transcription_allowed = normalize_transcription_model_ids(
+        getattr(django_settings, "TRANSCRIPTION_ALLOWED_MODELS", [])
+    )
+    raw_system_default = getattr(django_settings, "TRANSCRIPTION_DEFAULT_MODEL", "") or ""
 
     org_transcription_allowed = org_prefs.get("allowed_transcription_models") if org_prefs else None
     org_transcription_models = org_prefs.get("transcription_models", {}) if org_prefs else {}
+    if not isinstance(org_transcription_models, dict):
+        org_transcription_models = {}
 
     # Org restricts to subset of system; explicitly empty list = disabled
     if org_transcription_allowed is not None and isinstance(org_transcription_allowed, list):
-        effective_transcription_allowed = [m for m in org_transcription_allowed if m in system_transcription_allowed]
+        org_normalized = normalize_transcription_model_ids(org_transcription_allowed)
+        effective_transcription_allowed = [m for m in org_normalized if m in system_transcription_allowed]
     else:
         # None/missing = inherit all system models
         effective_transcription_allowed = list(system_transcription_allowed)
 
-    if effective_transcription_allowed:
-        transcription_model = _resolve_tier(
-            user_choice=None,
-            org_default=org_transcription_models.get("default"),
-            system_default=system_transcription_default,
-            effective_allowed=effective_transcription_allowed,
-            system_allowed=system_transcription_allowed,
-        )
-    else:
-        # Empty allowed list = transcription disabled
-        transcription_model = ""
+    # Each path has its own pool: the allow-list filtered by capability.
+    live_capable, upload_capable = partition_transcription_models(effective_transcription_allowed)
 
-    # Capability-specific defaults. The pool of viable models for each path
-    # is the effective allow-list filtered by the relevant capability flag.
-    # Diarize models, whisper-1, or any model without ``supports_live_streaming``
-    # are dropped from the live pool so an org with "openai/gpt-4o-transcribe-
-    # diarize" as its default can still start a live recording — the server
-    # picks the first live-capable model from the allow-list instead.
-    from llm.transcription_registry import get_transcription_model_info
-
-    def _filter_by_capability(models: list[str], flag: str) -> list[str]:
-        filtered = []
-        for mid in models:
-            info = get_transcription_model_info(mid)
-            if info is None:
-                continue
-            if getattr(info, flag, False):
-                filtered.append(mid)
-        return filtered
-
-    live_capable = _filter_by_capability(effective_transcription_allowed, "supports_live_streaming")
-    # "upload" means anything callable via the batch transcription endpoint —
-    # that's every known transcription model in the registry (including
-    # diarize and whisper-1), so we don't filter here.
-    upload_capable = list(effective_transcription_allowed)
-
-    # Per-capability system defaults. The env vars let ops pin a specific
-    # model per path without touching the generic TRANSCRIPTION_DEFAULT_MODEL
-    # (which stays around as the ultimate fallback).
-    #
-    # When neither an explicit org "live" override nor an ops
-    # TRANSCRIPTION_DEFAULT_MODEL_LIVE is set, fall back to the organization's
-    # resolved general default. If that general
-    # default isn't live-capable (e.g. a diarize/batch-only model), _resolve_tier
-    # drops it against the live pool and picks the first live-capable model.
-    system_default_live = (
-        getattr(django_settings, "TRANSCRIPTION_DEFAULT_MODEL_LIVE", "")
-        or transcription_model
-        or system_transcription_default
-    )
-    system_default_upload = (
-        getattr(django_settings, "TRANSCRIPTION_DEFAULT_MODEL_UPLOAD", "")
-        or system_transcription_default
-    )
-
-    def _resolve_for_pool(pool: list[str], key: str, system_default: str) -> str:
+    def _resolve_for_pool(pool: list[str], org_default, system_default: str, path: str) -> str:
         if not pool:
             return ""
         return _resolve_tier(
             user_choice=None,
-            org_default=org_transcription_models.get(key),
-            system_default=system_default,
+            org_default=canonical_transcription_model_id(org_default, path=path),
+            system_default=canonical_transcription_model_id(system_default, path=path) or "",
             effective_allowed=pool,
             system_allowed=system_transcription_allowed,
         )
 
-    transcription_model_live = _resolve_for_pool(live_capable, "live", system_default_live)
-    transcription_model_upload = _resolve_for_pool(upload_capable, "upload", system_default_upload)
+    # The generic default serves the file path (its direct consumer is
+    # data-room audio); empty allowed list = transcription disabled.
+    transcription_model = _resolve_for_pool(
+        upload_capable, org_transcription_models.get("default"), raw_system_default, "file",
+    )
+
+    # Per-path system defaults. The env vars let ops pin a model per path
+    # without touching the generic TRANSCRIPTION_DEFAULT_MODEL (the ultimate
+    # fallback). Without an org "live" override or TRANSCRIPTION_DEFAULT_MODEL_LIVE,
+    # live follows the org's general default — resolved to its live counterpart.
+    system_default_live = (
+        getattr(django_settings, "TRANSCRIPTION_DEFAULT_MODEL_LIVE", "")
+        or org_transcription_models.get("default")
+        or raw_system_default
+    )
+    system_default_upload = (
+        getattr(django_settings, "TRANSCRIPTION_DEFAULT_MODEL_UPLOAD", "")
+        or raw_system_default
+    )
+    transcription_model_live = _resolve_for_pool(
+        live_capable, org_transcription_models.get("live"), system_default_live, "live",
+    )
+    transcription_model_upload = _resolve_for_pool(
+        upload_capable, org_transcription_models.get("upload"), system_default_upload, "file",
+    )
 
     # --- Image generation model cascade ---
     # Mirrors transcription but single-kind (one "default"). Empty effective
