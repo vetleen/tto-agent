@@ -1,6 +1,6 @@
 """Automatic model choice for chat.
 
-A thread on "Automatic" runs each turn on a routing *category* (cheap, mid,
+A thread on "Automatic" runs each turn on a routing *category* (cheap, medium,
 writing, complex analysis, …). Each org maps every category to a model and a
 reasoning level in its settings (feature keys ``auto_<category>`` in
 core.preferences.FEATURE_DEFAULTS), so the router never names a model.
@@ -27,13 +27,11 @@ AUTO_MODEL_ID = "auto"
 class AutoCategory:
     key: str
     label: str
-    # Fixed quality rank: 0 cheap, 1 mid, 2 high. Drives the no-downgrade floor
-    # and the skill tie-break; deliberately independent of which model an org
-    # maps the category to.
+    # Fixed quality rank: 0 cheap, 1 medium, 2 high — the rank of the slot the
+    # category defaults to (core.preferences.FEATURE_DEFAULTS; a test pins the
+    # match). Drives the no-downgrade floor and the skill tie-break;
+    # deliberately independent of which model an org maps the category to.
     rank: int
-    # Settings-page description (the router's definitions live in
-    # chat/auto_model_prompt.py).
-    desc: str
 
     @property
     def feature_key(self) -> str:
@@ -41,22 +39,22 @@ class AutoCategory:
 
 
 AUTO_CATEGORIES: tuple[AutoCategory, ...] = (
-    AutoCategory("cheap", "Cheap", 0, "Greetings, thanks, one-step app operations (attach a skill, move text to the canvas) and questions about the app itself."),
-    AutoCategory("mid", "Default", 1, "Ordinary questions and everyday tasks — most turns land here. Also the fallback when the automatic choice fails."),
-    AutoCategory("top", "Top", 2, "Hard, open-ended problems that don't fit a more specific category."),
-    AutoCategory("short_writing", "Short writing", 1, "Short texts: a post, a short email, a paragraph, a reply."),
-    AutoCategory("writing", "Writing", 2, "Drafting or revising longer texts: reports, applications, agreements, skills and templates."),
-    AutoCategory("light_reading", "Light reading", 1, "Finding, summarising or extracting from documents when the answer is mostly on the page."),
-    AutoCategory("difficult_reading", "Difficult reading", 2, "Close reading of long, dense or technical documents: contracts, patents, applications."),
-    AutoCategory("light_analysis", "Light analysis", 1, "Straightforward analysis: comparisons, simple calculations, tables and plans from given facts."),
-    AutoCategory("complex_analysis", "Complex analysis", 2, "Multi-step reasoning and judgement: legal and IP assessments, gap analyses, evaluations, strategy."),
-    AutoCategory("research", "Research", 2, "Searching the web, patents or literature and synthesising what is found, e.g. prior art."),
-    AutoCategory("slide_design", "Slide design", 2, "Creating or redesigning slides and decks."),
+    AutoCategory("cheap", "Cheap", 0),
+    AutoCategory("medium", "Default", 1),
+    AutoCategory("top", "Top", 2),
+    AutoCategory("short_writing", "Short writing", 2),
+    AutoCategory("writing", "Writing", 2),
+    AutoCategory("light_reading", "Light reading", 1),
+    AutoCategory("difficult_reading", "Difficult reading", 2),
+    AutoCategory("light_analysis", "Light analysis", 1),
+    AutoCategory("complex_analysis", "Complex analysis", 2),
+    AutoCategory("research", "Research", 1),
+    AutoCategory("slide_design", "Slide design", 2),
 )
 
 CATEGORIES_BY_KEY: dict[str, AutoCategory] = {c.key: c for c in AUTO_CATEGORIES}
 AUTO_FEATURE_KEYS: tuple[str, ...] = tuple(c.feature_key for c in AUTO_CATEGORIES)
-DEFAULT_CATEGORY = "mid"
+DEFAULT_CATEGORY = "medium"
 
 
 def category_rank(key: str | None) -> int:
@@ -85,7 +83,7 @@ def resolve_category(prefs, key: str, level_override: str | None = None) -> tupl
     from core.preferences import resolve_org_feature_reasoning
 
     cat = CATEGORIES_BY_KEY.get(key) or CATEGORIES_BY_KEY[DEFAULT_CATEGORY]
-    model = prefs.feature_models.get(cat.feature_key) or prefs.mid_model
+    model = prefs.feature_models.get(cat.feature_key) or prefs.medium_model
     level = valid_level(model, level_override) or resolve_org_feature_reasoning(
         {"feature_reasoning": prefs.feature_reasoning}, cat.feature_key, model
     )
@@ -99,14 +97,16 @@ def resolve_category(prefs, key: str, level_override: str | None = None) -> tupl
 ROUTE_FEATURE_KEY = "auto_model_route"
 QUESTION_NAME = "category"
 
-# Router input budget, in characters (~4 per token): the first user message
-# frames the task, the latest is what we route, the assistant head disambiguates
-# short replies. Keeps a decision well under 10k tokens.
+# Router input budget, in characters (~4 per token), per user message: the
+# first ones frame the task, the latest is what we route, the decision point
+# says why the thread is on its current category. The last assistant message
+# goes in whole (it disambiguates short replies; input is cheap here).
 FIRST_USER_CHARS = 6_000
+FIRST_USER_COUNT = 2
 LATEST_USER_CHARS = 16_000
 EARLIER_USER_CHARS = 4_000
 EARLIER_USER_COUNT = 3
-ASSISTANT_HEAD_CHARS = 1_600
+DECISION_POINT_CHARS = 6_000
 
 
 @dataclass(frozen=True)
@@ -213,11 +213,133 @@ def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit].rstrip() + " …[truncated]"
 
 
-def build_router_input(thread_id, *, current_category: str | None, facts: dict | None) -> list:
+FACT_NAME_CHARS = 30
+
+
+def _short_name(name: str) -> str:
+    """*name* cut to FACT_NAME_CHARS, keeping a file extension visible."""
+    name = (name or "").strip() or "untitled"
+    if len(name) <= FACT_NAME_CHARS:
+        return name
+    stem, dot, ext = name.rpartition(".")
+    if dot and stem and len(ext) <= 5:
+        return name[: FACT_NAME_CHARS - len(ext) - 2] + "…." + ext
+    return name[: FACT_NAME_CHARS - 1] + "…"
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n:,} {word}{'' if n == 1 else 's'}"
+
+
+def _attachment_size(filename: str, content_type: str, page_count, text_chars: int, size_bytes: int) -> str:
+    content_type = content_type or ""
+    if content_type.startswith("image/"):
+        return "image"
+    if page_count:
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        return _plural(page_count, "slide" if ext in ("ppt", "pptx") else "page")
+    chars = text_chars or (size_bytes if content_type.startswith("text/") else 0)
+    if chars:
+        return f"~{_plural(max(1, chars // 4), 'token')}"
+    return f"{max(1, round((size_bytes or 0) / 1024)):,} KB"
+
+
+def build_route_facts(thread_id, attachment_ids=()) -> tuple[list[dict], dict]:
+    """The thread's attached skills (for skill_category) and the router's facts.
+
+    Facts are short lines — attachments, data rooms, canvases and skills, each
+    with its size and the round it was added in — plus the current round (the
+    number of user messages so far). Files on the latest message
+    (*attachment_ids*) belong to the current round even before they are linked
+    to it. Sync (DB).
+    """
+    from bisect import bisect_left, bisect_right
+
+    from django.db.models import Count, Q
+    from django.db.models.functions import Length
+
+    from chat.models import ChatAttachment, ChatCanvas, ChatMessage, ChatThreadDataRoom, ChatThreadSkill
+
+    user_times = list(
+        ChatMessage.objects.filter(thread_id=thread_id, role="user", is_hidden_from_user=False)
+        .order_by("created_at").values_list("created_at", flat=True)
+    )
+    current_round = max(1, len(user_times))
+
+    def round_in_progress(ts):
+        # Created during a round's turn (or before the first message).
+        return min(current_round, max(1, bisect_right(user_times, ts)))
+
+    def round_ahead(ts):
+        # Attached by the user between turns: belongs to the next message.
+        return min(current_round, bisect_left(user_times, ts) + 1)
+
+    skill_rows = list(
+        ChatThreadSkill.objects.filter(thread_id=thread_id).values_list(
+            "skill__name", "skill__kind", "skill__preferred_model_category",
+            "skill__preferred_reasoning_level", "attached_by", "attached_at",
+        )
+    )
+    skills = [
+        {"name": name, "preferred_model_category": category, "preferred_reasoning_level": level}
+        for name, _kind, category, level, _by, _at in skill_rows
+    ]
+
+    attachment_ids = {str(a) for a in attachment_ids or ()}
+    attachments = []
+    rows = (
+        ChatAttachment.objects.filter(thread_id=thread_id)
+        .filter(Q(message__isnull=False) | Q(pk__in=attachment_ids))
+        .annotate(text_chars=Length("extracted_content"))
+        .order_by("created_at")
+        .values_list(
+            "id", "original_filename", "content_type", "page_count", "text_chars", "size_bytes",
+            "message__created_at",
+        )
+    )
+    for pk, filename, content_type, page_count, text_chars, size_bytes, sent_at in rows:
+        added = current_round if str(pk) in attachment_ids or sent_at is None else round_in_progress(sent_at)
+        size = _attachment_size(filename, content_type, page_count, text_chars or 0, size_bytes)
+        attachments.append(f"{_short_name(filename)} ({size}, added round #{added})")
+
+    data_rooms = [
+        f"{_short_name(name)} ({_plural(files, 'file')}, added round #{round_ahead(at)})"
+        for name, files, at in ChatThreadDataRoom.objects.filter(thread_id=thread_id)
+        .annotate(files=Count("data_room__documents", filter=Q(data_room__documents__is_archived=False)))
+        .values_list("data_room__name", "files", "attached_at")
+    ]
+
+    canvases = [
+        f"{_short_name(title)} (~{_plural(max(0, chars // 4), 'token')}, added round #{round_in_progress(at)})"
+        for title, chars, at in ChatCanvas.objects.filter(thread_id=thread_id, deleted_at__isnull=True)
+        .annotate(chars=Length("content")).order_by("created_at")
+        .values_list("title", "chars", "created_at")
+    ]
+
+    skill_lines = [
+        f"{_short_name(name)} ({kind}, added round #{round_in_progress(at) if by == 'agent' else round_ahead(at)})"
+        for name, kind, _category, _level, by, at in skill_rows
+    ]
+
+    facts = {
+        "current_round": current_round,
+        "attachments": attachments,
+        "data_rooms": data_rooms,
+        "canvases": canvases,
+        "skills": skill_lines,
+    }
+    return skills, facts
+
+
+def build_router_input(
+    thread_id, *, current_category: str | None, decision_message_id=None, facts: dict | None,
+) -> list:
     """The decision input: the router prompt (developer) + one JSON user part.
 
     Reads ChatMessage rows directly — never the turn's history budget — so
-    routing doesn't wait on history loading or checkpoints. Sync (DB).
+    routing doesn't wait on history loading or checkpoints. *decision_message_id*
+    is the user message whose turn put the thread on *current_category*
+    (auto_route state ``decided_by_message_id``). Sync (DB).
     """
     from chat.auto_model_prompt import ROUTER_PROMPT
     from chat.models import ChatMessage
@@ -228,11 +350,18 @@ def build_router_input(thread_id, *, current_category: str | None, facts: dict |
     )
     users = visible.filter(role="user").exclude(content="")
     recent = list(users.order_by("-created_at").values_list("id", "content")[: EARLIER_USER_COUNT + 1])
-    first = users.order_by("created_at").values_list("id", "content").first()
+    recent_ids = {i for i, _c in recent}
+    first = [
+        content for i, content in users.order_by("created_at").values_list("id", "content")[:FIRST_USER_COUNT]
+        if i not in recent_ids
+    ]
     assistant = (
         visible.filter(role="assistant").exclude(content="").exclude(metadata__has_key="ui_only")
         .order_by("-created_at").values_list("content", flat=True).first()
     )
+    decision_point = None
+    if current_category and decision_message_id:
+        decision_point = users.filter(pk=decision_message_id).values_list("content", flat=True).first()
 
     data: dict = {"latest_user_message": ""}
     if recent:
@@ -240,11 +369,13 @@ def build_router_input(thread_id, *, current_category: str | None, facts: dict |
         earlier = [content for _id, content in reversed(recent[1:])]
         if earlier:
             data["earlier_user_messages"] = [_clip(c, EARLIER_USER_CHARS) for c in earlier]
-        if first and first[0] not in {i for i, _c in recent}:
-            data["first_user_message"] = _clip(first[1], FIRST_USER_CHARS)
+        if first:
+            data["first_user_messages"] = [_clip(c, FIRST_USER_CHARS) for c in first]
     if assistant:
-        data["last_assistant_message_head"] = _clip(assistant, ASSISTANT_HEAD_CHARS)
+        data["last_assistant_message"] = assistant.strip()
     data["current_category"] = current_category
+    if decision_point:
+        data["current_category_decision_point"] = _clip(decision_point, DECISION_POINT_CHARS)
     data["facts"] = facts or {}
 
     return [
@@ -269,13 +400,14 @@ class RouterNoAnswer(Exception):
     """The decision came back without a usable category (refusal, unknown value)."""
 
 
-async def decide_category(thread_id, *, org_id, current_category, facts) -> str:
+async def decide_category(thread_id, *, org_id, current_category, facts, decision_message_id=None) -> str:
     from channels.db import database_sync_to_async
 
     from llm.service.decisions_service import get_decisions_service
 
     messages = await database_sync_to_async(build_router_input)(
-        thread_id, current_category=current_category, facts=facts,
+        thread_id, current_category=current_category,
+        decision_message_id=decision_message_id, facts=facts,
     )
     result = await get_decisions_service().adecide(
         [build_question()], messages,
@@ -327,7 +459,10 @@ async def route_turn(
     else:
         try:
             raw = await asyncio.wait_for(
-                decide_category(thread_id, org_id=org_id, current_category=current, facts=facts),
+                decide_category(
+                    thread_id, org_id=org_id, current_category=current, facts=facts,
+                    decision_message_id=state.get("decided_by_message_id") if current else None,
+                ),
                 timeout=float(getattr(settings, "AUTO_MODEL_ROUTE_TIMEOUT_SECONDS", 5)),
             )
             source = "router"

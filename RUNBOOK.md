@@ -608,7 +608,7 @@ See `.env.example` for the full list with comments. Key production variables:
 | `MEM_DEBUG_WORKER` | No | Worker memory attribution (`core.memreport`): logs a `MEMREPORT` line set before/after every non-trivial task (RSS delta, glibc `mallinfo2`, pymalloc arenas, gc type movers, busy-thread stacks, tracemalloc growth when `MEM_DEBUG_TRACEMALLOC=1`) plus a periodic sample every `MEM_DEBUG_INTERVAL` s. Diagnostics only — leave unset in production. Independently of it, `manage.py memreport` enqueues a one-off report from the live worker. Read with `heroku logs --dyno worker \| grep MEMREPORT`. |
 | `OPENAI_API_KEY` | Yes | Embeddings + OpenAI LLM provider + the quick decisions pathway (Decisions endpoint) |
 | `LLM_DEFAULT_MODEL` | Yes | Primary model (e.g., `openai/gpt-5.2`) |
-| `LLM_DEFAULT_MID_MODEL` | Yes | Mid-tier model (also medium-quality sub-agents) |
+| `LLM_DEFAULT_MEDIUM_MODEL` | Yes | Medium-tier model (also medium-quality sub-agents). The old name `LLM_DEFAULT_MID_MODEL` is still read as a fallback |
 | `LLM_DEFAULT_CHEAP_MODEL` | Yes | Fast model for descriptions, classification (also low-quality sub-agents and the structured decisions pathway) |
 | `LLM_ALLOWED_MODELS` | Yes | Comma-separated `provider/model` allowlist |
 | `DECISIONS_QUICK_TIMEOUT_SECONDS` | No | Decisions (`llm/service/decisions_service.py`): read timeout per attempt at OpenAI's Decisions endpoint (default 15; measured calls take 1–3.5 s at any input size). On failure the request falls back to the structured pathway. Keep it well above normal latency — a timeout also opens the skip window. |

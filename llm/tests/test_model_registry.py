@@ -9,7 +9,7 @@ from django.test import SimpleTestCase
 from llm.model_registry import (
     TIER_CHEAP,
     TIER_FLAGSHIP,
-    TIER_MID,
+    TIER_MEDIUM,
     TIER_STANDARD,
     MODEL_REPLACEMENTS,
     ModelInfo,
@@ -56,7 +56,7 @@ class RegistryTests(SimpleTestCase):
                 self.assertIsNotNone(info)
                 self.assertIn(
                     info.tier,
-                    (TIER_CHEAP, TIER_MID, TIER_STANDARD, TIER_FLAGSHIP),
+                    (TIER_CHEAP, TIER_MEDIUM, TIER_STANDARD, TIER_FLAGSHIP),
                 )
                 # Every curated model must land in at least one category.
                 self.assertTrue(info.tiers)
@@ -275,13 +275,13 @@ class TierTests(SimpleTestCase):
         # Luna's curated 2 stars keep it mid-grade despite its low price.
         luna = get_model_info("openai/gpt-6-luna")
         self.assertEqual(luna.capability_stars, 2)
-        self.assertEqual(luna.tiers, frozenset({TIER_CHEAP, TIER_MID}))
-        self.assertEqual(get_model_tier("openai/gpt-6-luna"), TIER_MID)
+        self.assertEqual(luna.tiers, frozenset({TIER_CHEAP, TIER_MEDIUM}))
+        self.assertEqual(get_model_tier("openai/gpt-6-luna"), TIER_MEDIUM)
 
     def test_haiku_5_5_not_cheap_at_display_price(self):
         # $0.10 base but $0.50 above 100K; tiers follow the displayed band.
         haiku = get_model_info("anthropic/claude-haiku-5-5")
-        self.assertEqual(haiku.tiers, frozenset({TIER_MID}))
+        self.assertEqual(haiku.tiers, frozenset({TIER_MEDIUM}))
 
     def test_tier_sets(self):
         self.assertEqual(
@@ -293,7 +293,7 @@ class TierTests(SimpleTestCase):
             ],
         )
         self.assertEqual(
-            get_models_by_tier(TIER_MID),
+            get_models_by_tier(TIER_MEDIUM),
             [
                 "openai/gpt-6-luna",
                 "openai/gpt-5.6-terra",
@@ -328,9 +328,9 @@ class TierTests(SimpleTestCase):
         self.assertTrue(model_fits_slot("openai/gpt-5.4-nano", "cheap"))
         self.assertTrue(model_fits_slot("openai/gpt-6-luna", "cheap"))
         # Luna's 2 stars now clear the mid slot's floor (overlap is intended).
-        self.assertTrue(model_fits_slot("openai/gpt-6-luna", "mid"))
-        self.assertFalse(model_fits_slot("openai/gpt-5.4-nano", "mid"))
-        self.assertTrue(model_fits_slot("openai/gpt-5.6-terra", "mid"))
+        self.assertTrue(model_fits_slot("openai/gpt-6-luna", "medium"))
+        self.assertFalse(model_fits_slot("openai/gpt-5.4-nano", "medium"))
+        self.assertTrue(model_fits_slot("openai/gpt-5.6-terra", "medium"))
         # Primary requires 3 stars: Sonnet-class models stay eligible.
         self.assertTrue(model_fits_slot("openai/gpt-5.6-terra", "primary"))
         self.assertTrue(model_fits_slot("anthropic/claude-sonnet-5", "primary"))

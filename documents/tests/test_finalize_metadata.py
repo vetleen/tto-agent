@@ -29,7 +29,7 @@ except ImportError:
     LANGCHAIN_AVAILABLE = False
 
 # Resolves both the document_description and pii_scan feature models to a real id.
-_MODELS = dict(LLM_DEFAULT_MID_MODEL="openai/gpt-4o-mini", LLM_DEFAULT_CHEAP_MODEL="openai/gpt-4o-mini")
+_MODELS = dict(LLM_DEFAULT_MEDIUM_MODEL="openai/gpt-4o-mini", LLM_DEFAULT_CHEAP_MODEL="openai/gpt-4o-mini")
 
 
 def _pii(categories=None, detail=""):

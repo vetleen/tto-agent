@@ -1314,7 +1314,7 @@ async def generate_summary(
             Message(role="system", content=system_prompt),
             Message(role="user", content=user_prompt),
         ],
-        model=model or django_settings.LLM_DEFAULT_MID_MODEL,
+        model=model or django_settings.LLM_DEFAULT_MEDIUM_MODEL,
         stream=False,
         tools=[],
         context=context,
@@ -1350,7 +1350,7 @@ def resolve_vision_model(user) -> str | None:
 
     prefs = get_preferences(user)
     preferred = prefs.feature_models.get("image_description", prefs.cheap_model)
-    for candidate in (preferred, prefs.cheap_model, prefs.mid_model, prefs.top_model):
+    for candidate in (preferred, prefs.cheap_model, prefs.medium_model, prefs.top_model):
         if candidate and supports_vision(candidate):
             return candidate
     return None

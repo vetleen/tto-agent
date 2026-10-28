@@ -3685,7 +3685,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     def _summary_model(self):
         prefs = self.resolved_prefs
-        return prefs.feature_models.get("message_summary", prefs.mid_model) if prefs else None
+        return prefs.feature_models.get("message_summary", prefs.medium_model) if prefs else None
 
     def _schedule_checkpoint(self, thread, budgets):
         """After a turn: run a checkpoint if one is due (summarise only on a
@@ -4680,34 +4680,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def _auto_route_inputs(self, thread_id, attachment_ids):
         """The thread's attached skills and the turn facts the router sees."""
-        from collections import Counter
+        from chat.auto_model import build_route_facts
 
-        from django.db.models import Sum
-        from django.db.models.functions import Length
-
-        from chat.models import ChatAttachment, ChatCanvas, ChatThreadDataRoom, ChatThreadSkill
-
-        skills = [
-            {"name": name, "preferred_model_category": category, "preferred_reasoning_level": level}
-            for name, category, level in ChatThreadSkill.objects.filter(thread_id=thread_id).values_list(
-                "skill__name", "skill__preferred_model_category", "skill__preferred_reasoning_level",
-            )
-        ]
-        kinds = Counter()
-        for filename, content_type in ChatAttachment.objects.filter(pk__in=attachment_ids).values_list(
-            "original_filename", "content_type",
-        ):
-            ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-            kinds["image" if (content_type or "").startswith("image/") else (ext or "file")] += 1
-        canvases = ChatCanvas.objects.filter(thread_id=thread_id)
-        facts = {
-            "attachments": dict(kinds),
-            "data_rooms": ChatThreadDataRoom.objects.filter(thread_id=thread_id).count(),
-            "canvases": canvases.count(),
-            "canvas_chars": canvases.aggregate(n=Sum(Length("content")))["n"] or 0,
-            "skills": [s["name"] for s in skills],
-        }
-        return skills, facts
+        return build_route_facts(thread_id, attachment_ids)
 
     @staticmethod
     def _auto_route_display(decision, thinking_level) -> dict:
@@ -4731,9 +4706,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
         turn.auto_route = decision
         if decision.model and thread.model != decision.model:
             await self._persist_thread_model(thread, decision.model)
+        changes = {}
+        previous = thread.auto_route or {}
+        if decision.category and (
+            not previous.get("enabled") or previous.get("category") != decision.category
+        ):
+            # The message that put the thread on this category: the router's
+            # current_category_decision_point on later turns.
+            changes["decided_by_message_id"] = (
+                str(turn.user_message_id) if turn.user_message_id else None
+            )
         await self._update_auto_route(
             thread, enabled=True, category=decision.category,
-            model=decision.model, thinking_level=thinking_level,
+            model=decision.model, thinking_level=thinking_level, **changes,
         )
         await self._sink.send_event({
             "event_type": "turn.auto_routed",

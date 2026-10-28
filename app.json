@@ -58,8 +58,8 @@
     "LLM_DEFAULT_MODEL": {
       "description": "Primary model, e.g. openai/gpt-5.6-terra."
     },
-    "LLM_DEFAULT_MID_MODEL": {
-      "description": "Mid-tier model for sub-agents."
+    "LLM_DEFAULT_MEDIUM_MODEL": {
+      "description": "Medium-tier model (also medium-quality sub-agents)."
     },
     "LLM_DEFAULT_CHEAP_MODEL": {
       "description": "Fast model for descriptions and classification."

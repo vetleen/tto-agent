@@ -22,7 +22,7 @@ class NoOrgPreferencesTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="gemini/gemini-3.5-flash",
+        LLM_DEFAULT_MEDIUM_MODEL="gemini/gemini-3.5-flash",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
@@ -43,7 +43,7 @@ class NoOrgPreferencesTest(TestCase):
         prefs = get_preferences(user)
 
         self.assertEqual(prefs.top_model, "openai/gpt-5.4")
-        self.assertEqual(prefs.mid_model, "gemini/gemini-3.5-flash")
+        self.assertEqual(prefs.medium_model, "gemini/gemini-3.5-flash")
         self.assertEqual(prefs.cheap_model, "openai/gpt-5.4-nano")
         self.assertEqual(prefs.allowed_models, [
             "openai/gpt-5.4", "gemini/gemini-3.5-flash", "openai/gpt-5.4-nano",
@@ -58,7 +58,7 @@ class OrgRestrictsModelsTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_MEDIUM_MODEL="openai/gpt-5.4-mini",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
@@ -86,7 +86,7 @@ class UserModelOverrideIgnoredTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_MEDIUM_MODEL="openai/gpt-5.4-mini",
         LLM_DEFAULT_CHEAP_MODEL="",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
@@ -117,7 +117,7 @@ class UserPicksOutsideAllowedTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_MEDIUM_MODEL="",
         LLM_DEFAULT_CHEAP_MODEL="",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
@@ -149,7 +149,7 @@ class OrgDisablesToolTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_MEDIUM_MODEL="",
         LLM_DEFAULT_CHEAP_MODEL="",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
@@ -176,7 +176,7 @@ class ThemeFromPreferencesTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_MEDIUM_MODEL="",
         LLM_DEFAULT_CHEAP_MODEL="",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
@@ -194,7 +194,7 @@ class ThemeFromPreferencesTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_MEDIUM_MODEL="",
         LLM_DEFAULT_CHEAP_MODEL="",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
@@ -212,7 +212,7 @@ class OrgDefaultModelTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_MEDIUM_MODEL="openai/gpt-5.4-mini",
         LLM_DEFAULT_CHEAP_MODEL="",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
@@ -237,7 +237,7 @@ class OrgDefaultRemovedFromAllowedTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_MEDIUM_MODEL="openai/gpt-5.4-mini",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
@@ -268,7 +268,7 @@ class OrgAllowedModelsNoOverlapTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_MEDIUM_MODEL="openai/gpt-5.4-mini",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
@@ -290,7 +290,7 @@ class OrgAllowedModelsNoOverlapTest(TestCase):
         self.assertEqual(prefs.allowed_models, [])
         # Must NOT fall back to system default — that bypasses org restrictions
         self.assertEqual(prefs.top_model, "")
-        self.assertEqual(prefs.mid_model, "")
+        self.assertEqual(prefs.medium_model, "")
         self.assertEqual(prefs.cheap_model, "")
 
 
@@ -299,7 +299,7 @@ class SectionAwareToolFilteringTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_MEDIUM_MODEL="",
         LLM_DEFAULT_CHEAP_MODEL="",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
@@ -326,7 +326,7 @@ class SubagentSectionOverrideTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_MEDIUM_MODEL="",
         LLM_DEFAULT_CHEAP_MODEL="",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
@@ -365,7 +365,7 @@ class ParallelSubagentsTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_MEDIUM_MODEL="",
         LLM_DEFAULT_CHEAP_MODEL="",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
@@ -383,7 +383,7 @@ class ParallelSubagentsTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_MEDIUM_MODEL="",
         LLM_DEFAULT_CHEAP_MODEL="",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
@@ -403,7 +403,7 @@ class ParallelSubagentsTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_MEDIUM_MODEL="",
         LLM_DEFAULT_CHEAP_MODEL="",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
@@ -427,7 +427,7 @@ class MaxContextTokensTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_MEDIUM_MODEL="",
         LLM_DEFAULT_CHEAP_MODEL="",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
@@ -442,7 +442,7 @@ class MaxContextTokensTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_MEDIUM_MODEL="",
         LLM_DEFAULT_CHEAP_MODEL="",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
@@ -462,7 +462,7 @@ class MaxContextTokensTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_MEDIUM_MODEL="",
         LLM_DEFAULT_CHEAP_MODEL="",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
@@ -487,7 +487,7 @@ class MaxContextTokensTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_MEDIUM_MODEL="",
         LLM_DEFAULT_CHEAP_MODEL="",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
@@ -512,7 +512,7 @@ class MaxContextTokensTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_MEDIUM_MODEL="",
         LLM_DEFAULT_CHEAP_MODEL="",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
@@ -532,7 +532,7 @@ class MaxContextTokensTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_MEDIUM_MODEL="",
         LLM_DEFAULT_CHEAP_MODEL="",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
@@ -553,7 +553,7 @@ class MaxContextTokensTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_MEDIUM_MODEL="",
         LLM_DEFAULT_CHEAP_MODEL="",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
@@ -569,7 +569,7 @@ class MaxContextTokensTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_MEDIUM_MODEL="",
         LLM_DEFAULT_CHEAP_MODEL="",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
@@ -616,7 +616,7 @@ class TranscriptionModelCascadeTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_MEDIUM_MODEL="",
         LLM_DEFAULT_CHEAP_MODEL="",
         TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-transcribe",
         TRANSCRIPTION_DEFAULT_MODEL_LIVE="",
@@ -636,7 +636,7 @@ class TranscriptionModelCascadeTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_MEDIUM_MODEL="",
         LLM_DEFAULT_CHEAP_MODEL="",
         # Production on 2026-10-28: only retired IDs in the config vars.
         TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-4o-mini-transcribe",
@@ -658,7 +658,7 @@ class TranscriptionModelCascadeTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_MEDIUM_MODEL="",
         LLM_DEFAULT_CHEAP_MODEL="",
         TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-transcribe",
         TRANSCRIPTION_DEFAULT_MODEL_LIVE="",
@@ -681,7 +681,7 @@ class TranscriptionModelCascadeTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_MEDIUM_MODEL="",
         LLM_DEFAULT_CHEAP_MODEL="",
         TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-transcribe",
         TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-transcribe", "openai/gpt-live-transcribe"],
@@ -697,7 +697,7 @@ class TranscriptionModelCascadeTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_MEDIUM_MODEL="",
         LLM_DEFAULT_CHEAP_MODEL="",
         TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-transcribe",
         TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-transcribe", "openai/gpt-live-transcribe"],
@@ -715,7 +715,7 @@ class TranscriptionModelCascadeTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_MEDIUM_MODEL="",
         LLM_DEFAULT_CHEAP_MODEL="",
         TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-transcribe",
         TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-transcribe", "openai/gpt-live-transcribe"],
@@ -732,7 +732,7 @@ class TranscriptionModelCascadeTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_MEDIUM_MODEL="",
         LLM_DEFAULT_CHEAP_MODEL="",
         TRANSCRIPTION_DEFAULT_MODEL="openai/gpt-transcribe",
         TRANSCRIPTION_ALLOWED_MODELS=["openai/gpt-transcribe", "openai/gpt-live-transcribe"],
@@ -787,7 +787,7 @@ class ResolveTranscriptionModelTest(TestCase):
 
 @override_settings(
     LLM_DEFAULT_MODEL="openai/gpt-5.4",
-    LLM_DEFAULT_MID_MODEL="",
+    LLM_DEFAULT_MEDIUM_MODEL="",
     LLM_DEFAULT_CHEAP_MODEL="",
 )
 @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
@@ -867,7 +867,7 @@ class TierConstraintTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_MEDIUM_MODEL="openai/gpt-5.4-mini",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
@@ -891,7 +891,7 @@ class TierConstraintTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_MEDIUM_MODEL="openai/gpt-5.4-mini",
         LLM_DEFAULT_CHEAP_MODEL="anthropic/claude-fable-5-1",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
@@ -908,7 +908,7 @@ class TierConstraintTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_MEDIUM_MODEL="openai/gpt-5.4-mini",
         LLM_DEFAULT_CHEAP_MODEL="",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
@@ -925,7 +925,7 @@ class TierConstraintTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_MEDIUM_MODEL="openai/gpt-5.4-mini",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
@@ -946,7 +946,7 @@ class TierConstraintTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="gemini/gemini-3.5-flash",
+        LLM_DEFAULT_MEDIUM_MODEL="gemini/gemini-3.5-flash",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
@@ -958,11 +958,11 @@ class TierConstraintTest(TestCase):
 
         user = _create_user(email="tier-mid-std@example.com")
         settings = UserSettings.objects.get(user=user)
-        settings.preferences = {"models": {"mid": "openai/gpt-5.4"}}
+        settings.preferences = {"models": {"medium": "openai/gpt-5.4"}}
         settings.save()
 
         prefs = get_preferences(user)
-        self.assertEqual(prefs.mid_model, "gemini/gemini-3.5-flash")
+        self.assertEqual(prefs.medium_model, "gemini/gemini-3.5-flash")
 
 
 class FallbackWarningsTest(TestCase):
@@ -970,7 +970,7 @@ class FallbackWarningsTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="gemini/gemini-3.5-flash",
+        LLM_DEFAULT_MEDIUM_MODEL="gemini/gemini-3.5-flash",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
@@ -988,12 +988,12 @@ class FallbackWarningsTest(TestCase):
         Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
 
         prefs = get_preferences(user)
-        self.assertEqual(prefs.cheap_model, prefs.mid_model)
+        self.assertEqual(prefs.cheap_model, prefs.medium_model)
         self.assertTrue(any("cheap" in w.lower() for w in prefs.warnings))
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_MEDIUM_MODEL="openai/gpt-5.4-mini",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
@@ -1019,7 +1019,7 @@ class FeatureModelOverrideTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_MEDIUM_MODEL="openai/gpt-5.4-mini",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
@@ -1036,7 +1036,7 @@ class FeatureModelOverrideTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_MEDIUM_MODEL="openai/gpt-5.4-mini",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
@@ -1055,7 +1055,7 @@ class FeatureModelOverrideTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_MEDIUM_MODEL="openai/gpt-5.4-mini",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
@@ -1089,7 +1089,7 @@ class FeatureModelOverrideTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_MEDIUM_MODEL="openai/gpt-5.4-mini",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
@@ -1124,7 +1124,7 @@ class FeatureModelOverrideTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.6-sol",
-        LLM_DEFAULT_MID_MODEL="gemini/gemini-3.7-flash",
+        LLM_DEFAULT_MEDIUM_MODEL="gemini/gemini-3.7-flash",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
@@ -1163,7 +1163,7 @@ class FeatureModelOverrideTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_MEDIUM_MODEL="openai/gpt-5.4-mini",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
@@ -1184,7 +1184,7 @@ class FeatureModelOverrideTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_MEDIUM_MODEL="openai/gpt-5.4-mini",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
@@ -1204,7 +1204,7 @@ class FeatureModelOverrideTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_MEDIUM_MODEL="openai/gpt-5.4-mini",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
@@ -1236,7 +1236,7 @@ class FeatureModelPoolTest(TestCase):
     def test_modality_gate(self):
         from core.preferences import FeatureDefault, feature_model_pool
 
-        fdef = FeatureDefault("mid", "org", required_modality="image")
+        fdef = FeatureDefault("medium", "org", required_modality="image")
         self.assertTrue(fdef.gated)
         self.assertEqual(
             feature_model_pool(fdef, ["openai/gpt-6-luna", "custom/plain"]), ["openai/gpt-6-luna"]
@@ -1266,7 +1266,7 @@ class FeatureModelPoolTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_MEDIUM_MODEL="openai/gpt-5.4-mini",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
@@ -1328,7 +1328,7 @@ class DecisionsSettingsTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-6-sol",
-        LLM_DEFAULT_MID_MODEL="anthropic/claude-sonnet-5-5",
+        LLM_DEFAULT_MEDIUM_MODEL="anthropic/claude-sonnet-5-5",
         LLM_DEFAULT_CHEAP_MODEL="anthropic/claude-haiku-5-5",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=_DECISIONS_SYSTEM_MODELS)
@@ -1346,7 +1346,7 @@ class DecisionsSettingsTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-6-sol",
-        LLM_DEFAULT_MID_MODEL="anthropic/claude-sonnet-5-5",
+        LLM_DEFAULT_MEDIUM_MODEL="anthropic/claude-sonnet-5-5",
         LLM_DEFAULT_CHEAP_MODEL="anthropic/claude-haiku-5-5",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=_DECISIONS_SYSTEM_MODELS)
@@ -1372,7 +1372,7 @@ class DecisionsSettingsTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-6-sol",
-        LLM_DEFAULT_MID_MODEL="anthropic/claude-sonnet-5-5",
+        LLM_DEFAULT_MEDIUM_MODEL="anthropic/claude-sonnet-5-5",
         LLM_DEFAULT_CHEAP_MODEL="anthropic/claude-haiku-5-5",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=_DECISIONS_SYSTEM_MODELS)
@@ -1389,7 +1389,7 @@ class DecisionsSettingsTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-6-sol",
-        LLM_DEFAULT_MID_MODEL="openai/gpt-6-sol",
+        LLM_DEFAULT_MEDIUM_MODEL="openai/gpt-6-sol",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-6-sol",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-6-sol"])
@@ -1407,7 +1407,7 @@ class ModalityFeatureResolutionTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="gemini/gemini-3.5-flash",
+        LLM_DEFAULT_MEDIUM_MODEL="gemini/gemini-3.5-flash",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
@@ -1420,7 +1420,7 @@ class ModalityFeatureResolutionTest(TestCase):
 
         user = _create_user(email="modality-ok@example.com")
         prefs = get_preferences(user)
-        # default_slot="mid" and the mid model is vision-capable.
+        # default_slot="medium" and the mid model is vision-capable.
         self.assertEqual(prefs.feature_models["document_image_description"], "gemini/gemini-3.5-flash")
         self.assertTrue(feature_is_available(user, "document_image_description"))
         # spreadsheet_description shares the same modality gate.
@@ -1429,7 +1429,7 @@ class ModalityFeatureResolutionTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/whisper-1",
-        LLM_DEFAULT_MID_MODEL="openai/whisper-1",
+        LLM_DEFAULT_MEDIUM_MODEL="openai/whisper-1",
         LLM_DEFAULT_CHEAP_MODEL="openai/whisper-1",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/whisper-1"])
@@ -1457,7 +1457,7 @@ class ResolveOrgFeatureModelTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_MEDIUM_MODEL="openai/gpt-5.4-mini",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
@@ -1471,7 +1471,7 @@ class ResolveOrgFeatureModelTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-6-astra",
-        LLM_DEFAULT_MID_MODEL="openai/gpt-6-astra",
+        LLM_DEFAULT_MEDIUM_MODEL="openai/gpt-6-astra",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.6-luna",  # retired alias of gpt-6-luna
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
@@ -1491,7 +1491,7 @@ class ResolveOrgFeatureModelTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-6-sol",
-        LLM_DEFAULT_MID_MODEL="openai/gpt-6-sol",
+        LLM_DEFAULT_MEDIUM_MODEL="openai/gpt-6-sol",
         LLM_DEFAULT_CHEAP_MODEL="anthropic/claude-haiku-5-5",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
@@ -1513,7 +1513,7 @@ class ResolveOrgFeatureModelTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_MEDIUM_MODEL="openai/gpt-5.4-mini",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
@@ -1533,7 +1533,7 @@ class ResolveOrgFeatureModelTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="gemini/gemini-3.5-flash",
+        LLM_DEFAULT_MEDIUM_MODEL="gemini/gemini-3.5-flash",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
@@ -1554,7 +1554,7 @@ class ResolveOrgFeatureModelTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_MEDIUM_MODEL="openai/gpt-5.4-mini",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
@@ -1567,7 +1567,7 @@ class ResolveOrgFeatureModelTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+        LLM_DEFAULT_MEDIUM_MODEL="openai/gpt-5.4-mini",
         LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=[
@@ -1622,7 +1622,7 @@ class SkillResourceAutoGrantsViewToolsTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_MEDIUM_MODEL="",
         LLM_DEFAULT_CHEAP_MODEL="",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
@@ -1654,7 +1654,7 @@ class SkillResourceAutoGrantsViewToolsTest(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_MEDIUM_MODEL="",
         LLM_DEFAULT_CHEAP_MODEL="",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
@@ -1687,7 +1687,7 @@ class SkillApprovalInEntriesTests(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_MEDIUM_MODEL="",
         LLM_DEFAULT_CHEAP_MODEL="",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])
@@ -1739,7 +1739,7 @@ class RequiresInEntriesTests(TestCase):
 
     @override_settings(
         LLM_DEFAULT_MODEL="openai/gpt-5.4",
-        LLM_DEFAULT_MID_MODEL="",
+        LLM_DEFAULT_MEDIUM_MODEL="",
         LLM_DEFAULT_CHEAP_MODEL="",
     )
     @patch("llm.service.policies.get_allowed_models", return_value=["openai/gpt-5.4"])

@@ -11,12 +11,12 @@ from datetime import date
 from decimal import Decimal
 
 TIER_CHEAP = "cheap"
-TIER_MID = "mid"
+TIER_MEDIUM = "medium"
 TIER_STANDARD = "standard"
 TIER_FLAGSHIP = "flagship"
 TIER_ORDER = {
     TIER_CHEAP: 0,
-    TIER_MID: 1,
+    TIER_MEDIUM: 1,
     TIER_STANDARD: 2,
     TIER_FLAGSHIP: 3,
 }
@@ -25,15 +25,15 @@ TIER_ORDER = {
 # model_fits_slot). The cheap slot has no star floor — it is price-defined (a
 # model qualifies via the cheap category). Explicit admin choices ignore these.
 SLOT_MIN_STARS: dict[str, int] = {
-    "mid": 2,
+    "medium": 2,
     "primary": 3,
 }
 
 # Star rating → tier category. 1-star models categorize only as cheap (via
 # price); any model may additionally be cheap when priced below $0.50.
 _STARS_TO_TIER = {
-    2: TIER_MID,
-    3: TIER_MID,
+    2: TIER_MEDIUM,
+    3: TIER_MEDIUM,
     4: TIER_STANDARD,
     5: TIER_FLAGSHIP,
 }
@@ -544,7 +544,7 @@ def get_models_for_slot(slot: str, allowed_models: list[str] | None = None) -> l
 
 __all__ = [
     "ModelInfo", "PriceChange", "MODEL_REPLACEMENTS",
-    "TIER_CHEAP", "TIER_MID", "TIER_STANDARD", "TIER_FLAGSHIP", "TIER_ORDER",
+    "TIER_CHEAP", "TIER_MEDIUM", "TIER_STANDARD", "TIER_FLAGSHIP", "TIER_ORDER",
     "SLOT_MIN_STARS", "canonical_model_id", "normalize_model_ids",
     "get_model_info", "get_registered_model_ids", "get_model_tier",
     "get_models_by_tier", "model_fits_slot", "get_models_for_slot",

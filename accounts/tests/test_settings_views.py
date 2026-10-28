@@ -135,7 +135,7 @@ class SettingsPageTests(TestCase):
         from core.preferences import ResolvedPreferences
         mock_prefs.return_value = ResolvedPreferences(
             top_model="openai/gpt-5",
-            mid_model="openai/gpt-5-mini",
+            medium_model="openai/gpt-5-mini",
             cheap_model="",
             allowed_models=["openai/gpt-5", "openai/gpt-5-mini"],
             allowed_tools=["document_search"],
@@ -284,9 +284,9 @@ class OrgSettingsAccessTests(TestCase):
         self.assertEqual(rows["subagent_low"]["label"], "Low-quality sub-agents")
         self.assertEqual(rows["subagent_medium"]["label"], "Medium-quality sub-agents")
         self.assertEqual(rows["subagent_high"]["label"], "High-quality sub-agents")
-        # "No override" follows the org's cheap / mid / primary slot models.
+        # "No override" follows the org's cheap / medium / primary slot models.
         self.assertEqual(rows["subagent_low"]["default_slot"], "cheap")
-        self.assertEqual(rows["subagent_medium"]["default_slot"], "mid")
+        self.assertEqual(rows["subagent_medium"]["default_slot"], "medium")
         self.assertEqual(rows["subagent_high"]["default_slot"], "primary")
         # Budget inputs: one per tier, lowest first.
         self.assertEqual(
@@ -352,7 +352,7 @@ class OrgSettingsAccessTests(TestCase):
         # One row per category, in table order, each with a reasoning control.
         self.assertEqual([r["key"] for r in rows], list(AUTO_FEATURE_KEYS))
         by_key = {r["key"]: r for r in rows}
-        self.assertEqual(by_key["auto_mid"]["default_slot"], "mid")
+        self.assertEqual(by_key["auto_medium"]["default_slot"], "medium")
         self.assertEqual(by_key["auto_writing"]["default_slot"], "primary")
         self.assertEqual(by_key["auto_writing"]["reasoning"]["feature"], "auto_writing")
         # Not in the generic feature list.
@@ -2760,7 +2760,7 @@ _REASONING_SYSTEM_MODELS = [
 @override_settings(
     ALLOWED_HOSTS=["testserver"],
     LLM_DEFAULT_MODEL="openai/gpt-6-sol",
-    LLM_DEFAULT_MID_MODEL="anthropic/claude-sonnet-5-5",
+    LLM_DEFAULT_MEDIUM_MODEL="anthropic/claude-sonnet-5-5",
     LLM_DEFAULT_CHEAP_MODEL="openai/gpt-6-luna",
 )
 @patch("llm.service.policies.get_allowed_models", return_value=_REASONING_SYSTEM_MODELS)
@@ -2891,7 +2891,7 @@ class OrgSubagentReasoningUpdateTests(TestCase):
 @override_settings(
     ALLOWED_HOSTS=["testserver"],
     LLM_DEFAULT_MODEL="openai/gpt-6-sol",
-    LLM_DEFAULT_MID_MODEL="anthropic/claude-sonnet-5-5",
+    LLM_DEFAULT_MEDIUM_MODEL="anthropic/claude-sonnet-5-5",
     LLM_DEFAULT_CHEAP_MODEL="openai/gpt-6-luna",
 )
 @patch("llm.service.policies.get_allowed_models", return_value=_REASONING_SYSTEM_MODELS)

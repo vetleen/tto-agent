@@ -604,7 +604,7 @@ class ChatHomeModelChoicesTests(TestCase):
 
         mock_preferences.return_value = ResolvedPreferences(
             top_model="openai/gpt-5.6-sol",
-            mid_model="openai/gpt-6-luna",
+            medium_model="openai/gpt-6-luna",
             cheap_model="openai/gpt-5.4-nano",
             allowed_models=["openai/gpt-5.6-sol", "openai/gpt-6-luna"],
             feature_models={"chat": "openai/gpt-6-luna"},
@@ -655,7 +655,7 @@ class ChatHomeModelChoicesTests(TestCase):
         enabled = ["anthropic/claude-opus-5-5", "openai/gpt-6-luna"]
         mock_preferences.return_value = ResolvedPreferences(
             top_model="anthropic/claude-opus-5-5",
-            mid_model="openai/gpt-6-luna",
+            medium_model="openai/gpt-6-luna",
             cheap_model="openai/gpt-6-luna",
             allowed_models=enabled,
         )

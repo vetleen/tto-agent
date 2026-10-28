@@ -123,7 +123,7 @@ def resolve_subagent_model(tier: str, prefs: ResolvedPreferences) -> str:
 
     Honors the org's per-tier override (the ``subagent_low`` / ``subagent_medium``
     / ``subagent_high`` feature models), falling back to the tier's slot model
-    (``cheap_model`` / ``mid_model`` / ``top_model``) when no override is set —
+    (``cheap_model`` / ``medium_model`` / ``top_model``) when no override is set —
     which is also what ``feature_models`` resolves to by default. The slot
     fallback also covers callers that build a bare ``ResolvedPreferences``
     without the subagent feature keys. An unknown tier resolves as medium.
@@ -133,8 +133,8 @@ def resolve_subagent_model(tier: str, prefs: ResolvedPreferences) -> str:
         model = prefs.feature_models.get(feature)
         if model:
             return model
-    slot_model = {"low": prefs.cheap_model, "medium": prefs.mid_model, "high": prefs.top_model}
-    return slot_model.get(tier) or prefs.mid_model
+    slot_model = {"low": prefs.cheap_model, "medium": prefs.medium_model, "high": prefs.top_model}
+    return slot_model.get(tier) or prefs.medium_model
 
 
 def specialization_model(skill, prefs: ResolvedPreferences) -> tuple[str | None, str | None]:

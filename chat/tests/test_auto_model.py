@@ -15,13 +15,17 @@ from chat.auto_model import (
     RouteDecision,
     apply_floor,
     build_question,
+    build_route_facts,
     build_router_input,
     is_cache_warm,
     resolve_category,
     route_turn,
     skill_category,
 )
+from agent_skills.models import AgentSkill
 from chat.auto_model_prompt import CATEGORY_DEFINITIONS
+from chat.models import ChatAttachment, ChatCanvas, ChatMessage, ChatThread, ChatThreadDataRoom, ChatThreadSkill
+from documents.models import DataRoom, DataRoomDocument
 from core.preferences import FEATURE_DEFAULTS
 
 OPUS = "anthropic/claude-opus-5-5"
@@ -40,7 +44,7 @@ def _prefs(**feature_models):
     return SimpleNamespace(
         feature_models=models,
         feature_reasoning={},
-        mid_model=SONNET,
+        medium_model=SONNET,
         allowed_models=[OPUS, SONNET, LUNA, SOL, ARGON, HAIKU],
     )
 
@@ -57,6 +61,11 @@ class CategoryTableTests(SimpleTestCase):
             self.assertIn(c.feature_key, FEATURE_DEFAULTS)
             self.assertTrue(FEATURE_DEFAULTS[c.feature_key].reasoning_control)
 
+    def test_rank_follows_the_default_slot(self):
+        slot_rank = {"cheap": 0, "medium": 1, "primary": 2}
+        for c in AUTO_CATEGORIES:
+            self.assertEqual(c.rank, slot_rank[FEATURE_DEFAULTS[c.feature_key].default_slot], c.key)
+
     def test_question_offers_every_category(self):
         q = build_question()
         self.assertEqual([c.value for c in q.choices], [c.key for c in AUTO_CATEGORIES])
@@ -72,7 +81,7 @@ class CategoryTableTests(SimpleTestCase):
         self.assertEqual(resolve_category(prefs, "writing", "none"), (OPUS, None))
 
     def test_unknown_category_resolves_to_default(self):
-        prefs = _prefs(mid=LUNA)
+        prefs = _prefs(medium=LUNA)
         self.assertEqual(resolve_category(prefs, "nope")[0], LUNA)
 
 
@@ -123,10 +132,10 @@ class CacheWarmthTests(SimpleTestCase):
 
 class FloorAndSkillTests(SimpleTestCase):
     def test_floor(self):
-        self.assertEqual(apply_floor("mid", "writing"), ("writing", True))
-        self.assertEqual(apply_floor("cheap", "mid"), ("mid", True))
+        self.assertEqual(apply_floor("medium", "writing"), ("writing", True))
+        self.assertEqual(apply_floor("cheap", "medium"), ("medium", True))
         self.assertEqual(apply_floor("complex_analysis", "writing"), ("complex_analysis", False))
-        self.assertEqual(apply_floor("writing", "mid"), ("writing", False))
+        self.assertEqual(apply_floor("writing", "medium"), ("writing", False))
         # A cheap thread (or none yet) has no floor.
         self.assertEqual(apply_floor("cheap", "cheap"), ("cheap", False))
         self.assertEqual(apply_floor("cheap", None), ("cheap", False))
@@ -141,9 +150,9 @@ class FloorAndSkillTests(SimpleTestCase):
         self.assertEqual(skill_category(skills, prefs), ("slide_design", "high"))
 
     def test_skill_tie_goes_to_cheapest_model(self):
-        prefs = _prefs(writing=OPUS, research=LUNA)
-        skills = [{"preferred_model_category": "writing"}, {"preferred_model_category": "research"}]
-        self.assertEqual(skill_category(skills, prefs), ("research", None))
+        prefs = _prefs(writing=OPUS, complex_analysis=LUNA)
+        skills = [{"preferred_model_category": "writing"}, {"preferred_model_category": "complex_analysis"}]
+        self.assertEqual(skill_category(skills, prefs), ("complex_analysis", None))
 
     def test_no_skill_category(self):
         self.assertIsNone(skill_category([{"preferred_model_category": "bogus"}, {}], _prefs()))
@@ -154,7 +163,7 @@ class FloorAndSkillTests(SimpleTestCase):
 class RouteTurnTests(SimpleTestCase):
     def _route(self, *, state=None, thread_model=SONNET, skills=(), prefs=None):
         return _run(route_turn(
-            thread_id="t", org_id=None, prefs=prefs or _prefs(writing=OPUS, mid=LUNA),
+            thread_id="t", org_id=None, prefs=prefs or _prefs(writing=OPUS, medium=LUNA),
             state=state, thread_model=thread_model, summary_up_to=None,
             skills=list(skills), facts={},
         ))
@@ -165,11 +174,11 @@ class RouteTurnTests(SimpleTestCase):
         self.assertEqual(decision, RouteDecision(OPUS, None, "writing", "router", "writing", False))
         mock_decide.assert_awaited_once()
 
-    @patch.object(auto_model, "decide_category", new_callable=AsyncMock, return_value="mid")
+    @patch.object(auto_model, "decide_category", new_callable=AsyncMock, return_value="medium")
     def test_router_downgrade_is_clamped(self, _decide):
         state = {"enabled": True, "category": "writing", "model": OPUS}
         decision = self._route(state=state, thread_model=OPUS)
-        self.assertEqual((decision.category, decision.raw_category, decision.floor_applied), ("writing", "mid", True))
+        self.assertEqual((decision.category, decision.raw_category, decision.floor_applied), ("writing", "medium", True))
         self.assertEqual(decision.model, OPUS)
 
     @patch.object(auto_model, "decide_category", new_callable=AsyncMock, return_value="writing")
@@ -188,7 +197,7 @@ class RouteTurnTests(SimpleTestCase):
         self.assertEqual((decision.category, decision.source, decision.thinking_level), ("slide_design", "skill", "max"))
         mock_decide.assert_not_awaited()
 
-    def test_failures_fall_back_to_mid(self):
+    def test_failures_fall_back_to_medium(self):
         async def slow(*a, **k):
             await asyncio.sleep(5)
 
@@ -197,7 +206,7 @@ class RouteTurnTests(SimpleTestCase):
                     patch.object(auto_model, "decide_category", side_effect=side_effect):
                 with self.assertLogs("chat.auto_model", "WARNING"):
                     decision = self._route()
-                self.assertEqual((decision.model, decision.category, decision.source), (LUNA, "mid", "fallback"))
+                self.assertEqual((decision.model, decision.category, decision.source), (LUNA, "medium", "fallback"))
 
     @patch.object(auto_model, "decide_category", side_effect=RuntimeError("boom"))
     def test_fallback_respects_floor(self, _decide):
@@ -225,11 +234,15 @@ class RouterInputTests(TestCase):
         )
 
     def _data(self, **kw):
-        messages = build_router_input(self.thread.id, current_category=kw.get("current"), facts={"data_rooms": 1})
+        messages = build_router_input(
+            self.thread.id, current_category=kw.get("current"),
+            decision_message_id=kw.get("decided_by"), facts={"data_rooms": []},
+        )
         self.assertEqual(messages[0].role, "developer")
         return messages[1].content[0].data
 
     def test_shape(self):
+        self.msg("user", "hi")
         self.msg("user", "first task")
         for i in range(5):
             self.msg("user", f"u{i}")
@@ -241,19 +254,108 @@ class RouterInputTests(TestCase):
         data = self._data(current="writing")
         self.assertEqual(data["latest_user_message"], "thanks")
         self.assertEqual(data["earlier_user_messages"], ["u2", "u3", "u4"])
-        self.assertEqual(data["first_user_message"], "first task")
-        self.assertTrue(data["last_assistant_message_head"].endswith("…[truncated]"))
-        self.assertLess(len(data["last_assistant_message_head"]), 1700)
+        self.assertEqual(data["first_user_messages"], ["hi", "first task"])
+        self.assertEqual(data["last_assistant_message"], "A" * 5000)  # never clipped
         self.assertEqual(data["current_category"], "writing")
-        self.assertEqual(data["facts"], {"data_rooms": 1})
+        self.assertNotIn("current_category_decision_point", data)
+        self.assertEqual(data["facts"], {"data_rooms": []})
 
     def test_first_message_not_repeated(self):
         self.msg("user", "only message")
         data = self._data()
         self.assertEqual(data["latest_user_message"], "only message")
-        self.assertNotIn("first_user_message", data)
+        self.assertNotIn("first_user_messages", data)
         self.assertNotIn("earlier_user_messages", data)
-        self.assertNotIn("last_assistant_message_head", data)
+        self.assertNotIn("last_assistant_message", data)
+
+    def test_first_messages_skip_those_already_included(self):
+        for text in ("one", "two", "three"):
+            self.msg("user", text)
+        data = self._data()
+        self.assertEqual(data["earlier_user_messages"], ["one", "two"])
+        self.assertNotIn("first_user_messages", data)
+
+    def test_decision_point(self):
+        decided = self.msg("user", "draft the licence agreement")
+        self.msg("user", "make it shorter")
+        data = self._data(current="writing", decided_by=decided.pk)
+        self.assertEqual(data["current_category_decision_point"], "draft the licence agreement")
+        # Without a current category there is nothing to explain.
+        self.assertNotIn("current_category_decision_point", self._data(decided_by=decided.pk))
+
+
+class RouteFactsTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(email="facts@example.com", password="x")
+        self.thread = ChatThread.objects.create(created_by=self.user)
+
+    @staticmethod
+    def _at(obj, field, when):
+        type(obj).objects.filter(pk=obj.pk).update(**{field: when})
+
+    def _attachment(self, name, content_type, **kw):
+        return ChatAttachment.objects.create(
+            thread=self.thread, uploaded_by=self.user, file=name, original_filename=name,
+            content_type=content_type, size_bytes=10, **kw,
+        )
+
+    def test_facts(self):
+        t0 = timezone.now() - timedelta(hours=1)
+        first = ChatMessage.objects.create(thread=self.thread, role="user", content="hi")
+        self._at(first, "created_at", t0)
+        second = ChatMessage.objects.create(thread=self.thread, role="user", content="read this")
+        self._at(second, "created_at", t0 + timedelta(minutes=10))
+
+        self._attachment("patent_claims.pdf", "application/pdf", message=second, page_count=2)
+        self._attachment(
+            "a-very-long-file-name-for-the-board-meeting.docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            message=first, extracted_content="x" * 4000,
+        )
+        pending = self._attachment("photo.png", "image/png")  # this turn's, not linked yet
+        self._attachment("draft.txt", "text/plain")  # unsent, not on this turn: left out
+
+        room = DataRoom.objects.create(name="Project Alpha", created_by=self.user)
+        for i, archived in enumerate((False, False, True)):
+            DataRoomDocument.objects.create(
+                data_room=room, uploaded_by=self.user, original_filename=f"d{i}.pdf", is_archived=archived,
+            )
+        link = ChatThreadDataRoom.objects.create(thread=self.thread, data_room=room)
+        # Attached between the first and the second message: belongs to round 2.
+        self._at(link, "attached_at", t0 + timedelta(minutes=5))
+
+        canvas = ChatCanvas.objects.create(thread=self.thread, title="Memo", content="y" * 800)
+        self._at(canvas, "created_at", t0 + timedelta(minutes=1))  # during round 1's turn
+        ChatCanvas.objects.create(thread=self.thread, title="Gone", content="z", deleted_at=timezone.now())
+
+        skill = AgentSkill.objects.create(
+            slug="drafting", name="Drafting", instructions="x", level="user", created_by=self.user,
+            preferred_model_category="writing",
+        )
+        ChatThreadSkill.objects.create(thread=self.thread, skill=skill)
+
+        skills, facts = build_route_facts(self.thread.id, [str(pending.pk)])
+        self.assertEqual(skills, [{
+            "name": "Drafting", "preferred_model_category": "writing", "preferred_reasoning_level": "",
+        }])
+        self.assertEqual(facts, {
+            "current_round": 2,
+            "attachments": [
+                "patent_claims.pdf (2 pages, added round #2)",
+                "a-very-long-file-name-fo….docx (~1,000 tokens, added round #1)",
+                "photo.png (image, added round #2)",
+            ],
+            "data_rooms": ["Project Alpha (2 files, added round #2)"],
+            "canvases": ["Memo (~200 tokens, added round #1)"],
+            "skills": ["Drafting (playbook, added round #2)"],
+        })
+
+    def test_empty_thread(self):
+        skills, facts = build_route_facts(self.thread.id)
+        self.assertEqual(skills, [])
+        self.assertEqual(facts, {
+            "current_round": 1, "attachments": [], "data_rooms": [], "canvases": [], "skills": [],
+        })
 
 
 class SpecializationModelTests(SimpleTestCase):

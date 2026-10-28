@@ -19,7 +19,7 @@ from documents.models import (
 User = get_user_model()
 
 # Resolves the document_description / pii_scan feature models to a real id.
-_MODELS = dict(LLM_DEFAULT_MID_MODEL="openai/gpt-4o-mini", LLM_DEFAULT_CHEAP_MODEL="openai/gpt-4o-mini")
+_MODELS = dict(LLM_DEFAULT_MEDIUM_MODEL="openai/gpt-4o-mini", LLM_DEFAULT_CHEAP_MODEL="openai/gpt-4o-mini")
 _GATE_ON = ("openai/gpt-4o-mini", True, True)  # (model, pii_enabled, pii_quarantine_enabled)
 Origin = DataRoomDocumentVersion.Origin
 Status = DataRoomDocument.Status

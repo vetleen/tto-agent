@@ -31,7 +31,7 @@ LIVE_TRANSCRIPTION_MODES = ("chunked", "realtime", "realtime_with_fallback")
 @dataclass
 class ResolvedPreferences:
     top_model: str
-    mid_model: str
+    medium_model: str
     cheap_model: str
     allowed_models: list[str] = field(default_factory=list)
     allowed_tools: list[str] = field(default_factory=list)
@@ -89,7 +89,7 @@ class ResolvedPreferences:
 class FeatureDefault:
     """Per-feature model-selection policy.
 
-    default_slot: tier used by default ("primary", "mid", "cheap"). An org
+    default_slot: tier used by default ("primary", "medium", "cheap"). An org
         override may be any allowed model, whatever its stars.
     scope: "org" exposes a dedicated organization override; "user" identifies
         features that follow the organization's tier defaults. Chat also allows
@@ -144,16 +144,16 @@ FEATURE_DEFAULTS: dict[str, FeatureDefault] = {
     "thread_emoji": FeatureDefault("cheap", "user"),
     "canvas_title": FeatureDefault("cheap", "user"),
     "image_description": FeatureDefault("cheap", "user"),
-    "message_summary": FeatureDefault("mid", "org"),
+    "message_summary": FeatureDefault("medium", "org"),
     "guardrails_classifier": FeatureDefault("cheap", "org"),
     "guardrails_reviewer": FeatureDefault("primary", "org"),
-    "document_description": FeatureDefault("mid", "org"),
+    "document_description": FeatureDefault("medium", "org"),
     # Describes images uploaded to data rooms; needs a vision-capable model.
-    "document_image_description": FeatureDefault("mid", "org", required_modality="image"),
+    "document_image_description": FeatureDefault("medium", "org", required_modality="image"),
     # Describes spreadsheet sheets + adjudicates header rows from a rendered
     # tile; needs vision. Unlike images, spreadsheets degrade (heuristic
     # headers, no descriptions) instead of blocking upload when unavailable.
-    "spreadsheet_description": FeatureDefault("mid", "org", required_modality="image"),
+    "spreadsheet_description": FeatureDefault("medium", "org", required_modality="image"),
     "skill_emoji": FeatureDefault("cheap", "org"),
     "guardrail_chunk_scan": FeatureDefault("cheap", "org"),
     "guardrail_web_scan": FeatureDefault("cheap", "org"),
@@ -164,10 +164,10 @@ FEATURE_DEFAULTS: dict[str, FeatureDefault] = {
     "pii_scan": FeatureDefault("cheap", "org"),
     "pii_reviewer": FeatureDefault("primary", "org"),
     # Per-tier model for sub-agent runs, keyed to SubAgentRun.model_tier
-    # (SUBAGENT_TIERS). "No override" resolves to the org's cheap / mid / top
+    # (SUBAGENT_TIERS). "No override" resolves to the org's cheap / medium / top
     # slot model (see chat.subagent_service.resolve_subagent_model).
     "subagent_low": FeatureDefault("cheap", "org"),
-    "subagent_medium": FeatureDefault("mid", "org"),
+    "subagent_medium": FeatureDefault("medium", "org"),
     "subagent_high": FeatureDefault("primary", "org"),
     # Decisions (llm/service/decisions_service.py): structured yes/no, choice and
     # score questions. "quick" = OpenAI's Decisions endpoint — only models with
@@ -180,15 +180,15 @@ FEATURE_DEFAULTS: dict[str, FeatureDefault] = {
     # category, each with a pinned reasoning level. Keys are
     # f"auto_{category}" for chat.auto_model.AUTO_CATEGORIES.
     "auto_cheap": FeatureDefault("cheap", "org", reasoning_control=True),
-    "auto_mid": FeatureDefault("mid", "org", reasoning_control=True),
+    "auto_medium": FeatureDefault("medium", "org", reasoning_control=True),
     "auto_top": FeatureDefault("primary", "org", reasoning_control=True),
-    "auto_short_writing": FeatureDefault("mid", "org", reasoning_control=True),
+    "auto_short_writing": FeatureDefault("primary", "org", reasoning_control=True),
     "auto_writing": FeatureDefault("primary", "org", reasoning_control=True),
-    "auto_light_reading": FeatureDefault("mid", "org", reasoning_control=True),
+    "auto_light_reading": FeatureDefault("medium", "org", reasoning_control=True),
     "auto_difficult_reading": FeatureDefault("primary", "org", reasoning_control=True),
-    "auto_light_analysis": FeatureDefault("mid", "org", reasoning_control=True),
+    "auto_light_analysis": FeatureDefault("medium", "org", reasoning_control=True),
     "auto_complex_analysis": FeatureDefault("primary", "org", reasoning_control=True),
-    "auto_research": FeatureDefault("primary", "org", reasoning_control=True),
+    "auto_research": FeatureDefault("medium", "org", reasoning_control=True),
     "auto_slide_design": FeatureDefault("primary", "org", reasoning_control=True),
 }
 
@@ -202,18 +202,18 @@ CHAT_AUTO_DEFAULT_PREF = "chat_auto_default"
 DECISIONS_QUICK_PREF = "decisions_quick_enabled"
 
 # Sub-agent model-quality tiers (SubAgentRun.model_tier), lowest first. Not to
-# be confused with the slot vocabulary ("primary"/"mid"/"cheap") above.
+# be confused with the slot vocabulary ("primary"/"medium"/"cheap") above.
 SUBAGENT_TIERS = ("low", "medium", "high")
 DEFAULT_SUBAGENT_TIER = "medium"
 SUBAGENT_TIER_FEATURES = {tier: f"subagent_{tier}" for tier in SUBAGENT_TIERS}
 
-_SLOT_TO_ATTR = {"primary": "top_model", "mid": "mid_model", "cheap": "cheap_model"}
+_SLOT_TO_ATTR = {"primary": "top_model", "medium": "medium_model", "cheap": "cheap_model"}
 
 # Map a model's registry tier to the preference slot used for fallback.
 _TIER_TO_SLOT = {
     "flagship": "primary",
     "standard": "primary",
-    "mid": "mid",
+    "medium": "medium",
     "cheap": "cheap",
 }
 
@@ -294,7 +294,7 @@ def _get_system_model_defaults() -> dict[str, str]:
     """Return system-level default model for each tier from Django settings."""
     return {
         "primary": getattr(django_settings, "LLM_DEFAULT_MODEL", "") or "",
-        "mid": getattr(django_settings, "LLM_DEFAULT_MID_MODEL", "") or "",
+        "medium": getattr(django_settings, "LLM_DEFAULT_MEDIUM_MODEL", "") or "",
         "cheap": getattr(django_settings, "LLM_DEFAULT_CHEAP_MODEL", "") or "",
     }
 
@@ -362,13 +362,13 @@ def get_preferences(user) -> ResolvedPreferences:
         system_allowed=system_allowed,
         slot="primary",
     )
-    mid_model = _resolve_tier(
+    medium_model = _resolve_tier(
         user_choice=None,
-        org_default=org_models.get("mid"),
-        system_default=sys_models["mid"],
+        org_default=org_models.get("medium"),
+        system_default=sys_models["medium"],
         effective_allowed=effective_allowed,
         system_allowed=system_allowed,
-        slot="mid",
+        slot="medium",
     )
     cheap_model = _resolve_tier(
         user_choice=None,
@@ -381,12 +381,12 @@ def get_preferences(user) -> ResolvedPreferences:
 
     # Fallback: if no model available for a tier, fall up to the next tier
     warnings: list[str] = []
-    if not cheap_model and mid_model:
-        cheap_model = mid_model
+    if not cheap_model and medium_model:
+        cheap_model = medium_model
         warnings.append("No cheap-tier models in your organization's allowed list. Cheap-tier features will use a more expensive model.")
-    if not mid_model and top_model:
-        mid_model = top_model
-        warnings.append("No mid-tier models in your organization's allowed list. Mid-tier features will use the primary model.")
+    if not medium_model and top_model:
+        medium_model = top_model
+        warnings.append("No medium-tier models in your organization's allowed list. Medium-tier features will use the primary model.")
     if not get_models_for_slot("primary", effective_allowed):
         warnings.append("No standard-grade models (3 stars or better) in your organization's allowed list. Chat and primary features may not work correctly.")
 
@@ -665,7 +665,7 @@ def get_preferences(user) -> ResolvedPreferences:
     max_context_tokens = max(org_max_ctx, MIN_CONTEXT_TOKENS)
 
     # Resolve per-feature model overrides
-    slot_model = {"primary": top_model, "mid": mid_model, "cheap": cheap_model}
+    slot_model = {"primary": top_model, "medium": medium_model, "cheap": cheap_model}
     org_feature_prefs = org_prefs.get("feature_models") or {}
 
     feature_models: dict[str, str] = {}
@@ -690,7 +690,7 @@ def get_preferences(user) -> ResolvedPreferences:
 
     return ResolvedPreferences(
         top_model=top_model,
-        mid_model=mid_model,
+        medium_model=medium_model,
         cheap_model=cheap_model,
         allowed_models=effective_allowed,
         allowed_tools=allowed_tools,
@@ -791,7 +791,7 @@ def get_tier_defaults(user) -> dict[str, str]:
 
     return {
         "primary": _resolve_tier(None, org_models.get("primary"), sys_models["primary"], effective_allowed, system_allowed, slot="primary"),
-        "mid": _resolve_tier(None, org_models.get("mid"), sys_models["mid"], effective_allowed, system_allowed, slot="mid"),
+        "medium": _resolve_tier(None, org_models.get("medium"), sys_models["medium"], effective_allowed, system_allowed, slot="medium"),
         "cheap": _resolve_tier(None, org_models.get("cheap"), sys_models["cheap"], effective_allowed, system_allowed, slot="cheap"),
     }
 
@@ -805,7 +805,7 @@ def get_system_defaults() -> dict[str, str]:
 
     return {
         "primary": _resolve_tier(None, None, sys_models["primary"], system_allowed, system_allowed, slot="primary"),
-        "mid": _resolve_tier(None, None, sys_models["mid"], system_allowed, system_allowed, slot="mid"),
+        "medium": _resolve_tier(None, None, sys_models["medium"], system_allowed, system_allowed, slot="medium"),
         "cheap": _resolve_tier(None, None, sys_models["cheap"], system_allowed, system_allowed, slot="cheap"),
     }
 

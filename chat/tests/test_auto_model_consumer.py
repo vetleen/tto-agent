@@ -96,11 +96,37 @@ class AutoModelConsumerTests(TransactionTestCase):
         self.assertEqual(thread.auto_route["category"], "writing")
         self.assertEqual(thread.auto_route["model"], model)
         self.assertTrue(thread.auto_route["last_turn_at"])
+        question = await database_sync_to_async(
+            lambda: ChatMessage.objects.filter(thread=thread, role="user").last()
+        )()
+        self.assertEqual(thread.auto_route["decided_by_message_id"], str(question.pk))
 
         reply = await database_sync_to_async(
             lambda: ChatMessage.objects.filter(thread=thread, role="assistant").last()
         )()
         self.assertEqual(reply.metadata["auto_route"]["category"], "writing")
+
+    @override_settings(AUTO_MODEL_CACHE_TTL_SECONDS={})  # every turn re-routes
+    @patch("chat.auto_model.decide_category", new_callable=AsyncMock, return_value="writing")
+    @patch("llm.get_llm_service")
+    async def test_decision_point_moves_only_with_the_category(self, get_service, decide):
+        await self._turn(get_service, {"content": "Draft the report", "model": "auto"})
+        thread = await database_sync_to_async(ChatThread.objects.get)(created_by=self.user)
+        first_id = thread.auto_route["decided_by_message_id"]
+
+        await self._turn(get_service, {"content": "shorter", "thread_id": str(thread.id), "model": "auto"})
+        await database_sync_to_async(thread.refresh_from_db)()
+        self.assertEqual(thread.auto_route["decided_by_message_id"], first_id)
+        self.assertEqual(decide.await_args.kwargs["decision_message_id"], first_id)
+
+        decide.return_value = "complex_analysis"
+        await self._turn(get_service, {"content": "now assess the risks", "thread_id": str(thread.id), "model": "auto"})
+        await database_sync_to_async(thread.refresh_from_db)()
+        latest = await database_sync_to_async(
+            lambda: ChatMessage.objects.filter(thread=thread, role="user").last()
+        )()
+        self.assertEqual(thread.auto_route["category"], "complex_analysis")
+        self.assertEqual(thread.auto_route["decided_by_message_id"], str(latest.pk))
 
     @patch("chat.auto_model.decide_category", new_callable=AsyncMock, return_value="writing")
     @patch("llm.get_llm_service")

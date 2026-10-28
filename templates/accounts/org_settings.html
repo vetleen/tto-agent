@@ -367,7 +367,7 @@
           {% if subagent_model_rows %}
           <div class="border-t border-default px-5 pt-4">
             <h3 class="text-sm font-semibold text-heading">Sub-agent models</h3>
-            <p class="mt-0.5 text-sm text-body">By default, low-quality sub-agents use your Cheap model, medium-quality sub-agents your Mid model and high-quality sub-agents your Primary model (see Model defaults). Pick a model here to override that for sub-agents only.</p>
+            <p class="mt-0.5 text-sm text-body">By default, low-quality sub-agents use your Cheap model, medium-quality sub-agents your Medium model and high-quality sub-agents your Primary model (see Model defaults). Pick a model here to override that for sub-agents only.</p>
             <p class="mt-1 text-sm text-body">Reasoning sets how long the model thinks before acting. Lower is faster and cheaper; higher can help on hard tasks. Changing the model resets it to that model's default.</p>
           </div>
           <div class="divide-y divide-default">
@@ -554,14 +554,13 @@
       <section id="auto-model" class="scroll-mt-24">
         <div class="mb-3">
           <h2 class="text-base font-semibold text-heading">Automatic model choice</h2>
-          <p class="mt-0.5 text-sm text-body">When a chat is set to Automatic, each request is sorted into one of these categories and runs on its model and reasoning level. Most requests use Default. Skills and sub-agent specializations can name a category too.</p>
+          <p class="mt-0.5 text-sm text-body">When a chat is set to Automatic, user requests are routed to models using the categories below. On the skills page, these categories can also hint which models a skill works best with. Some sub-agents also use the models specified here.</p>
         </div>
         <div class="rounded-base border border-default bg-neutral-primary-soft overflow-hidden">
           <div class="divide-y divide-default">
             {% for row in auto_model_rows %}
             <div class="px-5 py-4">
               <label class="block text-sm font-medium text-heading" for="org-feature-model-{{ row.key }}">{{ row.label }}</label>
-              <p class="text-xs text-body mt-0.5">{{ row.desc }}</p>
               <div class="mt-2 flex flex-col gap-2 sm:flex-row">
                 <div class="flex-1 min-w-0">
                   <span class="block text-xs font-medium text-body mb-1">Model</span>

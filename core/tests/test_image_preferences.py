@@ -28,7 +28,7 @@ def _create_user(email="img@example.com"):
 
 @override_settings(
     LLM_DEFAULT_MODEL="openai/gpt-5.4",
-    LLM_DEFAULT_MID_MODEL="openai/gpt-5.4-mini",
+    LLM_DEFAULT_MEDIUM_MODEL="openai/gpt-5.4-mini",
     LLM_DEFAULT_CHEAP_MODEL="openai/gpt-5.4-nano",
     IMAGE_ALLOWED_MODELS=["gemini/gemini-3.1-flash-lite-image"],
     IMAGE_DEFAULT_MODEL="gemini/gemini-3.1-flash-lite-image",

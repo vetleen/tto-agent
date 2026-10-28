@@ -948,7 +948,9 @@ PGVECTOR_CONNECTION = os.environ.get("PGVECTOR_CONNECTION", os.environ.get("DATA
 # LLM model tiers
 LLM_DEFAULT_TOP_MODEL = os.environ.get("LLM_DEFAULT_TOP_MODEL") or os.environ.get("LLM_DEFAULT_MODEL") or os.environ.get("DEFAULT_LLM_MODEL", "")
 LLM_DEFAULT_MODEL = LLM_DEFAULT_TOP_MODEL  # backward compat alias
-LLM_DEFAULT_MID_MODEL = os.environ.get("LLM_DEFAULT_MID_MODEL", "")
+# LLM_DEFAULT_MID_MODEL is the pre-2026-10-28 name, still read until the Heroku
+# config vars are renamed.
+LLM_DEFAULT_MEDIUM_MODEL = os.environ.get("LLM_DEFAULT_MEDIUM_MODEL") or os.environ.get("LLM_DEFAULT_MID_MODEL", "")
 LLM_DEFAULT_CHEAP_MODEL = os.environ.get("LLM_DEFAULT_CHEAP_MODEL", "")
 LLM_ENABLE_THINKING = os.environ.get("LLM_ENABLE_THINKING", "true").lower() in ("true", "1", "yes")
 BRAVE_SEARCH_API_KEY = os.environ.get("BRAVE_SEARCH_API_KEY", "")

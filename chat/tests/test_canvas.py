@@ -756,7 +756,7 @@ class DescribeImageTests(TestCase):
         prefs = MagicMock()
         prefs.feature_models = {}
         prefs.cheap_model = "gemini/gemini-3.5-flash"
-        prefs.mid_model = "openai/gpt-5-mini"
+        prefs.medium_model = "openai/gpt-5-mini"
         prefs.top_model = "anthropic/claude-sonnet-4-5"
         mock_prefs.return_value = prefs
 
@@ -775,7 +775,7 @@ class DescribeImageTests(TestCase):
         prefs = MagicMock()
         prefs.feature_models = {}
         prefs.cheap_model = "openai/o3"
-        prefs.mid_model = "openai/o4-mini"
+        prefs.medium_model = "openai/o4-mini"
         prefs.top_model = "custom/text-only"
         mock_prefs.return_value = prefs
 
@@ -790,7 +790,7 @@ class DescribeImageTests(TestCase):
         prefs = MagicMock()
         prefs.feature_models = {}
         prefs.cheap_model = "anthropic/claude-haiku-4-5-20251001"
-        prefs.mid_model = "openai/gpt-5-mini"
+        prefs.medium_model = "openai/gpt-5-mini"
         prefs.top_model = "anthropic/claude-sonnet-4-5"
         mock_prefs.return_value = prefs
 
@@ -806,7 +806,7 @@ class DescribeImageTests(TestCase):
         prefs = MagicMock()
         prefs.feature_models = {}
         prefs.cheap_model = "openai/o3"  # no vision
-        prefs.mid_model = "openai/gpt-5-mini"  # vision
+        prefs.medium_model = "openai/gpt-5-mini"  # vision
         prefs.top_model = "anthropic/claude-sonnet-4-5"
         mock_prefs.return_value = prefs
 

@@ -37,7 +37,7 @@ _IN_MEMORY_STORAGE = override_settings(
 def _prefs(**overrides):
     defaults = dict(
         top_model="openai/gpt-5",
-        mid_model="openai/gpt-5-mini",
+        medium_model="openai/gpt-5-mini",
         cheap_model="openai/gpt-5-nano",
         allowed_models=["openai/gpt-5", "openai/gpt-5-mini", "openai/gpt-5-nano"],
         allowed_tools=["web_search"],

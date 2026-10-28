@@ -290,7 +290,7 @@ def _format_output_price(price: Decimal) -> str:
 
 # Standing label per star count, matching the star-based tier categories
 # (2-3 stars = mid, 4 = standard, 5 = flagship).
-_CAPABILITY_LABELS = {1: "Cheap", 2: "Mid", 3: "Mid", 4: "Standard", 5: "Flagship"}
+_CAPABILITY_LABELS = {1: "Cheap", 2: "Medium", 3: "Medium", 4: "Standard", 5: "Flagship"}
 
 
 def get_model_meta_tooltip(model_id: str) -> str | None:

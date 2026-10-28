@@ -219,10 +219,10 @@ class PickerRatingTests(SimpleTestCase):
             get_model_meta_tooltip("anthropic/claude-opus-5-5"),
             "Standard · $20 / 1M output tokens",
         )
-        # 3-star models read as "Mid" under the star-based categories.
+        # 3-star models read as "Medium" under the star-based categories.
         self.assertEqual(
             get_model_meta_tooltip("anthropic/claude-sonnet-5"),
-            "Mid · $10 / 1M output tokens",
+            "Medium · $10 / 1M output tokens",
         )
         self.assertEqual(
             get_model_meta_tooltip("openai/gpt-5.4-nano"),
@@ -231,6 +231,6 @@ class PickerRatingTests(SimpleTestCase):
         # Shows the >100K band most requests pay, not the $0.50 base.
         self.assertEqual(
             get_model_meta_tooltip("anthropic/claude-haiku-5-5"),
-            "Mid · $2.50 / 1M output tokens",
+            "Medium · $2.50 / 1M output tokens",
         )
         self.assertIsNone(get_model_meta_tooltip("custom/unknown"))

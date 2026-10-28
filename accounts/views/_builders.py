@@ -51,13 +51,13 @@ def build_feature_rows(
 
 
 def build_tier_rows(defaults: dict[str, str], allowed: list[str]) -> list[dict]:
-    """Build the primary/mid/cheap tier rows for a settings page.
+    """Build the primary/medium/cheap tier rows for a settings page.
 
     Every allowed model is offered for every tier.
     """
     descriptions = {
         "primary": ("Primary model", "Used for important tasks like chat and writing."),
-        "mid": ("Mid model", "Used for tasks that don't need the best model, like text summarization or tagging."),
+        "medium": ("Medium model", "Used for tasks that don't need the best model, like text summarization or tagging."),
         "cheap": ("Cheap model", "Used for very simple tasks, like yes/no questions."),
     }
     return [

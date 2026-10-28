@@ -462,13 +462,13 @@ def org_settings_page(request):
         "spreadsheet_description": ("Spreadsheet description", "Describes each sheet of an uploaded spreadsheet and verifies its header row from a rendered preview. Requires a vision-capable model; without one, spreadsheets still upload with heuristic headers and no descriptions."),
         "skill_emoji": ("Skill emoji", "Picks an emoji for newly created skills."),
         "guardrail_chunk_scan": ("Chunk scan", "Scans document chunks for hidden adversarial content during file processing. Runs on every chunk, so a cheap, fast model keeps costs low."),
-        "pii_scan": ("PII classification", "Classifies documents by GDPR personal data categories during processing. Uses a mid-tier model for accuracy."),
+        "pii_scan": ("PII classification", "Classifies documents by GDPR personal data categories during processing. Uses a medium-tier model for accuracy."),
         "subagent_low": ("Low-quality sub-agents", "For simple, well-defined delegated work, such as lookups, narrow searches and summaries."),
         "subagent_medium": ("Medium-quality sub-agents", "Handle most delegated work, such as web research, summaries and lookups."),
         "subagent_high": ("High-quality sub-agents", f"Used rarely, only for tasks that need exceptional intelligence. {django_settings.ASSISTANT_NAME} picks the model quality for each sub-agent."),
         "decisions_quick": ("Quick decisions model", "Answers structured yes/no, multiple-choice and scoring questions through OpenAI's Decisions endpoint — fast and cheap. Only models that endpoint accepts are offered."),
         "decisions_structured": ("Structured decisions model", "Answers the same questions with a normal structured-output call. Used for every decision when quick decisions are off, and as the fallback when they fail or are unavailable."),
-        **{c.feature_key: (c.label, c.desc) for c in AUTO_CATEGORIES},
+        **{c.feature_key: (c.label, "") for c in AUTO_CATEGORIES},
     }
     org_features = build_feature_rows(
         "org", org_feature_models, effective_org_allowed, _ORG_FEATURE_META
@@ -503,7 +503,7 @@ def org_settings_page(request):
     # with the currently-allowed models; the client uses this to re-populate them
     # live when the admin toggles the allowed-models checklist (no page reload).
     model_options = {
-        "tiers": {key: list(system_models) for key in ("primary", "mid", "cheap")},
+        "tiers": {key: list(system_models) for key in ("primary", "medium", "cheap")},
         "features": {
             row["key"]: row["eligible_models"]
             for row in build_feature_rows(
@@ -1378,7 +1378,7 @@ def org_models_update(request):
     tier = _str_field(data, "tier")
     model = _str_field(data, "model") or None
 
-    if tier not in ("primary", "mid", "cheap"):
+    if tier not in ("primary", "medium", "cheap"):
         return JsonResponse({"error": "Invalid tier"}, status=400)
 
     if model:

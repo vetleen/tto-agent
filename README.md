@@ -163,7 +163,7 @@ Use `.env` (from `.env.example`). Key variables:
 | `BRAVE_SEARCH_API_KEY` | Web search via Brave Search API |
 | `LLM_ALLOWED_MODELS` | Model allowlist (comma-separated `provider/model` pairs) |
 | `LLM_DEFAULT_MODEL` | Default model for primary tasks |
-| `LLM_DEFAULT_MID_MODEL` | Default model for mid-tier tasks (medium-quality sub-agents) |
+| `LLM_DEFAULT_MEDIUM_MODEL` | Default model for medium-tier tasks (medium-quality sub-agents) |
 | `LLM_DEFAULT_CHEAP_MODEL` | Default model for cheap/fast tasks (low-quality sub-agents) |
 | `LLM_REQUEST_TIMEOUT`, `LLM_MAX_RETRIES` | Request timeout (seconds) and retry count |
 | `TRANSCRIPTION_ALLOWED_MODELS`, `TRANSCRIPTION_DEFAULT_MODEL` | Transcription model allowlist and default (meetings) |
