@@ -18,6 +18,9 @@ from documents.models import DataRoom, DataRoomDocument, DataRoomDocumentTag
 
 logger = logging.getLogger(__name__)
 
+# The picker's label for Automatic (chat/auto_model.py); drop "(beta)" once it settles.
+AUTO_MODEL_LABEL = "Automatic (beta)"
+
 
 def _get_accessible_data_rooms(user):
     """Return data rooms the user owns, each annotated with its active
@@ -952,7 +955,7 @@ def chat_home(request):
     # each category carries its own level.
     model_choices.insert(0, {
         "id": AUTO_MODEL_ID,
-        "display_name": "Automatic",
+        "display_name": AUTO_MODEL_LABEL,
         "supports_thinking": False,
         "supports_vision": True,
         "thinking_levels": [],
@@ -1029,9 +1032,9 @@ def chat_home(request):
             # org's enabled models (rendered via json_script).
             "model_guide": build_model_guide(prefs.allowed_models),
             "default_model": effective_model,
-            "default_model_display": "Automatic" if effective_model == AUTO_MODEL_ID else get_display_name(effective_model),
+            "default_model_display": AUTO_MODEL_LABEL if effective_model == AUTO_MODEL_ID else get_display_name(effective_model),
             "preferred_chat_model": preferred_chat_model,
-            "preferred_chat_model_display": "Automatic" if preferred_chat_model == AUTO_MODEL_ID else get_display_name(preferred_chat_model),
+            "preferred_chat_model_display": AUTO_MODEL_LABEL if preferred_chat_model == AUTO_MODEL_ID else get_display_name(preferred_chat_model),
             "thread_tasks_json": thread_tasks_json,
             "thread_cost_usd": thread_cost_usd,
             "pending_initial_turn": pending_initial_turn,
