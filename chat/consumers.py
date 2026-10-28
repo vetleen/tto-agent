@@ -3846,6 +3846,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     }
                     if multi_room:
                         entry["data_room_name"] = d["data_room__name"]
+                        entry["data_room_id"] = d["data_room_id"]
                     documents.append(entry)
 
         return {"total_doc_count": total_count, "documents": documents}

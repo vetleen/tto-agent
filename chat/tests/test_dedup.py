@@ -7,7 +7,7 @@ from django.test import SimpleTestCase
 from chat.dedup import (
     _CONTENT_PLACEHOLDER,
     _DESC_PLACEHOLDER,
-    _extract_context_doc_indices,
+    _extract_context_docs,
     _parse_read_coverage,
     _parse_search_coverage,
     _redact_read_content,
@@ -113,14 +113,14 @@ class ParseSearchCoverageTests(SimpleTestCase):
             _search_result(1, doc_index=3, chunk_start=4, total_chunks=10)
         )
         cov = _parse_search_coverage(content)
-        self.assertEqual(cov, {3: {4}})
+        self.assertEqual(cov, {(None, 3): {4}})
 
     def test_chunk_range(self):
         content = _full_search_output(
             _search_result(1, doc_index=5, chunk_start=2, chunk_end=5, total_chunks=20)
         )
         cov = _parse_search_coverage(content)
-        self.assertEqual(cov, {5: {2, 3, 4, 5}})
+        self.assertEqual(cov, {(None, 5): {2, 3, 4, 5}})
 
     def test_multiple_blocks(self):
         content = _full_search_output(
@@ -128,7 +128,7 @@ class ParseSearchCoverageTests(SimpleTestCase):
             _search_result(2, doc_index=2, chunk_start=3, chunk_end=4, total_chunks=8),
         )
         cov = _parse_search_coverage(content)
-        self.assertEqual(cov, {1: {0}, 2: {3, 4}})
+        self.assertEqual(cov, {(None, 1): {0}, (None, 2): {3, 4}})
 
     def test_same_doc_multiple_blocks(self):
         content = _full_search_output(
@@ -136,7 +136,7 @@ class ParseSearchCoverageTests(SimpleTestCase):
             _search_result(2, doc_index=1, chunk_start=3, chunk_end=4, total_chunks=5),
         )
         cov = _parse_search_coverage(content)
-        self.assertEqual(cov, {1: {0, 3, 4}})
+        self.assertEqual(cov, {(None, 1): {0, 3, 4}})
 
     def test_no_chunk_label(self):
         # A block without chunk info should be skipped
@@ -154,12 +154,12 @@ class ParseReadCoverageTests(SimpleTestCase):
     def test_full_document(self):
         content = _read_output([_read_doc_entry(3, total_chunks=10)])
         cov = _parse_read_coverage(content)
-        self.assertEqual(cov, {3: set(range(10))})
+        self.assertEqual(cov, {(1, 3): set(range(10))})
 
     def test_chunk_range(self):
         content = _read_output([_read_doc_entry(5, total_chunks=20, chunk_range="5-10")])
         cov = _parse_read_coverage(content)
-        self.assertEqual(cov, {5: {5, 6, 7, 8, 9, 10}})
+        self.assertEqual(cov, {(1, 5): {5, 6, 7, 8, 9, 10}})
 
     def test_multiple_documents(self):
         content = _read_output([
@@ -167,7 +167,7 @@ class ParseReadCoverageTests(SimpleTestCase):
             _read_doc_entry(2, total_chunks=3, chunk_range="1-2"),
         ])
         cov = _parse_read_coverage(content)
-        self.assertEqual(cov, {1: set(range(5)), 2: {1, 2}})
+        self.assertEqual(cov, {(1, 1): set(range(5)), (1, 2): {1, 2}})
 
     def test_error_entry_skipped(self):
         content = _read_output([{"doc_index": 1, "error": "Not found"}])
@@ -187,7 +187,7 @@ class ParseReadCoverageTests(SimpleTestCase):
             "error": "Output size limit reached",
         }])
         cov = _parse_read_coverage(content)
-        self.assertEqual(cov, {1: {0, 1, 2}})
+        self.assertEqual(cov, {(None, 1): {0, 1, 2}})
 
 
 # ---------------------------------------------------------------------------
@@ -565,16 +565,16 @@ class ExtractContextDocIndicesTests(SimpleTestCase):
             '2. [2] "doc2.pdf" (~1,000 tokens) \u2014 Second doc\n'
             '3. [3] "doc3.pdf" (Patent) (~2,000 tokens)\n'
         )
-        indices = _extract_context_doc_indices(ctx)
+        indices = _extract_context_docs(ctx)
         # doc 3 has no description (no " — "), so should not be included
-        self.assertEqual(indices, {1, 2})
+        self.assertEqual(indices, {(None, 1), (None, 2)})
 
     def test_empty_context(self):
-        self.assertEqual(_extract_context_doc_indices(""), set())
+        self.assertEqual(_extract_context_docs(""), set())
 
     def test_no_retrieved_documents(self):
         ctx = "# Some other section\nNo docs here."
-        self.assertEqual(_extract_context_doc_indices(ctx), set())
+        self.assertEqual(_extract_context_docs(ctx), set())
 
 
 # ---------------------------------------------------------------------------
@@ -715,3 +715,89 @@ class RestoreThenNormalizeTests(SimpleTestCase):
         out = deduplicate_tool_results(msgs, dynamic_context="1. [1] \"doc.pdf\" (Report) — A document")
         self.assertIn(_CONTENT_PLACEHOLDER, out[2].content)
         self.assertNotIn(ORIGINAL_CONTENT_KEY, out[2].metadata)
+
+
+# ---------------------------------------------------------------------------
+# Several data rooms: doc_index restarts at 1 in each room
+# ---------------------------------------------------------------------------
+
+def _room_search_output(doc_index: int, room_id: int, content: str, chunk: int = 0) -> str:
+    """A multi-room document_search result: the tag carries the room id."""
+    return _full_search_output(
+        _search_result(1, doc_index=doc_index, chunk_start=chunk, content=content).replace(
+            f"[doc #{doc_index}]", f"[doc #{doc_index}, data_room_id {room_id}]",
+        )
+    )
+
+
+def _room_read_output(doc_index: int, room_id: int, content: str) -> str:
+    entry = _read_doc_entry(doc_index, total_chunks=1, content=content)
+    entry["data_room_id"] = room_id
+    return _read_output([entry])
+
+
+class MultiRoomDedupTests(SimpleTestCase):
+
+    def test_search_tag_with_room_parses(self):
+        cov = _parse_search_coverage(_room_search_output(3, 7, "x", chunk=2))
+        self.assertEqual(cov, {(7, 3): {2}})
+
+    def test_same_index_in_two_rooms_is_not_a_duplicate(self):
+        msgs = [
+            _user_msg(),
+            _assistant_msg([("r1", "document_read")]), _tool_msg("r1", _room_read_output(1, 7, "ACME TEXT")),
+            _assistant_msg([("r2", "document_read")]), _tool_msg("r2", _room_read_output(1, 8, "BETA TEXT")),
+        ]
+        self.assertEqual(deduplicate_tool_results(msgs), msgs)
+
+        from chat.dedup import redact_new_duplicates
+
+        out = redact_new_duplicates(msgs, 3)
+        self.assertIn("BETA TEXT", out[4].content)
+
+    def test_same_index_same_room_still_deduplicates(self):
+        msgs = [
+            _user_msg(),
+            _assistant_msg([("s1", "document_search")]), _tool_msg("s1", _room_search_output(1, 7, "ACME")),
+            _assistant_msg([("r1", "document_read")]), _tool_msg("r1", _room_read_output(1, 7, "ACME")),
+        ]
+        out = deduplicate_tool_results(msgs)
+        self.assertIn(_CONTENT_PLACEHOLDER, out[2].content)
+
+    def test_search_in_other_room_is_not_redacted_by_read(self):
+        msgs = [
+            _user_msg(),
+            _assistant_msg([("s1", "document_search")]), _tool_msg("s1", _room_search_output(1, 8, "BETA")),
+            _assistant_msg([("r1", "document_read")]), _tool_msg("r1", _room_read_output(1, 7, "ACME")),
+        ]
+        out = deduplicate_tool_results(msgs)
+        self.assertIn("BETA", out[2].content)
+        self.assertNotIn(_CONTENT_PLACEHOLDER, out[2].content)
+
+    def test_untagged_search_still_matches_room_read(self):
+        """A single-room search (no room tag) dedups against a read as before."""
+        search = _full_search_output(_search_result(1, doc_index=1, chunk_start=0, total_chunks=1))
+        msgs = [
+            _user_msg(),
+            _assistant_msg([("s1", "document_search")]), _tool_msg("s1", search),
+            _assistant_msg([("r1", "document_read")]), _tool_msg("r1", _room_read_output(1, 7, "X")),
+        ]
+        out = deduplicate_tool_results(msgs)
+        self.assertIn(_CONTENT_PLACEHOLDER, out[2].content)
+
+    def test_context_docs_carry_room(self):
+        ctx = (
+            '1. [1] "term_sheet.txt" (data room: Acme, data_room_id 7) \u2014 Acme terms\n'
+            '1. [1] "term_sheet.txt" (data room: Beta, data_room_id 8) \u2014 Beta terms\n'
+        )
+        self.assertEqual(_extract_context_docs(ctx), {(7, 1), (8, 1)})
+
+    def test_description_redacted_only_for_its_room(self):
+        out = _redact_search_content(
+            _room_search_output(1, 8, "BETA"), set(), {(7, 1)},
+        )
+        self.assertNotIn(_DESC_PLACEHOLDER, out)
+        out = _redact_search_content(
+            _room_search_output(1, 7, "ACME"), set(), {(7, 1)},
+        )
+        self.assertIn(_DESC_PLACEHOLDER, out)

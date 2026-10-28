@@ -342,8 +342,9 @@ class ReadDocumentToolTests(TestCase):
     def test_denies_access_to_other_users_data_room(self):
         other_user = User.objects.create_user(email="other2@test.com", password="pass")
         ctx = self._ctx(user_id=other_user.pk)
-        with self.assertRaises(Exception):
-            self._invoke({"doc_indices": [1]}, ctx)
+        result = self._invoke({"doc_indices": [1]}, ctx)
+        self.assertIn("access denied", result["error"])
+        self.assertEqual(result["documents"], [])
 
     def test_empty_data_room_ids_returns_error(self):
         ctx = RunContext.create(user_id=self.user.pk, data_room_ids=[])

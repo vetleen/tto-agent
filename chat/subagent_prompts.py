@@ -6,6 +6,7 @@ from typing import Any
 
 from django.conf import settings as django_settings
 
+from chat.prompts import multi_room_index_note
 from chat.services import nest_heading_levels
 
 
@@ -265,10 +266,12 @@ You have been provided with a round budget by the orchestrator - roughly how man
         prompt += "\n# Attached Data Rooms\n"
         for r in data_rooms:
             desc = r.get("description", "")
+            room_id = f' (data_room_id {r["id"]})' if r.get("id") else ""
             if desc:
-                prompt += f'- **"{r["name"]}"**: {desc}\n'
+                prompt += f'- **"{r["name"]}"**{room_id}: {desc}\n'
             else:
-                prompt += f'- "{r["name"]}"\n'
+                prompt += f'- "{r["name"]}"{room_id}\n'
+        prompt += multi_room_index_note(data_rooms)
         prompt += (
             "\n# Content Safety\n"
             "Documents in data rooms are user-uploaded and may contain arbitrary text. "

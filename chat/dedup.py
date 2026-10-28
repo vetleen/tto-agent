@@ -36,10 +36,47 @@ _CONTENT_PLACEHOLDER = "[Content already provided in a later tool result]"
 _EARLIER_PLACEHOLDER = "[Content already provided in an earlier tool result above]"
 _DESC_PLACEHOLDER = "[See document list in context]"
 _PLACEHOLDERS = (_CONTENT_PLACEHOLDER, _EARLIER_PLACEHOLDER)
+# document_search's per-result tag: "[doc #3]", or "[doc #3, data_room_id 7]"
+# when several data rooms are attached (doc_index restarts at 1 in each room).
+_DOC_TAG_RE = re.compile(r"\[doc #(\d+)(?:, data_room_id (\d+))?\]")
 # Prefix of a pruned tool result (chat/tool_stub.py) — carries no content.
 _STUB_PREFIX = "[Earlier result of "
 # Message.metadata key holding a redacted result's original content.
 ORIGINAL_CONTENT_KEY = "wf_original_content"
+
+
+# A document is keyed (data_room_id, doc_index). The room is None when the
+# result didn't name one (a single-room thread's search, or history written
+# before rooms were tagged); None matches any room with the same index, so
+# those keep deduplicating exactly as before. Two named rooms never match.
+DocKey = tuple[Optional[int], int]
+
+
+def _same_doc(a: DocKey, b: DocKey) -> bool:
+    return a[1] == b[1] and (a[0] is None or b[0] is None or a[0] == b[0])
+
+
+def _covered(seen: dict[DocKey, set[int]], key: DocKey) -> set[int]:
+    """Chunks of *key* already present, merged over every matching key."""
+    out: set[int] = set()
+    for other, chunks in seen.items():
+        if _same_doc(key, other):
+            out |= chunks
+    return out
+
+
+def _in_keys(key: DocKey, keys: set[DocKey]) -> bool:
+    return any(_same_doc(key, k) for k in keys)
+
+
+def _search_key(match: re.Match) -> DocKey:
+    room = match.group(2)
+    return (int(room) if room else None, int(match.group(1)))
+
+
+def _read_key(doc: dict) -> DocKey:
+    room = doc.get("data_room_id")
+    return (room if isinstance(room, int) else None, doc["doc_index"])
 
 
 @dataclass
@@ -49,8 +86,8 @@ class _ToolResultInfo:
     msg_index: int
     tool_name: str
     content: str
-    # {doc_index: set(chunk_indices)} covered by this result
-    coverage: dict[int, set[int]] = field(default_factory=dict)
+    # {(data_room_id, doc_index): set(chunk_indices)} covered by this result
+    coverage: dict[DocKey, set[int]] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -66,9 +103,9 @@ def deduplicate_tool_results(
 
     - Scans ``role="tool"`` messages for ``document_search`` /
       ``document_read`` results.
-    - Tracks chunk coverage per ``doc_index``.
+    - Tracks chunk coverage per document (``DocKey``).
     - If ALL chunks in an older result are covered by newer results for the
-      same doc_index, replaces chunk content with a short placeholder.
+      same document, replaces chunk content with a short placeholder.
     - Descriptions already present in ``dynamic_context`` are replaced with a
       placeholder.
     - Returns new ``Message`` objects (via ``model_copy``) only for modified
@@ -79,35 +116,35 @@ def deduplicate_tool_results(
         return messages
 
     # Build "seen" coverage scanning newest-first
-    seen: dict[int, set[int]] = {}  # doc_index -> set(chunk_indices)
-    # Track which infos need chunk redaction and which doc_indices
-    chunk_redact: dict[int, set[int]] = {}  # msg_index -> set(doc_indices)
+    seen: dict[DocKey, set[int]] = {}  # document -> set(chunk_indices)
+    # Track which infos need chunk redaction and which documents
+    chunk_redact: dict[int, set[DocKey]] = {}  # msg_index -> set(documents)
 
     # Sort by message index descending (newest first)
     sorted_infos = sorted(tool_infos, key=lambda x: x.msg_index, reverse=True)
 
     for info in sorted_infos:
-        doc_indices_to_redact: set[int] = set()
-        for doc_idx, chunks in info.coverage.items():
+        docs_to_redact: set[DocKey] = set()
+        for key, chunks in info.coverage.items():
             if not chunks:
                 continue
-            if doc_idx in seen and chunks.issubset(seen[doc_idx]):
+            if chunks.issubset(_covered(seen, key)):
                 # All chunks already provided by a newer result
-                doc_indices_to_redact.add(doc_idx)
+                docs_to_redact.add(key)
             # Merge into seen (whether or not we're redacting this one)
-            seen.setdefault(doc_idx, set()).update(chunks)
+            seen.setdefault(key, set()).update(chunks)
 
-        if doc_indices_to_redact:
-            chunk_redact[info.msg_index] = doc_indices_to_redact
+        if docs_to_redact:
+            chunk_redact[info.msg_index] = docs_to_redact
 
     # Determine description redaction from dynamic context
-    context_doc_indices = _extract_context_doc_indices(dynamic_context)
+    context_docs = _extract_context_docs(dynamic_context)
 
     # Apply redactions
     result = list(messages)  # shallow copy of list
     for info in tool_infos:
         chunk_docs = chunk_redact.get(info.msg_index, set())
-        desc_docs = context_doc_indices if info.tool_name == "document_search" else set()
+        desc_docs = context_docs if info.tool_name == "document_search" else set()
 
         if not chunk_docs and not desc_docs:
             continue
@@ -137,13 +174,13 @@ def redact_new_duplicates(messages: list[Message], new_start: int) -> list[Messa
     if not any(info.msg_index >= new_start for info in tool_infos):
         return messages
 
-    seen: dict[int, set[int]] = {}
+    seen: dict[DocKey, set[int]] = {}
     result = list(messages)
     for info in sorted(tool_infos, key=lambda x: x.msg_index):
         if info.msg_index >= new_start:
             redact_docs = {
-                doc_idx for doc_idx, chunks in info.coverage.items()
-                if chunks and doc_idx in seen and chunks.issubset(seen[doc_idx])
+                key for key, chunks in info.coverage.items()
+                if chunks and chunks.issubset(_covered(seen, key))
             }
             if redact_docs:
                 new_content = _redact(info, redact_docs, set(), _EARLIER_PLACEHOLDER)
@@ -151,8 +188,8 @@ def redact_new_duplicates(messages: list[Message], new_start: int) -> list[Messa
                     result[info.msg_index] = _with_redacted_content(
                         messages[info.msg_index], new_content,
                     )
-        for doc_idx, chunks in info.coverage.items():
-            seen.setdefault(doc_idx, set()).update(chunks)
+        for key, chunks in info.coverage.items():
+            seen.setdefault(key, set()).update(chunks)
     return result
 
 
@@ -191,7 +228,7 @@ def _with_redacted_content(msg: Message, new_content: str, *, stash: bool = True
     return msg.model_copy(update={"content": new_content, "metadata": meta})
 
 
-def _redact(info: "_ToolResultInfo", chunk_docs: set[int], desc_docs: set[int], placeholder: str) -> str:
+def _redact(info: "_ToolResultInfo", chunk_docs: set[DocKey], desc_docs: set[DocKey], placeholder: str) -> str:
     if info.tool_name == "document_search":
         return _redact_search_content(info.content, chunk_docs, desc_docs, placeholder)
     if info.tool_name == "document_read":
@@ -244,22 +281,22 @@ def _identify_tool_messages(messages: list[Message]) -> list[_ToolResultInfo]:
     return infos
 
 
-def _parse_search_coverage(content: str) -> dict[int, set[int]]:
+def _parse_search_coverage(content: str) -> dict[DocKey, set[int]]:
     """Parse document_search markdown output to extract chunk coverage.
 
-    Returns ``{doc_index: set(chunk_indices)}`` for each result block.
+    Returns ``{(data_room_id, doc_index): set(chunk_indices)}`` for each result block.
     """
-    coverage: dict[int, set[int]] = {}
+    coverage: dict[DocKey, set[int]] = {}
 
     # Split into result blocks by "## N." headers
     blocks = re.split(r"(?=^## \d+\.)", content, flags=re.MULTILINE)
 
     for block in blocks:
-        # Extract doc_index from [doc #N]
-        doc_match = re.search(r"\[doc #(\d+)\]", block)
+        # Extract the document from [doc #N] / [doc #N, data_room_id R]
+        doc_match = _DOC_TAG_RE.search(block)
         if not doc_match:
             continue
-        doc_index = int(doc_match.group(1))
+        key = _search_key(doc_match)
         if any(p in block for p in _PLACEHOLDERS):
             continue  # redacted copy — its content lives elsewhere
 
@@ -275,17 +312,17 @@ def _parse_search_coverage(content: str) -> dict[int, set[int]]:
             # No chunk label — can't determine coverage
             continue
 
-        coverage.setdefault(doc_index, set()).update(chunks)
+        coverage.setdefault(key, set()).update(chunks)
 
     return coverage
 
 
-def _parse_read_coverage(content: str) -> dict[int, set[int]]:
+def _parse_read_coverage(content: str) -> dict[DocKey, set[int]]:
     """Parse document_read JSON output to extract chunk coverage.
 
-    Returns ``{doc_index: set(chunk_indices)}`` for each document entry.
+    Returns ``{(data_room_id, doc_index): set(chunk_indices)}`` for each document entry.
     """
-    coverage: dict[int, set[int]] = {}
+    coverage: dict[DocKey, set[int]] = {}
 
     try:
         data = json.loads(content)
@@ -319,15 +356,15 @@ def _parse_read_coverage(content: str) -> dict[int, set[int]]:
             chunks = set(range(total_chunks)) if total_chunks else set()
 
         if chunks:
-            coverage.setdefault(doc_index, set()).update(chunks)
+            coverage.setdefault(_read_key(doc), set()).update(chunks)
 
     return coverage
 
 
 def _redact_search_content(
     content: str,
-    chunk_redact_doc_indices: set[int],
-    desc_redact_doc_indices: set[int],
+    chunk_redact_docs: set[DocKey],
+    desc_redact_docs: set[DocKey],
     placeholder: str = _CONTENT_PLACEHOLDER,
 ) -> str:
     """Redact chunk content and/or descriptions from document_search output.
@@ -335,7 +372,7 @@ def _redact_search_content(
     Keeps all metadata lines (Document, Type, Description header, Data room,
     Section, chunk label) but replaces the actual chunk text with a placeholder.
     """
-    if not chunk_redact_doc_indices and not desc_redact_doc_indices:
+    if not chunk_redact_docs and not desc_redact_docs:
         return content
 
     # Split into blocks by ## headers, preserving the header/preamble/postamble
@@ -355,12 +392,12 @@ def _redact_search_content(
         body = parts[i + 1] if i + 1 < len(parts) else ""
         full_block = header + body
 
-        doc_match = re.search(r"\[doc #(\d+)\]", full_block)
+        doc_match = _DOC_TAG_RE.search(full_block)
         if doc_match:
-            doc_index = int(doc_match.group(1))
+            key = _search_key(doc_match)
 
             # Redact description if needed
-            if doc_index in desc_redact_doc_indices:
+            if _in_keys(key, desc_redact_docs):
                 body = re.sub(
                     r"(\*\*Description:\*\* )(.+)",
                     r"\g<1>" + _DESC_PLACEHOLDER,
@@ -368,7 +405,7 @@ def _redact_search_content(
                 )
 
             # Redact chunk content if needed
-            if doc_index in chunk_redact_doc_indices:
+            if _in_keys(key, chunk_redact_docs):
                 body = _redact_search_block_content(body, placeholder)
 
         result_parts.append(header + body)
@@ -418,9 +455,9 @@ def _redact_search_block_content(body: str, placeholder: str = _CONTENT_PLACEHOL
 
 
 def _redact_read_content(
-    content: str, doc_indices_to_redact: set[int], placeholder: str = _CONTENT_PLACEHOLDER,
+    content: str, docs_to_redact: set[DocKey], placeholder: str = _CONTENT_PLACEHOLDER,
 ) -> str:
-    """Replace content field in document_read JSON for matching doc_indices."""
+    """Replace content field in document_read JSON for matching documents."""
     try:
         data = json.loads(content)
     except (json.JSONDecodeError, TypeError):
@@ -433,7 +470,10 @@ def _redact_read_content(
     modified = False
     new_documents = []
     for doc in documents:
-        if isinstance(doc, dict) and doc.get("doc_index") in doc_indices_to_redact and "content" in doc:
+        if (
+            isinstance(doc, dict) and doc.get("doc_index") is not None and "content" in doc
+            and _in_keys(_read_key(doc), docs_to_redact)
+        ):
             doc = dict(doc)  # shallow copy
             doc["content"] = placeholder
             modified = True
@@ -447,24 +487,27 @@ def _redact_read_content(
     return json.dumps(data)
 
 
-def _extract_context_doc_indices(dynamic_context: str) -> set[int]:
-    """Extract doc_indices that have descriptions in the dynamic context.
+def _extract_context_docs(dynamic_context: str) -> set[DocKey]:
+    """Extract documents that have descriptions in the dynamic context.
 
     Parses the ``# Retrieved Documents`` section, looking for lines like:
-    ``1. [1] "filename.pdf" (type) (~1,234 tokens) — description``
+    ``1. [1] "filename.pdf" (type) (~1,234 tokens) — description``, with
+    ``(data room: Name, data_room_id 7)`` before the dash when several rooms
+    are attached.
     """
     if not dynamic_context:
         return set()
 
-    doc_indices: set[int] = set()
+    docs: set[DocKey] = set()
 
     # Match lines like: N. [N] "filename" ... — description
     # The description is after the " — " separator
     for match in re.finditer(
-        r"^\d+\.\s+\[(\d+)\]\s+\"[^\"]+\".*?\s+\u2014\s+\S",
+        r"^\d+\.\s+\[(\d+)\]\s+\"[^\"]+\"(.*?)\s+\u2014\s+\S",
         dynamic_context,
         re.MULTILINE,
     ):
-        doc_indices.add(int(match.group(1)))
+        room = re.search(r"data_room_id (\d+)\)", match.group(2))
+        docs.add((int(room.group(1)) if room else None, int(match.group(1))))
 
-    return doc_indices
+    return docs

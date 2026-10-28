@@ -14,6 +14,14 @@ from llm.tools.interfaces import ArgTrim, drop_args, edits_description
 logger = logging.getLogger(__name__)
 
 
+# Shared description for every tool's ``data_room_id`` argument.
+DATA_ROOM_ID_DESCRIPTION = (
+    "The document's data room (data_room_id, shown next to each attached room and "
+    "in document_list/document_search results). Document numbers restart at 1 in "
+    "every data room, so this is required whenever more than one data room is attached."
+)
+
+
 def _record_chunk_usage(conversation_id: str, chunk_ids: list[int]) -> None:
     """Persist ThreadChunkUsage records for the given thread and chunks. Best-effort."""
     try:
@@ -74,7 +82,7 @@ class ReadDocumentInput(ReasonBaseModel):
     doc_indices: list[int] = Field(description="List of document index numbers to read (e.g. [1, 3]).")
     data_room_id: Optional[int] = Field(
         default=None,
-        description="Optional data room ID to disambiguate when multiple data rooms are attached.",
+        description=DATA_ROOM_ID_DESCRIPTION,
     )
     chunk_start: Optional[int] = Field(
         default=None,
@@ -101,6 +109,10 @@ class CanvasSaveToDocumentInput(ReasonBaseModel):
         default=None,
         description="Index of the document to overwrite (required when mode='overwrite').",
     )
+    data_room_id: Optional[int] = Field(
+        default=None,
+        description="mode='overwrite' only: " + DATA_ROOM_ID_DESCRIPTION,
+    )
     data_room_name: str = Field(
         default="",
         description="Target data room name when mode='new' and more than one data room is attached.",
@@ -122,12 +134,12 @@ class CanvasSaveToDocumentInput(ReasonBaseModel):
 class ListDocumentsInput(ReasonBaseModel):
     limit: int = Field(default=25, description="Maximum number of documents to list (1-100, default 25).")
     offset: int = Field(default=0, description="Number of documents to skip, for paging (default 0).")
-    data_room_id: Optional[int] = Field(default=None, description="Optional data room ID to scope the listing.")
+    data_room_id: Optional[int] = Field(default=None, description="Optional data room id to list only that room's documents.")
 
 
 class OpenDocumentInput(ReasonBaseModel):
     doc_index: int = Field(description="Index number of the document to open into a canvas for editing.")
-    data_room_id: Optional[int] = Field(default=None, description="Optional data room ID to disambiguate.")
+    data_room_id: Optional[int] = Field(default=None, description=DATA_ROOM_ID_DESCRIPTION)
     canvas_name: str = Field(default="", description="Optional canvas title; defaults to the document name.")
 
 
@@ -150,7 +162,7 @@ class EditDocumentInput(ReasonBaseModel):
         default="",
         description="Full markdown content for the new version (mode='rewrite').",
     )
-    data_room_id: Optional[int] = Field(default=None, description="Optional data room ID to disambiguate.")
+    data_room_id: Optional[int] = Field(default=None, description=DATA_ROOM_ID_DESCRIPTION)
     reason: str = Field(default="", description="Brief reason for the change.")
 
     @field_validator("edits", mode="before")
@@ -187,30 +199,86 @@ class EditDocumentInput(ReasonBaseModel):
 class ArchiveDocumentInput(ReasonBaseModel):
     doc_index: int = Field(description="Index of the document to archive (or restore).")
     archive: bool = Field(default=True, description="True to archive, False to restore.")
-    data_room_id: Optional[int] = Field(default=None, description="Optional data room ID to disambiguate.")
+    data_room_id: Optional[int] = Field(default=None, description=DATA_ROOM_ID_DESCRIPTION)
 
 
 class RenameDocumentInput(ReasonBaseModel):
     doc_index: int = Field(description="Index of the document to rename.")
     name: str = Field(description="New display name for the document.")
-    data_room_id: Optional[int] = Field(default=None, description="Optional data room ID to disambiguate.")
+    data_room_id: Optional[int] = Field(default=None, description=DATA_ROOM_ID_DESCRIPTION)
 
 
 class ListVersionsInput(ReasonBaseModel):
     doc_index: int = Field(description="Index of the document whose version history to list.")
-    data_room_id: Optional[int] = Field(default=None, description="Optional data room ID to disambiguate.")
+    data_room_id: Optional[int] = Field(default=None, description=DATA_ROOM_ID_DESCRIPTION)
 
 
 class RestoreVersionInput(ReasonBaseModel):
     doc_index: int = Field(description="Index of the document to roll back.")
     version_index: int = Field(description="The version_index to restore as the live document.")
-    data_room_id: Optional[int] = Field(default=None, description="Optional data room ID to disambiguate.")
+    data_room_id: Optional[int] = Field(default=None, description=DATA_ROOM_ID_DESCRIPTION)
     reason: str = Field(default="", description="Brief reason for the rollback.")
 
 
 class DocumentStatusInput(ReasonBaseModel):
     doc_index: int = Field(description="Index of the document to check processing/searchability status for.")
-    data_room_id: Optional[int] = Field(default=None, description="Optional data room ID to disambiguate.")
+    data_room_id: Optional[int] = Field(default=None, description=DATA_ROOM_ID_DESCRIPTION)
+
+
+def _attached_rooms_text(data_room_ids: list[int]) -> str:
+    from documents.models import DataRoom
+
+    names = dict(DataRoom.objects.filter(pk__in=data_room_ids).values_list("pk", "name"))
+    return ", ".join(f'"{names.get(rid, "?")}" (data_room_id {rid})' for rid in data_room_ids)
+
+
+def _scope_rooms(context, data_room_id: int | None = None) -> tuple[list[int], str | None]:
+    """The thread's accessible room ids, narrowed to *data_room_id* when given.
+
+    Returns ``(room_ids, error_msg)``. An id that isn't attached is an error,
+    never silently ignored: doc_index is per data room, so falling back to all
+    rooms would hand back a same-numbered document from another room.
+    """
+    data_room_ids = context.data_room_ids if context else []
+    if not data_room_ids:
+        return [], "No data rooms attached."
+    try:
+        data_room_ids = _filter_accessible_rooms(data_room_ids, context.user_id if context else None)
+    except ValueError as exc:
+        return [], str(exc)
+    if data_room_id:
+        if data_room_id not in data_room_ids:
+            return [], (
+                f"data_room_id {data_room_id} is not attached to this conversation. "
+                f"Attached: {_attached_rooms_text(data_room_ids)}."
+            )
+        data_room_ids = [data_room_id]
+    return data_room_ids, None
+
+
+def _pick_by_index(qs, doc_index: int):
+    """Return ``(doc, error_msg)`` for *doc_index* in an already-scoped queryset.
+
+    Document numbers restart at 1 in every data room, so the same index can
+    match one document per attached room. More than one match is an error
+    that names the candidates — never a guess.
+    """
+    matches = list(qs.filter(doc_index=doc_index).select_related(
+        "data_room", "current_version", "active_searchable_version",
+    )[:10])
+    if not matches:
+        return None, f"No document with index {doc_index} found."
+    if len(matches) > 1:
+        options = "; ".join(
+            f'"{d.display_name}" in "{d.data_room.name}" (data_room_id {d.data_room_id})'
+            for d in matches
+        )
+        return None, (
+            f"Document #{doc_index} is ambiguous: document numbers are per data room and "
+            f"#{doc_index} exists in several attached rooms: {options}. "
+            "Call again with data_room_id."
+        )
+    return matches[0], None
 
 
 def _resolve_document(context, doc_index: int, data_room_id: int | None = None, *, include_archived: bool = False):
@@ -220,23 +288,13 @@ def _resolve_document(context, doc_index: int, data_room_id: int | None = None, 
     """
     from documents.models import DataRoomDocument
 
-    data_room_ids = context.data_room_ids if context else []
-    if not data_room_ids:
-        return None, "No data rooms attached."
-    try:
-        data_room_ids = _filter_accessible_rooms(data_room_ids, context.user_id if context else None)
-    except ValueError as exc:
-        return None, str(exc)
-    if data_room_id and data_room_id in data_room_ids:
-        data_room_ids = [data_room_id]
-
-    qs = DataRoomDocument.objects.filter(data_room_id__in=data_room_ids, doc_index=doc_index)
+    data_room_ids, err = _scope_rooms(context, data_room_id)
+    if err:
+        return None, err
+    qs = DataRoomDocument.objects.filter(data_room_id__in=data_room_ids)
     if not include_archived:
         qs = qs.filter(is_archived=False)
-    doc = qs.select_related("current_version", "active_searchable_version").first()
-    if doc is None:
-        return None, f"No document with index {doc_index} found."
-    return doc, None
+    return _pick_by_index(qs, doc_index)
 
 
 def _get_user(user_id):
@@ -463,6 +521,7 @@ class SearchDocumentsTool(ContextAwareTool):
 
         # Verify the user has access to all data rooms
         data_room_ids = _filter_accessible_rooms(data_room_ids, context.user_id if context else None)
+        multi_room = len(data_room_ids) > 1
 
         try:
             docs = similarity_search_chunks(data_room_ids=data_room_ids, query=query, k=k)
@@ -601,7 +660,11 @@ class SearchDocumentsTool(ContextAwareTool):
                 heading = heading_map.get((doc_id, chunks_included[0]), "") or ""
 
             lines.append(f"## {result_num}.")
-            lines.append(f'**Document:** "{filename}" [doc #{doc_index}]')
+            # doc_index is per data room: with several rooms the same #N can
+            # name different documents, so tag the room id the tools take.
+            # (chat/dedup.py parses this tag.)
+            room_tag = f", data_room_id {dm.get('data_room_id')}" if multi_room else ""
+            lines.append(f'**Document:** "{filename}" [doc #{doc_index}{room_tag}]')
             if doc_type:
                 lines.append(f"**Type:** {doc_type}")
             if doc_desc:
@@ -660,7 +723,7 @@ class SearchDocumentsTool(ContextAwareTool):
                     rname = dm.get("data_room__name", "")
                     rdesc = dm.get("data_room__description", "")
                     if rname:
-                        line = f'- **"{rname}"**'
+                        line = f'- **"{rname}"** (data_room_id {rid})'
                         if rdesc:
                             line += f": {rdesc}"
                         lines.append(line)
@@ -708,52 +771,27 @@ class ReadDocumentTool(ContextAwareTool):
             raise ValueError("read_document requires a non-empty 'doc_indices' list")
 
         context = self.context
-        data_room_ids = context.data_room_ids if context else []
-        if not data_room_ids:
-            return json.dumps({"error": "No data rooms attached", "documents": []})
-
-        # Optionally scope to a single data room
-        if data_room_id and data_room_id in data_room_ids:
-            data_room_ids = [data_room_id]
-
-        # Verify the user has access
-        data_room_ids = _filter_accessible_rooms(data_room_ids, context.user_id if context else None)
+        data_room_ids, err = _scope_rooms(context, data_room_id)
+        if err:
+            return json.dumps({"error": err, "documents": []})
 
         use_chunk_range = chunk_start is not None and chunk_end is not None
 
         documents = []
         total_chars = 0
 
+        # READY only: documents still scanning for PII (or failed) must not
+        # reach the LLM. Same "not found" message — don't leak scan state.
+        ready_qs = DataRoomDocument.objects.filter(
+            data_room_id__in=data_room_ids,
+            is_archived=False,
+            status=DataRoomDocument.Status.READY,
+        )
         for idx in doc_indices:
-            # READY only: documents still scanning for PII (or failed) must not
-            # reach the LLM. Same "not found" message — don't leak scan state.
-            try:
-                doc = DataRoomDocument.objects.get(
-                    data_room_id__in=data_room_ids,
-                    doc_index=idx,
-                    is_archived=False,
-                    status=DataRoomDocument.Status.READY,
-                )
-            except DataRoomDocument.DoesNotExist:
-                documents.append({
-                    "doc_index": idx,
-                    "error": f"No document with index {idx} found.",
-                })
+            doc, err = _pick_by_index(ready_qs, idx)
+            if err:
+                documents.append({"doc_index": idx, "error": err})
                 continue
-            except DataRoomDocument.MultipleObjectsReturned:
-                # Same doc_index in multiple rooms — take the first match
-                doc = DataRoomDocument.objects.filter(
-                    data_room_id__in=data_room_ids,
-                    doc_index=idx,
-                    is_archived=False,
-                    status=DataRoomDocument.Status.READY,
-                ).first()
-                if doc is None:
-                    documents.append({
-                        "doc_index": idx,
-                        "error": f"No document with index {idx} found.",
-                    })
-                    continue
 
             # Gate on the version actually served (the live searchable one) — the
             # same thing document_search surfaces. Doc-level is_quarantined is a
@@ -917,7 +955,7 @@ class CanvasSaveToDocumentTool(ContextAwareTool):
 
     def _run(self, mode: str, canvas_name: str = "", doc_index: int | None = None,
              data_room_name: str = "", new_name: str = "", acknowledge_truncation: bool = False,
-             **kwargs) -> str:
+             data_room_id: int | None = None, **kwargs) -> str:
         from chat.services import CANVAS_MAX_CHARS, resolve_canvas, save_canvas_to_data_room
         from documents.models import DataRoom, DataRoomDocumentVersion
         from documents.services.sync_scan import scan_version_synchronously
@@ -1008,7 +1046,7 @@ class CanvasSaveToDocumentTool(ContextAwareTool):
         # mode == "overwrite"
         if doc_index is None:
             return json.dumps({"error": "doc_index is required for mode='overwrite'."})
-        doc, err = _resolve_document(context, doc_index)
+        doc, err = _resolve_document(context, doc_index, data_room_id)
         if err:
             return json.dumps({"error": err})
         locked = _agent_edit_block_reason(doc)
@@ -1078,7 +1116,9 @@ class ListDocumentsTool(ContextAwareTool):
     end_label: str = "Listed documents"
     description: str = (
         "List the documents in the attached data rooms, paginated. Returns each document's "
-        "index number, name, origin, processing status, version count and dates. Use this to "
+        "index number, data room, name, origin, processing status, version count and dates. "
+        "Index numbers are per data room (each room starts at 1), so pass the row's "
+        "data_room_id along with its doc_index to the other document tools. Use this to "
         "see what is in a data room before reading, opening, or editing a document."
     )
     args_schema: type[BaseModel] = ListDocumentsInput
@@ -1087,23 +1127,19 @@ class ListDocumentsTool(ContextAwareTool):
         from documents.models import DataRoomDocument
 
         context = self.context
-        data_room_ids = context.data_room_ids if context else []
-        if not data_room_ids:
-            return json.dumps({"error": "No data rooms attached."})
-        try:
-            data_room_ids = _filter_accessible_rooms(data_room_ids, context.user_id if context else None)
-        except ValueError as exc:
-            return json.dumps({"error": str(exc)})
-        if data_room_id and data_room_id in data_room_ids:
-            data_room_ids = [data_room_id]
+        data_room_ids, err = _scope_rooms(context, data_room_id)
+        if err:
+            return json.dumps({"error": err})
 
         limit = max(1, min(int(limit or 25), 100))
         offset = max(0, int(offset or 0))
 
+        # Grouped by room: doc_index restarts at 1 in each, so interleaving by
+        # index alone would list several unlabeled "#1"s side by side.
         qs = (
             DataRoomDocument.objects.filter(data_room_id__in=data_room_ids, is_archived=False)
-            .select_related("active_searchable_version", "current_version")
-            .order_by("doc_index")
+            .select_related("active_searchable_version", "current_version", "data_room")
+            .order_by("data_room__name", "data_room_id", "doc_index")
         )
         total = qs.count()
         rows = []
@@ -1113,6 +1149,8 @@ class ListDocumentsTool(ContextAwareTool):
             version = d.active_searchable_version or d.current_version
             row = {
                 "doc_index": d.doc_index,
+                "data_room_id": d.data_room_id,
+                "data_room": d.data_room.name,
                 "name": d.display_name,
                 "origin": version.origin if version else None,
                 "status": d.status,
@@ -1633,7 +1671,7 @@ class DocumentViewNativeInput(ReasonBaseModel):
         description="Document index number(s) to view, from an attached data room."
     )
     data_room_id: Optional[int] = Field(
-        default=None, description="Optional data room id to disambiguate the document indices."
+        default=None, description=DATA_ROOM_ID_DESCRIPTION
     )
     pages: Optional[str] = Field(
         default=None,

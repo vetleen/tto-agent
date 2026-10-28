@@ -398,6 +398,23 @@ def _skill_scan_reason(scan_state: str | None) -> str:
     return "needs a safety scan"
 
 
+def multi_room_index_note(data_rooms: list[dict] | None) -> str:
+    """How to address documents when several data rooms are attached ('' for one).
+
+    Document numbers (doc_index) restart at 1 in every data room, so with two
+    rooms "#1" names two documents. Shared by the main and sub-agent prompts.
+    """
+    if not data_rooms or len(data_rooms) < 2:
+        return ""
+    return (
+        "\nDocument numbers restart at 1 in each data room, so the same number (e.g. "
+        "#1) exists in several of the rooms above. Always pass the document's "
+        "`data_room_id` together with its number to any document tool; without it a "
+        "number shared by several rooms is rejected as ambiguous. Results from "
+        "`document_list` and `document_search` show each document's data_room_id.\n"
+    )
+
+
 def build_semi_static_prompt(
     *,
     data_rooms: list[dict[str, Any]] | None = None,
@@ -591,11 +608,17 @@ def build_semi_static_prompt(
         for r in data_rooms:
             desc = r.get("description", "")
             count = r.get("document_count")
-            count_str = f" ({count} document{'s' if count != 1 else ''})" if count is not None else ""
+            notes = []
+            if r.get("id"):
+                notes.append(f'data_room_id {r["id"]}')
+            if count is not None:
+                notes.append(f"{count} document{'s' if count != 1 else ''}")
+            meta = f" ({', '.join(notes)})" if notes else ""
             if desc:
-                prompt += f'- **"{r["name"]}"**{count_str}: {desc}\n'
+                prompt += f'- **"{r["name"]}"**{meta}: {desc}\n'
             else:
-                prompt += f'- "{r["name"]}"{count_str}\n'
+                prompt += f'- "{r["name"]}"{meta}\n'
+        prompt += multi_room_index_note(data_rooms)
         prompt += (
             "\nData room documents are versioned and you can edit, save, delete and "
             "otherwise manage them using tools. The tools are available through the "
@@ -932,7 +955,9 @@ def build_dynamic_context(
                 date_note = f" [{', '.join(dates)}]" if dates else ""
                 line = f'{idx}. [{idx}] "{fname}"{type_note}{token_note}{date_note}'
                 if room_name:
-                    line += f" (data room: {room_name})"
+                    room_id = doc.get("data_room_id")
+                    room_note = f", data_room_id {room_id}" if room_id else ""
+                    line += f" (data room: {room_name}{room_note})"
                 if desc:
                     line += f" — {desc}"
                 section += line + "\n"

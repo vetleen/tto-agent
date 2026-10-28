@@ -22,6 +22,7 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from chat.tools import DATA_ROOM_ID_DESCRIPTION
 from llm.tools import ContextAwareTool, ReasonBaseModel, get_tool_registry
 
 logger = logging.getLogger(__name__)
@@ -165,7 +166,7 @@ class ReadSheetInput(ReasonBaseModel):
         default=None, description='Restrict a rows read to these columns, e.g. "A,C-F".'
     )
     data_room_id: Optional[int] = Field(
-        default=None, description="Optional data room id to disambiguate the document index."
+        default=None, description=DATA_ROOM_ID_DESCRIPTION
     )
 
 
@@ -418,7 +419,7 @@ class ViewSheetInput(ReasonBaseModel):
         description='View the tiles covering a row range instead, e.g. "1490-1510".',
     )
     data_room_id: Optional[int] = Field(
-        default=None, description="Optional data room id to disambiguate the document index."
+        default=None, description=DATA_ROOM_ID_DESCRIPTION
     )
 
 
