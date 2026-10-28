@@ -60,7 +60,6 @@ class TranscriptionModelInfo:
     supports_live_streaming: bool = False       # Realtime API / live WS path
     supports_file_transcription: bool = False   # /v1/audio/transcriptions
     supports_output_streaming: bool = False     # stream=True on batch transcription
-    supports_diarization: bool = False          # returns speaker-labelled segments
     # chunking_strategy="auto" — server-side segmentation of long files
     # (prevents output truncation on long segments).
     supports_chunking_strategy: bool = False

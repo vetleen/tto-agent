@@ -75,7 +75,7 @@ class TranscriptionService:
         ``supports_output_streaming=True``. Each text delta is passed to the
         callback as it arrives from the server. The final text is still
         returned in the result. Ignored for models that don't support
-        streaming (whisper-1, diarize).
+        streaming.
         """
         if context is None:
             context = RunContext.create()
@@ -167,16 +167,14 @@ class TranscriptionService:
         t0 = time.perf_counter()
         response = self._call_create(client, file_path, info, prompt, language=language, on_delta=on_delta)
         duration_ms = int((time.perf_counter() - t0) * 1000)
-        text = _extract_text_from_response(response, info)
+        text = _extract_text_from_response(response)
         audio_duration = _get_audio_duration_seconds(file_path)
 
-        # Prefer token counts reported by the API over per-minute estimates.
-        # gpt-4o-transcribe / gpt-4o-mini-transcribe return a UsageTokens; the
-        # legacy whisper-1 path returns a UsageDuration (no token counts) and
-        # we fall through to the per-minute formula.
+        # Bill the seconds the API reports (gpt-transcribe returns a duration
+        # usage); fall back to our own ffprobe duration when it doesn't.
         input_tokens, output_tokens, total_tokens, audio_tokens = _extract_transcription_usage(response)
         cost = calculate_transcription_cost(
-            model_id, audio_duration,
+            model_id, _extract_billed_seconds(response) or audio_duration,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
         )
@@ -252,12 +250,12 @@ class TranscriptionService:
                 )
 
                 seg_duration_ms = int((time.perf_counter() - t0) * 1000)
-                text = _extract_text_from_response(response, info)
+                text = _extract_text_from_response(response)
                 audio_duration = _get_audio_duration_seconds(seg_path)
 
                 input_tokens, output_tokens, total_tokens, audio_tokens = _extract_transcription_usage(response)
                 cost = calculate_transcription_cost(
-                    model_id, audio_duration,
+                    model_id, _extract_billed_seconds(response) or audio_duration,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                 )
@@ -308,50 +306,36 @@ class TranscriptionService:
 
         Branches on the model's capability flags (set in the registry):
 
-        * ``supports_diarization=True`` — uses ``response_format="diarized_json"``
-          (skips streaming since the diarize endpoint only returns a full
-          formatted response).
         * ``supports_output_streaming=True`` AND ``on_delta`` set — opens a
           streaming response, forwards each ``transcript.text.delta`` event to
           the callback, returns the final ``.done`` event.
-        * Otherwise — plain ``response_format="json"`` as before.
+        * Otherwise — plain ``response_format="json"``.
 
-        Other kwargs added for newer models:
+        Other kwargs:
 
-        * ``chunking_strategy="auto"`` — required by diarize on inputs >30s,
-          recommended by OpenAI for ``gpt-4o-transcribe`` / ``-mini`` to avoid
-          the ~8-minute output truncation bug. Skipped for whisper-1.
-        * ``language`` — optional ISO-639-1 code. When set, skips the 30-second
-          language detection pass.
+        * ``chunking_strategy="auto"`` — server-side segmentation of long
+          files (avoids output truncation), for models that accept it.
+        * ``languages`` — the expected spoken language as a one-item list
+          (the current models replaced the singular ``language`` field, and
+          reject a request carrying both). Omitted for auto-detect.
 
         If the API rejects the request because the prompt is invalid (BadRequestError
         whose message mentions 'prompt'), retry once with prompt stripped.
         """
-        kwargs: dict = {"model": info.api_model}
+        kwargs: dict = {"model": info.api_model, "response_format": "json"}
 
-        if info.supports_diarization:
-            # Diarize endpoint only supports diarized_json; streaming not available.
-            kwargs["response_format"] = "diarized_json"
-        else:
-            # `verbose_json` is rejected by gpt-4o-transcribe / gpt-4o-mini-transcribe
-            # (only whisper-1 supports it). We use plain `json` and compute audio
-            # duration locally for cost tracking.
-            kwargs["response_format"] = "json"
-
-        # chunking_strategy prevents output truncation on >8-min segments and is
-        # required for diarize on >30s input; whisper-1 rejects it. Driven by the
-        # registry capability flag so a new model can't silently miss it.
+        # Driven by the registry capability flag so a new model can't silently
+        # miss it (or be sent one it rejects).
         if info.supports_chunking_strategy:
             kwargs["chunking_strategy"] = "auto"
 
-        if prompt and not info.supports_diarization:
-            # Diarize rejects the prompt parameter per OpenAI docs.
+        if prompt:
             kwargs["prompt"] = prompt
 
         if language:
-            kwargs["language"] = language
+            kwargs["languages"] = [language]
 
-        use_stream = bool(on_delta) and info.supports_output_streaming and not info.supports_diarization
+        use_stream = bool(on_delta) and info.supports_output_streaming
         if use_stream:
             kwargs["stream"] = True
 
@@ -413,12 +397,11 @@ class TranscriptionService:
             # some SDK events are frozen/slotted, so the old setattr(text)
             # silently failed and the whole transcript was lost. Prefer the done
             # event's own text, falling back to the assembled deltas, and carry
-            # over usage + any diarization segments the event exposes.
+            # over the usage the event exposes.
             assembled = "".join(full_text_parts)
             return _SynthesizedResponse(
                 text=getattr(final_event, "text", None) or assembled,
                 usage=getattr(final_event, "usage", None),
-                segments=getattr(final_event, "segments", None),
             )
 
         # No done event — synthesize a minimal response object.
@@ -437,35 +420,14 @@ class _SynthesizedResponse:
 
     Used both when there is no ``transcript.text.done`` event and when there is
     one — we never mutate the SDK event object (it may be frozen). Mirrors the
-    ``.text`` / ``.usage`` / ``.segments`` attributes the callers read.
+    ``.text`` / ``.usage`` attributes the callers read.
     """
     text: str
     usage: dict | None = None
-    segments: list | None = None
 
 
-def _extract_text_from_response(response, info) -> str:
-    """Pull the transcript text from a response, handling all branches.
-
-    For diarized responses we flatten ``response.segments`` into
-    ``Speaker A: ...`` lines; for plain responses we return ``response.text``.
-    """
-    if info.supports_diarization:
-        segments = getattr(response, "segments", None)
-        if segments:
-            lines: list[str] = []
-            for seg in segments:
-                speaker = getattr(seg, "speaker", None)
-                text = (getattr(seg, "text", "") or "").strip()
-                if not text:
-                    continue
-                if speaker:
-                    lines.append(f"Speaker {speaker}: {text}")
-                else:
-                    lines.append(text)
-            if lines:
-                return "\n".join(lines)
-        # Fall through — diarize responses usually also carry a flat .text.
+def _extract_text_from_response(response) -> str:
+    """Pull the transcript text from a (plain or synthesized) response."""
     if hasattr(response, "text"):
         return response.text or ""
     return str(response)
@@ -479,11 +441,11 @@ def _extract_transcription_usage(
 
     The OpenAI SDK returns a ``response.usage`` discriminated union:
       - ``UsageTokens`` (``type="tokens"``) — carries input/output/total token
-        counts and an optional ``input_token_details.audio_tokens`` breakdown.
-        Emitted by ``gpt-4o-transcribe`` and ``gpt-4o-mini-transcribe``.
-      - ``UsageDuration`` (``type="duration"``) — whisper-1 / legacy shape,
-        only carries audio seconds. Returned as all-``None`` here so the
-        caller falls back to per-minute billing.
+        counts and an optional ``input_token_details.audio_tokens`` breakdown
+        (the retired gpt-4o transcription models).
+      - ``UsageDuration`` (``type="duration"``) — only carries audio seconds
+        (``gpt-transcribe``; read by ``_extract_billed_seconds``). Returned
+        as all-``None`` here.
     Missing usage (e.g. a MagicMock in tests) also yields all-``None``.
     """
     usage = getattr(response, "usage", None)
@@ -510,6 +472,24 @@ def _extract_transcription_usage(
         _int_or_none(getattr(usage, "total_tokens", None)),
         audio_tokens,
     )
+
+
+def _extract_billed_seconds(response) -> Optional[float]:
+    """Seconds of audio a ``UsageDuration`` response says were billed.
+
+    ``None`` for token usage, missing usage, or a MagicMock in tests, so the
+    caller falls back to its own (ffprobe) duration.
+    """
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return None
+    if isinstance(usage, dict):
+        utype, seconds = usage.get("type"), usage.get("seconds")
+    else:
+        utype, seconds = getattr(usage, "type", None), getattr(usage, "seconds", None)
+    if utype != "duration" or isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+        return None
+    return float(seconds) if seconds > 0 else None
 
 
 # ---------------------------------------------------------------------------

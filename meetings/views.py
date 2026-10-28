@@ -228,7 +228,6 @@ def meeting_detail(request, meeting_uuid):
             # selected model doesn't support streaming).
             "supports_live_streaming": bool(info.supports_live_streaming),
             "supports_output_streaming": bool(info.supports_output_streaming),
-            "supports_diarization": bool(info.supports_diarization),
         })
 
     known_ids = [c["id"] for c in transcription_model_choices]
@@ -249,7 +248,6 @@ def meeting_detail(request, meeting_uuid):
         selected_model,
     )
     selected_supports_live = bool(selected_info.supports_live_streaming) if selected_info else False
-    selected_supports_diarization = bool(selected_info.supports_diarization) if selected_info else False
 
     from meetings.services.minutes import (
         get_eligible_summarizer_skills,
@@ -286,7 +284,6 @@ def meeting_detail(request, meeting_uuid):
             "transcription_model_selected": selected_model,
             "transcription_model_selected_display": selected_display,
             "transcription_model_selected_supports_live": selected_supports_live,
-            "transcription_model_selected_supports_diarization": selected_supports_diarization,
             "forced_language": meeting.forced_language or "",
             # Ordered (code, label) options for the language dropdown, and the
             # option to pre-select: the meeting's own choice, else the resolved

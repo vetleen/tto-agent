@@ -45,14 +45,13 @@ class RegistryCapabilityFlagTests(TestCase):
             with self.subTest(model=model_id):
                 self.assertIsInstance(info.supports_live_streaming, bool)
                 self.assertIsInstance(info.supports_output_streaming, bool)
-                self.assertIsInstance(info.supports_diarization, bool)
+                self.assertIsInstance(info.supports_file_transcription, bool)
 
     def test_file_model_is_batch_and_streamable(self):
         info = get_transcription_model_info("openai/gpt-transcribe")
         self.assertTrue(info.supports_file_transcription)
         self.assertTrue(info.supports_output_streaming)
         self.assertFalse(info.supports_live_streaming)
-        self.assertFalse(info.supports_diarization)
 
     def test_live_model_is_live_only(self):
         info = get_transcription_model_info("openai/gpt-live-transcribe")

@@ -655,22 +655,6 @@ def orchestrate_upload_transcription(
             chunk_text = result.text or ""
             if i == 0:
                 running_new_transcript = chunk_text
-            elif info.supports_diarization:
-                # Diarized output has Speaker A/B/... labels that are scoped to
-                # a single API call. Speaker A in chunk 2 is not guaranteed to
-                # be the same person as Speaker A in chunk 1. Fuzzy-stitching
-                # the overlap would also corrupt the structured speaker lines.
-                # Concatenate with an explicit boundary marker so the reader
-                # knows to treat labels as local to each section.
-                running_new_transcript = (
-                    running_new_transcript.rstrip()
-                    + "\n\n--- Part "
-                    + str(i + 1)
-                    + " of "
-                    + str(n)
-                    + " (speaker labels may not match earlier parts) ---\n\n"
-                    + chunk_text.lstrip()
-                )
             else:
                 running_new_transcript = stitch_transcripts(
                     running_new_transcript,

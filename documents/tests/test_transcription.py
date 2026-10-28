@@ -298,6 +298,68 @@ class TranscriptionPromptTests(TestCase):
 
     @patch("llm.service.transcription_service.log_transcription")
     @patch("openai.OpenAI")
+    def test_language_sent_as_languages_list_never_singular(self, mock_openai_cls, mock_log):
+        """gpt-transcribe takes ``languages`` (a list); sending the singular
+        ``language`` alongside it is rejected, so it is never sent."""
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.audio.transcriptions.create.return_value = _mock_response("hei")
+
+        for language, expected in (("no", ["no"]), (None, None)):
+            with self.subTest(language=language):
+                with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+                    f.write(b"\x00" * 1000)
+                    f.flush()
+                    transcribe_audio(Path(f.name), "openai/gpt-transcribe", language=language)
+                call_kwargs = mock_client.audio.transcriptions.create.call_args[1]
+                self.assertNotIn("language", call_kwargs)
+                self.assertEqual(call_kwargs.get("languages"), expected)
+                self.assertEqual(call_kwargs["response_format"], "json")
+                self.assertEqual(call_kwargs["chunking_strategy"], "auto")
+
+    @patch("llm.service.transcription_service._get_audio_duration_seconds", return_value=0.0)
+    @patch("llm.service.transcription_service.log_transcription")
+    @patch("openai.OpenAI")
+    def test_duration_usage_drives_cost(self, mock_openai_cls, mock_log, mock_duration):
+        """The billed seconds in a duration usage price the call even when our
+        own ffprobe duration is unavailable (0.0)."""
+        class _Usage:
+            type = "duration"
+            seconds = 120.0
+
+        class _Resp:
+            text = "billed by the minute"
+            usage = _Usage()
+
+        mock_client = MagicMock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.audio.transcriptions.create.return_value = _Resp()
+
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            f.write(b"\x00" * 1000)
+            f.flush()
+            result = TranscriptionService().transcribe(Path(f.name), "openai/gpt-transcribe")
+        self.assertAlmostEqual(float(result.cost_usd), 0.009, places=6)
+
+    def test_billed_seconds_extraction(self):
+        from llm.service.transcription_service import _extract_billed_seconds
+
+        class _Usage:
+            type = "duration"
+            seconds = 9
+
+        class _Resp:
+            usage = _Usage()
+
+        self.assertEqual(_extract_billed_seconds(_Resp()), 9.0)
+        self.assertEqual(
+            _extract_billed_seconds(MagicMock(usage={"type": "duration", "seconds": 4})), 4.0,
+        )
+        self.assertIsNone(_extract_billed_seconds(MagicMock()))
+        self.assertIsNone(_extract_billed_seconds(MagicMock(usage=None)))
+
+    @patch("llm.service.transcription_service.log_transcription")
+    @patch("openai.OpenAI")
     def test_prompt_forwarded_when_set(self, mock_openai_cls, mock_log):
         """A non-empty prompt is forwarded to the API call kwargs."""
         mock_client = MagicMock()

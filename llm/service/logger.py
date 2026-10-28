@@ -475,11 +475,11 @@ def log_transcription(
 ) -> None:
     """Write a SUCCESS log entry for a transcription call. Never raises.
 
-    When the OpenAI transcription API returns ``response.usage`` (which it
-    does for ``gpt-4o-transcribe`` / ``gpt-4o-mini-transcribe``), callers
-    should pass ``input_tokens`` / ``output_tokens`` / ``total_tokens`` so
+    When the OpenAI transcription API returns token usage, callers should
+    pass ``input_tokens`` / ``output_tokens`` / ``total_tokens`` so
     transcription rows populate the same ``LLMCallLog`` columns chat rows do
-    and token-based analytics stays consistent across call types.
+    and token-based analytics stays consistent across call types (the current
+    models report a duration instead, so these stay empty).
     ``audio_tokens`` is stashed inside ``response_metadata`` as a nice-to-have
     observability signal but is not a first-class column.
     """
