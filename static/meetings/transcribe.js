@@ -400,6 +400,13 @@
   // server-side ffmpeg pipe sees one unbroken Matroska stream.
   let liveMode = 'chunked';
   const STREAMING_TIMESLICE_MS = 250;
+  // On Stop the streaming recorder delivers its last burst asynchronously
+  // (dataavailable, then stop). `stop` goes to the server only after that
+  // burst is on the wire, or the server finalizes first and the tail is lost.
+  let streamTailPending = false;   // stopped streaming recorder hasn't fired onstop yet
+  let pendingStreamBursts = 0;     // bursts whose arrayBuffer() hasn't resolved
+  let stopTailDeadline = 0;        // stop goes out by then regardless
+  const STOP_TAIL_MAX_WAIT_MS = 2000;
 
   // ---------------- auto-stop (client-enforced) ----------------
   // The limit lives in the number input; the elapsed timer re-reads it every
@@ -1379,9 +1386,17 @@
     // continuous input — no timestamp resets, no DTS warnings.
     recorder.ondataavailable = function (ev) {
       if (!ev.data || ev.data.size === 0) return;
-      ev.data.arrayBuffer().then(function (ab) { pushStreamBurst(ab); });
+      pendingStreamBursts += 1;
+      ev.data.arrayBuffer().then(function (ab) { pushStreamBurst(ab); }).then(
+        function () { pendingStreamBursts -= 1; maybeFlushStop(); },
+        function () { pendingStreamBursts -= 1; maybeFlushStop(); }
+      );
     };
     recorder.onstop = function () {
+      if (streamTailPending) {
+        streamTailPending = false;
+        maybeFlushStop();
+      }
       // If we're still transcribing when this fires (user paused mic, then
       // resumed via visibility handler) restart a fresh continuous session —
       // but ONLY while the server still has us in a realtime mode. After a
@@ -1605,7 +1620,10 @@
     if (segmentTimer) { clearTimeout(segmentTimer); segmentTimer = null; }
     // Force the current recorder to stop so the final chunk gets uploaded.
     if (mediaRecorder && mediaRecorder.state === 'recording') {
-      try { mediaRecorder.stop(); } catch (e) {}
+      streamTailPending = liveMode === 'realtime' || liveMode === 'realtime_with_fallback';
+      stopTailDeadline = Date.now() + STOP_TAIL_MAX_WAIT_MS;
+      try { mediaRecorder.stop(); } catch (e) { streamTailPending = false; }
+      if (streamTailPending) setTimeout(maybeFlushStop, STOP_TAIL_MAX_WAIT_MS + 50);
     }
     updateIndicator();
     // Tear down local recording state immediately, but keep the WS open
@@ -1622,6 +1640,8 @@
   function maybeFlushStop() {
     if (!stoppingPendingDrain) return;
     if (inFlightSegments.size > 0) return;
+    if ((streamTailPending || pendingStreamBursts > 0) && Date.now() < stopTailDeadline) return;
+    streamTailPending = false;
     stoppingPendingDrain = false;
     removeBeforeUnloadGuard();
     if (ws && ws.readyState === WebSocket.OPEN) {
