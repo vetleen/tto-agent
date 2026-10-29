@@ -7,6 +7,7 @@ Covers, by driving handler methods directly with fakes:
 - C16: a live connect is refused while an upload transcription is in flight.
 - C10: a session-build failure unwinds the ffmpeg pipe.
 - C7:  a Stop whose finalize fails does not report success and re-arms disconnect.
+- An audio frame that trails `stop` is dropped, not used to open a new session.
 """
 from __future__ import annotations
 
@@ -275,6 +276,47 @@ class StartSessionPipeLeakTests(TransactionTestCase):
 
         self.assertTrue(closed_flag["pipe"])
         self.assertIsNone(consumer._pcm_pipe)
+
+
+class FrameAfterStopTests(TransactionTestCase):
+    """A recorder's last burst can trail the client's `stop`. After the
+    teardown reset _realtime_started, such a frame used to open a second
+    realtime session; it must be dropped instead."""
+
+    async def _frame_after_stop(self, mode):
+        from meetings.services import realtime_session as rt_mod
+
+        consumer, sent, _closed = _consumer_with_send()
+        consumer.meeting_uuid = "m-after-stop"
+        consumer._stop_requested = True
+        consumer._realtime_started = False
+        consumer._realtime_mode = mode
+        consumer._pending_meta = [{"segment_index": 0, "byte_length": 965, "mime": "audio/webm"}]
+        starts: list = []
+
+        async def _start(mime):
+            starts.append(mime)
+
+        consumer._start_realtime_session = _start
+
+        def _boom(**kwargs):
+            raise AssertionError("a session must not be built after stop")
+
+        with patch.object(rt_mod, "build_realtime_session", _boom):
+            await consumer._handle_binary_frame(b"\x00" * 965)
+        return consumer, sent, starts
+
+    async def test_realtime_frame_after_stop_opens_no_session(self):
+        consumer, sent, starts = await self._frame_after_stop("realtime")
+        self.assertEqual(starts, [])
+        self.assertFalse(consumer._realtime_started)
+        self.assertEqual(sent, [])
+
+    async def test_chunked_frame_after_stop_is_dropped_silently(self):
+        consumer, sent, starts = await self._frame_after_stop("chunked")
+        self.assertEqual(starts, [])
+        self.assertEqual(sent, [])
+        self.assertEqual(len(consumer._pending_meta), 1)
 
 
 class StopFinalizeFailureTests(TransactionTestCase):
