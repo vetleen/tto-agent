@@ -906,6 +906,7 @@ def chat_home(request):
         get_default_thinking_level,
         get_display_name,
         get_model_meta_tooltip,
+        get_model_warning,
         get_price_level,
         get_thinking_levels,
         supports_thinking,
@@ -948,6 +949,8 @@ def chat_home(request):
             "price_level": get_price_level(m),
             "capability_level": get_capability_level(m),
             "meta_tooltip": get_model_meta_tooltip(m),
+            # Banner above the chat while this model is selected (or None).
+            "warning": get_model_warning(m),
         }
         for m in prefs.allowed_models
     ]
@@ -963,6 +966,7 @@ def chat_home(request):
         "price_level": 0,
         "capability_level": 0,
         "meta_tooltip": "Picks a model for each request from your organization's Automatic model choices",
+        "warning": None,
     })
 
     pending_initial_turn = bool(

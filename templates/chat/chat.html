@@ -418,6 +418,16 @@
       </button>
     </div>
   </div>
+  {# Model warning (ModelInfo.warning) — shown by updateModelWarning() while a warned model is selected #}
+  <div id="model-warning" class="hidden px-4 pt-2 max-w-4xl mx-auto w-full">
+    <div class="flex items-start gap-2.5 bg-warning-soft border border-warning-subtle rounded-lg px-3.5 py-2.5" role="status">
+      <svg class="w-4 h-4 shrink-0 mt-0.5 text-fg-warning" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>
+      <div class="min-w-0 text-sm">
+        <div class="font-semibold text-fg-warning">Warning</div>
+        <p id="model-warning-text" class="text-body mt-0.5"></p>
+      </div>
+    </div>
+  </div>
   {# Body: messages + composer. When empty, this group centers vertically (mock empty state). #}
   <div id="chat-body" class="flex flex-col flex-1 min-h-0 justify-center">
   {# Messages area — scrollable #}
@@ -2900,6 +2910,7 @@
         modelSelectorLabel.textContent = m.display_name;
         renderModelOptions();
         updateReasoningControl();
+        updateModelWarning();
         modelSelectorDropdown.classList.add('hidden');
       });
       modelOptionsContainer.appendChild(btn);
@@ -3022,6 +3033,16 @@
     showEl(thinkingControl);
   }
 
+  // The selected model's registry warning (ModelInfo.warning) above the chat.
+  function updateModelWarning() {
+    var box = document.getElementById('model-warning');
+    if (!box) return;
+    var current = MODEL_CHOICES.find(function(m) { return m.id === selectedModel; });
+    var text = current && current.warning;
+    document.getElementById('model-warning-text').textContent = text || '';
+    box.classList.toggle('hidden', !text);
+  }
+
   // Initialize
   (function initModelSelector() {
     var current = MODEL_CHOICES.find(function(m) { return m.id === selectedModel; });
@@ -3030,6 +3051,7 @@
     }
     renderModelOptions();
     updateReasoningControl();
+    updateModelWarning();
   })();
 
   if (modelSelectorBtn && modelSelectorDropdown) {
@@ -3847,6 +3869,7 @@
         if (modelSelectorLabel && shownName) modelSelectorLabel.textContent = shownName;
         if (typeof renderModelOptions === 'function') renderModelOptions();
         if (typeof updateReasoningControl === 'function') updateReasoningControl();
+        if (typeof updateModelWarning === 'function') updateModelWarning();
       }
       return;
     }

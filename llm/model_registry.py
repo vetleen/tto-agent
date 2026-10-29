@@ -89,6 +89,9 @@ class ModelInfo:
     # WHOLE generation (X-Server-Timeout), so it must cover the slowest
     # legitimate request, not just the wait for the first byte.
     request_timeout_seconds: int | None = None
+    # User-facing caution (plain text) shown above the chat while this model is
+    # selected in the picker, e.g. a known slowness. None = no banner.
+    warning: str | None = None
     uses_responses_api: bool = False
     # Accepted by OpenAI's Decisions endpoint (POST /v1/decisions) — the "quick"
     # pathway of llm.service.decisions_service. GPT-6 Luna only, today.
@@ -389,6 +392,12 @@ _MODELS: dict[str, ModelInfo] = {
         # Requests of 150-200k tokens average ~400 s per round in prod; 300 s cut
         # off 10 of 132 turns in the 14 days to 2026-10-29 (WILFRED-9M).
         request_timeout_seconds=600,
+        warning=(
+            "Gemini 4 Argon has sometimes been very slow to reply in Wilfred. Large "
+            "requests regularly take 5–10 minutes, so we allow up to 10 minutes before "
+            "timing out. If you find yourself waiting too long, or it times out "
+            "repeatedly, consider switching to another model."
+        ),
         # Introductory pricing through 2026-11-30; no long-context band.
         input_price=Decimal("2.00"), cached_input_price=Decimal("0.10"),
         output_price=Decimal("10.00"),

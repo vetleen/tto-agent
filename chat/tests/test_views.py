@@ -649,6 +649,25 @@ class ChatHomeModelChoicesTests(TestCase):
                 self.assertFalse(any("blend" in k for k in m))
 
     @patch("core.preferences.get_preferences")
+    def test_model_choices_carry_registry_warning(self, mock_preferences):
+        from core.preferences import ResolvedPreferences
+        from llm.display import get_model_warning
+
+        mock_preferences.return_value = ResolvedPreferences(
+            top_model="gemini/gemini-4-argon",
+            medium_model="openai/gpt-6-luna",
+            cheap_model="openai/gpt-6-luna",
+            allowed_models=["gemini/gemini-4-argon", "openai/gpt-6-luna"],
+        )
+        response = self.client.get(reverse("chat_home"))
+        choices = {m["id"]: m for m in json.loads(response.context["model_choices_json"])}
+        self.assertEqual(
+            choices["gemini/gemini-4-argon"]["warning"], get_model_warning("gemini/gemini-4-argon"),
+        )
+        self.assertIsNone(choices["openai/gpt-6-luna"]["warning"])
+        self.assertContains(response, 'id="model-warning"')
+
+    @patch("core.preferences.get_preferences")
     def test_model_guide_covers_only_enabled_models(self, mock_preferences):
         from core.preferences import ResolvedPreferences
 

@@ -15,6 +15,7 @@ from llm.display import (
     get_default_thinking_level,
     get_display_name,
     get_model_meta_tooltip,
+    get_model_warning,
     get_price_level,
     get_thinking_levels,
     supports_capability,
@@ -234,3 +235,14 @@ class PickerRatingTests(SimpleTestCase):
             "Medium · $2.50 / 1M output tokens",
         )
         self.assertIsNone(get_model_meta_tooltip("custom/unknown"))
+
+
+class ModelWarningTests(SimpleTestCase):
+    def test_argon_carries_its_slowness_warning(self):
+        warning = get_model_warning("gemini/gemini-4-argon")
+        self.assertIn("slow", warning)
+        self.assertIn("10 minutes", warning)
+
+    def test_no_warning_for_unwarned_or_unknown_models(self):
+        self.assertIsNone(get_model_warning("openai/gpt-6-luna"))
+        self.assertIsNone(get_model_warning("custom/unknown"))
