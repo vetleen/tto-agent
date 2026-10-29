@@ -104,8 +104,13 @@ warnings.filterwarnings(
 _is_test_run = len(sys.argv) > 1 and sys.argv[1] == "test"
 _is_shell = len(sys.argv) > 1 and sys.argv[1] == "shell"
 _sentry_dsn = os.environ.get("SENTRY_DSN", "")
+# Trace sample rate for everything core.sentry_sampling.traces_sampler doesn't
+# refuse outright. Defined unconditionally: the sampler is unit-tested without
+# a Sentry client.
+SENTRY_TRACES_SAMPLE_RATE = float(os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "1.0"))
 if _sentry_dsn and not _is_test_run and not _is_shell and not DEBUG:
     from core.middleware import get_request_id
+    from core.sentry_sampling import traces_sampler
     from core.sentry_scrub import scrub_event
 
     def _sentry_before_send(event, hint):
@@ -130,12 +135,15 @@ if _sentry_dsn and not _is_test_run and not _is_shell and not DEBUG:
 
     sentry_sdk.init(
         dsn=_sentry_dsn,
-        # Performance: 100 % sample rate for alpha (~2 users).
-        # Lower via SENTRY_TRACES_SAMPLE_RATE when traffic grows.
-        traces_sample_rate=float(
-            os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "1.0")
-        ),
-        # Profiling: 100 % of sampled transactions (alpha).
+        # Performance: the sampler skips every request the client-IP gate is
+        # about to refuse (scanner probes) and applies SENTRY_TRACES_SAMPLE_RATE
+        # to the rest.
+        traces_sampler=traces_sampler,
+        # Profiling: fraction of sampled transactions that also get a profile.
+        # Every open profile costs ~100 Hz × thread-count dicts until its
+        # transaction ends, so under a request burst this — not the request
+        # itself — is the dominant memory cost (2026-10-29). 0 never starts the
+        # profiler thread at all.
         profiles_sample_rate=float(
             os.environ.get("SENTRY_PROFILES_SAMPLE_RATE", "1.0")
         ),

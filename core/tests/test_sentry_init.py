@@ -59,6 +59,16 @@ _IGNORED_LOGGERS_PROBE = (
 )
 
 
+# Import settings, then print which traces_sampler the client was initialised
+# with — the allowlist-aware one (core.sentry_sampling) or none.
+_SAMPLER_PROBE = (
+    "import sentry_sdk; "
+    "from config import settings; "  # noqa: F401 — import triggers the gate
+    "s = sentry_sdk.get_client().options['traces_sampler']; "
+    "print('SAMPLER:' + (s.__module__ + '.' + s.__name__ if s else 'none'))"
+)
+
+
 def _probe_sentry(env_overrides: dict, probe: str = _PROBE) -> str:
     """Import ``config.settings`` in a fresh process; return the probe's last stdout line."""
     env = {**os.environ, **env_overrides}
@@ -164,3 +174,20 @@ class SentryIgnoredLoggersTests(SimpleTestCase):
         # Only our own logger still records; every pypdf/weasyprint/fontTools/trafilatura
         # name is dropped (trafilatura.utils logs at ERROR — WILFRED-94/95).
         self.assertEqual(out, "RECORDED:chat.views")
+
+
+class SentryTracesSamplerWiringTests(SimpleTestCase):
+    """Production init traces through the allowlist-aware sampler, not a flat rate.
+
+    Sentry's ASGI middleware starts a transaction (and profile) before the
+    client-IP gate runs, so a flat ``traces_sample_rate`` traces every scanner
+    probe; under a burst the profiler's per-thread samples inflated the web dyno
+    by ~400 MB (2026-10-29). ``core.sentry_sampling.traces_sampler`` returns 0
+    for those requests.
+    """
+
+    def test_init_uses_allowlist_aware_sampler(self) -> None:
+        out = _probe_sentry(
+            {"DJANGO_DEBUG": "False", "SENTRY_DSN": _FAKE_DSN}, probe=_SAMPLER_PROBE,
+        )
+        self.assertEqual(out, "SAMPLER:core.sentry_sampling.traces_sampler")
