@@ -300,7 +300,10 @@ def classify_api_error(exc: Exception, provider_label: str) -> ClassifiedError:
     if status in (408, 504) or _is_timeout_error(exc):
         return ClassifiedError(
             error_code="timeout",
-            user_message=f"The request to {provider_label} timed out. Please try again.",
+            user_message=(
+                f"The request to {provider_label} timed out. Please try again — if it keeps "
+                "happening, switch to a different model."
+            ),
             log_level="warning",
         )
     if _is_connection_error(exc):

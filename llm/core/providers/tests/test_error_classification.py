@@ -314,6 +314,9 @@ class TestClassifyApiError(TestCase):
         )
         result = classify_api_error(exc, "Gemini")
         self.assertEqual(result.error_code, "timeout")
+        # A recurring timeout is usually the model, not the request (WILFRED-9M).
+        self.assertIn("Gemini timed out", result.user_message)
+        self.assertIn("switch to a different model", result.user_message)
         # Timeouts are not retried inside the provider (the whole sub-agent run
         # is retried at the Celery layer instead).
         self.assertFalse(_is_retryable_transient_error(exc))
