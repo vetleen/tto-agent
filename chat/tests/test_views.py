@@ -664,8 +664,10 @@ class ChatHomeModelChoicesTests(TestCase):
         self.assertEqual(
             choices["gemini/gemini-4-argon"]["warning"], get_model_warning("gemini/gemini-4-argon"),
         )
+        self.assertEqual(choices["gemini/gemini-4-argon"]["warning"]["icon"], "clock")
         self.assertIsNone(choices["openai/gpt-6-luna"]["warning"])
         self.assertContains(response, 'id="model-warning"')
+        self.assertContains(response, 'id="model-warning-more"')
 
     @patch("core.preferences.get_preferences")
     def test_model_guide_covers_only_enabled_models(self, mock_preferences):

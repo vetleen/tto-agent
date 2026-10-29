@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from django.test import SimpleTestCase
 
-from llm.model_registry import ModelInfo
+from llm.model_registry import _MODELS, MODEL_WARNING_ICONS, ModelInfo, ModelWarning
 from llm.display import (
     _PRICE_MIX_CACHE_READ,
     _PRICE_MIX_CACHE_WRITE,
@@ -240,8 +240,24 @@ class PickerRatingTests(SimpleTestCase):
 class ModelWarningTests(SimpleTestCase):
     def test_argon_carries_its_slowness_warning(self):
         warning = get_model_warning("gemini/gemini-4-argon")
-        self.assertIn("slow", warning)
-        self.assertIn("10 minutes", warning)
+        self.assertEqual(warning["summary"], "Gemini 4 Argon can be slow")
+        self.assertIn("10 minutes", warning["detail"])
+        self.assertEqual(warning["icon"], "clock")
+
+    def test_detail_is_optional(self):
+        info = ModelInfo("X", "openai", "x", warning=ModelWarning(summary="Heads up"))
+        with patch("llm.display.get_model_info", return_value=info):
+            self.assertEqual(
+                get_model_warning("openai/x"),
+                {"summary": "Heads up", "detail": "", "icon": "warning"},
+            )
+
+    def test_registry_warnings_use_known_icons(self):
+        for model_id, info in _MODELS.items():
+            if info.warning is not None:
+                with self.subTest(model=model_id):
+                    self.assertIn(info.warning.icon, MODEL_WARNING_ICONS)
+                    self.assertTrue(info.warning.summary.strip())
 
     def test_no_warning_for_unwarned_or_unknown_models(self):
         self.assertIsNone(get_model_warning("openai/gpt-6-luna"))

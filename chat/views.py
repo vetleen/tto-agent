@@ -949,7 +949,7 @@ def chat_home(request):
             "price_level": get_price_level(m),
             "capability_level": get_capability_level(m),
             "meta_tooltip": get_model_meta_tooltip(m),
-            # Banner above the chat while this model is selected (or None).
+            # Note under the picker while this model is selected (or None).
             "warning": get_model_warning(m),
         }
         for m in prefs.allowed_models

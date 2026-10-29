@@ -312,8 +312,11 @@ def get_model_meta_tooltip(model_id: str) -> str | None:
     )
 
 
-def get_model_warning(model_id: str) -> str | None:
-    """The registry's user-facing caution for *model_id* (``ModelInfo.warning``),
-    shown above the chat while the model is selected; None when there is none."""
+def get_model_warning(model_id: str) -> dict | None:
+    """The registry's user-facing caution for *model_id* (``ModelInfo.warning``)
+    as ``{summary, detail, icon}`` for the picker; None when there is none."""
     info = get_model_info(model_id)
-    return info.warning if info is not None else None
+    if info is None or info.warning is None:
+        return None
+    w = info.warning
+    return {"summary": w.summary, "detail": w.detail or "", "icon": w.icon}
