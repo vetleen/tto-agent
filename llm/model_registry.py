@@ -386,9 +386,9 @@ _MODELS: dict[str, ModelInfo] = {
         reasoning_levels=("low", "medium", "high"), default_reasoning_level="medium",
         input_modalities=_MULTIMODAL, context_window=1_048_576,
         max_output_tokens=65_536,
-        # Prod 30 days to 2026-10-21: single-request turns max 136 s (~67 tok/s);
-        # ~2x headroom. Long turns are long tool loops, not one request.
-        request_timeout_seconds=300,
+        # Requests of 150-200k tokens average ~400 s per round in prod; 300 s cut
+        # off 10 of 132 turns in the 14 days to 2026-10-29 (WILFRED-9M).
+        request_timeout_seconds=600,
         # Introductory pricing through 2026-11-30; no long-context band.
         input_price=Decimal("2.00"), cached_input_price=Decimal("0.10"),
         output_price=Decimal("10.00"),
@@ -403,7 +403,7 @@ _MODELS: dict[str, ModelInfo] = {
         api_model="gemini-3.1-pro-preview", stars=3,
         reasoning_levels=("low", "medium", "high"), default_reasoning_level="high",
         input_modalities=_MULTIMODAL, context_window=1_048_576,
-        request_timeout_seconds=300,
+        request_timeout_seconds=600,  # same class as Argon (WILFRED-9M)
         max_output_tokens=65_536, input_price=Decimal("2.00"),
         cached_input_price=Decimal("0.20"), output_price=Decimal("12.00"),
         long_context_threshold=200_000,

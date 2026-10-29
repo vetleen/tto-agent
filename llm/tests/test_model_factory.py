@@ -204,9 +204,9 @@ class RequestTimeoutTests(SimpleTestCase):
 
         mock_init.side_effect = lambda *a, **kw: MagicMock()
         create_chat_model("gemini-3.1-pro-preview")
-        self.assertEqual(mock_init.call_args[1]["timeout"], 300)
+        self.assertEqual(mock_init.call_args[1]["timeout"], 600)
         create_chat_model("gemini/gemini-4-argon")
-        self.assertEqual(mock_init.call_args[1]["timeout"], 300)
+        self.assertEqual(mock_init.call_args[1]["timeout"], 600)
         create_chat_model("gemini/gemini-3.8-flash")
         self.assertEqual(mock_init.call_args[1]["timeout"], 120)
 
@@ -227,7 +227,7 @@ class RequestTimeoutTests(SimpleTestCase):
             "gemini-3.1-pro-preview", "google_genai",
             thinking_level="high", include_thoughts=True,
         )
-        self.assertEqual(mock_init.call_args[1]["timeout"], 300)
+        self.assertEqual(mock_init.call_args[1]["timeout"], 600)
 
     @patch("llm.core.model_factory.init_chat_model")
     def test_gemini_gets_one_retry(self, mock_init):
@@ -246,7 +246,8 @@ class RequestTimeoutTests(SimpleTestCase):
     def test_request_timeout_for_model(self):
         from llm.core.model_factory import request_timeout_for_model
 
-        self.assertEqual(request_timeout_for_model("gemini/gemini-4-argon"), 300)
+        self.assertEqual(request_timeout_for_model("gemini/gemini-4-argon"), 600)
+        self.assertEqual(request_timeout_for_model("gemini/gemini-3.1-pro-preview"), 600)
         self.assertEqual(request_timeout_for_model("gemini/gemini-3.8-flash"), 120)
         self.assertEqual(request_timeout_for_model("gemini/gemini-3.7-flash"), 120)  # retired → 3.8
         self.assertEqual(request_timeout_for_model("openai/gpt-6-luna"), 120)

@@ -162,7 +162,8 @@ def _get_provider_kwargs(provider: str, api_model: str) -> dict[str, Any]:
 # per-operation limit, so a long stream that keeps producing tokens is fine. The
 # google-genai SDK also sends it as ``X-Server-Timeout``, making it Google's
 # deadline for the WHOLE generation: Gemini 4 Argon's long thinking on big tool
-# loops hit 120 s (504 "Deadline expired", WILFRED-9M). Registered models set
+# loops hit 120 s and then 300 s (504 "Deadline expired", WILFRED-9M; Argon and
+# 3.1 Pro now 600 s). Registered models set
 # their own deadline (ModelInfo.request_timeout_seconds); the provider value is
 # the fallback. Runaway generations are bounded by the output cap and
 # repetition guard, not by this.

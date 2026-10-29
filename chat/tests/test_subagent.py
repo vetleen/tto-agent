@@ -612,7 +612,7 @@ class StaleRunExpirationTests(TestCase):
             expected = max(request_timeout_for_model(model), longest_tool) + STALE_SILENCE_MARGIN_SECONDS
             self.assertEqual(running_silence_limit(model), expected)
             self.assertEqual(running_silence_limit(model, longest_tool), expected)
-        self.assertEqual(running_silence_limit("gemini/gemini-4-argon", 30.0), 300 + 120)
+        self.assertEqual(running_silence_limit("gemini/gemini-4-argon", 30.0), 600 + 120)
         self.assertLessEqual(running_silence_limit("gemini/gemini-4-argon"), 15 * 60)
 
     def test_sweep_scans_the_tool_registry_once(self):
@@ -634,7 +634,7 @@ class StaleRunExpirationTests(TestCase):
         self.assertEqual(scan.call_count, 1)
 
     def test_silence_limit_follows_the_model_request_timeout(self):
-        """An Argon run (300 s request timeout) may sit silent far longer than an
+        """An Argon run (600 s request timeout) may sit silent far longer than an
         OpenAI one (120 s) before it counts as stale."""
         openai_limit = running_silence_limit("openai/gpt-6-luna")
         gemini_limit = running_silence_limit("gemini/gemini-4-argon")
