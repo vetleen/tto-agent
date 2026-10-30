@@ -282,3 +282,26 @@ class SeedGuardTests(SimpleTestCase):
             turn.cancel_event.clear()
             consumer._turn = None  # superseded
             self.assertFalse(consumer._should_seed_continuation(turn))
+
+
+class ClosedSocketReplyTests(SimpleTestCase):
+    """A reply to a message whose socket closed mid-handler is dropped quietly (WILFRED-AC)."""
+
+    async def test_send_on_closed_socket_is_swallowed(self):
+        from autobahn.exception import Disconnected
+
+        consumer = ChatConsumer()
+        consumer.send = AsyncMock(side_effect=Disconnected("Attempt to send on a closed protocol"))
+        consumer._active_owned_deck = MagicMock(return_value=None)
+        consumer._slides_state_sync = MagicMock(return_value=None)
+
+        await consumer.receive(text_data='{"type": "chat.slides_open", "thread_id": "t1"}')
+
+        consumer.send.assert_awaited_once()
+
+    async def test_other_errors_still_raise(self):
+        consumer = ChatConsumer()
+        consumer._handle_slides_open = AsyncMock(side_effect=RuntimeError("boom"))
+
+        with self.assertRaises(RuntimeError):
+            await consumer.receive(text_data='{"type": "chat.slides_open", "thread_id": "t1"}')

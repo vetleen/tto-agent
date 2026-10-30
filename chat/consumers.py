@@ -8,6 +8,7 @@ import logging
 import threading
 from dataclasses import dataclass, field
 
+from autobahn.exception import Disconnected
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
 
@@ -1187,6 +1188,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
 
     async def receive(self, text_data=None, bytes_data=None):
+        try:
+            await self._receive(text_data)
+        except Disconnected:
+            # The client closed the socket while a handler was awaiting (DB load,
+            # render); its reply has nowhere to go (WILFRED-AC).
+            logger.debug("Chat socket closed before a reply could be sent")
+
+    async def _receive(self, text_data):
         if not text_data:
             return
 
