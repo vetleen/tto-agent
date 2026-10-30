@@ -283,16 +283,18 @@ class FrameAfterStopTests(TransactionTestCase):
     teardown reset _realtime_started, such a frame used to open a second
     realtime session; it must be dropped instead."""
 
-    async def _frame_after_stop(self, mode):
+    async def _frame_after_stop(self, mode, raw=None, mime="audio/webm", stop_requested=True):
         from meetings.services import realtime_session as rt_mod
 
+        if raw is None:
+            raw = b"\x1a\x45\xdf\xa3" + b"\x00" * 961  # a whole WebM file starts with EBML
         consumer, sent, _closed = _consumer_with_send()
         consumer.meeting_uuid = "m-after-stop"
-        consumer._stop_requested = True
+        consumer._stop_requested = stop_requested
         consumer._realtime_started = False
         consumer._realtime_mode = mode
         consumer._pending_meta = [{
-            "segment_index": 0, "byte_length": 965, "mime": "audio/webm", "start_offset_seconds": 0.0,
+            "segment_index": 0, "byte_length": len(raw), "mime": mime, "start_offset_seconds": 0.0,
         }]
         consumer.meeting_id = 1
         consumer._realtime_was_active_this_conn = False
@@ -319,7 +321,7 @@ class FrameAfterStopTests(TransactionTestCase):
             raise AssertionError("a session must not be built after stop")
 
         with patch.object(rt_mod, "build_realtime_session", _boom):
-            await consumer._handle_binary_frame(b"\x00" * 965)
+            await consumer._handle_binary_frame(raw)
         return consumer, sent, starts
 
     async def test_realtime_frame_after_stop_opens_no_session(self):
@@ -335,6 +337,30 @@ class FrameAfterStopTests(TransactionTestCase):
         consumer, sent, starts = await self._frame_after_stop("chunked")
         self.assertEqual(starts, [])
         self.assertEqual(consumer._pending_meta, [])
+        self.assertEqual(self.enqueued, [0])
+
+
+class HeaderlessChunkTests(TransactionTestCase):
+    """After a realtime -> chunked fallback, the stopped streaming recorder's
+    tail (a bare WebM cluster) used to be taken as a chunk and fail ffprobe as
+    undecodable (meeting 601, segment 606). Chunked frames are whole files."""
+
+    _frame = FrameAfterStopTests._frame_after_stop
+
+    async def test_headerless_webm_chunk_is_dropped(self):
+        cluster = b"\x1f\x43\xb6\x75" + b"\x00" * 9000
+        consumer, sent, _starts = await self._frame("chunked", raw=cluster, stop_requested=False)
+        self.assertEqual(self.enqueued, [])
+        self.assertEqual(sent, [])
+        self.assertEqual(consumer._pending_meta, [])
+
+    async def test_ogg_chunk_is_not_checked_for_ebml(self):
+        ogg = b"OggS" + b"\x00" * 9000
+        await self._frame("chunked", raw=ogg, mime="audio/ogg;codecs=opus", stop_requested=False)
+        self.assertEqual(self.enqueued, [0])
+
+    async def test_whole_webm_chunk_is_processed(self):
+        await self._frame("chunked", stop_requested=False)
         self.assertEqual(self.enqueued, [0])
 
 

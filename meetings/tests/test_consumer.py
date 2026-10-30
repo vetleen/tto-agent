@@ -21,6 +21,9 @@ from meetings import consumers as consumers_module
 from meetings.consumers import MeetingTranscribeConsumer
 from meetings.models import Meeting, MeetingTranscriptSegment
 
+# Chunked uploads are whole WebM files, which start with the EBML header.
+_EBML = b"\x1a\x45\xdf\xa3"
+
 User = get_user_model()
 
 
@@ -219,7 +222,7 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
         await comm.connect()
         await comm.receive_from()  # started
 
-        chunk = b"\x00\x01\x02\x03"
+        chunk = _EBML + b"\x00\x01\x02\x03"
         await comm.send_to(text_data=json.dumps({
             "type": "chunk_meta",
             "segment_index": 0,
@@ -243,7 +246,7 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
         await comm.connect()
         await comm.receive_from()  # consume "started"
 
-        chunk = b"\x00\x01\x02\x03"
+        chunk = _EBML + b"\x00\x01\x02\x03"
         await comm.send_to(text_data=json.dumps({
             "type": "chunk_meta",
             "segment_index": 0,
@@ -568,7 +571,7 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
             enqueue_calls.append(meta["segment_index"])
         consumer._enqueue_chunk_task = _fake_enqueue
 
-        tiny = b"\x00" * 100  # well under the 8 KB MEETING_CHUNK_MIN_BYTES default
+        tiny = _EBML + b"\x00" * 96  # well under the 8 KB MEETING_CHUNK_MIN_BYTES default
         for i in range(4):
             consumer._pending_meta.append({
                 "segment_index": i,
@@ -613,8 +616,8 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
             return f"/tmp/seg-{meta['segment_index']}"
         consumer._write_chunk = _fake_write_chunk
 
-        big = b"\x00" * (16 * 1024)   # > 8 KB → resets the streak
-        tiny = b"\x00" * 100          # legit short tail
+        big = _EBML + b"\x00" * (16 * 1024)   # > 8 KB → resets the streak
+        tiny = _EBML + b"\x00" * 96          # legit short tail
 
         # tiny (streak=1, allowed) → big (resets to 0) → tiny (streak=1, allowed)
         for i, frame in enumerate((tiny, big, tiny)):
@@ -663,7 +666,7 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
             enqueue_calls.append(meta["segment_index"])
         consumer._enqueue_chunk_task = _fake_enqueue
 
-        tiny = b"\x00" * 100  # well under 8 KB
+        tiny = _EBML + b"\x00" * 96  # well under 8 KB
 
         # Send two tiny (leaked) frames — both should be dropped.
         for i in range(2):
@@ -725,7 +728,7 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
         consumer._enqueue_chunk_task = _fake_enqueue
 
         # Client sends an inflated index (271) — server should allocate 2 instead.
-        big = b"\x00" * (16 * 1024)
+        big = _EBML + b"\x00" * (16 * 1024)
         consumer._pending_meta.append({
             "segment_index": 271,
             "byte_length": len(big),
@@ -764,7 +767,7 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
             return "/tmp/fake"
         consumer._write_chunk = _fake_write_chunk
 
-        tiny = b"\x00" * 100  # undersized — should be allowed as first
+        tiny = _EBML + b"\x00" * 96  # undersized — should be allowed as first
         consumer._pending_meta.append({
             "segment_index": 7,  # arbitrary client index
             "byte_length": len(tiny),
@@ -885,8 +888,9 @@ class MeetingTranscribeConsumerTests(TransactionTestCase):
         self.assertEqual(consumer._realtime_tasks, [])
         # The parked pump task was cancelled, not left running.
         self.assertTrue(pump_task.cancelled() or pump_task.done())
-        # Client was told to fall back to chunked.
-        self.assertTrue(any(m["type"] == "live_mode_changed" for m in sent))
+        # Client was told to fall back to chunked — and NOT that the session
+        # disconnected, which makes it shut the mic instead (meeting 601).
+        self.assertEqual([m["type"] for m in sent], ["error", "live_mode_changed"])
 
     async def test_session_activity_is_forwarded_to_client(self):
         """Upstream VAD lifecycle reaches the client as ``session.activity`` so

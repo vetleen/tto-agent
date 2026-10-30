@@ -61,6 +61,8 @@ _PENDING_META_MAX = 16
 # Teardown waits this long for ffmpeg to flush its tail through the PCM pump
 # before the session commits its final turn.
 _PCM_DRAIN_SECONDS = 1.5
+# First bytes of every WebM/Matroska file (the EBML header element ID).
+_EBML_MAGIC = b"\x1a\x45\xdf\xa3"
 
 # TTL for the per-meeting presence lock that rejects a second concurrent live
 # session on the same meeting. > 2x the heartbeat so a live session keeps it
@@ -452,6 +454,15 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
                 f"chunk byte_length mismatch: expected {meta['byte_length']}, got {len(raw)}"
             )
             return
+        # Every chunked recording is a complete file. A WebM frame without the
+        # EBML header is the stopped streaming recorder's tail leaking across
+        # a fallback — undecodable, so don't spend a transcription task on it.
+        if "webm" in (meta.get("mime") or "") and not raw.startswith(_EBML_MAGIC):
+            logger.info(
+                "meetings: dropping headerless webm chunk (%dB, meeting=%s)",
+                len(raw), self.meeting_uuid,
+            )
+            return
         # Drop undersized frames before they can flood ffprobe/Celery.
         # Normally we allow the first one (a legit short final chunk) but drop
         # a *run* — the signature of 250ms streaming bursts leaking into
@@ -647,16 +658,9 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
                         "message": f"{evt.code}: {evt.message}",
                     }))
                     if evt.fatal:
-                        # Surface a disconnected status alongside the error so
-                        # the client can show its fatal-error banner instead of
-                        # just logging the error to the console.
-                        try:
-                            await self.send(text_data=json.dumps({
-                                "type": "session.status",
-                                "state": "disconnected",
-                            }))
-                        except Exception:
-                            pass
+                        # No session.status "disconnected" here: the client
+                        # reads it as "stop recording" and shuts the mic, so
+                        # the chunked recorder never started (meeting 601).
                         # Notify the client first so it switches to chunked
                         # immediately, then release realtime resources (the
                         # ffmpeg pipe + forwarder task + session) instead of

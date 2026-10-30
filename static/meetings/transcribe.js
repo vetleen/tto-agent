@@ -1333,6 +1333,11 @@
     if (segmentTimer) { clearTimeout(segmentTimer); segmentTimer = null; }
     if (mediaRecorder) {
       mediaRecorder.onstop = null;
+      if (liveMode === 'chunked') {
+        // A streaming recorder's final burst is a bare WebM cluster. After a
+        // fallback it would be uploaded as a chunk and fail as undecodable.
+        mediaRecorder.ondataavailable = null;
+      }
       if (mediaRecorder.state === 'recording') {
         try { mediaRecorder.stop(); } catch (e) {}
       }
