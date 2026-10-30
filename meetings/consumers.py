@@ -425,10 +425,12 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         })
 
     async def _handle_binary_frame(self, raw: bytes) -> None:
-        if getattr(self, "_stop_requested", False):
-            # A recorder's last burst can trail the client's `stop`. The
-            # session is already torn down; in realtime mode this frame would
-            # open a fresh one (_realtime_started was reset by the teardown).
+        if getattr(self, "_stop_requested", False) and self._realtime_mode != "chunked":
+            # A streaming recorder's last burst can trail the client's `stop`.
+            # The session is already torn down, and this frame would open a
+            # fresh one (_realtime_started was reset by the teardown). Chunked
+            # mode is exempt: its final upload (up to 30 s of audio) can also
+            # trail `stop`, and it is still transcribed on its own.
             logger.info(
                 "meetings: dropped %sB audio frame received after stop (meeting=%s)",
                 len(raw), self.meeting_uuid,

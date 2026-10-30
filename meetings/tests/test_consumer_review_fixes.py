@@ -291,13 +291,29 @@ class FrameAfterStopTests(TransactionTestCase):
         consumer._stop_requested = True
         consumer._realtime_started = False
         consumer._realtime_mode = mode
-        consumer._pending_meta = [{"segment_index": 0, "byte_length": 965, "mime": "audio/webm"}]
+        consumer._pending_meta = [{
+            "segment_index": 0, "byte_length": 965, "mime": "audio/webm", "start_offset_seconds": 0.0,
+        }]
+        consumer.meeting_id = 1
+        consumer._realtime_was_active_this_conn = False
+        consumer._post_fallback_drop_armed = False
+        consumer._segments_total = 0
+        consumer._undersized_chunk_streak = 0
         starts: list = []
+        self.enqueued: list = []
 
         async def _start(mime):
             starts.append(mime)
 
+        async def _write_chunk(meta, raw):
+            return "/tmp/seg-0"
+
+        async def _enqueue(meta, temp_path):
+            self.enqueued.append(meta["segment_index"])
+
         consumer._start_realtime_session = _start
+        consumer._write_chunk = _write_chunk
+        consumer._enqueue_chunk_task = _enqueue
 
         def _boom(**kwargs):
             raise AssertionError("a session must not be built after stop")
@@ -311,12 +327,15 @@ class FrameAfterStopTests(TransactionTestCase):
         self.assertEqual(starts, [])
         self.assertFalse(consumer._realtime_started)
         self.assertEqual(sent, [])
+        self.assertEqual(self.enqueued, [])
 
-    async def test_chunked_frame_after_stop_is_dropped_silently(self):
+    async def test_chunked_final_chunk_after_stop_is_still_processed(self):
+        # Chunked mode's last upload can trail `stop` (the client only waits
+        # a fixed tick); it must reach the chunk pipeline, not be dropped.
         consumer, sent, starts = await self._frame_after_stop("chunked")
         self.assertEqual(starts, [])
-        self.assertEqual(sent, [])
-        self.assertEqual(len(consumer._pending_meta), 1)
+        self.assertEqual(consumer._pending_meta, [])
+        self.assertEqual(self.enqueued, [0])
 
 
 class StopFinalizeFailureTests(TransactionTestCase):
