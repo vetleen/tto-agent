@@ -86,12 +86,44 @@ class BuildTranscriptionKeywordsTests(TestCase):
             ["Research Council", "Horizon"],
         )
 
-    def test_sentence_start_needs_a_name_shape(self):
-        # "Vetle"/"Discuss" open their sentences: grammar, not a signal. The
-        # run "Discuss Innovasjon Norge" keeps the part after it.
+    def test_lone_sentence_start_word_needs_a_name_shape(self):
+        # "Vetle"/"Discuss" open their sentences: grammar, not a signal.
         self.assertEqual(
-            self._kw(agenda="Vetle presents the plan. Discuss Innovasjon Norge funding. NTNU update"),
-            ["Innovasjon Norge", "NTNU"],
+            self._kw(agenda="Vetle presents the plan. Discuss funding. NTNU update"),
+            ["NTNU"],
+        )
+
+    def test_multi_word_run_at_a_line_start_is_kept_whole(self):
+        self.assertEqual(
+            self._kw(agenda="Innovasjon Norge update\nResearch Council meeting\nNew York office"),
+            ["Innovasjon Norge", "Research Council", "New York"],
+        )
+
+    def test_capital_inside_a_word_is_not_a_name(self):
+        self.assertEqual(self._kw(agenda="Sync with iPhone team about eBay listing"), [])
+
+    def test_title_abbreviations_neither_end_a_sentence_nor_join_a_name(self):
+        self.assertEqual(
+            self._kw(agenda="Meeting with Dr. Kari Nordmann. Meet Prof. Hansen, e.g. Monday"),
+            ["Kari Nordmann", "Hansen", "Monday"],
+        )
+
+    def test_names_with_the_or_of_on_ordinary_lines_survive(self):
+        self.assertEqual(
+            self._kw(agenda="Lunch with Kari Nordmann at The Grand\nCall with Bank Of America"),
+            ["Kari Nordmann", "The Grand", "Bank Of America"],
+        )
+
+    def test_non_breaking_space_behaves_like_a_space(self):
+        self.assertEqual(
+            self._kw(agenda="Funding from Innovasjon\xa0Norge and\tEquinor"),
+            ["Innovasjon Norge", "Equinor"],
+        )
+
+    def test_pronoun_contractions_are_not_names(self):
+        self.assertEqual(
+            self._kw(description="Next week I'll present the plan and I’m meeting Kari"),
+            ["Kari"],
         )
 
     def test_mostly_capitalized_line_without_title_case_markers_keeps_names(self):
@@ -109,6 +141,8 @@ class BuildTranscriptionKeywordsTests(TestCase):
             ["Q3", "Pharma"],
         )
         self.assertEqual(self._kw(agenda="Budget Plans And Hiring"), [])
+        # Stopwords are filtered on Title Case lines too.
+        self.assertEqual(self._kw(agenda="Review Of Open Items TBD"), [])
 
     def test_stopwords_are_skipped(self):
         self.assertEqual(

@@ -158,20 +158,31 @@ def build_transcription_prompt(meeting: "Meeting", prior_tail: str | None = None
 MAX_TRANSCRIPTION_KEYWORDS = 50
 MAX_TRANSCRIPTION_KEYWORD_CHARS = 100
 _PARTICIPANT_SPLIT = re.compile(r"[,;/\n]|\s+(?:and|og|&)\s+", re.IGNORECASE)
-# Runs of capitalized words: candidate proper nouns in free text.
-_CAPITALIZED_RUN = re.compile(r"[A-ZÆØÅÄÖÜ][\wÆØÅæøåÄÖÜäöü&.'-]*(?:\s+[A-ZÆØÅÄÖÜ][\wÆØÅæøåÄÖÜäöü&.'-]*)*")
+# A capitalized word that starts a word (so not the "P" in "iPhone"), and runs
+# of them joined by single spaces (sentences are whitespace-normalized first).
+_CAPITALIZED_WORD = r"(?<![\w'’-])[A-ZÆØÅÄÖÜ][\w&.'’-]*"
+_CAPITALIZED_RUN = re.compile(rf"{_CAPITALIZED_WORD}(?: {_CAPITALIZED_WORD})*")
 _KEYWORD_FORBIDDEN = re.compile(r"[<>\r\n]")
 _SENTENCE_BREAK = re.compile(r"[.!?;:](?:\s+|$)|\n")
-_WORD = re.compile(r"[^\W\d_][\w'-]*")
-# Always capitalized, never a term worth biasing toward.
-_KEYWORD_STOPWORDS = frozenset({"ok", "okay", "tbd", "tba", "nb", "fyi", "etc", "mr", "mrs", "ms", "dr"})
-# A capitalized function word past the first word marks a Title Case heading
-# ("Review Of Q3 Budget Plans"), where capitalization says nothing. A share of
-# capitalized words can't tell that from "Møte med Kari Nordmann".
+# The dot after these doesn't end a sentence ("Meeting with Dr. Kari Nordmann").
+_ABBREVIATION_DOT = re.compile(
+    r"\b(Dr|Prof|Mr|Mrs|Ms|St|Jr|Sr|e\.g|i\.e|f\.eks|bl\.a|ca|dvs|evt|nr)\.", re.IGNORECASE,
+)
+_WORD = re.compile(r"[^\W\d_][\w'’-]*")
+# Titles split a run and are dropped: "Meet Prof Hansen" -> "Hansen".
+_NAME_TITLES = frozenset({"dr", "prof", "mr", "mrs", "ms"})
+# Always capitalized, never a term worth biasing toward; trimmed off run edges.
+_KEYWORD_STOPWORDS = frozenset({
+    "ok", "okay", "tbd", "tba", "nb", "fyi", "etc", "i'm", "i'll", "i've", "i'd",
+})
+# A Title Case heading ("Review Of Q3 Budget Plans") has a capitalized function
+# word past its first word and no lowercase content word; there capitalization
+# says nothing. The/A/An are left out: they open too many names ("The Grand").
 _TITLE_CASE_MARKERS = frozenset({
-    "Of", "And", "The", "For", "With", "In", "On", "To", "At", "By", "From", "An",
+    "Of", "And", "For", "With", "In", "On", "To", "At", "By", "From",
     "Og", "Med", "Om", "Til", "Av", "Fra", "På", "Etter", "Før",
 })
+_TITLE_CASE_MIN_LOWERCASE_WORD = 4
 
 
 def _looks_like_proper_noun(phrase: str) -> bool:
@@ -183,7 +194,22 @@ def _looks_like_proper_noun(phrase: str) -> bool:
 
 
 def _is_title_case(sentence: str) -> bool:
-    return any(w in _TITLE_CASE_MARKERS for w in _WORD.findall(sentence)[1:])
+    words = _WORD.findall(sentence)
+    if not any(w in _TITLE_CASE_MARKERS for w in words[1:]):
+        return False
+    return not any(w[0].islower() and len(w) >= _TITLE_CASE_MIN_LOWERCASE_WORD for w in words)
+
+
+def _word_key(word: str) -> str:
+    return word.casefold().replace("’", "'").strip(".")
+
+
+def _trim_stopwords(words: list[str]) -> list[str]:
+    while words and _word_key(words[0]) in _KEYWORD_STOPWORDS:
+        words = words[1:]
+    while words and _word_key(words[-1]) in _KEYWORD_STOPWORDS:
+        words = words[:-1]
+    return words
 
 
 def _sentence_keyword_candidates(sentence: str) -> list[str]:
@@ -191,26 +217,37 @@ def _sentence_keyword_candidates(sentence: str) -> list[str]:
 
     A capitalized word past the sentence's first word is taken as a name
     (Norwegian capitalizes little else). The first word is capitalized by
-    grammar, so it only counts with a name's shape (acronym, CamelCase,
-    digits); a run it opens keeps the rest ("Discuss Innovasjon Norge" ->
-    "Innovasjon Norge"). On a Title Case line capitalization means nothing,
-    so only name-shaped single words count there.
+    grammar, so on its own it only counts with a name's shape (acronym,
+    CamelCase, digits); a longer run it opens is kept whole ("Innovasjon
+    Norge update" -> "Innovasjon Norge"). Titles split runs and are dropped.
+    On a Title Case line capitalization means nothing, so only name-shaped
+    single words count there.
     """
+    sentence = " ".join(sentence.split())
     first_letter = _WORD.search(sentence)
     if first_letter is None:
         return []
-    if _is_title_case(sentence):
-        words = (w.strip(",()[]\"'") for w in sentence.split())
-        return [w for w in words if _CAPITALIZED_RUN.fullmatch(w) and _looks_like_proper_noun(w)]
+    title_case = _is_title_case(sentence)
     candidates = []
     for match in _CAPITALIZED_RUN.finditer(sentence):
-        phrase = match.group(0)
-        if match.start() == first_letter.start():
-            first, _, rest = phrase.partition(" ")
-            if not _looks_like_proper_noun(first):
-                phrase = rest
-        if phrase and phrase.casefold().strip(".") not in _KEYWORD_STOPWORDS:
-            candidates.append(phrase)
+        at_start = match.start() == first_letter.start()
+        segments: list[list[str]] = [[]]
+        for word in match.group(0).split(" "):
+            if _word_key(word) in _NAME_TITLES:
+                segments.append([])
+            else:
+                segments[-1].append(word)
+        for i, words in enumerate(segments):
+            if title_case:
+                pieces = [[w] for w in words if _looks_like_proper_noun(w)]
+            elif i == 0 and at_start and len(words) == 1 and not _looks_like_proper_noun(words[0]):
+                pieces = []
+            else:
+                pieces = [words]
+            for piece in pieces:
+                piece = _trim_stopwords(piece)
+                if piece:
+                    candidates.append(" ".join(piece))
     return candidates
 
 
@@ -229,7 +266,7 @@ def build_transcription_keywords(meeting: "Meeting") -> list[str]:
     participants = (getattr(meeting, "participants", "") or "")
     candidates.extend(_PARTICIPANT_SPLIT.split(participants))
     for field in ("agenda", "description"):
-        text = getattr(meeting, field, "") or ""
+        text = _ABBREVIATION_DOT.sub(r"\1", getattr(meeting, field, "") or "")
         # Match within sentences so a run can't swallow the next sentence's
         # capitalized first word.
         for sentence in _SENTENCE_BREAK.split(text):
