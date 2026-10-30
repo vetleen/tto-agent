@@ -62,8 +62,11 @@ class _CommitMeta:
     """What our side knows about one commit, keyed by item_id once acked."""
     start_bytes: int
     turn_bytes: int
-    # Commit order on the current socket (assigned when the commit is sent).
+    # Commit order (assigned when the commit is first sent; a resend keeps it).
     seq: int = 0
+    # The committed audio, kept until the turn is transcribed or failed so a
+    # dropped socket can resend it. None once released (or never retained).
+    audio: bytes | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +147,13 @@ class UnsupportedModelError(RealtimeSessionError):
 # At 24kHz mono PCM16 that's 48_000 bytes/sec: 60 s ≈ 2.9 MB.
 _UNCOMMITTED_BUFFER_SECONDS = 60
 _UNCOMMITTED_BUFFER_BYTES = PCM_BYTES_PER_SECOND * _UNCOMMITTED_BUFFER_SECONDS
+
+# Committed turns keep their audio until transcribed, so a socket that dies
+# between commit and .completed doesn't lose them (they are resent). Bounded
+# like the uncommitted buffer; past it the oldest turn's audio is let go.
+_RETAINED_AUDIO_BYTES = _UNCOMMITTED_BUFFER_BYTES
+# Resent turns go out in appends of this size.
+_RESEND_APPEND_BYTES = PCM_BYTES_PER_SECOND
 
 # Reconnect schedule: cap at 4s so we recover quickly, max 8 attempts per
 # meeting before giving up. The counter resets after 60s of success so a
@@ -265,6 +275,9 @@ class OpenAIRealtimeSession:
         self._uncommitted: deque[bytes] = deque()
         self._uncommitted_bytes = 0
         self._offline_commits: deque[tuple[int, _CommitMeta]] = deque()
+        # Turns committed on a socket that died before they were transcribed,
+        # by seq; the next replay resends their audio and re-commits them.
+        self._resend: dict[int, _CommitMeta] = {}
         # Set from just before a reconnect's _open() until its replay has
         # caught up; send_pcm only buffers meanwhile.
         self._replaying = False
@@ -331,23 +344,42 @@ class OpenAIRealtimeSession:
         if not self._api_key:
             raise RealtimeSessionError("OPENAI_API_KEY is not set")
         # Commits orphaned by the dropped socket can never produce a .completed
-        # on the new one. Reset the pairing so finalize()'s committed-vs-completed
-        # wait doesn't stall on ghosts and burn its full timeout on every Stop
-        # after a reconnect. The byte counter keeps running to preserve a
-        # continuous meeting timeline.
-        lost = len(self._pending_commits) + max(0, self._committed_count - self._completed_count)
-        if lost:
+        # on the new one. Those whose audio we still hold are resent by the
+        # replay under their original seq (so later turns keep waiting for
+        # them); the rest are lost. Reset the pairing so finalize()'s
+        # committed-vs-completed wait doesn't stall on ghosts. The byte counter
+        # keeps running to preserve a continuous meeting timeline.
+        outstanding = [*self._pending_commits, *self._items.values()]
+        for meta in outstanding:
+            if meta.audio:
+                self._resend[meta.seq] = meta
+        lost = [m for m in outstanding if not m.audio]
+        unpaired = max(0, self._committed_count - self._completed_count - len(self._items))
+        if lost or unpaired:
             logger.warning(
-                "OpenAIRealtimeSession: %d committed turn(s) lost with the dropped socket", lost,
+                "OpenAIRealtimeSession: %d committed turn(s) lost with the dropped socket",
+                len(lost) + unpaired,
+            )
+        if self._resend:
+            logger.info(
+                "OpenAIRealtimeSession: %d committed turn(s) will be resent", len(self._resend),
             )
         self._pending_commits.clear()
         self._items.clear()
         self._committed_count = 0
         self._completed_count = 0
-        # Lost turns will never complete: release what was waiting on them and
-        # number the new socket's commits after everything sent so far.
-        await self._flush_held()
-        self._next_emit_seq = self._commit_seq + 1
+        if self._resend:
+            # Lost turns will never complete: mark them failed so in-order
+            # emission skips them, and keep waiting for the resent ones.
+            for meta in lost:
+                if meta.seq >= self._next_emit_seq:
+                    self._held.setdefault(meta.seq, None)
+            await self._release_held()
+        else:
+            # Nothing to wait for: release everything held and number the new
+            # socket's commits after everything sent so far.
+            await self._flush_held()
+            self._next_emit_seq = self._commit_seq + 1
         ws = await self._ws_connect_factory(self._api_key, _REALTIME_WS_URL)
         self._ws = ws
         await self._send_session_update()
@@ -626,19 +658,29 @@ class OpenAIRealtimeSession:
         await self._events.put(SessionStatus(state="connected"))
 
     async def _replay_uncommitted(self) -> None:
-        """Send the audio no commit has covered yet to the fresh socket.
+        """Bring the fresh socket up to date: resend, then replay.
 
-        Everything since the last successful commit is replayed exactly once,
-        so nothing is lost or transcribed twice. Commits the detector decided
-        while the socket was down are sent at their byte boundaries, so turns
-        stay separate. ``send_pcm`` keeps buffering while ``_replaying`` is
-        set, and this loop drains until it has caught up, so live frames can't
-        overtake the replay.
+        First, turns committed on the dead socket but never transcribed are
+        resent (their retained audio, then a commit under their original seq).
+        Then everything since the last successful commit is replayed exactly
+        once, so nothing is lost or transcribed twice. Commits the detector
+        decided while the socket was down are sent at their byte boundaries,
+        so turns stay separate. ``send_pcm`` keeps buffering while
+        ``_replaying`` is set, and this loop drains until it has caught up, so
+        live frames can't overtake the replay.
         """
         replayed = 0
         idx = 0
         pos = 0  # bytes of the buffer's head already sent on this socket
         try:
+            for seq in sorted(self._resend):
+                meta = self._resend[seq]
+                audio = meta.audio or b""
+                for i in range(0, len(audio), _RESEND_APPEND_BYTES):
+                    await self._send_audio_frame(audio[i:i + _RESEND_APPEND_BYTES])
+                await self._send_commit(meta, seq=seq)
+                del self._resend[seq]
+                replayed += len(audio)
             while idx < len(self._uncommitted):
                 frame = self._uncommitted[idx]
                 await self._send_audio_frame(frame)
@@ -646,12 +688,14 @@ class OpenAIRealtimeSession:
                 pos += len(frame)
                 replayed += len(frame)
                 while self._offline_commits and self._offline_commits[0][0] <= pos:
-                    _, meta = self._offline_commits.popleft()
+                    meta = self._offline_commits[0][1]
                     await self._send_commit(meta)
-                    # The committed head no longer needs replaying.
-                    for _ in range(idx):
-                        self._uncommitted.popleft()
-                    self._uncommitted_bytes -= pos
+                    # Popped only once sent: a socket that dies first keeps
+                    # the boundary for the next replay.
+                    self._offline_commits.popleft()
+                    # The committed head no longer needs replaying; it is
+                    # retained with the turn until transcribed.
+                    self._retain(meta, self._take_committed(idx))
                     self._offline_commits = deque(
                         (p - pos, m) for p, m in self._offline_commits
                     )
@@ -705,8 +749,9 @@ class OpenAIRealtimeSession:
             if frame:
                 await self._send_audio_frame(frame)
             if decision.commit:
-                await self._send_commit(self._commit_meta(decision))
-                self._drop_uncommitted()
+                meta = self._commit_meta(decision)
+                await self._send_commit(meta)
+                self._retain(meta, self._take_committed())
             elif decision.clear:
                 await self._ws.send(json.dumps({"type": "input_audio_buffer.clear"}))
                 self._drop_uncommitted()
@@ -734,6 +779,29 @@ class OpenAIRealtimeSession:
         self._uncommitted.clear()
         self._uncommitted_bytes = 0
 
+    def _take_committed(self, n_frames: int | None = None) -> bytes:
+        """Pop the buffer's first ``n_frames`` (all by default) and return them."""
+        if n_frames is None:
+            n_frames = len(self._uncommitted)
+        frames = [self._uncommitted.popleft() for _ in range(n_frames)]
+        audio = b"".join(frames)
+        self._uncommitted_bytes -= len(audio)
+        return audio
+
+    def _retain(self, meta: _CommitMeta, audio: bytes) -> None:
+        """Keep a committed turn's audio until it is transcribed, within the cap."""
+        meta.audio = audio or None
+        retained = sorted(
+            (m for m in (*self._pending_commits, *self._items.values()) if m.audio),
+            key=lambda m: m.seq,
+        )
+        total = sum(len(m.audio) for m in retained)
+        for old in retained:
+            if total <= _RETAINED_AUDIO_BYTES:
+                break
+            total -= len(old.audio)
+            old.audio = None
+
     @staticmethod
     def _commit_meta(decision: TurnDecision) -> _CommitMeta:
         return _CommitMeta(
@@ -741,17 +809,22 @@ class OpenAIRealtimeSession:
             turn_bytes=decision.turn_bytes,
         )
 
-    async def _send_commit(self, meta: _CommitMeta) -> None:
-        """Send ``input_audio_buffer.commit`` and number it for in-order emission."""
+    async def _send_commit(self, meta: _CommitMeta, *, seq: int | None = None) -> None:
+        """Send ``input_audio_buffer.commit`` and number it for in-order emission.
+
+        ``seq`` re-commits a resent turn under the number it already has.
+        """
         assert self._ws is not None
-        self._commit_seq += 1
-        meta.seq = self._commit_seq
+        if seq is None:
+            self._commit_seq += 1
+            meta.seq = self._commit_seq
         self._pending_commits.append(meta)
         try:
             await self._ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
         except Exception:
             self._pending_commits.pop()
-            self._commit_seq -= 1
+            if seq is None:
+                self._commit_seq -= 1
             raise
 
     async def _emit_in_order(self, seq: int | None, evt: TranscriptCompleted | None) -> None:
@@ -802,6 +875,11 @@ class OpenAIRealtimeSession:
             self._next_emit_seq = max(self._next_emit_seq, seq + 1)
             if evt is not None:
                 await self._events.put(evt)
+        # A skipped turn may still be transcribed (emitted on its own), but it
+        # is no longer worth resending: let its audio go.
+        for meta in (*self._pending_commits, *self._items.values()):
+            if meta.seq < self._next_emit_seq:
+                meta.audio = None
 
     async def update_language(self, language: str | None) -> None:
         """Apply a new transcription language to the running session.
@@ -880,13 +958,14 @@ class OpenAIRealtimeSession:
             return
         decision = self._turn.flush()
         if decision.commit:
+            meta = self._commit_meta(decision)
             try:
-                await self._send_commit(self._commit_meta(decision))
+                await self._send_commit(meta)
             except Exception as exc:
                 logger.debug("OpenAIRealtimeSession: commit raised (%s) — continuing", exc)
                 await self._flush_held()
                 return
-            self._drop_uncommitted()
+            self._retain(meta, self._take_committed())
         while time.monotonic() < deadline:
             all_acked = not self._pending_commits
             all_transcribed = self._committed_count <= self._completed_count

@@ -758,6 +758,15 @@ class OpenAIRealtimeSessionTests(TestCase):
             ):
                 await session.connect()
                 await _send_audio(session, committed_turn)
+                # The first turn is transcribed before the drop, so it is done
+                # with (not resent).
+                ws1.push_server_json({"type": "input_audio_buffer.committed", "item_id": "item_1"})
+                ws1.push_server_json({
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "item_id": "item_1",
+                    "transcript": "first",
+                })
+                await asyncio.sleep(0.05)
                 # Socket drops; audio keeps arriving during the backoff.
                 ws1._queue.put_nowait(None)
                 await asyncio.sleep(0.05)
@@ -1084,6 +1093,166 @@ class CompletionOrderTests(TestCase):
 
         seen = _run(run())
         self.assertTrue(any(isinstance(e, TranscriptCompleted) and e.text == "second" for e in seen))
+
+
+class ResendTests(TestCase):
+    """A turn keeps its audio until transcribed: a socket that dies between
+    commit and .completed must not lose it — the reconnect resends it."""
+
+    _TURN = _silence_ms(400) + _tone_ms(1000) + _silence_ms(600)
+
+    class _AnsweringWS(_FakeWebSocket):
+        """Acks and transcribes each commit, naming items from ``texts``."""
+
+        def __init__(self, texts, **kwargs):
+            super().__init__(**kwargs)
+            self._texts = list(texts)
+
+        async def send(self, payload):
+            await super().send(payload)
+            if json.loads(payload).get("type") == "input_audio_buffer.commit" and self._texts:
+                item_id, text = self._texts.pop(0)
+                self.push_server_json({"type": "input_audio_buffer.committed", "item_id": item_id})
+                self.push_server_json({
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "item_id": item_id,
+                    "transcript": text,
+                })
+
+    def _session(self, *sockets):
+        it = iter(sockets)
+
+        async def factory(api_key: str, url: str):
+            return next(it)
+
+        return OpenAIRealtimeSession(
+            model_id="openai/gpt-live-transcribe",
+            _ws_connect_factory=factory,
+            _api_key="sk-fake",
+        )
+
+    async def _completions_until(self, session, n, timeout=5.0):
+        out: list[TranscriptCompleted] = []
+
+        async def take():
+            async for evt in session.events():
+                if isinstance(evt, TranscriptCompleted):
+                    out.append(evt)
+                    if len(out) == n:
+                        return
+        await asyncio.wait_for(take(), timeout)
+        return out
+
+    def _drop_and_resend(self):
+        ws1 = _FakeWebSocket(script=[{"type": "session.created", "session": {"id": "s1"}}])
+        ws2 = self._AnsweringWS(
+            [("item_a2", "first")], script=[{"type": "session.created", "session": {"id": "s2"}}],
+        )
+        session = self._session(ws1, ws2)
+
+        async def run():
+            with patch("meetings.services.realtime_session._RECONNECT_BACKOFFS", (0.1,) * 8):
+                await session.connect()
+                await _send_audio(session, self._TURN)  # turn a: committed on ws1
+                await _send_audio(session, self._TURN)  # turn b: committed on ws1
+                ws1.push_server_json({"type": "input_audio_buffer.committed", "item_id": "item_a"})
+                ws1.push_server_json({"type": "input_audio_buffer.committed", "item_id": "item_b"})
+                ws1.push_server_json({
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "item_id": "item_b",
+                    "transcript": "second",
+                })
+                await asyncio.sleep(0.05)
+                ws1._queue.put_nowait(None)  # drops before turn a is transcribed
+                out = await self._completions_until(session, 2)
+                await session.aclose()
+                return out
+
+        return ws2, _run(run())
+
+    def _assert_resent(self, ws2, out):
+        # Turn a's audio went out again on the new socket, then its commit.
+        sent2 = [json.loads(m) for m in ws2.sent]
+        types2 = [m["type"] for m in sent2]
+        self.assertEqual(types2.count("input_audio_buffer.commit"), 1)
+        resent = b"".join(
+            base64.b64decode(m["audio"]) for m in sent2 if m["type"] == "input_audio_buffer.append"
+        )
+        self.assertEqual(resent, self._TURN)
+        # Spoken order holds (b waited for the resent a), and a keeps its
+        # original place on the meeting timeline.
+        self.assertEqual([e.text for e in out], ["first", "second"])
+        self.assertAlmostEqual(out[0].start_offset_seconds, 0.4, places=1)
+
+    def test_turn_acked_but_not_transcribed_is_resent(self):
+        self._assert_resent(*self._drop_and_resend())
+
+    def test_turns_never_acked_are_resent_in_order(self):
+        ws1 = _FakeWebSocket(script=[{"type": "session.created", "session": {"id": "s1"}}])
+        ws2 = self._AnsweringWS(
+            [("item_a2", "first"), ("item_b2", "second")],
+            script=[{"type": "session.created", "session": {"id": "s2"}}],
+        )
+        session = self._session(ws1, ws2)
+
+        async def run():
+            with patch("meetings.services.realtime_session._RECONNECT_BACKOFFS", (0.1,) * 8):
+                await session.connect()
+                await _send_audio(session, self._TURN)
+                await _send_audio(session, self._TURN)
+                ws1._queue.put_nowait(None)  # drops before any ack
+                out = await self._completions_until(session, 2)
+                await session.aclose()
+                return out
+
+        out = _run(run())
+        sent2 = [json.loads(m) for m in ws2.sent]
+        self.assertEqual([m["type"] for m in sent2].count("input_audio_buffer.commit"), 2)
+        resent = b"".join(
+            base64.b64decode(m["audio"]) for m in sent2 if m["type"] == "input_audio_buffer.append"
+        )
+        self.assertEqual(resent, self._TURN + self._TURN)
+        self.assertEqual([e.text for e in out], ["first", "second"])
+        self.assertLess(out[0].start_offset_seconds, out[1].start_offset_seconds)
+
+    def test_turn_skipped_by_reorder_wait_releases_its_audio(self):
+        ws = _FakeWebSocket(script=[{"type": "session.created", "session": {"id": "s"}}])
+        session = self._session(ws)
+
+        async def run():
+            with patch("meetings.services.realtime_session.REORDER_WAIT_SECONDS", 0.1):
+                await session.connect()
+                await _send_audio(session, self._TURN)
+                await _send_audio(session, self._TURN)
+                ws.push_server_json({"type": "input_audio_buffer.committed", "item_id": "item_a"})
+                ws.push_server_json({"type": "input_audio_buffer.committed", "item_id": "item_b"})
+                ws.push_server_json({
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "item_id": "item_b",
+                    "transcript": "second",
+                })
+                await self._completions_until(session, 1)
+                audio_a = session._items["item_a"].audio
+                await session.aclose()
+                return audio_a
+
+        self.assertIsNone(_run(run()))
+
+    def test_retained_audio_is_capped_oldest_first(self):
+        ws = _FakeWebSocket(script=[{"type": "session.created", "session": {"id": "s"}}])
+        session = self._session(ws)
+
+        async def run():
+            with patch("meetings.services.realtime_session._RETAINED_AUDIO_BYTES", len(self._TURN) + 1):
+                await session.connect()
+                await _send_audio(session, self._TURN)
+                await _send_audio(session, self._TURN)
+                metas = sorted(session._pending_commits, key=lambda m: m.seq)
+                kept = [m.audio is not None for m in metas]
+                await session.aclose()
+                return kept
+
+        self.assertEqual(_run(run()), [False, True])
 
 
 class FinalizeTests(TestCase):

@@ -181,8 +181,10 @@ live path still sends no `prompt` (the gpt-4o models regurgitated it).
 frames) closes a turn after 600 ms of silence, at the first pause past 12 s, or at 20 s
 (`MEETING_REALTIME_TURN_*`); idle audio is cleared upstream. `OpenAIRealtimeSession` keeps all audio
 since the last commit and replays it once after a reconnect (offline commits at their byte
-boundaries), pairs acks FIFO and completions by `item_id`, and emits transcripts in commit order
-(`REORDER_WAIT_SECONDS`). Draft deltas stream before the commit.
+boundaries), keeps each committed turn's audio until it is transcribed and resends it (same seq)
+when the socket dies first, pairs acks FIFO and completions by `item_id`, and emits transcripts in
+commit order (`REORDER_WAIT_SECONDS`). Draft deltas stream before the commit. Stop drains ffmpeg
+(`PcmPipe.close_input`) before `finalize()` commits the last turn.
 
 ## Chat Tool Labels
 
