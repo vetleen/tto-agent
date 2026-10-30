@@ -338,6 +338,54 @@ class FrameAfterStopTests(TransactionTestCase):
         self.assertEqual(self.enqueued, [0])
 
 
+class TeardownDrainTests(TransactionTestCase):
+    """Stop must let ffmpeg flush its tail through the PCM pump before the
+    session commits its final turn; otherwise the last words never arrive."""
+
+    async def test_pipe_is_drained_before_finalize(self):
+        consumer, _sent, _closed = _consumer_with_send()
+        consumer.meeting_uuid = "m-drain"
+        consumer._total_pcm_bytes = 0
+        calls: list[str] = []
+        eof = asyncio.Event()
+
+        class _FakePipe:
+            async def close_input(self):
+                calls.append("close_input")
+                eof.set()
+
+            async def aclose(self):
+                calls.append("pipe_aclose")
+
+        class _FakeSession:
+            async def finalize(self, timeout):
+                calls.append("finalize")
+
+            def pending_event_count(self):
+                return 0
+
+            async def aclose(self):
+                calls.append("session_aclose")
+
+        async def _pump():
+            await eof.wait()
+            await asyncio.sleep(0.05)  # the tail frames being forwarded
+            calls.append("pump_done")
+
+        consumer._pcm_pipe = _FakePipe()
+        consumer._realtime_session = _FakeSession()
+        consumer._realtime_started = True
+        consumer._realtime_pump_task = asyncio.create_task(_pump())
+        consumer._realtime_consume_task = None
+        consumer._realtime_tasks = [consumer._realtime_pump_task]
+
+        await consumer._teardown_realtime(finalize_timeout=1.0)
+
+        self.assertEqual(
+            calls, ["close_input", "pump_done", "finalize", "session_aclose", "pipe_aclose"],
+        )
+
+
 class StopFinalizeFailureTests(TransactionTestCase):
     def setUp(self):
         self.user = User.objects.create_user(email="c7@example.com", password="pw")

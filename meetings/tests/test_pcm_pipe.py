@@ -20,6 +20,7 @@ from pathlib import Path
 from meetings.services.pcm_pipe import (
     DEFAULT_FRAME_BYTES,
     PcmPipe,
+    PcmPipeError,
     PCM_SAMPLE_BYTES,
     PCM_SAMPLE_RATE,
     _EBML_MAGIC,
@@ -121,6 +122,43 @@ class PcmPipeTests(unittest.TestCase):
             total, expected_bytes + tolerance,
             f"expected ~{expected_bytes} bytes of PCM, got {total}",
         )
+
+    def test_close_input_drains_the_tail_to_eof(self):
+        """Stop's drain: closing stdin alone (no aclose) makes ffmpeg flush
+        everything it holds and end read_frames; later writes are refused."""
+        fixture = _generate_webm_fixture(duration_seconds=1.0)
+        expected_bytes = PCM_SAMPLE_RATE * PCM_SAMPLE_BYTES
+
+        async def run():
+            pipe = PcmPipe(mime="audio/webm")
+            await pipe.start()
+            await pipe.write(fixture)
+            pcm_chunks: list[bytes] = []
+
+            async def read_until_eof():
+                async for frame in pipe.read_frames():
+                    pcm_chunks.append(frame)
+
+            read_task = asyncio.create_task(read_until_eof())
+            await pipe.close_input()
+            try:
+                await asyncio.wait_for(read_task, timeout=5.0)
+                ended = True
+            except asyncio.TimeoutError:
+                read_task.cancel()
+                ended = False
+            write_error = None
+            try:
+                await pipe.write(b"more")
+            except PcmPipeError as exc:
+                write_error = exc
+            await pipe.aclose(grace_seconds=5.0)
+            return ended, sum(len(c) for c in pcm_chunks), write_error
+
+        ended, total, write_error = _run_async(run())
+        self.assertTrue(ended, "read_frames must end at EOF after close_input")
+        self.assertGreaterEqual(total, expected_bytes * 9 // 10)
+        self.assertIsNotNone(write_error)
 
     def test_frame_size_matches_200ms_slices(self):
         # Sanity check: our declared frame size matches the math we use

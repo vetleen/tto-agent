@@ -843,6 +843,15 @@ class OpenAIRealtimeSession:
             self._reopen_requested = False
             logger.warning("OpenAIRealtimeSession: reopen close failed (%s)", exc)
 
+    def _recovering(self) -> bool:
+        """A reconnect (or config reopen) is under way, or its replay is running."""
+        if self._replaying:
+            return True
+        if self._ws is not None:
+            return False
+        reconnect = self._reconnect_task
+        return self._reopen_requested or (reconnect is not None and not reconnect.done())
+
     async def finalize(self, timeout: float = 3.0) -> None:
         """Commit the open turn and wait for every owed transcription.
 
@@ -853,21 +862,31 @@ class OpenAIRealtimeSession:
         loop can persist the trailing ``.completed`` before teardown.
         ``timeout`` is a hard ceiling — we never block longer than that even if
         the server goes quiet (failsafe against a wedged socket).
+
+        A Stop that lands mid-reconnect or mid-replay first waits (within the
+        same budget) for the socket to be back and the replay to catch up:
+        committing earlier would cover only part of the buffered audio, and
+        the replay would then lose the rest.
         """
-        if self._closed or self._ws is None:
+        if self._closed:
+            return
+        deadline = time.monotonic() + timeout
+        while self._recovering() and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+        if self._ws is None or self._replaying:
+            # Still offline: hand over what is already transcribed while the
+            # consumer is alive to persist it (aclose runs after it's cancelled).
+            await self._flush_held()
             return
         decision = self._turn.flush()
         if decision.commit:
-            meta = self._commit_meta(decision)
-            self._pending_commits.append(meta)
             try:
-                await self._ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
+                await self._send_commit(self._commit_meta(decision))
             except Exception as exc:
-                self._pending_commits.pop()
                 logger.debug("OpenAIRealtimeSession: commit raised (%s) — continuing", exc)
+                await self._flush_held()
                 return
             self._drop_uncommitted()
-        deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             all_acked = not self._pending_commits
             all_transcribed = self._committed_count <= self._completed_count

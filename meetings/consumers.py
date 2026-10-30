@@ -58,6 +58,10 @@ REALTIME_FAILURE_BUDGET = 2
 # otherwise grow this list without bound (RSS DoS on a shared dyno).
 _PENDING_META_MAX = 16
 
+# Teardown waits this long for ffmpeg to flush its tail through the PCM pump
+# before the session commits its final turn.
+_PCM_DRAIN_SECONDS = 1.5
+
 # TTL for the per-meeting presence lock that rejects a second concurrent live
 # session on the same meeting. > 2x the heartbeat so a live session keeps it
 # fresh; a hard-crashed session's lock expires within this window so a genuine
@@ -578,10 +582,9 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         # Keep a handle on the consume task: teardown lets it drain the trailing
         # .completed before cancelling it (see _teardown_realtime).
         self._realtime_consume_task = asyncio.create_task(self._consume_realtime_events())
-        self._realtime_tasks = [
-            asyncio.create_task(self._pump_pcm_to_realtime()),
-            self._realtime_consume_task,
-        ]
+        # Teardown lets the pump forward the decoder's tail before finalize.
+        self._realtime_pump_task = asyncio.create_task(self._pump_pcm_to_realtime())
+        self._realtime_tasks = [self._realtime_pump_task, self._realtime_consume_task]
         self._realtime_started = True
         self._realtime_was_active_this_conn = True
         logger.info(
@@ -783,6 +786,7 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
         ):
             return
         current = asyncio.current_task()
+        await self._drain_pcm_pipe(current)
         if self._realtime_session is not None:
             try:
                 await self._realtime_session.finalize(timeout=finalize_timeout)
@@ -839,6 +843,23 @@ class MeetingTranscribeConsumer(AsyncWebsocketConsumer):
                 pass
             self._pcm_pipe = None
         self._realtime_started = False
+
+    async def _drain_pcm_pipe(self, current: asyncio.Task | None) -> None:
+        """Let ffmpeg decode what it still holds and the pump forward it.
+
+        Without this, finalize() commits while the last few hundred ms of
+        speech are still inside the decoder, and they never reach the
+        session. Bounded by ``_PCM_DRAIN_SECONDS``; a dead pipe returns at once.
+        """
+        pipe = self._pcm_pipe
+        pump = getattr(self, "_realtime_pump_task", None)
+        if pipe is None or pump is None or pump is current or pump.done():
+            return
+        try:
+            await pipe.close_input()
+            await asyncio.wait_for(asyncio.shield(pump), _PCM_DRAIN_SECONDS)
+        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+            pass
 
     async def _fall_back_to_chunked(self, *, reason: str) -> None:
         """Flip the consumer to chunked mode and tell the client.

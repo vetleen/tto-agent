@@ -125,6 +125,8 @@ class PcmPipe:
         self._stdout_q: Optional[asyncio.Queue] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._closed = False
+        # Set by close_input(): no more container bytes, ffmpeg drains to EOF.
+        self._input_closed = False
         self._stdin_lock = threading.Lock()
         self.stats = PcmPipeStats()
         # EBML header gate (WebM/Matroska only). A reconnect may feed the new
@@ -265,7 +267,7 @@ class PcmPipe:
         forwarded together with everything that follows, and all subsequent
         writes bypass the check entirely (``_header_seen`` stays True).
         """
-        if self._closed or self._proc is None or self._proc.stdin is None:
+        if self._closed or self._input_closed or self._proc is None or self._proc.stdin is None:
             raise PcmPipeError("pipe is not running")
         if not data:
             return
@@ -314,6 +316,28 @@ class PcmPipe:
             if chunk == _EOF:
                 return
             yield chunk
+
+    async def close_input(self) -> None:
+        """Signal end of input: close ffmpeg's stdin but keep reading.
+
+        ffmpeg then decodes what it still holds, writes it out and exits, so
+        ``read_frames`` yields the tail and ends at EOF. Stop uses this to get
+        the last words through before the session commits its final turn.
+        ``aclose`` still reaps the process.
+        """
+        if self._closed or self._input_closed or self._proc is None:
+            return
+        self._input_closed = True
+
+        def _close_stdin():
+            with self._stdin_lock:
+                try:
+                    if self._proc is not None and self._proc.stdin is not None:
+                        self._proc.stdin.close()
+                except Exception:
+                    pass
+
+        await asyncio.to_thread(_close_stdin)
 
     async def aclose(self, *, grace_seconds: float = 3.0) -> None:
         """Close stdin, wait for ffmpeg to exit, force-kill on timeout."""

@@ -1230,6 +1230,112 @@ class FinalizeTests(TestCase):
             "finalize() must wait for the .completed that trails the committed ack",
         )
 
+    def _session(self, ws):
+        return OpenAIRealtimeSession(
+            model_id="openai/gpt-live-transcribe",
+            _ws_connect_factory=_factory_for(ws),
+            _api_key="sk-fake",
+        )
+
+    @staticmethod
+    def _completed(item_id, text):
+        return {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": item_id,
+            "transcript": text,
+        }
+
+    async def _two_turns_second_held(self, session, ws):
+        """Two committed turns; only the second is transcribed, so it is held."""
+        await session.connect()
+        await _send_audio(session, _silence_ms(400) + _tone_ms(1000) + _silence_ms(600))
+        await _send_audio(session, _tone_ms(1000) + _silence_ms(600))
+        ws.push_server_json({"type": "input_audio_buffer.committed", "item_id": "item_a"})
+        ws.push_server_json({"type": "input_audio_buffer.committed", "item_id": "item_b"})
+        ws.push_server_json(self._completed("item_b", "second"))
+        await asyncio.sleep(0.05)
+
+    @staticmethod
+    def _collector(session, out):
+        async def consume():
+            async for evt in session.events():
+                if isinstance(evt, TranscriptCompleted):
+                    out.append(evt.text)
+        return asyncio.create_task(consume())
+
+    def test_trailing_commit_is_ordered_behind_outstanding_turns(self):
+        # The final turn goes through the numbered commit path, so it can't
+        # jump ahead of an earlier turn still waiting for its transcript.
+        test = self
+
+        class _AckThirdCommitWS(_FakeWebSocket):
+            commits = 0
+
+            async def send(self, payload):
+                await super().send(payload)
+                if json.loads(payload).get("type") == "input_audio_buffer.commit":
+                    self.commits += 1
+                    if self.commits == 3:
+                        self.push_server_json({"type": "input_audio_buffer.committed", "item_id": "item_c"})
+                        self.push_server_json(test._completed("item_c", "last"))
+
+        ws = _AckThirdCommitWS(script=[{"type": "session.created", "session": {"id": "s"}}])
+        session = self._session(ws)
+        out: list[str] = []
+
+        async def run():
+            await self._two_turns_second_held(session, ws)
+            consumer = self._collector(session, out)
+            await _send_audio(session, _tone_ms(1000))  # the open, trailing turn
+            await session.finalize(timeout=0.5)  # item_a never answers
+            await asyncio.sleep(0.05)
+            consumer.cancel()
+            await session.aclose()
+
+        _run(run())
+        self.assertEqual(out, ["second", "last"])
+
+    def test_finalize_during_reconnect_backoff_flushes_held_completions(self):
+        # Stop while the socket is down: the already-transcribed turn must be
+        # handed over while the consumer is still alive to persist it.
+        ws = _FakeWebSocket(script=[{"type": "session.created", "session": {"id": "s"}}])
+        session = self._session(ws)
+        out: list[str] = []
+
+        async def run():
+            await self._two_turns_second_held(session, ws)
+            consumer = self._collector(session, out)
+            session._ws = None
+            session._reconnect_task = asyncio.create_task(asyncio.sleep(10))
+            await session.finalize(timeout=0.3)
+            await asyncio.sleep(0.05)
+            seen_before_close = list(out)
+            consumer.cancel()
+            await session.aclose()
+            return seen_before_close
+
+        self.assertEqual(_run(run()), ["second"])
+
+    def test_finalize_waits_for_a_running_replay_before_committing(self):
+        ws = _FakeWebSocket(script=[{"type": "session.created", "session": {"id": "s"}}])
+        session = self._session(ws)
+
+        async def run():
+            await session.connect()
+            await _send_audio(session, _tone_ms(1000))  # open turn, sent live
+            session._replaying = True
+            fin = asyncio.create_task(session.finalize(timeout=2.0))
+            await asyncio.sleep(0.2)
+            committed_during_replay = "input_audio_buffer.commit" in _sent_types(ws)
+            session._replaying = False
+            await fin
+            await session.aclose()
+            return committed_during_replay
+
+        committed_during_replay = _run(run())
+        self.assertFalse(committed_during_replay)
+        self.assertIn("input_audio_buffer.commit", _sent_types(ws))
+
     def test_finalize_skips_commit_when_turn_is_silent(self):
         # Committing silence only bills and invites a hallucinated tail.
         ws = _FakeWebSocket(script=[
