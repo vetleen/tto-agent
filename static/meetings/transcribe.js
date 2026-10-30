@@ -66,12 +66,10 @@
 
   const meetingUuid = root.dataset.meetingUuid;
   const initialStatus = root.dataset.meetingStatus;
-  const autoStopDefault = parseInt(root.dataset.autoStopDefault || '3600', 10);
+  // One fixed recording limit for everyone (MEETING_AUTO_STOP_MAX_SECONDS,
+  // 4 h); past it the user clicks Resume. The server enforces the same ceiling.
   const autoStopMax = parseInt(root.dataset.autoStopMax || '14400', 10);
   const autoStartTranscription = root.dataset.autoStartTranscription === '1';
-  // Per-meeting memory for the "Auto-stop after (minutes)" input so a reload
-  // (or the next session on this meeting) keeps what the user chose.
-  const AUTO_STOP_STORAGE_KEY = 'wf.meeting.' + meetingUuid + '.autoStopMinutes';
 
   const transcribeBtn = document.getElementById('transcribe-btn');
   const transcribeBtnLabel = document.getElementById('transcribe-btn-label');
@@ -82,7 +80,6 @@
   const controlsEl = document.getElementById('transcribe-controls');
   const elapsedEl = document.getElementById('elapsed-counter');
   const micSelect = document.getElementById('mic-select');
-  const autoStopInput = document.getElementById('auto-stop-input');
   const autoStopHint = document.getElementById('auto-stop-hint');
   const levelBar = document.getElementById('mic-level-bar');
   let transcriptPane = document.getElementById('transcript-pane');
@@ -408,63 +405,21 @@
   let stopTailDeadline = 0;        // stop goes out by then regardless
   const STOP_TAIL_MAX_WAIT_MS = 2000;
 
-  // ---------------- auto-stop (client-enforced) ----------------
-  // The limit lives in the number input; the elapsed timer re-reads it every
-  // second, so edits apply immediately. These helpers add what was missing:
-  // the value survives a reload (localStorage, per meeting), the user sees
-  // when the stop will happen, and the server is told for its logs.
-  function autoStopMaxMinutes() {
-    return Math.max(1, Math.floor(autoStopMax / 60));
-  }
-
+  // ---------------- auto-stop (fixed limit) ----------------
   function currentAutoStopMinutes() {
-    const raw = autoStopInput ? parseInt(autoStopInput.value, 10) : NaN;
-    if (!isFinite(raw) || raw < 1) return Math.max(1, Math.round(autoStopDefault / 60));
-    return Math.min(autoStopMaxMinutes(), raw);
-  }
-
-  function readStoredAutoStopMinutes() {
-    try {
-      const raw = parseInt(window.localStorage.getItem(AUTO_STOP_STORAGE_KEY), 10);
-      if (isFinite(raw) && raw >= 1 && raw <= autoStopMaxMinutes()) return raw;
-    } catch (e) {
-      // Private mode / blocked storage: fall back to the server default.
-    }
-    return null;
-  }
-
-  function storeAutoStopMinutes(minutes) {
-    try { window.localStorage.setItem(AUTO_STOP_STORAGE_KEY, String(minutes)); } catch (e) {}
+    return Math.max(1, Math.floor(autoStopMax / 60));
   }
 
   function updateAutoStopHint() {
     if (!autoStopHint) return;
-    const minutes = currentAutoStopMinutes();
     if (transcribing && elapsedStartedAt) {
-      const at = new Date(elapsedStartedAt + minutes * 60000);
-      autoStopHint.textContent = 'Stops at ' + at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const at = new Date(elapsedStartedAt + currentAutoStopMinutes() * 60000);
+      autoStopHint.textContent = 'Stops automatically at '
+        + at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     } else {
-      autoStopHint.textContent = 'Stops ' + minutes + ' minute' + (minutes === 1 ? '' : 's') + ' after start';
+      autoStopHint.textContent = '';
     }
   }
-
-  if (autoStopInput) {
-    const storedMinutes = readStoredAutoStopMinutes();
-    if (storedMinutes !== null) autoStopInput.value = String(storedMinutes);
-    autoStopInput.addEventListener('input', function () {
-      storeAutoStopMinutes(currentAutoStopMinutes());
-      updateAutoStopHint();
-    });
-    autoStopInput.addEventListener('change', function () {
-      const minutes = currentAutoStopMinutes();
-      storeAutoStopMinutes(minutes);
-      updateAutoStopHint();
-      if (transcribing && ws && ws.readyState === WebSocket.OPEN) {
-        try { ws.send(JSON.stringify({ type: 'extend_auto_stop', minutes: minutes })); } catch (e) {}
-      }
-    });
-  }
-  updateAutoStopHint();
 
   // Choose the best supported audio mime type for MediaRecorder.
   function pickMime() {
@@ -1562,11 +1517,6 @@
       return;
     }
 
-    // Keep the user's remembered limit; only fall back to the server default
-    // when nothing was stored for this meeting.
-    if (autoStopInput && readStoredAutoStopMinutes() === null) {
-      autoStopInput.value = String(Math.round(autoStopDefault / 60));
-    }
     autoStopFired = false;
     controlsEl.classList.remove('hidden');
     // Use inline style instead of the `hidden` class: the button has

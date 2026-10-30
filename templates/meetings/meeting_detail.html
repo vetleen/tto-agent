@@ -11,7 +11,6 @@
      data-meeting-status="{{ meeting.status }}"
      data-meeting-transcript-source="{{ meeting.transcript_source }}"
      data-meeting-has-transcript="{% if meeting.transcript %}1{% else %}0{% endif %}"
-     data-auto-stop-default="{{ auto_stop_default_seconds }}"
      data-auto-stop-max="{{ auto_stop_max_seconds }}"
      data-auto-start-transcription="{% if request.GET.transcribe %}1{% else %}0{% endif %}">
   {# Drop overlay for drag-and-drop file upload #}
@@ -158,6 +157,7 @@
           Transcribing
         </span>
         <span id="elapsed-counter" class="text-sm font-mono text-body">00:00</span>
+        <span id="auto-stop-hint" class="text-xs text-body"></span>
       </div>
     </div>
 
@@ -165,12 +165,6 @@
       <div>
         <label for="mic-select" class="block text-xs font-medium text-body mb-1">Microphone</label>
     <select id="mic-select" class="wf-input text-heading text-sm rounded-base block w-full px-3 py-2"></select>
-      </div>
-      <div>
-        <label for="auto-stop-input" class="block text-xs font-medium text-body mb-1">Auto-stop after (minutes)</label>
-        <input type="number" id="auto-stop-input" min="1" max="240" value="60"
-        class="wf-input text-heading text-sm rounded-base block w-full px-3 py-2">
-        <p id="auto-stop-hint" class="mt-1 text-xs text-body"></p>
       </div>
     </div>
 
@@ -601,6 +595,6 @@
 {# marked + DOMPurify power the transcript editor's markdown preview toggle. #}
 <script src="{% static 'js/vendor/marked.min.js' %}"></script>
 <script src="{% static 'js/vendor/purify.min.js' %}"></script>
-<script src="{% static 'meetings/transcribe.js' %}?v=rt20" defer></script>
+<script src="{% static 'meetings/transcribe.js' %}?v=rt21" defer></script>
 <script src="{% static 'js/wilfred-ai-button.js' %}?v=20260611" defer></script>
 {% endblock %}

@@ -1099,7 +1099,7 @@ SOFFICE_BIN = os.environ.get("SOFFICE_BIN", "soffice")
 
 # Meetings settings
 MEETING_CHUNK_TEMP_DIR = os.environ.get("MEETING_CHUNK_TEMP_DIR", str(MEDIA_ROOT / "_meeting_chunks"))
-MEETING_AUTO_STOP_DEFAULT_SECONDS = _env_int("MEETING_AUTO_STOP_DEFAULT_SECONDS", "3600")
+# One fixed recording limit (client timer + server ceiling); past it, Resume.
 MEETING_AUTO_STOP_MAX_SECONDS = _env_int("MEETING_AUTO_STOP_MAX_SECONDS", "14400")
 MEETING_TRANSCRIPT_UPLOAD_MAX_BYTES = _env_int("MEETING_TRANSCRIPT_UPLOAD_MAX_BYTES", "2000000")  # 2 MB
 MEETING_TRANSCRIPT_ALLOWED_EXTENSIONS = {"txt", "md"}

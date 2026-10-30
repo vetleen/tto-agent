@@ -278,7 +278,6 @@ def meeting_detail(request, meeting_uuid):
             "user_data_rooms": user_data_rooms,
             "saved_doc_groups": saved_doc_groups,
             "transcript_currently_saved": transcript_currently_saved,
-            "auto_stop_default_seconds": getattr(settings, "MEETING_AUTO_STOP_DEFAULT_SECONDS", 3600),
             "auto_stop_max_seconds": getattr(settings, "MEETING_AUTO_STOP_MAX_SECONDS", 14400),
             "transcription_model_choices": transcription_model_choices,
             "transcription_model_selected": selected_model,
