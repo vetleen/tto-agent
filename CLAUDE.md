@@ -183,7 +183,9 @@ frames) closes a turn after 600 ms of silence, at the first pause past 12 s, or 
 since the last commit and replays it once after a reconnect (offline commits at their byte
 boundaries), keeps each committed turn's audio until it is transcribed and resends it (same seq)
 when the socket dies first, pairs acks FIFO and completions by `item_id`, and emits transcripts in
-commit order (`REORDER_WAIT_SECONDS`). Draft deltas stream before the commit. Stop drains ffmpeg
+commit order (`REORDER_WAIT_SECONDS`). OpenAI ends every live session at 60 min
+(`session_expired`): the session renews in place over a fresh socket (same replay + resend), never
+a fallback. Draft deltas stream before the commit. Stop drains ffmpeg
 (`PcmPipe.close_input`) before `finalize()` commits the last turn.
 
 ## Chat Tool Labels

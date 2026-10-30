@@ -1351,6 +1351,94 @@ class ResendTests(TestCase):
         self.assertEqual(_run(run()), [False, True])
 
 
+class SessionRenewTests(TestCase):
+    """OpenAI ends every session at 60 minutes with ``session_expired``. The
+    meeting must carry on over a fresh socket, not fall back to chunked."""
+
+    _TURN = ResendTests._TURN
+    _AnsweringWS = ResendTests._AnsweringWS
+    _session = ResendTests._session
+
+    _EXPIRED = {
+        "type": "error",
+        "error": {
+            "type": "invalid_request_error",
+            "code": "session_expired",
+            "message": "Your session hit the maximum duration of 60 minutes.",
+        },
+    }
+
+    def test_expired_session_renews_with_resend_and_replay(self):
+        ws1 = _FakeWebSocket(script=[{"type": "session.created", "session": {"id": "s1"}}])
+        ws2 = self._AnsweringWS(
+            [("item_a2", "first"), ("item_c", "third")],
+            script=[{"type": "session.created", "session": {"id": "s2"}}],
+        )
+        session = self._session(ws1, ws2)
+        open_turn = _silence_ms(400) + _tone_ms(600)
+
+        async def run():
+            events = []
+            with patch("meetings.services.realtime_session._RECONNECT_BACKOFFS", (0.1,) * 8):
+                await session.connect()
+                await _send_audio(session, self._TURN)  # turn a: committed + acked on ws1
+                ws1.push_server_json({"type": "input_audio_buffer.committed", "item_id": "item_a"})
+                await asyncio.sleep(0.05)
+                await _send_audio(session, open_turn)  # still uncommitted at expiry
+                ws1.push_server_json(self._EXPIRED)
+
+                async def take():
+                    async for evt in session.events():
+                        events.append(evt)
+                        if isinstance(evt, SessionStatus) and evt.state == "connected" and ws2.sent:
+                            return
+                await asyncio.wait_for(take(), 5)
+                await session.finalize(timeout=2)
+                await asyncio.sleep(0.05)
+                while session.pending_event_count():
+                    events.append(await session._events.get())
+                await session.aclose()
+            return events
+
+        events = _run(run())
+        self.assertTrue(ws1.closed)
+        self.assertFalse([e for e in events if isinstance(e, SessionError)])
+        sent2 = [json.loads(m) for m in ws2.sent]
+        appended = b"".join(
+            base64.b64decode(m["audio"]) for m in sent2 if m["type"] == "input_audio_buffer.append"
+        )
+        # Turn a resent first, then the open turn replayed (and committed by finalize).
+        self.assertTrue(appended.startswith(self._TURN + open_turn))
+        self.assertEqual([m["type"] for m in sent2].count("input_audio_buffer.commit"), 2)
+        texts = [e.text for e in events if isinstance(e, TranscriptCompleted)]
+        self.assertEqual(texts, ["first", "third"])
+
+    def test_finalize_during_renewal_waits_for_the_new_socket(self):
+        ws1 = _FakeWebSocket(script=[{"type": "session.created", "session": {"id": "s1"}}])
+        ws2 = self._AnsweringWS(
+            [("item_a", "first")], script=[{"type": "session.created", "session": {"id": "s2"}}],
+        )
+        session = self._session(ws1, ws2)
+
+        async def run():
+            with patch("meetings.services.realtime_session._RECONNECT_BACKOFFS", (0.2,) * 8):
+                await session.connect()
+                await _send_audio(session, _silence_ms(400) + _tone_ms(600))
+                ws1.push_server_json(self._EXPIRED)
+                await asyncio.sleep(0.02)
+                self.assertTrue(session._recovering())
+                await session.finalize(timeout=3)
+                out = []
+                while session.pending_event_count():
+                    evt = await session._events.get()
+                    if isinstance(evt, TranscriptCompleted):
+                        out.append(evt.text)
+                await session.aclose()
+                return out
+
+        self.assertEqual(_run(run()), ["first"])
+
+
 class FinalizeTests(TestCase):
     """finalize() must commit the open turn and wait for the server's
     transcription so the user's last utterance isn't dropped on Stop —

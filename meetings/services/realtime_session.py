@@ -126,6 +126,10 @@ SessionEvent = (
 # then dropped) surfaces as an ``invalid_request_error`` but is not a failure —
 # swallowing it keeps a benign race from tearing down the realtime session.
 _BENIGN_ERROR_CODES = frozenset({"input_audio_buffer_commit_empty"})
+# OpenAI ends every Realtime session at 60 minutes with this code (typed
+# invalid_request_error, which would otherwise read as fatal). A meeting simply
+# continues on a fresh socket: the reconnect replays and resends what's owed.
+_SESSION_RENEW_CODES = frozenset({"session_expired"})
 
 
 class RealtimeSessionError(RuntimeError):
@@ -215,6 +219,13 @@ async def _default_ws_connect(api_key: str, url: str):
         additional_headers=headers,
         max_size=2**24,  # 16MB — plenty of headroom for delta events
     )
+
+
+async def _close_quietly(ws) -> None:
+    try:
+        await ws.close()
+    except Exception:
+        pass
 
 
 class OpenAIRealtimeSession:
@@ -309,6 +320,9 @@ class OpenAIRealtimeSession:
         # is a fresh session (clearing a pinned language). The receive loop
         # then treats the self-inflicted close as routine, not a server drop.
         self._reopen_requested = False
+        self._reopen_reason = ""
+        self._socket_opened_at: float = 0.0
+        self._renew_close_task: Optional[asyncio.Task] = None
         self._ws_connect_factory = _ws_connect_factory or _default_ws_connect
         self._api_key = _api_key or os.environ.get("OPENAI_API_KEY", "")
 
@@ -383,6 +397,7 @@ class OpenAIRealtimeSession:
             self._next_emit_seq = self._commit_seq + 1
         ws = await self._ws_connect_factory(self._api_key, _REALTIME_WS_URL)
         self._ws = ws
+        self._socket_opened_at = time.monotonic()
         await self._send_session_update()
         # Bind the loop to THIS socket: it must never pick up (or clear) a
         # socket that a later reopen/reconnect installed in self._ws.
@@ -457,20 +472,29 @@ class OpenAIRealtimeSession:
             # drop — otherwise this is a silent stall: audio keeps flowing into
             # a dead session and no error ever surfaces.
             if not self._closed:
-                if self._reopen_requested:
-                    self._reopen_requested = False
-                    logger.info("OpenAIRealtimeSession: reopening to apply config")
-                else:
+                planned = self._take_reopen()
+                if not planned:
                     logger.warning("OpenAIRealtimeSession: server closed the socket; reconnecting")
                 await self._drop_dead_socket(ws)
-                self._reconnect_task = asyncio.create_task(self._try_reconnect())
+                self._reconnect_task = asyncio.create_task(self._try_reconnect(planned=planned))
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.warning("OpenAIRealtimeSession: recv loop ended (%s)", exc)
+            # A reopen we asked for can end in an abnormal close too.
+            planned = self._take_reopen()
+            if not planned:
+                logger.warning("OpenAIRealtimeSession: recv loop ended (%s)", exc)
             if not self._closed:
                 await self._drop_dead_socket(ws)
-                self._reconnect_task = asyncio.create_task(self._try_reconnect())
+                self._reconnect_task = asyncio.create_task(self._try_reconnect(planned=planned))
+
+    def _take_reopen(self) -> bool:
+        """Consume a pending reopen request; True when this close was ours."""
+        if not self._reopen_requested:
+            return False
+        self._reopen_requested = False
+        logger.info("OpenAIRealtimeSession: reopening %s", self._reopen_reason or "on request")
+        return True
 
     async def _drop_dead_socket(self, ws) -> None:
         """Forget a socket whose receive loop has ended, before the reconnect backoff.
@@ -600,6 +624,21 @@ class OpenAIRealtimeSession:
                     rejected.audio = None
                     await self._emit_in_order(rejected.seq, None)
                 return
+            if code in _SESSION_RENEW_CODES:
+                logger.info(
+                    "OpenAIRealtimeSession: session expired after %.0f min; renewing",
+                    (time.monotonic() - self._socket_opened_at) / 60,
+                )
+                # We are inside this socket's receive loop: hand it off and
+                # close it in the background (an awaited close here would wait
+                # on the very loop it ends).
+                ws = self._ws
+                if ws is not None:
+                    self._reopen_requested = True
+                    self._reopen_reason = "after session expiry"
+                    self._ws = None
+                    self._renew_close_task = asyncio.create_task(_close_quietly(ws))
+                return
             # Fatal vs recoverable. A genuine request/config rejection
             # (``error.type == "invalid_request_error"`` — e.g. a bad
             # session.update or an unsupported model) will be rejected
@@ -621,7 +660,7 @@ class OpenAIRealtimeSession:
             return
         # Other event types (rate_limits.updated etc.) are ignored for now.
 
-    async def _try_reconnect(self) -> None:
+    async def _try_reconnect(self, *, planned: bool = False) -> None:
         if self._closed:
             return
         # Reset counter if the previous session lasted long enough to be healthy.
@@ -635,7 +674,12 @@ class OpenAIRealtimeSession:
 
         backoff = _RECONNECT_BACKOFFS[self._reconnect_attempt] + random.uniform(0, 0.25)
         self._reconnect_attempt += 1
-        logger.warning("OpenAIRealtimeSession: reconnecting in %.1fs (attempt %d)", backoff, self._reconnect_attempt)
+        # A reopen we asked for (config change, hourly renewal) is routine:
+        # INFO, so it doesn't become a Sentry event every hour of a meeting.
+        logger.log(
+            logging.INFO if planned else logging.WARNING,
+            "OpenAIRealtimeSession: reconnecting in %.1fs (attempt %d)", backoff, self._reconnect_attempt,
+        )
         await self._events.put(SessionStatus(state="reconnecting"))
         await asyncio.sleep(backoff)
 
@@ -936,6 +980,7 @@ class OpenAIRealtimeSession:
         if ws is None:
             return
         self._reopen_requested = True
+        self._reopen_reason = "to apply config"
         self._ws = None
         try:
             await ws.close()
