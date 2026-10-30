@@ -76,6 +76,46 @@ class BuildTranscriptionKeywordsTests(TestCase):
         self.assertEqual(self._kw(), [])
         self.assertEqual(self._kw(agenda="Budget review and next steps."), [])
 
+    def test_single_capitalized_word_past_the_sentence_start_is_a_name(self):
+        self.assertEqual(
+            self._kw(agenda="Møte med Vetle om Oslo-kontoret. Budsjett for Trondheim."),
+            ["Vetle", "Oslo-kontoret", "Trondheim"],
+        )
+        self.assertEqual(
+            self._kw(description="We met with the Research Council about Horizon funding."),
+            ["Research Council", "Horizon"],
+        )
+
+    def test_sentence_start_needs_a_name_shape(self):
+        # "Vetle"/"Discuss" open their sentences: grammar, not a signal. The
+        # run "Discuss Innovasjon Norge" keeps the part after it.
+        self.assertEqual(
+            self._kw(agenda="Vetle presents the plan. Discuss Innovasjon Norge funding. NTNU update"),
+            ["Innovasjon Norge", "NTNU"],
+        )
+
+    def test_mostly_capitalized_line_without_title_case_markers_keeps_names(self):
+        self.assertEqual(self._kw(agenda="Møte med Kari Nordmann"), ["Kari Nordmann"])
+
+    def test_list_items_and_numbering_count_as_sentence_starts(self):
+        self.assertEqual(
+            self._kw(agenda="1. Budget\n- Licensing with Kari\n* Patents in Bergen"),
+            ["Kari", "Bergen"],
+        )
+
+    def test_title_case_line_falls_back_to_name_shapes(self):
+        self.assertEqual(
+            self._kw(agenda="Review Of Q3 Budget Plans\nStatus for Pharma deals"),
+            ["Q3", "Pharma"],
+        )
+        self.assertEqual(self._kw(agenda="Budget Plans And Hiring"), [])
+
+    def test_stopwords_are_skipped(self):
+        self.assertEqual(
+            self._kw(agenda="Deadline is TBD, ask Kari if OK"),
+            ["Kari"],
+        )
+
 
 class BuildTranscriptionPromptTests(TestCase):
     def setUp(self):

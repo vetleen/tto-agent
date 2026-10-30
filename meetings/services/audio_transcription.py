@@ -162,17 +162,56 @@ _PARTICIPANT_SPLIT = re.compile(r"[,;/\n]|\s+(?:and|og|&)\s+", re.IGNORECASE)
 _CAPITALIZED_RUN = re.compile(r"[A-ZÆØÅÄÖÜ][\wÆØÅæøåÄÖÜäöü&.'-]*(?:\s+[A-ZÆØÅÄÖÜ][\wÆØÅæøåÄÖÜäöü&.'-]*)*")
 _KEYWORD_FORBIDDEN = re.compile(r"[<>\r\n]")
 _SENTENCE_BREAK = re.compile(r"[.!?;:](?:\s+|$)|\n")
+_WORD = re.compile(r"[^\W\d_][\w'-]*")
+# Always capitalized, never a term worth biasing toward.
+_KEYWORD_STOPWORDS = frozenset({"ok", "okay", "tbd", "tba", "nb", "fyi", "etc", "mr", "mrs", "ms", "dr"})
+# A capitalized function word past the first word marks a Title Case heading
+# ("Review Of Q3 Budget Plans"), where capitalization says nothing. A share of
+# capitalized words can't tell that from "Møte med Kari Nordmann".
+_TITLE_CASE_MARKERS = frozenset({
+    "Of", "And", "The", "For", "With", "In", "On", "To", "At", "By", "From", "An",
+    "Og", "Med", "Om", "Til", "Av", "Fra", "På", "Etter", "Før",
+})
 
 
 def _looks_like_proper_noun(phrase: str) -> bool:
-    """Multi-word capitalized runs, acronyms, CamelCase, or words with digits.
-
-    A lone capitalized word is usually just a sentence start ("Discuss"),
-    so it only counts when its shape says name or term.
-    """
+    """Multi-word capitalized runs, acronyms, CamelCase, or words with digits:
+    shapes that say name or term even where capitalization itself doesn't."""
     if " " in phrase:
         return True
     return any(c.isupper() for c in phrase[1:]) or any(c.isdigit() for c in phrase)
+
+
+def _is_title_case(sentence: str) -> bool:
+    return any(w in _TITLE_CASE_MARKERS for w in _WORD.findall(sentence)[1:])
+
+
+def _sentence_keyword_candidates(sentence: str) -> list[str]:
+    """Capitalized runs in one sentence that are likely names or terms.
+
+    A capitalized word past the sentence's first word is taken as a name
+    (Norwegian capitalizes little else). The first word is capitalized by
+    grammar, so it only counts with a name's shape (acronym, CamelCase,
+    digits); a run it opens keeps the rest ("Discuss Innovasjon Norge" ->
+    "Innovasjon Norge"). On a Title Case line capitalization means nothing,
+    so only name-shaped single words count there.
+    """
+    first_letter = _WORD.search(sentence)
+    if first_letter is None:
+        return []
+    if _is_title_case(sentence):
+        words = (w.strip(",()[]\"'") for w in sentence.split())
+        return [w for w in words if _CAPITALIZED_RUN.fullmatch(w) and _looks_like_proper_noun(w)]
+    candidates = []
+    for match in _CAPITALIZED_RUN.finditer(sentence):
+        phrase = match.group(0)
+        if match.start() == first_letter.start():
+            first, _, rest = phrase.partition(" ")
+            if not _looks_like_proper_noun(first):
+                phrase = rest
+        if phrase and phrase.casefold().strip(".") not in _KEYWORD_STOPWORDS:
+            candidates.append(phrase)
+    return candidates
 
 
 def build_transcription_keywords(meeting: "Meeting") -> list[str]:
@@ -194,9 +233,7 @@ def build_transcription_keywords(meeting: "Meeting") -> list[str]:
         # Match within sentences so a run can't swallow the next sentence's
         # capitalized first word.
         for sentence in _SENTENCE_BREAK.split(text):
-            candidates.extend(
-                m for m in _CAPITALIZED_RUN.findall(sentence) if _looks_like_proper_noun(m)
-            )
+            candidates.extend(_sentence_keyword_candidates(sentence))
 
     keywords: list[str] = []
     seen: set[str] = set()
