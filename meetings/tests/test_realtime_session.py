@@ -467,6 +467,54 @@ class OpenAIRealtimeSessionTests(TestCase):
             for e in seen
         ))
 
+    def test_rejected_empty_commit_is_dropped_from_pairing(self):
+        # The rejected commit is never acked. Left at the head of the FIFO,
+        # the next ack would pair with it: wrong offsets for every later turn,
+        # each held REORDER_WAIT_SECONDS, and every Stop waiting its timeout.
+        ws = _FakeWebSocket(script=[{"type": "session.created", "session": {"id": "s"}}])
+        session = OpenAIRealtimeSession(
+            model_id="openai/gpt-live-transcribe",
+            _ws_connect_factory=_factory_for(ws),
+            _api_key="sk-fake",
+        )
+        turn = _silence_ms(400) + _tone_ms(1000) + _silence_ms(600)
+
+        async def run():
+            await session.connect()
+            await _send_audio(session, turn)  # commit 1: rejected as empty
+            await _send_audio(session, turn)  # commit 2
+            ws.push_server_json({"type": "error", "error": {
+                "type": "invalid_request_error",
+                "code": "input_audio_buffer_commit_empty",
+                "message": "buffer is empty",
+            }})
+            ws.push_server_json({"type": "input_audio_buffer.committed", "item_id": "item_2"})
+            ws.push_server_json({
+                "type": "conversation.item.input_audio_transcription.completed",
+                "item_id": "item_2",
+                "transcript": "second turn",
+            })
+
+            async def first_completed():
+                async for evt in session.events():
+                    if isinstance(evt, TranscriptCompleted):
+                        return evt
+
+            # Emitted at once, not after the 8 s reorder wait.
+            evt = await asyncio.wait_for(first_completed(), 1.0)
+            started = asyncio.get_running_loop().time()
+            await session.finalize(timeout=2.0)
+            elapsed = asyncio.get_running_loop().time() - started
+            await session.aclose()
+            return evt, elapsed
+
+        evt, elapsed = _run(run())
+        self.assertEqual(evt.text, "second turn")
+        # Paired with the second turn's meta (speech 0.4 s into its audio),
+        # not the rejected first one's (0.4 s).
+        self.assertAlmostEqual(evt.start_offset_seconds, len(turn) / 48000 + 0.4, places=1)
+        self.assertLess(elapsed, 0.5)
+
     def test_failed_utterance_surfaces_nonfatal_error_and_keeps_counters_paired(self):
         # A committed buffer whose transcription fails server-side emits
         # ``conversation.item.input_audio_transcription.failed``. It must
@@ -798,6 +846,54 @@ class OpenAIRealtimeSessionTests(TestCase):
         # The trailing silence was replayed but no commit covers it yet.
         self.assertEqual(session._uncommitted_bytes, len(trailing))
 
+
+    def test_idle_clear_while_offline_is_replayed_as_a_clear(self):
+        # Silence that the detector cleared during an outage must not be
+        # folded into the next turn's commit (billed, and invites invented text).
+        ws1 = _FakeWebSocket(script=[{"type": "session.created", "session": {"id": "s1"}}])
+        ws2 = _FakeWebSocket(script=[{"type": "session.created", "session": {"id": "s2"}}])
+        sockets = iter([ws1, ws2])
+
+        async def factory(api_key: str, url: str):
+            return next(sockets)
+
+        session = OpenAIRealtimeSession(
+            model_id="openai/gpt-live-transcribe",
+            _ws_connect_factory=factory,
+            _api_key="sk-fake",
+        )
+        offline_turn = _tone_ms(1000) + _silence_ms(600)
+        idle = _silence_ms(16_000)
+        next_turn = _tone_ms(1000) + _silence_ms(600)
+
+        async def run():
+            with patch("meetings.services.realtime_session._RECONNECT_BACKOFFS", (0.2,) * 8):
+                await session.connect()
+                ws1._queue.put_nowait(None)
+                await asyncio.sleep(0.05)
+                await _send_audio(session, offline_turn + idle + next_turn)
+                states: list[str] = []
+                async for evt in session.events():
+                    if isinstance(evt, SessionStatus):
+                        states.append(evt.state)
+                        if states.count("connected") == 2:
+                            break
+                await session.aclose()
+
+        _run(run())
+        sent2 = [json.loads(m) for m in ws2.sent]
+        types2 = [m["type"] for m in sent2]
+        first_commit = types2.index("input_audio_buffer.commit")
+        clear = types2.index("input_audio_buffer.clear")
+        second_commit = types2.index("input_audio_buffer.commit", first_commit + 1)
+        self.assertLess(first_commit, clear)
+        self.assertLess(clear, second_commit)
+        # The second turn's commit covers only what followed the cleared stretch.
+        after_clear = b"".join(
+            base64.b64decode(m["audio"]) for m in sent2[clear:second_commit]
+            if m["type"] == "input_audio_buffer.append"
+        )
+        self.assertLess(len(after_clear), len(next_turn) + 48000 * 2)
 
     def test_update_language_resends_session_update_when_open(self):
         ws = _FakeWebSocket(script=[

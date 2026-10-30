@@ -274,7 +274,8 @@ class OpenAIRealtimeSession:
         # byte boundaries in this buffer and sent during the replay.
         self._uncommitted: deque[bytes] = deque()
         self._uncommitted_bytes = 0
-        self._offline_commits: deque[tuple[int, _CommitMeta]] = deque()
+        # A ``None`` meta marks a clear (an idle stretch) rather than a commit.
+        self._offline_commits: deque[tuple[int, _CommitMeta | None]] = deque()
         # Turns committed on a socket that died before they were transcribed,
         # by seq; the next replay resends their audio and re-commits them.
         self._resend: dict[int, _CommitMeta] = {}
@@ -590,6 +591,14 @@ class OpenAIRealtimeSession:
             # they don't surface as a SessionError that tears down realtime.
             if code in _BENIGN_ERROR_CODES:
                 logger.info("OpenAIRealtimeSession: benign server error %s (%s)", code, message)
+                if code == "input_audio_buffer_commit_empty" and self._pending_commits:
+                    # That commit will never be acked. Errors come back in
+                    # send order, so it is the oldest unacked one: drop it, or
+                    # every later ack pairs with the wrong turn and in-order
+                    # emission waits on it forever.
+                    rejected = self._pending_commits.popleft()
+                    rejected.audio = None
+                    await self._emit_in_order(rejected.seq, None)
                 return
             # Fatal vs recoverable. A genuine request/config rejection
             # (``error.type == "invalid_request_error"`` — e.g. a bad
@@ -689,13 +698,19 @@ class OpenAIRealtimeSession:
                 replayed += len(frame)
                 while self._offline_commits and self._offline_commits[0][0] <= pos:
                     meta = self._offline_commits[0][1]
-                    await self._send_commit(meta)
+                    if meta is None:
+                        # An idle stretch the detector cleared while offline.
+                        await self._ws.send(json.dumps({"type": "input_audio_buffer.clear"}))
+                    else:
+                        await self._send_commit(meta)
                     # Popped only once sent: a socket that dies first keeps
                     # the boundary for the next replay.
                     self._offline_commits.popleft()
-                    # The committed head no longer needs replaying; it is
-                    # retained with the turn until transcribed.
-                    self._retain(meta, self._take_committed(idx))
+                    # The head no longer needs replaying. A committed turn's
+                    # audio is retained until transcribed; cleared audio goes.
+                    head = self._take_committed(idx)
+                    if meta is not None:
+                        self._retain(meta, head)
                     self._offline_commits = deque(
                         (p - pos, m) for p, m in self._offline_commits
                     )
@@ -741,8 +756,13 @@ class OpenAIRealtimeSession:
             # back. A turn that ends now is committed during the replay.
             if decision.commit:
                 self._offline_commits.append((self._uncommitted_bytes, self._commit_meta(decision)))
-            elif decision.clear and not self._offline_commits and not self._replaying:
-                self._drop_uncommitted()
+            elif decision.clear:
+                if self._offline_commits or self._replaying:
+                    # Earlier audio still has to be replayed: mark where the
+                    # idle stretch ends so the replay clears it there.
+                    self._offline_commits.append((self._uncommitted_bytes, None))
+                else:
+                    self._drop_uncommitted()
             return
         frame = self._uncommitted[-1] if self._uncommitted else b""
         try:
@@ -761,6 +781,8 @@ class OpenAIRealtimeSession:
             logger.warning("OpenAIRealtimeSession: send failed (%s) — will replay after reconnect", exc)
             if decision.commit:
                 self._offline_commits.append((self._uncommitted_bytes, self._commit_meta(decision)))
+            elif decision.clear:
+                self._offline_commits.append((self._uncommitted_bytes, None))
 
     def _keep_uncommitted(self, frame: bytes) -> None:
         self._uncommitted.append(frame)
