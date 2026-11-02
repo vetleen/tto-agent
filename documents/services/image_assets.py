@@ -120,9 +120,11 @@ class EmbeddedImageDescriberBase:
 
     def __init__(
         self, *, user, org_id, model, max_described=MAX_DESCRIBED_EMBEDDED_IMAGES, label="",
-        conversation_id=None,
+        conversation_id=None, thinking_level=None,
     ):
         self.uploaded_by = user
+        # The org's pinned level for the feature; None → describe_image's lowest.
+        self.thinking_level = thinking_level
         # Chat thread the vision calls are billed to (/cost); None for data rooms.
         self.conversation_id = conversation_id
         # None → org cache off.
@@ -257,6 +259,7 @@ class EmbeddedImageDescriberBase:
                     rec["bytes"], rec["content_type"], self.uploaded_by,
                     alt_text=rec["alt_text"], model=self.model,
                     conversation_id=self.conversation_id,
+                    thinking_level=self.thinking_level,
                 )
             finally:
                 if abandoned.is_set():
@@ -351,15 +354,19 @@ class EmbeddedImageDescriber(EmbeddedImageDescriberBase):
     """
 
     def __init__(self, version, doc):
-        from core.preferences import resolve_org_feature_model
+        from core.preferences import resolve_org_feature_model_and_reasoning
         from documents.services.pii_scan import org_id_for_document
 
         org_id = org_id_for_document(doc)
+        model, thinking_level = resolve_org_feature_model_and_reasoning(
+            org_id, "document_image_description",
+        )
         super().__init__(
             user=doc.uploaded_by,
             org_id=org_id,
             # "" when the org has no vision-capable model — assets are still stored.
-            model=resolve_org_feature_model(org_id, "document_image_description"),
+            model=model,
+            thinking_level=thinking_level,
             max_described=getattr(settings, "DOCUMENT_MAX_DESCRIBED_IMAGES", MAX_DESCRIBED_EMBEDDED_IMAGES),
             label=f"version_id={version.id}",
         )

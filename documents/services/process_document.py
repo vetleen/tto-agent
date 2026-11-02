@@ -238,11 +238,13 @@ def _extract_native(version, doc):
             version.parser_type = "image"
             from chat.services import describe_image
             from core.file_types import canonical_mime_for_extension
-            from core.preferences import resolve_org_feature_model
+            from core.preferences import resolve_org_feature_model_and_reasoning
             from documents.services.pii_scan import org_id_for_document
 
             org_id = org_id_for_document(doc)
-            model = resolve_org_feature_model(org_id, "document_image_description")
+            model, thinking_level = resolve_org_feature_model_and_reasoning(
+                org_id, "document_image_description",
+            )
             if not model:
                 raise ValueError("Image description is not enabled for your organization.")
             with open(file_path, "rb") as fh:
@@ -271,7 +273,9 @@ def _extract_native(version, doc):
                 "process_document_version: version_id=%s stage=describing_image model=%s",
                 version.id, model,
             )
-            description = describe_image(img_bytes, media_type, doc.uploaded_by, model=model)
+            description = describe_image(
+                img_bytes, media_type, doc.uploaded_by, model=model, thinking_level=thinking_level,
+            )
             if not description:
                 raise ValueError("Could not generate a description for this image.")
             cleaned = clean_extracted_text(description)

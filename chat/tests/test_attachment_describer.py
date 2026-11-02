@@ -58,7 +58,8 @@ class AttachmentImageDescriberTests(TestCase):
         barrier = threading.Barrier(n, timeout=8)  # deadlocks if calls run serially
         threads_seen = set()
 
-        def fake_describe(image_bytes, content_type, user, alt_text=None, model=None, conversation_id=None):
+        def fake_describe(image_bytes, content_type, user, alt_text=None, model=None, conversation_id=None,
+                          thinking_level=None):
             threads_seen.add(threading.get_ident())
             barrier.wait()
             return f"desc {len(image_bytes)}"
@@ -89,7 +90,8 @@ class AttachmentImageDescriberTests(TestCase):
 
         seen = {}  # worker thread ident -> its DatabaseWrapper
 
-        def fake_describe(image_bytes, content_type, user, alt_text=None, model=None, conversation_id=None):
+        def fake_describe(image_bytes, content_type, user, alt_text=None, model=None, conversation_id=None,
+                          thinking_level=None):
             seen[threading.get_ident()] = connections["default"]
             return "desc"
 

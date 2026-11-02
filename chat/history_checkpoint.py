@@ -458,7 +458,8 @@ class CheckpointResult:
 
 async def run_checkpoint(thread, *, user_id, model: str | None, budgets=None,
                          keep_rounds: int | None = None, force_summary: bool = False,
-                         reason: str = "threshold") -> CheckpointResult:
+                         reason: str = "threshold",
+                         thinking_level: str | None = None) -> CheckpointResult:
     """Plan and apply a checkpoint. Only the summarise action calls the LLM."""
     from channels.db import database_sync_to_async
 
@@ -491,6 +492,7 @@ async def run_checkpoint(thread, *, user_id, model: str | None, budgets=None,
             conversation_id=str(thread.id),
             model=model,
             target_tokens=plan.summary_target or 5_000,
+            thinking_level=thinking_level,
         )
     summary = join_summary(narrative, plan.index_lines)
     saved = await database_sync_to_async(save_summary)(

@@ -973,7 +973,7 @@ class ProcessDocumentServiceTests(TestCase):
         ]
         captured = {}
 
-        def _fake_describe(img_bytes, media_type, user, model=None):
+        def _fake_describe(img_bytes, media_type, user, model=None, thinking_level=None):
             captured["len"] = len(img_bytes)
             return "A noisy test image."
 

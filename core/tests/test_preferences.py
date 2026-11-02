@@ -1317,6 +1317,61 @@ class ResolveOrgFeatureReasoningTest(TestCase):
         self.assertIsNone(resolve_org_feature_reasoning(prefs, "f", "custom/plain"))
 
 
+class FeatureReasoningLevelTest(TestCase):
+    """feature_reasoning_level: the org's pin, else lowest for image features,
+    else None (the registry default)."""
+
+    LUNA = "openai/gpt-6-luna"
+
+    def test_pin_wins(self):
+        from core.preferences import feature_reasoning_level
+
+        fr = {"message_summary": {"model": self.LUNA, "level": "low"}}
+        self.assertEqual(feature_reasoning_level(fr, "message_summary", self.LUNA), "low")
+        # A pin for another model is inert.
+        self.assertIsNone(feature_reasoning_level(fr, "message_summary", "openai/gpt-6-sol"))
+
+    def test_unpinned_feature_leaves_the_registry_default(self):
+        from core.preferences import feature_reasoning_level
+
+        self.assertIsNone(feature_reasoning_level({}, "message_summary", self.LUNA))
+        self.assertIsNone(feature_reasoning_level(None, "guardrails_classifier", self.LUNA))
+
+    def test_image_features_default_to_the_lowest_level(self):
+        from core.preferences import feature_reasoning_level
+        from llm.display import get_minimal_thinking_level
+
+        lowest = get_minimal_thinking_level(self.LUNA)
+        self.assertIsNotNone(lowest)
+        for key in ("image_description", "document_image_description"):
+            with self.subTest(key=key):
+                self.assertEqual(feature_reasoning_level({}, key, self.LUNA), lowest)
+                pinned = {key: {"model": self.LUNA, "level": "high"}}
+                self.assertEqual(feature_reasoning_level(pinned, key, self.LUNA), "high")
+
+    def test_org_lookup(self):
+        from core.preferences import org_feature_reasoning_level, org_feature_reasoning_params
+
+        org = Organization.objects.create(name="FR", slug="fr", preferences={
+            "feature_reasoning": {"pii_scan": {"model": self.LUNA, "level": "medium"}},
+        })
+        self.assertEqual(org_feature_reasoning_level(org.pk, "pii_scan", self.LUNA), "medium")
+        self.assertEqual(
+            org_feature_reasoning_params(org.pk, "pii_scan", self.LUNA), {"thinking_level": "medium"},
+        )
+        self.assertEqual(org_feature_reasoning_params(org.pk, "pii_reviewer", self.LUNA), {})
+        self.assertEqual(org_feature_reasoning_params(None, "pii_scan", self.LUNA), {})
+
+    def test_reasoning_control_coverage(self):
+        from core.preferences import FEATURE_DEFAULTS
+
+        without = {k for k, f in FEATURE_DEFAULTS.items() if not f.reasoning_control}
+        self.assertEqual(
+            without, {"chat", "decisions_quick", "subagent_low", "subagent_medium", "subagent_high"},
+        )
+        self.assertTrue(all(f.scope == "org" for f in FEATURE_DEFAULTS.values()))
+
+
 _DECISIONS_SYSTEM_MODELS = [
     "openai/gpt-6-sol", "openai/gpt-6-luna", "anthropic/claude-sonnet-5-5", "anthropic/claude-haiku-5-5",
 ]

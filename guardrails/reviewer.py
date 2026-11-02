@@ -157,7 +157,7 @@ def review_flagged_message_sync(
     call under its own trace_id; otherwise a fresh context for ``user_id`` /
     ``conversation_id`` is built.
     """
-    from core.preferences import resolve_org_feature_model
+    from core.preferences import org_feature_reasoning_params, resolve_org_feature_model
     from llm.types import ChatRequest, Message, RunContext
 
     top_model = resolve_org_feature_model(org_id, "guardrails_reviewer")
@@ -206,6 +206,7 @@ def review_flagged_message_sync(
         stream=False,
         tools=[],
         context=context,
+        params=org_feature_reasoning_params(org_id, "guardrails_reviewer", top_model),
     )
 
     service = _get_llm_service()
@@ -298,7 +299,7 @@ def review_flagged_chunk(
     group this call's ``LLMCallLog`` row under its own trace_id; by default a fresh
     context for ``user_id`` is created.
     """
-    from core.preferences import resolve_org_feature_model
+    from core.preferences import org_feature_reasoning_params, resolve_org_feature_model
     from llm.types import ChatRequest, Message, RunContext
 
     top_model = resolve_org_feature_model(org_id, "guardrails_reviewer")
@@ -337,6 +338,7 @@ def review_flagged_chunk(
         stream=False,
         tools=[],
         context=context,
+        params=org_feature_reasoning_params(org_id, "guardrails_reviewer", top_model),
     )
 
     service = _get_llm_service()
@@ -414,7 +416,7 @@ def review_flagged_skill_content(
     ``label`` is our own trusted metadata (the skill or resource name) shown
     outside the untrusted markers; ``text`` is wrapped as untrusted data.
     """
-    from core.preferences import resolve_org_feature_model
+    from core.preferences import org_feature_reasoning_params, resolve_org_feature_model
     from llm.types import ChatRequest, Message, RunContext
 
     top_model = resolve_org_feature_model(org_id, "guardrails_reviewer")
@@ -451,6 +453,7 @@ def review_flagged_skill_content(
         stream=False,
         tools=[],
         context=context,
+        params=org_feature_reasoning_params(org_id, "guardrails_reviewer", top_model),
     )
 
     service = _get_llm_service()
@@ -517,7 +520,7 @@ def review_flagged_web_content(
     ``source_label`` (e.g. ``"web_fetch"``) is our own trusted metadata and is shown
     outside the untrusted markers; ``content`` is wrapped as untrusted data.
     """
-    from core.preferences import resolve_org_feature_model
+    from core.preferences import org_feature_reasoning_params, resolve_org_feature_model
     from llm.types import ChatRequest, Message, RunContext
 
     top_model = resolve_org_feature_model(org_id, "guardrails_reviewer")
@@ -553,6 +556,7 @@ def review_flagged_web_content(
         stream=False,
         tools=[],
         context=context,
+        params=org_feature_reasoning_params(org_id, "guardrails_reviewer", top_model),
     )
 
     service = _get_llm_service()

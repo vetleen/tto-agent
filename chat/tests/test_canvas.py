@@ -860,6 +860,16 @@ class DescribeImageTests(TestCase):
             describe_image(b"\x89PNG", "image/png", self.user, model="custom/vision-no-reasoning")
         self.assertNotIn("thinking_level", mock_svc.return_value.run.call_args[0][1].params)
 
+    @patch("llm.get_llm_service")
+    def test_an_org_pin_overrides_the_lowest_level(self, mock_svc):
+        from chat.services import describe_image
+
+        mock_svc.return_value.run.return_value.message.content = "A photo"
+        describe_image(
+            b"\x89PNG", "image/png", self.user, model="openai/gpt-6-luna", thinking_level="medium",
+        )
+        self.assertEqual(mock_svc.return_value.run.call_args[0][1].params["thinking_level"], "medium")
+
 
 class GenerateCanvasTitleTests(TestCase):
     def setUp(self):

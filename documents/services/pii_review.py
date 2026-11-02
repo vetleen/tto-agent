@@ -133,7 +133,7 @@ def review_flagged_pii_window(
     the caller's existing retry/SCAN_FAILED contract applies. ``context`` (a
     ``RunContext``) lets a caller group the call under its own trace_id.
     """
-    from core.preferences import resolve_org_feature_model
+    from core.preferences import org_feature_reasoning_params, resolve_org_feature_model
     from llm.types import ChatRequest, Message, RunContext
     from llm.types.structured import PIIReviewDecision
 
@@ -171,6 +171,7 @@ def review_flagged_pii_window(
         stream=False,
         tools=[],
         context=context,
+        params=org_feature_reasoning_params(org_id, "pii_reviewer", top_model),
     )
 
     service = _get_llm_service()

@@ -104,7 +104,7 @@ def describe_sheets(
     from django.conf import settings
 
     from chat.pdf_export import weasyprint_available
-    from core.preferences import resolve_org_feature_model
+    from core.preferences import org_feature_reasoning_params, resolve_org_feature_model
     from documents.services.pii_scan import org_id_for_document
 
     final = dict(signal_headers)
@@ -112,6 +112,10 @@ def describe_sheets(
 
     org_id = org_id_for_document(doc)
     vision_model = resolve_org_feature_model(org_id, "spreadsheet_description")
+    vision_params = (
+        org_feature_reasoning_params(org_id, "spreadsheet_description", vision_model)
+        if vision_model else {}
+    )
     if not vision_model:
         logger.info("spreadsheets: no spreadsheet_description model for org; heuristic headers only")
         return final, descriptions
@@ -135,7 +139,9 @@ def describe_sheets(
             if not rendered:
                 continue
             _, _, png = rendered[0]
-            parsed = _call_vision(png, sheet, signal_headers[sheet.index], vision_model, doc)
+            parsed = _call_vision(
+                png, sheet, signal_headers[sheet.index], vision_model, doc, params=vision_params,
+            )
             if parsed is None:
                 continue
             if parsed.description.strip():
@@ -151,7 +157,7 @@ def describe_sheets(
     return final, descriptions
 
 
-def _call_vision(png: bytes, sheet, signal: HeaderInfo, vision_model: str, doc):
+def _call_vision(png: bytes, sheet, signal: HeaderInfo, vision_model: str, doc, *, params=None):
     from chat.services import build_image_content_block
     from llm import get_llm_service
     from llm.core.model_factory import detect_provider
@@ -168,6 +174,7 @@ def _call_vision(png: bytes, sheet, signal: HeaderInfo, vision_model: str, doc):
         stream=False,
         tools=[],
         context=RunContext.create(user_id=doc.uploaded_by_id),
+        params=dict(params or {}),
     )
     try:
         parsed, _usage = get_llm_service().run_structured(request, SheetVisionOutput)

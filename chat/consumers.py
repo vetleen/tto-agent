@@ -3706,6 +3706,20 @@ class ChatConsumer(AsyncWebsocketConsumer):
         prefs = self.resolved_prefs
         return prefs.feature_models.get("message_summary", prefs.medium_model) if prefs else None
 
+    def _feature_params(self, feature_key, model) -> dict:
+        """``params`` carrying the org's reasoning level for a feature call
+        (core.preferences.feature_reasoning_level); {} = registry default."""
+        from core.preferences import feature_reasoning_level
+
+        prefs = self.resolved_prefs
+        if not prefs or not model:
+            return {}
+        level = feature_reasoning_level(prefs.feature_reasoning, feature_key, model)
+        return {"thinking_level": level} if level else {}
+
+    def _summary_thinking_level(self):
+        return self._feature_params("message_summary", self._summary_model()).get("thinking_level")
+
     def _schedule_checkpoint(self, thread, budgets):
         """After a turn: run a checkpoint if one is due (summarise only on a
         conversation overflow; stub / drop tool output otherwise). Its own task —
@@ -3729,6 +3743,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 return
             result = await run_checkpoint(
                 thread, user_id=self.user.pk, model=self._summary_model(),
+                thinking_level=self._summary_thinking_level(),
                 budgets=budgets, reason="threshold",
             )
             await self._send_compacted_notice(result)
@@ -3831,6 +3846,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         try:
             result = await run_checkpoint(
                 thread, user_id=self.user.pk, model=self._summary_model(),
+                thinking_level=self._summary_thinking_level(),
                 budgets=budgets, keep_rounds=keep_rounds,
                 force_summary=force_summary, reason=reason,
             )
@@ -5658,6 +5674,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 stream=False,
                 tools=[],
                 context=context,
+                params=self._feature_params("thread_title", title_model),
             )
             service = get_llm_service()
             response = await service.arun("simple_chat", request)
@@ -6337,6 +6354,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             stream=False,
             tools=[],
             context=context,
+            params=self._feature_params("thread_emoji", emoji_model),
         )
         service = get_llm_service()
         response = await service.arun("simple_chat", request)
@@ -6372,6 +6390,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             ) if chat_model else None
             result = await run_checkpoint(
                 thread, user_id=self.user.pk, model=self._summary_model(),
+                thinking_level=self._summary_thinking_level(),
                 budgets=budgets, keep_rounds=0, force_summary=True, reason="compact",
             )
             if not result.folded_count:

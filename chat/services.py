@@ -1272,12 +1272,14 @@ async def generate_summary(
     conversation_id,
     model: str | None = None,
     target_tokens: int = 5_000,
+    thinking_level: str | None = None,
 ) -> str:
     """Summarise *messages* into a rolling summary of about *target_tokens*.
 
     When *existing_summary* is provided it is folded into the new summary
     so that the LLM produces a single coherent summary covering all prior
-    history. The prompt lives in ``chat/summary_prompt.py``.
+    history. The prompt lives in ``chat/summary_prompt.py``. *thinking_level*
+    is the org's pin for ``message_summary`` (None = the model's default).
     """
     from django.conf import settings as django_settings
 
@@ -1318,6 +1320,7 @@ async def generate_summary(
         stream=True,
         tools=[],
         context=context,
+        params={"thinking_level": thinking_level} if thinking_level else {},
     )
 
     # Streamed: a ~13k-token summary took 70-120 s and a non-streaming call trips
@@ -1363,6 +1366,19 @@ def resolve_vision_model(user) -> str | None:
     return None
 
 
+def image_description_level(user, model: str | None) -> str | None:
+    """The org's reasoning level for chat image descriptions on *model* (its pin,
+    else the model's lowest — core.preferences.feature_reasoning_level). A
+    tier fallback from :func:`resolve_vision_model` is not the pinned model, so
+    it gets the lowest level."""
+    from core.preferences import feature_reasoning_level, get_preferences
+
+    if user is None or not model:
+        return None
+    prefs = get_preferences(user)
+    return feature_reasoning_level(prefs.feature_reasoning, "image_description", model)
+
+
 def describe_image(
     image_bytes: bytes,
     content_type: str,
@@ -1370,11 +1386,15 @@ def describe_image(
     alt_text: str | None = None,
     model: str | None = None,
     conversation_id: str | None = None,
+    thinking_level: str | None = None,
 ) -> str | None:
     """Use a vision-capable model to describe an image.
 
     *conversation_id* attributes the call's ``LLMCallLog`` row to a chat thread
-    so it counts toward that thread's cost (``/cost``).
+    so it counts toward that thread's cost (``/cost``). *thinking_level* is the
+    org's pin for the calling feature (``image_description`` /
+    ``document_image_description``); without one the call asks for the least
+    reasoning the model accepts.
 
     When *model* is given it is used directly (the caller must have picked a
     vision-capable model, e.g. via ``resolve_org_feature_model`` for data-room
@@ -1391,6 +1411,8 @@ def describe_image(
             return None
     else:
         model = resolve_vision_model(user)
+        if model is not None and thinking_level is None:
+            thinking_level = image_description_level(user, model)
 
     if model is None:
         return None
@@ -1417,11 +1439,12 @@ def describe_image(
 
     # Transcribing an image is mechanical: the model's curated chat default
     # (e.g. Luna's high) spends ~90% of the output tokens — and the wait —
-    # on reasoning, so ask for the least reasoning the model accepts.
+    # on reasoning, so unless the org pinned a level ask for the least the
+    # model accepts.
     params: dict = {}
-    minimal_level = get_minimal_thinking_level(model)
-    if minimal_level is not None:
-        params["thinking_level"] = minimal_level
+    level = thinking_level or get_minimal_thinking_level(model)
+    if level is not None:
+        params["thinking_level"] = level
 
     context = RunContext.create(user_id=user.pk, conversation_id=conversation_id)
     request = ChatRequest(
@@ -1479,7 +1502,7 @@ def generate_canvas_title(
     *conversation_id* attributes the call to the thread's cost (``/cost``).
     Returns the title string or None on failure (never raises).
     """
-    from core.preferences import get_preferences
+    from core.preferences import feature_reasoning_level, get_preferences
     from llm import get_llm_service
     from llm.types import ChatRequest, Message, RunContext
 
@@ -1490,13 +1513,16 @@ def generate_canvas_title(
         "Reply with ONLY the title."
     )
 
+    model = prefs.feature_models.get("canvas_title", prefs.cheap_model)
+    level = feature_reasoning_level(prefs.feature_reasoning, "canvas_title", model)
     context = RunContext.create(user_id=user.pk, conversation_id=conversation_id)
     request = ChatRequest(
         messages=[Message(role="user", content=prompt)],
-        model=prefs.feature_models.get("canvas_title", prefs.cheap_model),
+        model=model,
         stream=False,
         tools=[],
         context=context,
+        params={"thinking_level": level} if level else {},
     )
 
     try:

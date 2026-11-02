@@ -28,7 +28,7 @@ def generate_data_room_description(data_room_id: int, user_id: int | None = None
     Fetches the room name and up to 10 document descriptions, then asks
     the LLM to synthesize a room-level description.
     """
-    from core.preferences import resolve_org_feature_model
+    from core.preferences import org_feature_reasoning_params, resolve_org_feature_model
     from llm import get_llm_service
     from llm.types import ChatRequest, Message, RunContext
 
@@ -70,15 +70,17 @@ def generate_data_room_description(data_room_id: int, user_id: int | None = None
     context = RunContext.create(
         user_id=user_id,
     )
+    model = resolve_org_feature_model(org_id, "document_description")
     request = ChatRequest(
         messages=[
             Message(role="system", content=_SYSTEM_PROMPT),
             Message(role="user", content=user_content),
         ],
-        model=resolve_org_feature_model(org_id, "document_description"),
+        model=model,
         stream=False,
         tools=[],
         context=context,
+        params=org_feature_reasoning_params(org_id, "document_description", model),
     )
 
     service = get_llm_service()

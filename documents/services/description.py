@@ -78,7 +78,7 @@ def generate_description_and_tags_from_text(
     When *is_image* is set, *text* is the vision model's description of an image
     (not file text), so the prompt is adjusted to summarise the image directly.
     """
-    from core.preferences import resolve_org_feature_model
+    from core.preferences import org_feature_reasoning_params, resolve_org_feature_model
     from llm import get_llm_service
     from llm.types import ChatRequest, Message, RunContext
     from llm.types.structured import DocumentDescriptionOutput
@@ -103,6 +103,7 @@ def generate_description_and_tags_from_text(
         stream=False,
         tools=[],
         context=context,
+        params=org_feature_reasoning_params(org_id, "document_description", model),
     )
 
     service = get_llm_service()

@@ -98,6 +98,31 @@ class ClassifyMessageSyncTest(TestCase):
         self.assertEqual(request.model, "test-cheap-model")
         self.assertEqual(call_args[0][1], ClassifierResult)
 
+    @patch("core.preferences.resolve_org_feature_model", return_value="openai/gpt-6-luna")
+    @patch("guardrails.classifier._get_llm_service")
+    def test_org_reasoning_pin_reaches_the_request(self, mock_get_service, _mock_resolve):
+        from accounts.models import Organization
+
+        org = Organization.objects.create(name="G", slug="g", preferences={
+            "feature_reasoning": {
+                "guardrails_classifier": {"model": "openai/gpt-6-luna", "level": "low"},
+            },
+        })
+        mock_service = MagicMock()
+        mock_get_service.return_value = mock_service
+        mock_service.run_structured.return_value = (
+            ClassifierResult(is_suspicious=False, concern_tags=[], confidence=0.0, reasoning="Clean."),
+            MagicMock(total_tokens=50),
+        )
+        from guardrails.classifier import _run_classifier
+
+        # The sync core: async_to_sync would read the org on another connection.
+        _run_classifier("hello", 1, None, "system", org_id=org.pk)
+        self.assertEqual(mock_service.run_structured.call_args[0][0].params["thinking_level"], "low")
+        # No pin → no level.
+        _run_classifier("hello", 1, None, "system", org_id=None)
+        self.assertNotIn("thinking_level", mock_service.run_structured.call_args[0][0].params)
+
 
 class ClassifyDescriptionSyncTest(TestCase):
     """Test the synchronous description classifier."""

@@ -454,6 +454,10 @@ def org_settings_page(request):
     org_feature_models = org_prefs.get("feature_models", {})
     _ORG_FEATURE_META = {
         "chat": ("Chat", "The default model for new chats. Members can still choose a different model for an individual conversation."),
+        "thread_title": ("Chat title", "Names each new chat from its first message."),
+        "thread_emoji": ("Chat emoji", "Picks an emoji for a chat when asked to tag it."),
+        "canvas_title": ("Canvas title", "Names a canvas created by importing a file."),
+        "image_description": ("Chat image description", "Describes pictures in chat and meeting attachments so the model can read them. Requires a vision-capable model."),
         "message_summary": ("Message summary", "When conversations get long, this model summarizes the chat history to stay within the context window."),
         "guardrails_classifier": ("Guardrails classifier", "Screens every user message and profile description for adversarial or policy-violating content. A cheap, fast model is ideal here since it only flags content for further review."),
         "guardrails_reviewer": ("Guardrails reviewer", "Reviews content flagged by the classifier and decides whether action is needed (warn, block message, ban user, etc.). A stronger model is recommended since it actually makes the final decision."),
@@ -497,6 +501,11 @@ def org_settings_page(request):
     auto_model_rows = [_auto_rows[k] for k in _AUTO_FEATURE_KEYS if k in _auto_rows]
     for row in auto_model_rows:
         row["reasoning"] = _feature_reasoning_row(org, row["key"])
+    from core.preferences import FEATURE_DEFAULTS
+
+    for row in org_features:
+        if FEATURE_DEFAULTS[row["key"]].reasoning_control:
+            row["reasoning"] = _feature_reasoning_row(org, row["key"])
 
     # Full (allowed-independent) eligible model lists per tier and per feature.
     # The Model-defaults and Feature-override dropdowns are server-rendered only
@@ -1594,13 +1603,23 @@ def _feature_reasoning_row(org, feature_key: str) -> dict:
 
     ``model`` is the feature's effective model; the level is stored under
     ``feature_reasoning[feature_key]`` (core.preferences.resolve_org_feature_reasoning).
+    A ``reasoning_default="lowest"`` feature runs at its model's lowest level
+    when nothing is pinned, so that level is the row's default, labelled
+    "Recommended" (core.preferences.feature_reasoning_level).
     """
-    from core.preferences import resolve_feature_model_from_prefs
+    from core.preferences import FEATURE_DEFAULTS, resolve_feature_model_from_prefs
+    from llm.display import reasoning_level_label
 
     prefs = org.preferences or {}
     model = resolve_feature_model_from_prefs(prefs, feature_key)
     entry = (prefs.get("feature_reasoning") or {}).get(feature_key) or {}
-    return {"feature": feature_key, **_reasoning_row_state(model, entry)}
+    row = {"feature": feature_key, **_reasoning_row_state(model, entry)}
+    fdef = FEATURE_DEFAULTS.get(feature_key)
+    if fdef is not None and fdef.reasoning_default == "lowest" and row["levels"]:
+        row["default_level"] = row["levels"][0]
+        row["default_label"] = reasoning_level_label(row["levels"][0])
+        row["default_prefix"] = "Recommended"
+    return row
 
 
 @login_required

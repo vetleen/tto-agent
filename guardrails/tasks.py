@@ -352,7 +352,7 @@ def _classify_chunk_batch(
     would be invisible to the classifier yet fully retrievable.
     """
     chunk_by_index = {c["chunk_index"]: c for c in chunks}
-    results_by_index = _run_batch_classifier(doc, chunks, model)
+    results_by_index = _run_batch_classifier(doc, chunks, model, org_id)
 
     # Models routinely drop items from long lists (and an adversarial chunk could
     # try to induce its own omission). Classify each omitted chunk on its own —
@@ -366,7 +366,7 @@ def _classify_chunk_batch(
         )
         for chunk_index in sorted(missing):
             results_by_index.update(
-                _run_batch_classifier(doc, [chunk_by_index[chunk_index]], model)
+                _run_batch_classifier(doc, [chunk_by_index[chunk_index]], model, org_id)
             )
 
     # Fail closed: a chunk still unclassified after its own call must not slip
@@ -395,7 +395,7 @@ def _classify_chunk_batch(
         )
 
 
-def _run_batch_classifier(doc, chunks: list[dict], model: str) -> dict:
+def _run_batch_classifier(doc, chunks: list[dict], model: str, org_id: int | None = None) -> dict:
     """One classifier call over ``chunks``; returns ``{chunk_index: result}``.
 
     Deduped (first occurrence wins) with hallucinated indexes not in ``chunks``
@@ -424,6 +424,8 @@ def _run_batch_classifier(doc, chunks: list[dict], model: str) -> dict:
         "```json\n" + json.dumps(payload, ensure_ascii=False) + "\n```"
     )
 
+    from core.preferences import org_feature_reasoning_params
+
     context = RunContext.create(
         user_id=doc.uploaded_by_id,
     )
@@ -436,6 +438,7 @@ def _run_batch_classifier(doc, chunks: list[dict], model: str) -> dict:
         stream=False,
         tools=[],
         context=context,
+        params=org_feature_reasoning_params(org_id, "guardrail_chunk_scan", model),
     )
 
     service = get_llm_service()

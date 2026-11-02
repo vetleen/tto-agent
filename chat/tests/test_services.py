@@ -85,6 +85,26 @@ class GenerateSummaryTests(TransactionTestCase):
         self.assertIn("9,000 words", system)
 
     @patch("llm.get_llm_service")
+    async def test_pinned_reasoning_reaches_the_request(self, mock_get_service):
+        from chat.services import generate_summary
+
+        mock_response = MagicMock()
+        mock_response.message.content = "S"
+        mock_response.metadata = {}
+        mock_service = MagicMock()
+        mock_service.arun_via_stream = AsyncMock(return_value=mock_response)
+        mock_get_service.return_value = mock_service
+
+        await generate_summary(
+            [MagicMock(role="user", content="x")], user_id=1, conversation_id="c",
+            thinking_level="low",
+        )
+        self.assertEqual(mock_service.arun_via_stream.call_args[0][1].params["thinking_level"], "low")
+        # No pin → no level: the service applies the model's default.
+        await generate_summary([MagicMock(role="user", content="x")], user_id=1, conversation_id="c")
+        self.assertNotIn("thinking_level", mock_service.arun_via_stream.call_args[0][1].params)
+
+    @patch("llm.get_llm_service")
     async def test_truncated_summary_raises(self, mock_get_service):
         from chat.services import generate_summary
         from llm.service.errors import LLMProviderError

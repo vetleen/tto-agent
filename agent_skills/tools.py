@@ -25,7 +25,7 @@ def _generate_emoji_for_skill(name: str, user_id, conversation_id, org_id: int |
 
     Returns empty string on any failure. Caller decides whether to persist.
     """
-    from core.preferences import resolve_org_feature_model
+    from core.preferences import org_feature_reasoning_params, resolve_org_feature_model
 
     model = resolve_org_feature_model(org_id, "skill_emoji")
     if not model:
@@ -46,6 +46,7 @@ def _generate_emoji_for_skill(name: str, user_id, conversation_id, org_id: int |
         stream=False,
         tools=[],
         context=RunContext.create(user_id=user_id, conversation_id=conversation_id),
+        params=org_feature_reasoning_params(org_id, "skill_emoji", model),
     )
     service = get_llm_service()
     parsed, _ = service.run_structured(request, _EmojiResult)

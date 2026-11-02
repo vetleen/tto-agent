@@ -425,7 +425,7 @@ class AttachmentImageDescriber(EmbeddedImageDescriberBase):
         from django.conf import settings
 
         from accounts.models import get_user_org
-        from chat.services import resolve_vision_model  # call-time: tests patch it
+        from chat.services import image_description_level, resolve_vision_model  # call-time: tests patch it
 
         org = get_user_org(user) if user is not None else None
         if model is None:
@@ -439,6 +439,7 @@ class AttachmentImageDescriber(EmbeddedImageDescriberBase):
             max_described=max_described,
             label=f"attachment_id={attachment.id}",
             conversation_id=str(attachment.thread_id),
+            thinking_level=image_description_level(user, model),
         )
         self.attachment = attachment
 

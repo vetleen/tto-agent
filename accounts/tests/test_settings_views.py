@@ -2036,15 +2036,33 @@ class OrgFeatureModelUpdateTests(TestCase):
     @patch("llm.service.policies.get_allowed_models", return_value=[
         "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
     ])
-    def test_rejects_tier_managed_feature(self, mock_models):
+    def test_title_emoji_and_image_features_are_org_configurable(self, mock_models):
+        """Once tier-only, these now have org override rows (2026-11-02)."""
+        self.client.login(email=self.admin_user.email, password=self.password)
+        for feature in ("thread_title", "thread_emoji", "canvas_title"):
+            with self.subTest(feature=feature):
+                response = self.client.post(
+                    self.url,
+                    json.dumps({"feature": feature, "model": "openai/gpt-5.4-nano"}),
+                    content_type="application/json",
+                )
+                self.assertEqual(response.status_code, 200, response.content)
+        self.org.refresh_from_db()
+        self.assertEqual(
+            self.org.preferences["feature_models"]["thread_title"], "openai/gpt-5.4-nano"
+        )
+
+    @patch("llm.service.policies.get_allowed_models", return_value=[
+        "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
+    ])
+    def test_rejects_unknown_feature(self, mock_models):
         self.client.login(email=self.admin_user.email, password=self.password)
         response = self.client.post(
             self.url,
-            json.dumps({"feature": "thread_title", "model": "openai/gpt-5.4-nano"}),
+            json.dumps({"feature": "nope", "model": "openai/gpt-5.4-nano"}),
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 400)
-        self.assertIn("not org-configurable", response.json()["error"])
 
     @patch("llm.service.policies.get_allowed_models", return_value=[
         "openai/gpt-5.4", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
@@ -2942,11 +2960,59 @@ class OrgFeatureReasoningUpdateTests(TestCase):
         self.assertEqual(resolve_decisions_settings(self.org.pk).structured_thinking_level, "low")
 
     def test_rejects_feature_without_reasoning_control(self, _models):
-        for feature in ("chat", "decisions_quick", "thread_title", "nope"):
+        # chat: the composer picks; sub-agent tiers: their own store;
+        # decisions_quick: the endpoint takes no reasoning parameter.
+        for feature in ("chat", "decisions_quick", "subagent_low", "nope"):
             with self.subTest(feature=feature):
                 response = self._post({"feature": feature, "level": "low"})
                 self.assertEqual(response.status_code, 400)
         self.assertEqual(self._reasoning(), {})
+
+    def test_feature_overrides_take_a_pin(self, _models):
+        from core.preferences import org_feature_reasoning_level
+
+        # The message summariser runs on the medium model (Sonnet 5.5 here).
+        response = self._post({"feature": "message_summary", "level": "low"})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["model"], "anthropic/claude-sonnet-5-5")
+        self.assertEqual(
+            org_feature_reasoning_level(self.org.pk, "message_summary", "anthropic/claude-sonnet-5-5"),
+            "low",
+        )
+        for feature in ("thread_title", "guardrails_classifier", "pii_reviewer", "skill_emoji"):
+            with self.subTest(feature=feature):
+                self.assertEqual(self._post({"feature": feature, "level": "low"}).status_code, 200)
+
+    def test_image_description_recommends_and_defaults_to_lowest(self, _models):
+        from core.preferences import org_feature_reasoning_level
+
+        # image_description runs on the cheap model (Luna): lowest level, recommended.
+        response = self._post({"feature": "image_description", "level": ""})
+        data = response.json()
+        lowest = data["levels"][0]
+        self.assertEqual(data["default_level"], lowest)
+        self.assertEqual(data["default_prefix"], "Recommended")
+        self.assertEqual(
+            org_feature_reasoning_level(self.org.pk, "image_description", "openai/gpt-6-luna"), lowest,
+        )
+        # Choosing the lowest stores nothing; a higher level is a pin.
+        self._post({"feature": "image_description", "level": lowest})
+        self.assertEqual(self._reasoning(), {})
+        self._post({"feature": "image_description", "level": "high"})
+        self.assertEqual(
+            org_feature_reasoning_level(self.org.pk, "image_description", "openai/gpt-6-luna"), "high",
+        )
+
+    def test_override_rows_render_a_reasoning_select(self, _models):
+        with patch("llm.tools.registry.get_tool_registry") as mock_reg:
+            mock_reg.return_value.list_tools.return_value = {}
+            self.client.login(email=self.admin_user.email, password=self.password)
+            response = self.client.get(reverse("accounts:org_settings"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'id="feature-reasoning-message_summary"')
+        self.assertContains(response, 'id="feature-reasoning-image_description"')
+        self.assertNotContains(response, 'id="feature-reasoning-chat"')
+        self.assertContains(response, "Recommended (")
 
     def test_rejects_level_not_offered_by_model(self, _models):
         # Sonnet 5.5 has no "none"; Luna does — validated against the feature's model.

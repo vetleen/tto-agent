@@ -91,10 +91,10 @@ class FeatureDefault:
 
     default_slot: tier used by default ("primary", "medium", "cheap"). An org
         override may be any allowed model, whatever its stars.
-    scope: "org" exposes a dedicated organization override; "user" identifies
-        features that follow the organization's tier defaults. Chat also allows
-        an individual thread override, stored on the thread rather than in user
-        settings.
+    scope: "org" exposes a dedicated organization override (every feature
+        today); "user" would mark one that only follows the organization's tier
+        defaults. Chat also allows an individual thread override, stored on the
+        thread rather than in user settings.
     required_modality: when set (e.g. "image"), only models whose input
         modalities include it are eligible, and the feature is *unavailable*
         when the effective allow-list has no capable model.
@@ -104,6 +104,9 @@ class FeatureDefault:
     reasoning_control: the org may pin a reasoning level for the feature's
         model — prefs["feature_reasoning"][key] = {"model", "level"}, read by
         resolve_org_feature_reasoning(); a model change resets it.
+    reasoning_default: "lowest" runs the feature at its model's lowest level
+        unless the org pinned another (the settings row recommends it); None
+        leaves an unpinned call on the registry default (feature_reasoning_level).
     """
 
     default_slot: str
@@ -111,6 +114,7 @@ class FeatureDefault:
     required_modality: str | None = None
     required_capability: str | None = None
     reasoning_control: bool = False
+    reasoning_default: str | None = None
 
     @property
     def gated(self) -> bool:
@@ -140,29 +144,43 @@ def feature_model_pool(fdef: FeatureDefault, allowed: list[str]) -> list[str]:
 # Per-feature model catalog.
 FEATURE_DEFAULTS: dict[str, FeatureDefault] = {
     "chat": FeatureDefault("primary", "org"),
-    "thread_title": FeatureDefault("cheap", "user"),
-    "thread_emoji": FeatureDefault("cheap", "user"),
-    "canvas_title": FeatureDefault("cheap", "user"),
-    "image_description": FeatureDefault("cheap", "user"),
-    "message_summary": FeatureDefault("medium", "org"),
-    "guardrails_classifier": FeatureDefault("cheap", "org"),
-    "guardrails_reviewer": FeatureDefault("primary", "org"),
-    "document_description": FeatureDefault("medium", "org"),
+    # Every override below except chat (the composer picks), the sub-agent tiers
+    # (their own subagents.reasoning store) and decisions_quick (no reasoning
+    # parameter) takes a pinned reasoning level (feature_reasoning_level).
+    "thread_title": FeatureDefault("cheap", "org", reasoning_control=True),
+    "thread_emoji": FeatureDefault("cheap", "org", reasoning_control=True),
+    "canvas_title": FeatureDefault("cheap", "org", reasoning_control=True),
+    # Describes pictures in chat and meeting attachments; needs vision
+    # (chat.services.resolve_vision_model falls back through the tiers).
+    # Transcribing a picture is mechanical: lowest reasoning by default.
+    "image_description": FeatureDefault(
+        "cheap", "org", required_modality="image",
+        reasoning_control=True, reasoning_default="lowest",
+    ),
+    "message_summary": FeatureDefault("medium", "org", reasoning_control=True),
+    "guardrails_classifier": FeatureDefault("cheap", "org", reasoning_control=True),
+    "guardrails_reviewer": FeatureDefault("primary", "org", reasoning_control=True),
+    "document_description": FeatureDefault("medium", "org", reasoning_control=True),
     # Describes images uploaded to data rooms; needs a vision-capable model.
-    "document_image_description": FeatureDefault("medium", "org", required_modality="image"),
+    "document_image_description": FeatureDefault(
+        "medium", "org", required_modality="image",
+        reasoning_control=True, reasoning_default="lowest",
+    ),
     # Describes spreadsheet sheets + adjudicates header rows from a rendered
     # tile; needs vision. Unlike images, spreadsheets degrade (heuristic
     # headers, no descriptions) instead of blocking upload when unavailable.
-    "spreadsheet_description": FeatureDefault("medium", "org", required_modality="image"),
-    "skill_emoji": FeatureDefault("cheap", "org"),
-    "guardrail_chunk_scan": FeatureDefault("cheap", "org"),
-    "guardrail_web_scan": FeatureDefault("cheap", "org"),
+    "spreadsheet_description": FeatureDefault(
+        "medium", "org", required_modality="image", reasoning_control=True,
+    ),
+    "skill_emoji": FeatureDefault("cheap", "org", reasoning_control=True),
+    "guardrail_chunk_scan": FeatureDefault("cheap", "org", reasoning_control=True),
+    "guardrail_web_scan": FeatureDefault("cheap", "org", reasoning_control=True),
     # Two-stage PII scan: the cheap classifier only raises Art. 9/10 candidate
     # flags; the primary-model reviewer makes the final quarantine decision
     # (documents/services/pii_review.py). Ordinary-category tags stay
     # classifier-only.
-    "pii_scan": FeatureDefault("cheap", "org"),
-    "pii_reviewer": FeatureDefault("primary", "org"),
+    "pii_scan": FeatureDefault("cheap", "org", reasoning_control=True),
+    "pii_reviewer": FeatureDefault("primary", "org", reasoning_control=True),
     # Per-tier model for sub-agent runs, keyed to SubAgentRun.model_tier
     # (SUBAGENT_TIERS). "No override" resolves to the org's cheap / medium / top
     # slot model (see chat.subagent_service.resolve_subagent_model).
@@ -933,6 +951,57 @@ def resolve_org_feature_reasoning(org_prefs: dict | None, feature_key: str, mode
     if not info or level not in info.reasoning_levels:
         return None
     return level
+
+
+def feature_reasoning_level(feature_reasoning: dict | None, feature_key: str, model: str) -> str | None:
+    """The reasoning level a call for *feature_key* on *model* should send.
+
+    The org's pin (``feature_reasoning`` = ``prefs["feature_reasoning"]``), else
+    the model's lowest level for a ``reasoning_default="lowest"`` feature, else
+    None — the caller sends no level and the service applies the registry
+    default. Callers set ``params["thinking_level"]`` only when this is truthy.
+    """
+    pinned = resolve_org_feature_reasoning(
+        {"feature_reasoning": feature_reasoning or {}}, feature_key, model,
+    )
+    if pinned:
+        return pinned
+    fdef = FEATURE_DEFAULTS.get(feature_key)
+    if fdef is not None and fdef.reasoning_default == "lowest" and model:
+        from llm.display import get_minimal_thinking_level
+
+        return get_minimal_thinking_level(model)
+    return None
+
+
+def resolve_org_feature_model_and_reasoning(org_id: int | None, feature_key: str) -> tuple[str, str | None]:
+    """``resolve_org_feature_model`` plus ``feature_reasoning_level`` — for
+    org-scoped call sites that only have an org id. The model goes through
+    ``resolve_org_feature_model`` itself (one place to resolve, and to patch)."""
+    model = resolve_org_feature_model(org_id, feature_key)
+    return model, org_feature_reasoning_level(org_id, feature_key, model)
+
+
+def org_feature_reasoning_level(org_id: int | None, feature_key: str, model: str) -> str | None:
+    """``feature_reasoning_level`` for an org id (one small Organization read)."""
+    from accounts.models import Organization
+
+    feature_reasoning = None
+    if org_id and model:
+        feature_reasoning = (
+            Organization.objects.filter(pk=org_id)
+            .values_list("preferences__feature_reasoning", flat=True)
+            .first()
+        )
+    return feature_reasoning_level(feature_reasoning, feature_key, model)
+
+
+def org_feature_reasoning_params(org_id: int | None, feature_key: str, model: str) -> dict:
+    """``ChatRequest.params`` for an org feature call: ``{"thinking_level": …}``
+    when the org pinned one (or the feature defaults to lowest), else {} so the
+    service applies the registry default."""
+    level = org_feature_reasoning_level(org_id, feature_key, model)
+    return {"thinking_level": level} if level else {}
 
 
 @dataclass(frozen=True)

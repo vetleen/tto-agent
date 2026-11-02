@@ -146,19 +146,45 @@
                 {{ feature.label }}
               </label>
               {% if feature.desc %}<p class="text-xs text-body mt-0.5">{{ feature.desc }}</p>{% endif %}
-              <select
-                id="org-feature-model-{{ feature.key }}"
-                data-feature="{{ feature.key }}"
-                class="org-feature-model-select mt-2 block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
-              >
-                <option value="">Use organization default {{ feature.default_slot }} model (recommended)</option>
-                {% if feature.key == "chat" %}
-                <option value="auto" data-keep="1" {% if chat_auto_default %}selected{% endif %}>Automatic — picks a model per request (see Automatic model choice)</option>
+              <div class="mt-2 flex flex-col gap-2 sm:flex-row">
+                <div class="flex-1 min-w-0">
+                  {% if feature.reasoning %}<span class="block text-xs font-medium text-body mb-1">Model</span>{% endif %}
+                  <select
+                    id="org-feature-model-{{ feature.key }}"
+                    data-feature="{{ feature.key }}"
+                    aria-label="{{ feature.label }}"
+                    class="org-feature-model-select block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium"
+                  >
+                    <option value="">Use organization default {{ feature.default_slot }} model (recommended)</option>
+                    {% if feature.key == "chat" %}
+                    <option value="auto" data-keep="1" {% if chat_auto_default %}selected{% endif %}>Automatic — picks a model per request (see Automatic model choice)</option>
+                    {% endif %}
+                    {% for model in feature.eligible_models %}
+                    <option value="{{ model }}" {% if feature.current == model %}{% if feature.key != "chat" or not chat_auto_default %}selected{% endif %}{% endif %}>{{ model }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                {% if feature.reasoning %}
+                <div class="sm:w-56">
+                  <label class="block text-xs font-medium text-body mb-1" for="feature-reasoning-{{ feature.key }}">Reasoning</label>
+                  <select
+                    id="feature-reasoning-{{ feature.key }}"
+                    data-feature="{{ feature.key }}"
+                    class="org-feature-reasoning-select block w-full rounded-base border border-default bg-neutral-primary text-body text-sm px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-medium disabled:opacity-60"
+                    {% if not feature.reasoning.levels %}disabled{% endif %}
+                  >
+                    {% if feature.reasoning.levels %}
+                    <option value="">{{ feature.reasoning.default_prefix|default:"Model default" }} ({{ feature.reasoning.default_label }})</option>
+                    {% for opt in feature.reasoning.level_options %}
+                    <option value="{{ opt.value }}" {% if feature.reasoning.current == opt.value %}selected{% endif %}>{{ opt.label }}</option>
+                    {% endfor %}
+                    {% else %}
+                    <option value="">Not adjustable</option>
+                    {% endif %}
+                  </select>
+                </div>
                 {% endif %}
-                {% for model in feature.eligible_models %}
-                <option value="{{ model }}" {% if feature.current == model %}{% if feature.key != "chat" or not chat_auto_default %}selected{% endif %}{% endif %}>{{ model }}</option>
-                {% endfor %}
-              </select>
+              </div>
             </div>
             {% endfor %}
           </div>
@@ -1139,7 +1165,7 @@
     while (sel.options.length) { sel.remove(0); }
     var first = document.createElement('option');
     first.value = '';
-    first.textContent = row.levels.length ? 'Model default (' + row.default_label + ')' : 'Not adjustable';
+    first.textContent = row.levels.length ? (row.default_prefix || 'Model default') + ' (' + row.default_label + ')' : 'Not adjustable';
     sel.appendChild(first);
     row.level_options.forEach(function(o) {
       var opt = document.createElement('option');

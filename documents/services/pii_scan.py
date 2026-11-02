@@ -221,7 +221,7 @@ def scan_pii_categories(
 
     Returns a dict of only the categories detected as ``True``.
     """
-    from core.preferences import resolve_org_feature_model
+    from core.preferences import org_feature_reasoning_params, resolve_org_feature_model
     from llm import get_llm_service
     from llm.types import ChatRequest, Message, RunContext
     from llm.types.structured import PIICategoryOutput
@@ -244,6 +244,7 @@ def scan_pii_categories(
         stream=False,
         tools=[],
         context=context,
+        params=org_feature_reasoning_params(org_id, "pii_scan", model),
     )
 
     service = get_llm_service()

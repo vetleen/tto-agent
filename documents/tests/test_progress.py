@@ -195,7 +195,8 @@ class ImageDescribeConcurrencyTests(TestCase):
 
         conversation_ids = set()
 
-        def fake_describe(image_bytes, content_type, user, alt_text=None, model=None, conversation_id=None):
+        def fake_describe(image_bytes, content_type, user, alt_text=None, model=None, conversation_id=None,
+                          thinking_level=None):
             threads_seen.add(threading.get_ident())
             conversation_ids.add(conversation_id)
             barrier.wait()

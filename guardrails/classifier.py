@@ -66,7 +66,7 @@ def _run_classifier(
     scanning uses its own ``guardrail_web_scan`` so it can be tuned/disabled
     independently.
     """
-    from core.preferences import resolve_org_feature_model
+    from core.preferences import org_feature_reasoning_params, resolve_org_feature_model
     from llm.types import ChatRequest, Message, RunContext
 
     cheap_model = resolve_org_feature_model(org_id, feature_key)
@@ -92,6 +92,7 @@ def _run_classifier(
         stream=False,
         tools=[],
         context=context,
+        params=org_feature_reasoning_params(org_id, feature_key, cheap_model),
     )
 
     service = _get_llm_service()
