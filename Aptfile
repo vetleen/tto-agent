@@ -2,6 +2,9 @@ ffmpeg
 libpulse0
 libblas3
 liblapack3
+# pypdf shells out to jbig2dec to decode JBIG2 images (common in scans);
+# without it those embedded images are skipped (WILFRED-AH).
+jbig2dec
 # WeasyPrint (HTML → PDF for canvas exports) renders text through Pango +
 # HarfBuzz + Fontconfig. Modern WeasyPrint (>=53) dropped Cairo/GDK-PixBuf, so
 # these are the full runtime set. The heroku-community/apt buildpack must be
