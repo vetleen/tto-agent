@@ -318,6 +318,10 @@ class LLMService:
         """Async wrapper around ``run()``. Executes the blocking call in a thread."""
         return await asyncio.to_thread(self.run, pipeline_id, request)
 
+    async def arun_via_stream(self, pipeline_id: str, request: ChatRequest) -> ChatResponse:
+        """Async wrapper around ``run_via_stream()``. Executes the blocking call in a thread."""
+        return await asyncio.to_thread(self.run_via_stream, pipeline_id, request)
+
     _STREAM_SENTINEL = None  # sentinel to signal end of stream
 
     async def astream(

@@ -12,8 +12,9 @@ class GenerateSummaryTests(TransactionTestCase):
 
         mock_response = MagicMock()
         mock_response.message.content = "This is a summary."
+        mock_response.metadata = {}
         mock_service = MagicMock()
-        mock_service.arun = AsyncMock(return_value=mock_response)
+        mock_service.arun_via_stream = AsyncMock(return_value=mock_response)
         mock_get_service.return_value = mock_service
 
         msg1 = MagicMock(role="user", content="Hello")
@@ -26,13 +27,15 @@ class GenerateSummaryTests(TransactionTestCase):
         )
 
         self.assertEqual(result, "This is a summary.")
-        mock_service.arun.assert_called_once()
+        mock_service.arun_via_stream.assert_called_once()
 
         # Verify it used the medium-tier model from settings
         from django.conf import settings
-        call_args = mock_service.arun.call_args
+        call_args = mock_service.arun_via_stream.call_args
         request = call_args[0][1]
         self.assertEqual(request.model, settings.LLM_DEFAULT_MEDIUM_MODEL)
+        # Streamed: a long summary must not hit the non-streaming read timeout.
+        self.assertTrue(request.stream)
 
     @patch("llm.get_llm_service")
     async def test_includes_existing_summary(self, mock_get_service):
@@ -40,8 +43,9 @@ class GenerateSummaryTests(TransactionTestCase):
 
         mock_response = MagicMock()
         mock_response.message.content = "Updated summary."
+        mock_response.metadata = {}
         mock_service = MagicMock()
-        mock_service.arun = AsyncMock(return_value=mock_response)
+        mock_service.arun_via_stream = AsyncMock(return_value=mock_response)
         mock_get_service.return_value = mock_service
 
         msg = MagicMock(role="user", content="New message")
@@ -55,7 +59,7 @@ class GenerateSummaryTests(TransactionTestCase):
 
         self.assertEqual(result, "Updated summary.")
         # The prompt should contain the old summary
-        call_args = mock_service.arun.call_args
+        call_args = mock_service.arun_via_stream.call_args
         request = call_args[0][1]
         user_msg = [m for m in request.messages if m.role == "user"][0]
         self.assertIn("Old summary text.", user_msg.content)
@@ -66,15 +70,33 @@ class GenerateSummaryTests(TransactionTestCase):
 
         mock_response = MagicMock()
         mock_response.message.content = "S"
+        mock_response.metadata = {}
         mock_service = MagicMock()
-        mock_service.arun = AsyncMock(return_value=mock_response)
+        mock_service.arun_via_stream = AsyncMock(return_value=mock_response)
         mock_get_service.return_value = mock_service
 
         await generate_summary(
             [MagicMock(role="user", content="x")], user_id=1, conversation_id="c",
             target_tokens=12_000,
         )
-        request = mock_service.arun.call_args[0][1]
+        request = mock_service.arun_via_stream.call_args[0][1]
         system = [m for m in request.messages if m.role == "system"][0].content
         self.assertIn("12,000 tokens", system)
         self.assertIn("9,000 words", system)
+
+    @patch("llm.get_llm_service")
+    async def test_truncated_summary_raises(self, mock_get_service):
+        from chat.services import generate_summary
+        from llm.service.errors import LLMProviderError
+
+        mock_response = MagicMock()
+        mock_response.message.content = "Half a summ"
+        mock_response.metadata = {"output_truncated": True, "stop_reason": "repetition"}
+        mock_service = MagicMock()
+        mock_service.arun_via_stream = AsyncMock(return_value=mock_response)
+        mock_get_service.return_value = mock_service
+
+        with self.assertRaises(LLMProviderError):
+            await generate_summary(
+                [MagicMock(role="user", content="x")], user_id=1, conversation_id="c",
+            )

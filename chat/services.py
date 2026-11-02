@@ -1315,13 +1315,20 @@ async def generate_summary(
             Message(role="user", content=user_prompt),
         ],
         model=model or django_settings.LLM_DEFAULT_MEDIUM_MODEL,
-        stream=False,
+        stream=True,
         tools=[],
         context=context,
     )
 
+    # Streamed: a ~13k-token summary took 70-120 s and a non-streaming call trips
+    # the client's 120 s read timeout (WILFRED-A8); streaming resets it per chunk.
     service = get_llm_service()
-    response = await service.arun("simple_chat", request)
+    response = await service.arun_via_stream("simple_chat", request)
+    if (response.metadata or {}).get("output_truncated"):
+        # A cut summary would replace the history it folds; fail like an error.
+        from llm.service.errors import LLMProviderError
+
+        raise LLMProviderError("summary output truncated")
     return response.message.content.strip()
 
 

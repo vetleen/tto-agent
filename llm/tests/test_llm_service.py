@@ -539,6 +539,29 @@ class RunViaStreamTests(TestCase):
         with self.assertRaises(LLMTimeoutError):
             service.run_via_stream("simple_chat", request)
 
+    @patch("llm.service.llm_service.log_stream")
+    async def test_arun_via_stream_delegates(self, _mock_log):
+        # Patched ``log_stream``: the worker thread must not commit an
+        # ``LLMCallLog`` row outside the test transaction.
+        request = self._req()
+
+        def fake_stream(req):
+            yield StreamEvent(event_type="message_start", data={"model": "m"}, sequence=1, run_id="r")
+            yield StreamEvent(event_type="token", data={"text": "Summary"}, sequence=2, run_id="r")
+            yield StreamEvent(event_type="message_end",
+                              data={"model": "m", "input_tokens": 5, "output_tokens": 1,
+                                    "total_tokens": 6},
+                              sequence=3, run_id="r")
+
+        fake_pipeline = MagicMock()
+        fake_pipeline.capabilities = {"streaming": True, "tools": True}
+        fake_pipeline.stream.side_effect = fake_stream
+        service = _make_service(fake_pipeline)
+        resp = await service.arun_via_stream("simple_chat", request)
+        self.assertTrue(request.stream)
+        self.assertEqual(resp.message.content, "Summary")
+        fake_pipeline.run.assert_not_called()
+
 
 class _TestSchema(BaseModel):
     description: str = Field(description="A description")
