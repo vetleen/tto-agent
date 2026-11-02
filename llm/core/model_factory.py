@@ -181,7 +181,10 @@ def _request_timeout(provider: str, api_model: str | None = None) -> int:
 
 
 # Attempts per model call: the first plus the SDK's ``max_retries`` (below).
-REQUEST_ATTEMPTS = 1 + 3
+# Two retries cover connection blips and 5xx; a request too long for the
+# timeout fails identically each time (4 attempts once burned 8 minutes,
+# WILFRED-A8). Rate limits and overload have their own retry in providers/base.
+REQUEST_ATTEMPTS = 1 + 2
 # Gemini gets one retry: a hung request already waited a whole deadline, and the
 # SDK retries timeouts. langchain-google-genai hands ``max_retries`` to the SDK
 # as HttpRetryOptions(attempts=…), i.e. it counts the first request too.

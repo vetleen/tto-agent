@@ -128,7 +128,7 @@ class CreateChatModelTests(SimpleTestCase):
         call_kwargs = mock_init.call_args
         self.assertEqual(call_kwargs[0][0], "gpt-5-mini")
         self.assertEqual(call_kwargs[1]["model_provider"], "openai")
-        self.assertEqual(call_kwargs[1]["max_retries"], 3)
+        self.assertEqual(call_kwargs[1]["max_retries"], 2)
         self.assertEqual(call_kwargs[1]["stream_usage"], True)
 
     @patch("llm.core.model_factory.init_chat_model")
@@ -241,7 +241,7 @@ class RequestTimeoutTests(SimpleTestCase):
         create_variant_client("gemini-4-argon", "google_genai", thinking_level="high")
         self.assertEqual(mock_init.call_args[1]["max_retries"], 2)
         create_chat_model("gpt-5-mini")
-        self.assertEqual(mock_init.call_args[1]["max_retries"], 3)
+        self.assertEqual(mock_init.call_args[1]["max_retries"], 2)
 
     def test_request_timeout_for_model(self):
         from llm.core.model_factory import request_timeout_for_model
