@@ -494,3 +494,111 @@ class RunCheckpointTests(_ThreadMixin, TransactionTestCase):
         self.assertEqual(gen.await_args.kwargs["existing_summary"], "OLD SUMMARY")
         await database_sync_to_async(self.thread.refresh_from_db)()
         self.assertTrue(self.thread.summary.startswith("NEW SUMMARY"))
+
+
+class _CapturingSink:
+    wants_heartbeats = False
+
+    def __init__(self):
+        self.sent = []
+
+    async def send_event(self, event):
+        self.sent.append(event)
+
+
+def _history(over_budget):
+    return {"messages": [], "meta": {"over_budget": over_budget, "budgets": BUDGETS.as_dict()}}
+
+
+class HardPathTests(_ThreadMixin, TransactionTestCase):
+    """The window no longer fits at turn start: checkpoint, retry once keeping
+    only the current round, then refuse the turn — never the sliding window."""
+
+    def setUp(self):
+        super().setUp()
+        self.consumer._sink = _CapturingSink()
+
+    async def test_checkpoint_that_fits_needs_no_retry(self):
+        self.consumer._checkpoint_now = AsyncMock(return_value=True)
+        self.consumer._load_history = AsyncMock(return_value=_history(False))
+        result = await self.consumer._fit_history(self.thread, _history(True), {})
+        self.assertFalse(result["meta"]["over_budget"])
+        self.consumer._checkpoint_now.assert_awaited_once()
+
+    async def test_failed_checkpoint_retries_keeping_the_current_round(self):
+        self.consumer._checkpoint_now = AsyncMock(side_effect=[False, True])
+        self.consumer._load_history = AsyncMock(return_value=_history(False))
+        result = await self.consumer._fit_history(self.thread, _history(True), {})
+        self.assertFalse(result["meta"]["over_budget"])
+        retry = self.consumer._checkpoint_now.await_args_list[1].kwargs
+        self.assertEqual(retry["keep_rounds"], 1)
+        self.assertTrue(retry["force_summary"])
+
+    async def test_checkpoint_that_still_does_not_fit_also_retries(self):
+        self.consumer._checkpoint_now = AsyncMock(return_value=True)
+        self.consumer._load_history = AsyncMock(side_effect=[_history(True), _history(False)])
+        await self.consumer._fit_history(self.thread, _history(True), {})
+        self.assertEqual(self.consumer._checkpoint_now.await_count, 2)
+
+    async def test_still_over_budget_refuses_logs_and_marks_the_thread(self):
+        from chat.history_checkpoint import HistoryTooLarge
+
+        self.consumer._checkpoint_now = AsyncMock(return_value=False)
+        self.consumer._load_history = AsyncMock()
+        with self.assertLogs("chat.consumers", level="ERROR") as logs:
+            with self.assertRaises(HistoryTooLarge):
+                await self.consumer._fit_history(self.thread, _history(True), {})
+        self.assertIn("History does not fit after checkpoint retry", "\n".join(logs.output))
+        marker = await database_sync_to_async(
+            lambda: ChatMessage.objects.get(thread=self.thread, role="system")
+        )()
+        self.assertEqual(marker.metadata["type"], "chat_notice")
+        self.assertEqual(marker.metadata["kind"], "history_too_large")
+        self.assertTrue(marker.metadata["ui_only"])
+        # The marker never reaches the model.
+        fresh = ChatConsumer()
+        fresh.user = self.user
+        fresh.resolved_prefs = None
+        messages = (await fresh._load_history(self.thread))["messages"]
+        self.assertEqual(messages, [])
+
+    @patch("chat.services.generate_summary", new_callable=AsyncMock, return_value="S")
+    async def test_retry_never_folds_the_message_being_answered(self, gen):
+        for n in range(3):
+            await database_sync_to_async(self._turn)(n, tokens=50)
+        await database_sync_to_async(self._msg)("The new question")
+        result = await run_checkpoint(
+            self.thread, user_id=self.user.pk, model=None, budgets=BUDGETS,
+            keep_rounds=1, force_summary=True, reason="over_budget_retry",
+        )
+        self.assertTrue(result.saved)
+        folded = [m.content for m in gen.await_args.args[0]]
+        self.assertNotIn("The new question", folded)
+        self.assertIn("Answer 2", folded)
+
+    async def test_refused_turn_sends_the_history_too_large_error(self):
+        import asyncio
+        import threading
+
+        from chat import turn_gate
+        from chat.consumers import _TurnState
+        from chat.history_checkpoint import HistoryTooLarge
+
+        turn_gate.reset()
+        self.addCleanup(turn_gate.reset)
+        consumer = self.consumer
+        consumer._stopped = False
+        turn = _TurnState(cancel_event=threading.Event(), stream_finished=asyncio.Event())
+        consumer._turn = turn
+        consumer._wait_for_attachments = AsyncMock(return_value=True)
+        consumer._assemble_turn_inputs = AsyncMock(side_effect=HistoryTooLarge("t"))
+        consumer._finalize_guardrail = AsyncMock()
+        await consumer._stream_and_finalize(
+            self.thread, content="hi", requested_model=None, thinking_level=None,
+            resolved_model=None, max_context_tokens=None, history_mode="conversational",
+            turn=turn, seed_mode=False,
+        )
+        errors = [e for e in consumer._sink.sent if e.get("event_type") == "error"]
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0]["data"]["error_code"], "history_too_large")
+        self.assertIn("/compact", errors[0]["data"]["message"])

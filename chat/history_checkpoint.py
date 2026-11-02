@@ -412,6 +412,38 @@ def save_summary(thread_id, text: str, last_msg_id, count: int, expected_cutoff_
     return rows > 0
 
 
+class HistoryTooLarge(Exception):
+    """The history still doesn't fit after a checkpoint and its retry; the turn
+    is refused instead of taking the sliding-window fallback."""
+
+
+# ``ui_only`` system rows the chat timeline renders as a pill (live and on
+# reload); never part of the model's history.
+NOTICE_HISTORY_TOO_LARGE = "history_too_large"
+
+
+def history_too_large_message() -> str:
+    return (
+        f"{settings.ASSISTANT_NAME} couldn't summarize the start of this chat, and it "
+        "no longer fits in the context window. Type /compact to try compacting it "
+        "manually, or (recommended) start a new chat."
+    )
+
+
+def create_notice_marker(thread_id, kind: str) -> str:
+    """Persist a ``chat_notice`` pill of *kind* at the end of the thread."""
+    from chat.models import ChatMessage
+
+    msg = ChatMessage.objects.create(
+        thread_id=thread_id,
+        role="system",
+        content="",
+        metadata={"type": "chat_notice", "kind": kind, "ui_only": True},
+        is_hidden_from_user=False,
+    )
+    return str(msg.id)
+
+
 @dataclass
 class CheckpointResult:
     saved: bool

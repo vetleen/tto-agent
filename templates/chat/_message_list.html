@@ -104,6 +104,15 @@
         {% if not m.metadata.restored %}<button type="button" class="canvas-undo-btn font-medium text-fg-brand hover:underline cursor-pointer" data-canvas-id="{{ m.metadata.canvas_id }}" data-message-id="{{ m.id }}">Undo</button>{% endif %}
       </span>
     </div>
+  {% elif m.role == "system" and m.metadata.type == "chat_notice" %}
+    {% if m.metadata.kind == "history_too_large" %}
+    <div class="flex justify-center my-2" data-chat-notice="history_too_large" data-message-id="{{ m.id }}">
+      <span class="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-full text-fg-danger bg-danger-soft">
+        <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>
+        {{ assistant_name }} couldn't summarize the start of this chat, and it no longer fits in the context window. Type /compact to try compacting it manually, or (recommended) start a new chat.
+      </span>
+    </div>
+    {% endif %}
   {% endif %}
   {% if m.is_boundary %}
   <div class="compression-divider flex items-center gap-2 text-xs text-body/40 select-none" data-compression-divider>

@@ -14,6 +14,7 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 
 from chat import turn_gate
 from chat.assistant_replay import build_assistant_replay, replay_metadata_for
+from chat.history_checkpoint import HistoryTooLarge, history_too_large_message
 from core.observability import sentry_scope
 from core.redis_errors import REDIS_BLIP as _REDIS_BLIP
 
@@ -2606,6 +2607,18 @@ class ChatConsumer(AsyncWebsocketConsumer):
                         "error_code": "turn_queue_timeout",
                     },
                 })
+        except HistoryTooLarge:
+            # Logged (Sentry) and marked in the thread by _fit_history.
+            if self._turn is turn:
+                self._cancel_event = None
+            if not self._stopped:
+                await self._sink.send_event({
+                    "event_type": "error",
+                    "data": {
+                        "message": history_too_large_message(),
+                        "error_code": "history_too_large",
+                    },
+                })
         except asyncio.CancelledError:
             pass
         except Exception:
@@ -2932,11 +2945,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             history_result = await self._load_history(thread, **load_kwargs)
             meta = history_result["meta"]
             if meta.get("over_budget") and history_mode == "conversational":
-                # The window no longer fits: checkpoint now rather than take
-                # the sliding-window fallback (which breaks the cache every turn).
-                if await self._checkpoint_now(thread, meta.get("budgets")):
-                    history_result = await self._load_history(thread, **load_kwargs)
-                    meta = history_result["meta"]
+                history_result = await self._fit_history(thread, history_result, load_kwargs)
+                meta = history_result["meta"]
             history = history_result["messages"]
 
         # -- 4. Build the FINAL runtime_stats + dynamic_context_data with the real
@@ -3744,7 +3754,43 @@ class ChatConsumer(AsyncWebsocketConsumer):
         except Exception:
             pass  # logged by the task itself
 
-    async def _checkpoint_now(self, thread, budgets) -> bool:
+    async def _fit_history(self, thread, history_result, load_kwargs):
+        """The window no longer fits: checkpoint now rather than take the
+        sliding-window fallback (which breaks the cache every turn). A failed or
+        insufficient checkpoint gets one retry that keeps only the current round
+        (keep_rounds=0 would fold the message being answered); a history that
+        still doesn't fit refuses the turn with ``HistoryTooLarge``."""
+        from chat.history_checkpoint import (
+            NOTICE_HISTORY_TOO_LARGE, HistoryTooLarge, create_notice_marker,
+        )
+
+        budgets = history_result["meta"].get("budgets")
+        if await self._checkpoint_now(thread, budgets):
+            history_result = await self._load_history(thread, **load_kwargs)
+            if not history_result["meta"].get("over_budget"):
+                return history_result
+        logger.warning(
+            "History checkpoint did not fit thread=%s; retrying with only the current round kept",
+            thread.id,
+        )
+        if await self._checkpoint_now(
+            thread, budgets, keep_rounds=1, force_summary=True, reason="over_budget_retry",
+        ):
+            history_result = await self._load_history(thread, **load_kwargs)
+            if not history_result["meta"].get("over_budget"):
+                return history_result
+        meta = history_result["meta"]
+        logger.error(
+            "History does not fit after checkpoint retry: thread=%s messages=%s "
+            "window_tokens=%s budget=%s summary_tokens=%s",
+            thread.id, meta.get("total_messages"), meta.get("window_tokens"),
+            meta.get("history_budget_tokens"), meta.get("summary_tokens"),
+        )
+        await database_sync_to_async(create_notice_marker)(thread.id, NOTICE_HISTORY_TOO_LARGE)
+        raise HistoryTooLarge(str(thread.id))
+
+    async def _checkpoint_now(self, thread, budgets, *, keep_rounds=None,
+                              force_summary=False, reason="over_budget") -> bool:
         """Synchronous checkpoint at turn start, when the history no longer fits.
         Retitles the waiting spinner and keeps the socket alive meanwhile."""
         from chat.history_checkpoint import run_checkpoint
@@ -3757,7 +3803,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
         try:
             result = await run_checkpoint(
                 thread, user_id=self.user.pk, model=self._summary_model(),
-                budgets=budgets, reason="over_budget",
+                budgets=budgets, keep_rounds=keep_rounds,
+                force_summary=force_summary, reason=reason,
             )
             return result.saved
         except Exception:
@@ -6002,6 +6049,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 # fallback (the caller runs a checkpoint first and reloads).
                 "over_budget": over_budget,
                 "history_budget_tokens": max_history_tokens,
+                # What the whole window (summary + every replayed row) costs.
+                "window_tokens": summary_token_count + window_tokens,
                 # Conversation / summary / stub shares (estimate units) for the
                 # checkpoint (chat/history_checkpoint.py).
                 "budgets": budgets.as_dict(),

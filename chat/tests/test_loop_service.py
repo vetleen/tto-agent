@@ -201,6 +201,22 @@ class ExecuteLoopRunTests(TransactionTestCase):
         self.assertFalse(self.loop.running)  # lock released even on error
         self.assertIsNone(self.loop.locked_at)
 
+    def test_history_too_large_counts_as_a_failed_run(self):
+        """A loop thread whose history can't be compacted fails visibly (error
+        count, auto-pause at the cap) instead of running on a sliding window."""
+        from chat import loop_service
+        from chat.history_checkpoint import HistoryTooLarge
+
+        with patch.object(
+            loop_service.HeadlessTurnRunner, "run_loop_turn",
+            new_callable=AsyncMock, side_effect=HistoryTooLarge("t"),
+        ):
+            with self.assertRaises(HistoryTooLarge):
+                loop_service.execute_loop_run(self.loop.id)
+
+        self.loop.refresh_from_db()
+        self.assertEqual(self.loop.consecutive_errors, 1)
+
     def test_error_auto_pause_archives_thread(self):
         from chat import loop_service
 
