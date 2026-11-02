@@ -47,6 +47,7 @@ class _ThreadMixin:
         self.consumer = ChatConsumer()
         self.consumer.user = self.user
         self.consumer.resolved_prefs = None
+        self.consumer._sink = _CapturingSink()
 
     def _msg(self, content, role="user", *, tool_call_id=None, tool_calls=None,
              hidden=False, tokens=None, metadata=None):
@@ -471,6 +472,44 @@ class RunCheckpointTests(_ThreadMixin, TransactionTestCase):
         self.assertTrue(self.consumer._checkpoint_task.done())
         await database_sync_to_async(self.thread.refresh_from_db)()
         self.assertTrue(self.thread.summary.startswith("NEW SUMMARY"))
+
+    async def test_pending_checkpoint_wait_is_visible_and_capped(self, gen):
+        import asyncio
+
+        sink = _CapturingSink()
+        self.consumer._sink = sink
+        never = asyncio.Event()
+        self.consumer._checkpoint_task = asyncio.create_task(never.wait())
+        try:
+            with override_settings(CONTEXT_CHECKPOINT_WAIT_SECONDS=0.2):
+                await self.consumer._await_pending_checkpoint()
+            self.assertEqual([e["event_type"] for e in sink.sent], ["turn.compacting_history"])
+            # The cap only ends the wait; the checkpoint keeps running.
+            self.assertFalse(self.consumer._checkpoint_task.done())
+        finally:
+            self.consumer._checkpoint_task.cancel()
+
+    async def test_stop_ends_the_pending_checkpoint_wait(self, gen):
+        import asyncio
+        import time
+
+        self.consumer._sink = _CapturingSink()
+        self.consumer._stopped = True
+        never = asyncio.Event()
+        self.consumer._checkpoint_task = asyncio.create_task(never.wait())
+        try:
+            started = time.monotonic()
+            await self.consumer._await_pending_checkpoint()
+            self.assertLess(time.monotonic() - started, 1)
+        finally:
+            self.consumer._checkpoint_task.cancel()
+
+    async def test_finished_checkpoint_sends_no_wait_event(self, gen):
+        sink = _CapturingSink()
+        self.consumer._sink = sink
+        self.consumer._checkpoint_task = None
+        await self.consumer._await_pending_checkpoint()
+        self.assertEqual(sink.sent, [])
 
     async def test_compact_works_when_a_summary_exists(self, gen):
         """/compact used to save with no expected cutoff, which can never match

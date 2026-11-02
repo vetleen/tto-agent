@@ -3738,21 +3738,35 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     async def _await_pending_checkpoint(self):
         """Let a checkpoint still running from the previous turn land before
-        this turn loads its history (bounded; it keeps running past the wait)."""
+        this turn loads its history: proceeding without it would only break the
+        cache on the turn after, when it lands. Visible (the spinner says the
+        conversation is being compacted) and bounded — the history still fits
+        on this path — and it keeps running past the wait. A stop ends the wait."""
         from django.conf import settings
 
         task = getattr(self, "_checkpoint_task", None)
         if task is None or task.done():
             return
+        await self._sink.send_event({"event_type": "turn.compacting_history", "data": {}})
+        hb = (
+            asyncio.create_task(self._send_heartbeats())
+            if getattr(self._sink, "wants_heartbeats", False) else None
+        )
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + getattr(settings, "CONTEXT_CHECKPOINT_WAIT_SECONDS", 300)
         try:
-            await asyncio.wait_for(
-                asyncio.shield(task),
-                timeout=getattr(settings, "CONTEXT_CHECKPOINT_WAIT_SECONDS", 60),
-            )
-        except asyncio.TimeoutError:
-            logger.info("History checkpoint still running; turn proceeds without it")
-        except Exception:
-            pass  # logged by the task itself
+            while not task.done():
+                cancel = getattr(self, "_cancel_event", None)
+                if getattr(self, "_stopped", False) or (cancel is not None and cancel.is_set()):
+                    return
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    logger.info("History checkpoint still running; turn proceeds without it")
+                    return
+                await asyncio.wait({task}, timeout=min(1.0, remaining))
+        finally:
+            if hb is not None:
+                hb.cancel()
 
     async def _fit_history(self, thread, history_result, load_kwargs):
         """The window no longer fits: checkpoint now rather than take the
@@ -3795,7 +3809,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         Retitles the waiting spinner and keeps the socket alive meanwhile."""
         from chat.history_checkpoint import run_checkpoint
 
-        await self._sink.send_event({"event_type": "turn.condensing_history", "data": {}})
+        await self._sink.send_event({"event_type": "turn.compacting_history", "data": {}})
         hb = (
             asyncio.create_task(self._send_heartbeats())
             if getattr(self._sink, "wants_heartbeats", False) else None

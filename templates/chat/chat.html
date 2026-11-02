@@ -3676,11 +3676,13 @@
       }
       return;
     }
-    if (et === "turn.condensing_history") {
-      // The history no longer fits: the server folds older rounds into the
-      // conversation summary before the turn starts. Same spinner retitle.
+    if (et === "turn.compacting_history" || et === "turn.condensing_history") {
+      // The server is folding older rounds into the conversation summary
+      // before this turn starts (a checkpoint from the last reply that is
+      // still running, or a history that no longer fits). Same spinner retitle.
+      // condensing_history: the pre-rename event, for a server one deploy behind.
       var condensingLabel = currentStreamingElement && currentStreamingElement.querySelector(".waiting-indicator span");
-      if (condensingLabel) condensingLabel.textContent = "Condensing earlier conversation…";
+      if (condensingLabel) condensingLabel.textContent = "Compacting your conversation with " + ASSISTANT_NAME + "…";
       return;
     }
     if (et === "turn.waiting_for_attachments") {

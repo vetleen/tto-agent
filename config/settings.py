@@ -795,7 +795,8 @@ CONTEXT_STUB_DROP_FRACTION = float(os.environ.get("CONTEXT_STUB_DROP_FRACTION", 
 # Folded tool calls listed under the summary (tool + arguments, "call again").
 CONTEXT_TOOL_INDEX_MAX_ENTRIES = _env_int("CONTEXT_TOOL_INDEX_MAX_ENTRIES", "20")
 CONTEXT_CHECKPOINT_KEEP_ROUNDS = _env_int("CONTEXT_CHECKPOINT_KEEP_ROUNDS", "2")
-CONTEXT_CHECKPOINT_WAIT_SECONDS = _env_int("CONTEXT_CHECKPOINT_WAIT_SECONDS", "60")
+# How long the next turn waits (visibly) for a background checkpoint to land.
+CONTEXT_CHECKPOINT_WAIT_SECONDS = _env_int("CONTEXT_CHECKPOINT_WAIT_SECONDS", "300")
 # A finished sub-agent's result message is a pointer to its report (read with
 # chat_subagent_report_read), carrying its final message inline up to this many
 # tokens. Keeps reports out of the history, where nothing could prune them.
