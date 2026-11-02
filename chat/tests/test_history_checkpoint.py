@@ -473,6 +473,44 @@ class RunCheckpointTests(_ThreadMixin, TransactionTestCase):
         await database_sync_to_async(self.thread.refresh_from_db)()
         self.assertTrue(self.thread.summary.startswith("NEW SUMMARY"))
 
+    def _notices(self):
+        return list(ChatMessage.objects.filter(
+            thread=self.thread, role="system", metadata__type="chat_notice",
+        ).values_list("metadata__kind", flat=True))
+
+    async def test_summarise_checkpoint_adds_a_compacted_pill(self, gen):
+        for n in range(4):
+            await database_sync_to_async(self._turn)(n, tokens=800, tool_tokens=10)
+        before = (await self.consumer._load_history(self.thread))["messages"]
+        result = await run_checkpoint(self.thread, user_id=self.user.pk, model=None, budgets=BUDGETS)
+        self.assertIsNotNone(result.notice_id)
+        self.assertEqual(await database_sync_to_async(self._notices)(), ["history_compacted"])
+        # The pill is ui_only: the reloaded history carries no trace of it.
+        after = (await self.consumer._load_history(self.thread))["messages"]
+        self.assertFalse(any("compacted" in str(m.get("content")) for m in after))
+        self.assertLess(len(after), len(before))
+
+    async def test_stub_only_checkpoint_and_compact_add_no_pill(self, gen):
+        for n in range(4):
+            await database_sync_to_async(self._turn)(n, tokens=50, tool_tokens=2_000)
+        result = await run_checkpoint(self.thread, user_id=self.user.pk, model=None, budgets=BUDGETS)
+        self.assertTrue(result.saved)
+        self.assertIsNone(result.notice_id)
+        result = await run_checkpoint(
+            self.thread, user_id=self.user.pk, model=None, budgets=BUDGETS,
+            keep_rounds=0, force_summary=True, reason="compact",
+        )
+        self.assertTrue(result.saved)
+        self.assertEqual(await database_sync_to_async(self._notices)(), [])
+
+    async def test_consumer_pushes_the_pill_live(self, gen):
+        for n in range(3):
+            await database_sync_to_async(self._turn)(n, tokens=1_000)
+        await self.consumer._checkpoint_if_due(self.thread, BUDGETS.as_dict())
+        notices = [e for e in self.consumer._sink.sent if e["event_type"] == "chat.notice"]
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(notices[0]["kind"], "history_compacted")
+
     async def test_pending_checkpoint_wait_is_visible_and_capped(self, gen):
         import asyncio
 

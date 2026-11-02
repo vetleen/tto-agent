@@ -3727,14 +3727,28 @@ class ChatConsumer(AsyncWebsocketConsumer):
         try:
             if not await database_sync_to_async(needs_checkpoint)(thread, budgets):
                 return
-            await run_checkpoint(
+            result = await run_checkpoint(
                 thread, user_id=self.user.pk, model=self._summary_model(),
                 budgets=budgets, reason="threshold",
             )
+            await self._send_compacted_notice(result)
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("History checkpoint failed for thread %s", thread.id)
+
+    async def _send_compacted_notice(self, result) -> None:
+        """Live "your chat was compacted" pill (persisted by run_checkpoint)."""
+        if not result.notice_id:
+            return
+        try:
+            await self._sink.send_event({
+                "event_type": "chat.notice",
+                "kind": "history_compacted",
+                "message_id": result.notice_id,
+            })
+        except Exception:
+            logger.debug("Compacted notice not delivered", exc_info=True)
 
     async def _await_pending_checkpoint(self):
         """Let a checkpoint still running from the previous turn land before
@@ -3820,6 +3834,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 budgets=budgets, keep_rounds=keep_rounds,
                 force_summary=force_summary, reason=reason,
             )
+            await self._send_compacted_notice(result)
             return result.saved
         except Exception:
             logger.exception("Synchronous history checkpoint failed for thread %s", thread.id)

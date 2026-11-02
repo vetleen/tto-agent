@@ -112,6 +112,13 @@
         {{ assistant_name }} couldn't summarize the start of this chat, and it no longer fits in the context window. Type /compact to try compacting it manually, or (recommended) start a new chat.
       </span>
     </div>
+    {% elif m.metadata.kind == "history_compacted" %}
+    <div class="flex justify-center my-2" data-chat-notice="history_compacted" data-message-id="{{ m.id }}">
+      <span class="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium text-body bg-neutral-tertiary rounded-full">
+        <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+        Your chat was compacted to fit the context window — this may affect {{ assistant_name }}'s memory of details from early in the conversation.
+      </span>
+    </div>
     {% endif %}
   {% endif %}
   {% if m.is_boundary %}

@@ -3806,6 +3806,24 @@
       scrollToBottom();
       return;
     }
+    if (et === "chat.notice" && data.kind === "history_compacted") {
+      // Persistent pill (a ui_only marker row): older conversation was folded
+      // into the summary. Above the bubble of a turn that is waiting on it.
+      var ntWrap = document.createElement("div");
+      ntWrap.className = "flex justify-center my-2";
+      ntWrap.setAttribute("data-chat-notice", "history_compacted");
+      if (data.message_id) ntWrap.setAttribute("data-message-id", String(data.message_id));
+      ntWrap.innerHTML = '<span class="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium text-body bg-neutral-tertiary rounded-full">'
+        + '<svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>'
+        + escapeHtml("Your chat was compacted to fit the context window — this may affect " + ASSISTANT_NAME + "'s memory of details from early in the conversation.")
+        + '</span>';
+      var ntBefore = currentStreamingElement;
+      while (ntBefore && ntBefore.parentNode !== messagesContainer) ntBefore = ntBefore.parentNode;
+      if (ntBefore) messagesContainer.insertBefore(ntWrap, ntBefore);
+      else messagesContainer.appendChild(ntWrap);
+      scrollToBottom();
+      return;
+    }
     if (et === "chat.canvas_marker_restored") {
       if (!data.message_id) return;
       var cmr = messagesContainer.querySelector('[data-canvas-marker][data-message-id="' + data.message_id + '"]');

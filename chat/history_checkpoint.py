@@ -420,6 +420,7 @@ class HistoryTooLarge(Exception):
 # ``ui_only`` system rows the chat timeline renders as a pill (live and on
 # reload); never part of the model's history.
 NOTICE_HISTORY_TOO_LARGE = "history_too_large"
+NOTICE_HISTORY_COMPACTED = "history_compacted"
 
 
 def history_too_large_message() -> str:
@@ -452,6 +453,7 @@ class CheckpointResult:
     summarised: bool = False
     stubbed: int = 0
     dropped: int = 0
+    notice_id: str | None = None  # the "chat was compacted" pill, when one was added
 
 
 async def run_checkpoint(thread, *, user_id, model: str | None, budgets=None,
@@ -505,7 +507,15 @@ async def run_checkpoint(thread, *, user_id, model: str | None, budgets=None,
         )
     else:
         logger.info("History checkpoint (%s) skipped for thread %s: concurrent update", reason, thread.id)
+    # The user is told when conversation (not just tool output) was folded;
+    # /compact answers with its own command result.
+    notice_id = None
+    if saved and plan.to_summarise and reason != "compact":
+        notice_id = await database_sync_to_async(create_notice_marker)(
+            thread.id, NOTICE_HISTORY_COMPACTED,
+        )
     return CheckpointResult(
         saved=saved, folded_count=plan.folded_count, summarised=saved,
         summary_tokens=count_tokens(summary) if saved else 0,
+        notice_id=notice_id,
     )

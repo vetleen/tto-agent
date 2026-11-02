@@ -90,3 +90,18 @@ class CompressionIndicatorTests(TestCase):
         resp = self.client.get(reverse("chat_home") + f"?thread={self.thread.id}")
         self.assertEqual(resp.status_code, 200)
         self.assertNotIn("Earlier messages summarized", resp.content.decode())
+
+    def test_notice_pills_render_on_reload(self):
+        from chat.history_checkpoint import (
+            NOTICE_HISTORY_COMPACTED, NOTICE_HISTORY_TOO_LARGE, create_notice_marker,
+        )
+
+        ChatMessage.objects.create(thread=self.thread, role="user", content="hi")
+        create_notice_marker(self.thread.id, NOTICE_HISTORY_COMPACTED)
+        create_notice_marker(self.thread.id, NOTICE_HISTORY_TOO_LARGE)
+        resp = self.client.get(reverse("chat_home") + f"?thread={self.thread.id}")
+        html = resp.content.decode()
+        self.assertIn('data-chat-notice="history_compacted"', html)
+        self.assertIn("Your chat was compacted to fit the context window", html)
+        self.assertIn('data-chat-notice="history_too_large"', html)
+        self.assertIn("Type /compact", html)
