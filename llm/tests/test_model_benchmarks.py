@@ -94,10 +94,11 @@ class BenchmarkDataTests(SimpleTestCase):
     def test_gemini_4_argon_scores(self):
         # AA and LMArena only run Argon at high.
         expected = {
-            BENCHMARK_GDPVAL: 1624,
+            BENCHMARK_GDPVAL: 1631,
             BENCHMARK_GDP_PDF: 21.8,
-            BENCHMARK_OMNISCIENCE: 15.1,
+            BENCHMARK_OMNISCIENCE: 4.3,
             BENCHMARK_ARENA_BUSINESS: 1521,
+            BENCHMARK_RESPONSE_TIME: 86.1,
         }
         for key, score in expected.items():
             with self.subTest(key=key):
@@ -122,13 +123,10 @@ class BenchmarkDataTests(SimpleTestCase):
     def test_response_time(self):
         bench = get_benchmark(BENCHMARK_RESPONSE_TIME)
         self.assertFalse(bench.higher_is_better)
-        # AA has no 100K timing for these (checked 2026-10-11; Argon 2026-10-14).
+        # AA has no 100K timing for these (checked 2026-11-03).
         self.assertEqual(
             missing_models(BENCHMARK_RESPONSE_TIME),
-            [
-                "openai/gpt-5.6-sol", "openai/gpt-5.4-nano", "anthropic/claude-fable-5",
-                "gemini/gemini-4-argon",
-            ],
+            ["openai/gpt-5.6-sol", "openai/gpt-5.4-nano", "anthropic/claude-fable-5"],
         )
         for s in bench.scores:
             with self.subTest(model=s.model_id, effort=s.effort):
