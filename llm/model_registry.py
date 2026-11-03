@@ -251,6 +251,21 @@ _MODELS: dict[str, ModelInfo] = {
         long_context_cache_write_price=Decimal("5.00"),
         long_context_output_price=Decimal("15.00"),
     ),
+    "openai/gpt-6.1-terra": ModelInfo(
+        display_name="GPT-6.1 Terra", provider="openai", api_model="gpt-6.1-terra",
+        stars=3,
+        # Keeps "none", unlike GPT-6.1 Sol. Cache reads are 0.05x input.
+        reasoning_levels=_GPT56_LEVELS, default_reasoning_level="medium",
+        uses_responses_api=True, input_modalities=_MULTIMODAL,
+        context_window=1_050_000, max_output_tokens=128_000,
+        input_price=Decimal("1.00"), cached_input_price=Decimal("0.05"),
+        cache_write_price=Decimal("1.25"), output_price=Decimal("5.00"),
+        long_context_threshold=272_000,
+        long_context_input_price=Decimal("2.00"),
+        long_context_cached_input_price=Decimal("0.10"),
+        long_context_cache_write_price=Decimal("2.50"),
+        long_context_output_price=Decimal("7.50"),
+    ),
     "openai/gpt-6-luna": ModelInfo(
         display_name="GPT-6 Luna", provider="openai", api_model="gpt-6-luna",
         stars=2,

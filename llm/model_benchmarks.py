@@ -71,7 +71,7 @@ def _row(model_id, effort, score, source_label, ci=None, note=None):
 # Artificial Analysis rows are parsed from the model data embedded in
 # artificialanalysis.ai pages; source_label is AA's slug. Every AA row (all
 # four AA benchmarks) was re-read from one snapshot of each slug's
-# /models/<slug> page on 2026-11-03. A metric the
+# /models/<slug> page on 2026-11-03, when GPT-6.1 Terra was added. A metric the
 # page no longer shows keeps its earlier value (Omniscience: GPT-6 Sol, GPT-5.6
 # Sol, GPT-5.4 nano, Fable 5, Sonnet 5, Gemini 3.1 Pro; response time: GPT-6
 # Sol, Sonnet 5). GDPval Elo is relative and drifts as AA adds models, so all
@@ -97,6 +97,12 @@ _AA_SCORES = {
         _row("openai/gpt-6-sol", "high", 1404, "gpt-6-sol-high"),
         _row("openai/gpt-6-sol", "xhigh", 1466, "gpt-6-sol-xhigh"),
         _row("openai/gpt-6-sol", "max", 1516, "gpt-6-sol"),
+        _row("openai/gpt-6.1-terra", "none", 1286, "gpt-6-1-terra-non-reasoning"),
+        _row("openai/gpt-6.1-terra", "low", 1204, "gpt-6-1-terra-low"),
+        _row("openai/gpt-6.1-terra", "medium", 1325, "gpt-6-1-terra-medium"),
+        _row("openai/gpt-6.1-terra", "high", 1353, "gpt-6-1-terra-high"),
+        _row("openai/gpt-6.1-terra", "xhigh", 1415, "gpt-6-1-terra-xhigh"),
+        _row("openai/gpt-6.1-terra", "max", 1476, "gpt-6-1-terra"),
         _row("openai/gpt-6-luna", "none", 1052, "gpt-6-luna-non-reasoning"),
         _row("openai/gpt-6-luna", "low", 1040, "gpt-6-luna-low"),
         _row("openai/gpt-6-luna", "medium", 1270, "gpt-6-luna-medium"),
@@ -167,6 +173,12 @@ _AA_SCORES = {
         _row("openai/gpt-6-sol", "high", 24.4, "gpt-6-sol-high"),
         _row("openai/gpt-6-sol", "xhigh", 24.6, "gpt-6-sol-xhigh"),
         _row("openai/gpt-6-sol", "max", 25.2, "gpt-6-sol"),
+        _row("openai/gpt-6.1-terra", "none", 23.2, "gpt-6-1-terra-non-reasoning"),
+        _row("openai/gpt-6.1-terra", "low", 25.6, "gpt-6-1-terra-low"),
+        _row("openai/gpt-6.1-terra", "medium", 28.4, "gpt-6-1-terra-medium"),
+        _row("openai/gpt-6.1-terra", "high", 28.0, "gpt-6-1-terra-high"),
+        _row("openai/gpt-6.1-terra", "xhigh", 26.6, "gpt-6-1-terra-xhigh"),
+        _row("openai/gpt-6.1-terra", "max", 28.6, "gpt-6-1-terra"),
         _row("openai/gpt-6-luna", "none", 5.8, "gpt-6-luna-non-reasoning"),
         _row("openai/gpt-6-luna", "low", 9.0, "gpt-6-luna-low"),
         _row("openai/gpt-6-luna", "medium", 13.8, "gpt-6-luna-medium"),
@@ -236,6 +248,12 @@ _AA_SCORES = {
         _row("openai/gpt-6-sol", "high", 58.1, "gpt-6-sol-high"),
         _row("openai/gpt-6-sol", "xhigh", 58.9, "gpt-6-sol-xhigh"),
         _row("openai/gpt-6-sol", "max", 60.1, "gpt-6-sol"),
+        _row("openai/gpt-6.1-terra", "none", 77.1, "gpt-6-1-terra-non-reasoning"),
+        _row("openai/gpt-6.1-terra", "low", 41.6, "gpt-6-1-terra-low"),
+        _row("openai/gpt-6.1-terra", "medium", 39.6, "gpt-6-1-terra-medium"),
+        _row("openai/gpt-6.1-terra", "high", 37.0, "gpt-6-1-terra-high"),
+        _row("openai/gpt-6.1-terra", "xhigh", 36.8, "gpt-6-1-terra-xhigh"),
+        _row("openai/gpt-6.1-terra", "max", 34.5, "gpt-6-1-terra"),
         _row("openai/gpt-6-luna", "none", 80.0, "gpt-6-luna-non-reasoning"),
         _row("openai/gpt-6-luna", "low", 84.8, "gpt-6-luna-low"),
         _row("openai/gpt-6-luna", "medium", 85.3, "gpt-6-luna-medium"),
@@ -366,6 +384,12 @@ _RESPONSE_TIME_SCORES = (
     _row("openai/gpt-6-sol", "high", 18.8, "gpt-6-sol-high"),
     _row("openai/gpt-6-sol", "xhigh", 39.8, "gpt-6-sol-xhigh"),
     _row("openai/gpt-6-sol", "max", 58.6, "gpt-6-sol"),
+    _row("openai/gpt-6.1-terra", "none", 6.9, "gpt-6-1-terra-non-reasoning"),
+    _row("openai/gpt-6.1-terra", "low", 7.4, "gpt-6-1-terra-low"),
+    _row("openai/gpt-6.1-terra", "medium", 9.8, "gpt-6-1-terra-medium"),
+    _row("openai/gpt-6.1-terra", "high", 10.7, "gpt-6-1-terra-high"),
+    _row("openai/gpt-6.1-terra", "xhigh", 35.3, "gpt-6-1-terra-xhigh"),
+    _row("openai/gpt-6.1-terra", "max", 218.7, "gpt-6-1-terra"),
     _row("openai/gpt-6-luna", "none", 5.2, "gpt-6-luna-non-reasoning"),
     _row("openai/gpt-6-luna", "low", 7.6, "gpt-6-luna-low"),
     _row("openai/gpt-6-luna", "medium", 16.4, "gpt-6-luna-medium"),

@@ -127,6 +127,7 @@ class PickerRatingTests(SimpleTestCase):
             # prices put it with Gemini 3.8 Flash.
             "anthropic/claude-haiku-5-5": 2,
             "gemini/gemini-3.8-flash": 2,
+            "openai/gpt-6.1-terra": 2,
             "openai/gpt-6.1-sol": 3,
             "openai/gpt-6-sol": 3,
             "openai/gpt-5.6-terra": 3,

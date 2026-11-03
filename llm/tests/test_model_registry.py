@@ -28,6 +28,7 @@ EXPECTED_IDS = [
     "openai/gpt-6-astra",
     "openai/gpt-6.1-sol",
     "openai/gpt-6-sol",
+    "openai/gpt-6.1-terra",
     "openai/gpt-6-luna",
     "openai/gpt-5.6-sol",
     "openai/gpt-5.6-terra",
@@ -79,6 +80,7 @@ class RegistryTests(SimpleTestCase):
             "openai/gpt-5.6-sol": (("none", "low", "medium", "high", "xhigh", "max"), "medium"),
             "openai/gpt-5.6-terra": (("none", "low", "medium", "high", "xhigh", "max"), "medium"),
             "openai/gpt-6-sol": (("none", "low", "medium", "high", "xhigh", "max"), "medium"),
+            "openai/gpt-6.1-terra": (("none", "low", "medium", "high", "xhigh", "max"), "medium"),
             "openai/gpt-6-luna": (("none", "low", "medium", "high", "xhigh", "max"), "high"),
             "openai/gpt-5.4-nano": (("none", "low", "medium", "high", "xhigh"), "none"),
             "anthropic/claude-fable-5-1": (("low", "medium", "high", "xhigh", "max"), "high"),
@@ -295,6 +297,7 @@ class TierTests(SimpleTestCase):
         self.assertEqual(
             get_models_by_tier(TIER_MEDIUM),
             [
+                "openai/gpt-6.1-terra",
                 "openai/gpt-6-luna",
                 "openai/gpt-5.6-terra",
                 "anthropic/claude-sonnet-5-5",
@@ -333,6 +336,8 @@ class TierTests(SimpleTestCase):
         self.assertTrue(model_fits_slot("openai/gpt-5.6-terra", "medium"))
         # Primary requires 3 stars: Sonnet-class models stay eligible.
         self.assertTrue(model_fits_slot("openai/gpt-5.6-terra", "primary"))
+        self.assertTrue(model_fits_slot("openai/gpt-6.1-terra", "primary"))
+        self.assertFalse(model_fits_slot("openai/gpt-6.1-terra", "cheap"))
         self.assertTrue(model_fits_slot("anthropic/claude-sonnet-5", "primary"))
         self.assertTrue(model_fits_slot("openai/gpt-5.6-sol", "primary"))
         self.assertTrue(model_fits_slot("openai/gpt-6-astra", "primary"))

@@ -35,6 +35,11 @@ class PricingLookupTests(SimpleTestCase):
             get_model_pricing("openai/gpt-6-luna"),
             (Decimal("0.10"), Decimal("0.01"), Decimal("0.125"), Decimal("0.50")),
         )
+        # Cache reads are 0.05x input on GPT-6.1 Terra too.
+        self.assertEqual(
+            get_model_pricing("openai/gpt-6.1-terra"),
+            (Decimal("1.00"), Decimal("0.05"), Decimal("1.25"), Decimal("5.00")),
+        )
 
     def test_opus_55_prices(self):
         # Cache reads are 0.05x input on Opus 5.5 (not the usual 0.1x).
@@ -92,6 +97,10 @@ class PricingLookupTests(SimpleTestCase):
         self.assertEqual(
             get_model_pricing("gpt-6.1-sol", input_tokens=272_001),
             (Decimal("4.00"), Decimal("0.20"), Decimal("5.00"), Decimal("15.00")),
+        )
+        self.assertEqual(
+            get_model_pricing("gpt-6.1-terra", input_tokens=272_001),
+            (Decimal("2.00"), Decimal("0.10"), Decimal("2.50"), Decimal("7.50")),
         )
         self.assertEqual(
             get_model_pricing("gpt-6-luna", input_tokens=272_001),

@@ -44,10 +44,13 @@ class BenchmarkDataTests(SimpleTestCase):
 
     def test_missing_models(self):
         # GPT-6.1 Sol, Sonnet 5.5 and Haiku 5.5 have no Arena business
-        # rating yet (checked 2026-10-10).
+        # rating yet (checked 2026-10-10), nor GPT-6.1 Terra (2026-11-03).
         self.assertEqual(
             missing_models(BENCHMARK_ARENA_BUSINESS),
-            ["openai/gpt-6.1-sol", "anthropic/claude-sonnet-5-5", "anthropic/claude-haiku-5-5"],
+            [
+                "openai/gpt-6.1-sol", "openai/gpt-6.1-terra",
+                "anthropic/claude-sonnet-5-5", "anthropic/claude-haiku-5-5",
+            ],
         )
         self.assertEqual(missing_models(BENCHMARK_GDPVAL), [])
         for key in BENCHMARKS:
@@ -88,8 +91,12 @@ class BenchmarkDataTests(SimpleTestCase):
         )
 
     def test_livebench_if_missing_models(self):
-        # Gemini 4 Argon is not in a LiveBench release yet (checked 2026-10-14).
-        self.assertEqual(missing_models(BENCHMARK_LIVEBENCH_IF), ["gemini/gemini-4-argon"])
+        # Gemini 4 Argon is not in a LiveBench release (checked 2026-10-14);
+        # GPT-6.1 Terra came out after LiveBench 2.0 replaced the IF table.
+        self.assertEqual(
+            missing_models(BENCHMARK_LIVEBENCH_IF),
+            ["openai/gpt-6.1-terra", "gemini/gemini-4-argon"],
+        )
 
     def test_gemini_4_argon_scores(self):
         # AA and LMArena only run Argon at high.
@@ -116,6 +123,18 @@ class BenchmarkDataTests(SimpleTestCase):
             [s.effort for s in get_scores(BENCHMARK_LIVEBENCH_IF, "anthropic/claude-haiku-5-5")],
             ["xhigh", "max"],
         )
+
+    def test_gpt_6_1_terra_scores(self):
+        # Every effort level, "none" included, on all four AA benchmarks.
+        efforts = ["none", "low", "medium", "high", "xhigh", "max"]
+        for key in (
+            BENCHMARK_GDPVAL, BENCHMARK_GDP_PDF, BENCHMARK_OMNISCIENCE, BENCHMARK_RESPONSE_TIME,
+        ):
+            with self.subTest(key=key):
+                rows = get_scores(key, "openai/gpt-6.1-terra")
+                self.assertEqual([s.effort for s in rows], efforts)
+        gdpval = {s.effort: s.score for s in get_scores(BENCHMARK_GDPVAL, "openai/gpt-6.1-terra")}
+        self.assertEqual(gdpval["max"], 1476)
 
     def test_hallucination_rate_is_lower_is_better(self):
         self.assertFalse(get_benchmark(BENCHMARK_OMNISCIENCE).higher_is_better)
