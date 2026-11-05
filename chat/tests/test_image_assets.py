@@ -64,8 +64,33 @@ class AssetBlobCleanupTests(TestCase):
         asset = _make_asset(canvas=self.canvas)
         storage, name = asset.blob.storage, asset.blob.name
         self.assertTrue(storage.exists(name))
-        asset.delete()
+        with self.captureOnCommitCallbacks(execute=True):
+            asset.delete()
         self.assertFalse(storage.exists(name))
+
+    def test_blob_survives_until_commit(self):
+        # WILFRED-AK: the blob used to go before the row deletion committed, so a
+        # concurrent serve found the row but not its bytes.
+        asset = _make_asset(canvas=self.canvas)
+        storage, name, pk = asset.blob.storage, asset.blob.name, asset.pk
+        with self.captureOnCommitCallbacks(execute=False) as callbacks:
+            asset.delete()
+        self.assertFalse(Asset.objects.filter(pk=pk).exists())
+        self.assertTrue(storage.exists(name))
+        for cb in callbacks:
+            cb()
+        self.assertFalse(storage.exists(name))
+
+    def test_rolled_back_delete_keeps_blob(self):
+        asset = _make_asset(canvas=self.canvas)
+        storage, name, pk = asset.blob.storage, asset.blob.name, asset.pk
+        with self.captureOnCommitCallbacks(execute=True):
+            with self.assertRaises(RuntimeError):
+                with transaction.atomic():
+                    asset.delete()
+                    raise RuntimeError("roll back")
+        self.assertTrue(Asset.objects.filter(pk=pk).exists())
+        self.assertTrue(storage.exists(name))
 
     def test_reference_asset_delete_is_noop(self):
         from documents.models import DataRoom
@@ -76,7 +101,9 @@ class AssetBlobCleanupTests(TestCase):
         asset = Asset.objects.create(
             version=doc.current_version, blob="", content_type="image/png", size_bytes=0,
         )
-        asset.delete()  # blank blob → no storage call, no error
+        with self.captureOnCommitCallbacks(execute=True) as callbacks:
+            asset.delete()  # blank blob → no storage call, no error
+        self.assertEqual(callbacks, [])
 
     def test_blob_cleaned_on_cascade_delete(self):
         # Registering the post_delete receiver also stops Django fast-deleting the
@@ -84,7 +111,8 @@ class AssetBlobCleanupTests(TestCase):
         asset = _make_asset(canvas=self.canvas)
         storage, name = asset.blob.storage, asset.blob.name
         self.assertTrue(storage.exists(name))
-        self.thread.delete()
+        with self.captureOnCommitCallbacks(execute=True):
+            self.thread.delete()
         self.assertFalse(storage.exists(name))
 
 

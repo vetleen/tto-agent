@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 
+from django.db import transaction
 from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 from django.utils import timezone
@@ -39,6 +40,19 @@ def extend_dataroom_retain_on_attach(sender, instance, created, **kwargs):
     )
 
 
+def _delete_file_on_commit(storage, name, label, pk):
+    # post_delete fires inside the delete's transaction: removing the file only
+    # once the row deletion commits means a concurrent serve sees a clean 404
+    # (not a row whose blob is gone), and a rolled-back delete keeps its file.
+    def _cleanup():
+        try:
+            storage.delete(name)
+        except Exception:
+            logger.exception("Failed to delete %s id=%s path=%s", label, pk, name)
+
+    transaction.on_commit(_cleanup)
+
+
 @receiver(post_delete, sender="chat.ChatAttachment")
 def delete_file_on_chat_attachment_delete(sender, instance, **kwargs):
     file_field = instance.file
@@ -47,14 +61,7 @@ def delete_file_on_chat_attachment_delete(sender, instance, **kwargs):
     name = file_field.name
     if not name:
         return
-    try:
-        file_field.storage.delete(name)
-    except Exception:
-        logger.exception(
-            "Failed to delete file for ChatAttachment id=%s path=%s",
-            instance.pk,
-            name,
-        )
+    _delete_file_on_commit(file_field.storage, name, "file for ChatAttachment", instance.pk)
 
 
 @receiver(post_delete, sender="chat.Asset")
@@ -71,11 +78,4 @@ def delete_blob_on_asset_delete(sender, instance, **kwargs):
     name = file_field.name
     if not name:
         return
-    try:
-        file_field.storage.delete(name)
-    except Exception:
-        logger.exception(
-            "Failed to delete blob for Asset id=%s path=%s",
-            instance.pk,
-            name,
-        )
+    _delete_file_on_commit(file_field.storage, name, "blob for Asset", instance.pk)

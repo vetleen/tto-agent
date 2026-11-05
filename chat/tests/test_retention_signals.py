@@ -7,6 +7,7 @@ from pathlib import Path
 
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import transaction
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
@@ -124,8 +125,31 @@ class ChatAttachmentFileCleanupTests(TestCase):
         stored_path = Path(att.file.path)
         self.assertTrue(stored_path.exists())
 
-        att.delete()
+        with self.captureOnCommitCallbacks(execute=True):
+            att.delete()
         self.assertFalse(stored_path.exists())
+
+    def test_rolled_back_delete_keeps_file(self):
+        msg = ChatMessage.objects.create(thread=self.thread, role="user", content="file")
+        upload = SimpleUploadedFile("keep.txt", b"keep", content_type="text/plain")
+        att = ChatAttachment.objects.create(
+            thread=self.thread,
+            message=msg,
+            uploaded_by=self.user,
+            file=upload,
+            original_filename="keep.txt",
+            content_type="text/plain",
+            size_bytes=4,
+        )
+        stored_path, pk = Path(att.file.path), att.pk
+
+        with self.captureOnCommitCallbacks(execute=True):
+            with self.assertRaises(RuntimeError):
+                with transaction.atomic():
+                    att.delete()
+                    raise RuntimeError("roll back")
+        self.assertTrue(ChatAttachment.objects.filter(pk=pk).exists())
+        self.assertTrue(stored_path.exists())
 
     def test_thread_delete_cascades_to_file_removal(self):
         msg = ChatMessage.objects.create(thread=self.thread, role="user", content="file")
@@ -142,5 +166,6 @@ class ChatAttachmentFileCleanupTests(TestCase):
         stored_path = Path(att.file.path)
         self.assertTrue(stored_path.exists())
 
-        self.thread.delete()
+        with self.captureOnCommitCallbacks(execute=True):
+            self.thread.delete()
         self.assertFalse(stored_path.exists())
