@@ -191,3 +191,31 @@ class SentryTracesSamplerWiringTests(SimpleTestCase):
             {"DJANGO_DEBUG": "False", "SENTRY_DSN": _FAKE_DSN}, probe=_SAMPLER_PROBE,
         )
         self.assertEqual(out, "SAMPLER:core.sentry_sampling.traces_sampler")
+
+
+# Import settings, then feed the client's before_send a LangChain-integration
+# capture of a google-genai 429 and a non-LangChain one; print what survives.
+_BEFORE_SEND_PROBE = (
+    "import sentry_sdk; "
+    "from config import settings; "  # noqa: F401 — import triggers the gate
+    "from google.genai import errors; "
+    "bs = sentry_sdk.get_client().options['before_send']; "
+    "exc = errors.ClientError(429, {'error': {'code': 429, 'message': 'x', 'status': 'RESOURCE_EXHAUSTED'}}); "
+    "ev = lambda m: {'exception': {'values': [{'type': 'ClientError', 'mechanism': {'type': m}}]}}; "
+    "hint = {'exc_info': (type(exc), exc, None)}; "
+    "print('BEFORE_SEND:' + ','.join(m for m in ('langchain', 'logging') if bs(ev(m), hint) is not None))"
+)
+
+
+class SentryBeforeSendWiringTests(SimpleTestCase):
+    """Production init drops the LangChain integration's duplicate provider errors.
+
+    Every retried 429 / Gemini bare 400 was captured as an unhandled event
+    before base.py's retry handled it (WILFRED-A0, WILFRED-AP).
+    """
+
+    def test_before_send_drops_langchain_provider_errors(self) -> None:
+        out = _probe_sentry(
+            {"DJANGO_DEBUG": "False", "SENTRY_DSN": _FAKE_DSN}, probe=_BEFORE_SEND_PROBE,
+        )
+        self.assertEqual(out, "BEFORE_SEND:logging")

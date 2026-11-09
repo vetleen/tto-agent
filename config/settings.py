@@ -110,11 +110,15 @@ _sentry_dsn = os.environ.get("SENTRY_DSN", "")
 SENTRY_TRACES_SAMPLE_RATE = float(os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "1.0"))
 if _sentry_dsn and not _is_test_run and not _is_shell and not DEBUG:
     from core.middleware import get_request_id
+    from core.sentry_filters import drop_duplicate_provider_error
     from core.sentry_sampling import traces_sampler
     from core.sentry_scrub import scrub_event
 
     def _sentry_before_send(event, hint):
-        """Scrub PII, then tag every Sentry error event with the request_id."""
+        """Drop duplicate provider errors, scrub PII, tag with the request_id."""
+        event = drop_duplicate_provider_error(event, hint)
+        if event is None:
+            return None
         event = scrub_event(event)
         if event is None:
             return None
