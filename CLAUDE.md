@@ -35,9 +35,38 @@ DATABASE_URL= PGVECTOR_CONNECTION= python manage.py test accounts.tests.test_aut
 DATABASE_URL= PGVECTOR_CONNECTION= python manage.py test accounts.tests.test_auth.LoginTestCase.test_login  # Single test
 ```
 
-- The full suite takes ~10 minutes. Only run tests relevant to your changes unless changes are cross-cutting.
-- **`chat` is the slow app.** It alone accounts for most of the 10-minute total (heavy modules: `test_chat_end_to_end`, `test_consumer`, `test_subagent`). When verifying a cross-cutting change, prefer running only the *modules* that actually exercise the code path you touched, not the whole `chat` app. Reference points: `agent_skills` ≈ 2 min (120 tests), `core.tests.test_preferences` + `accounts.tests.test_settings_views` together ≈ 2.5 min (86 tests).
-- Use a generous timeout (5–10 min) or run in background. Use `TaskOutput` to await background runs rather than polling.
+- **The full suite takes ~40 minutes.** Only run tests relevant to your changes unless changes are
+  cross-cutting. Measured 2026-11-10 (6,844 tests; Windows 11 laptop, i7-12700H, SQLite, apps run
+  one at a time with `python manage.py test <app>`, wall-clock):
+
+  | App | Tests | Time |
+  |---|---|---|
+  | `chat` | 2,210 | 17.6 min |
+  | `accounts` | 481 | 5.9 min |
+  | `agent_skills` | 671 | 5.8 min |
+  | `documents` | 736 | 4.6 min |
+  | `meetings` | 428 | 2.7 min |
+  | `core` | 594 | 2.0 min |
+  | `guardrails` | 264 | 1.5 min |
+  | `feedback` | 65 | 0.6 min |
+  | `llm` | 1,376 | 0.4 min |
+  | `config` | 19 | 3 s |
+
+  Rule of thumb: ~0.5 s per test in the Django-heavy apps, ~0.01 s in `llm` (mostly pure unit
+  tests). Module reference point: `core.tests.test_preferences` + `accounts.tests.test_settings_views`
+  + `llm.tests.test_model_registry` + `llm.tests.test_context_budget` = 316 tests in 3.6 min.
+- **`chat` is the slow app** (heavy modules: `test_chat_end_to_end`, `test_consumer`, `test_subagent`). When verifying a cross-cutting change, prefer running only the *modules* that actually exercise the code path you touched, not the whole `chat` app.
+- Always run anything over a few minutes in the background (`chat` alone exceeds the 10-minute foreground cap). Use `TaskOutput` to await background runs rather than polling.
+- **Machine-dependent variables.** If the `.env` sets `AWS_STORAGE_BUCKET_NAME`, unset it for tests too
+  (`AWS_STORAGE_BUCKET_NAME= …`): settings pick S3 storage whenever it is set, even under `test`, and
+  every file-saving test plus the skill seed step then hits S3 (~1,200 errors). `TEST_APIS=True` runs
+  the live provider tests against the real keys; set `TEST_APIS=False` on the command line to skip
+  them. Failures that are the machine, not the code: `llm.tests.test_epo_ops.TokenTests` and the two
+  toolkit tests in `agent_skills.tests.test_tools` that name `patent_epoops_search` need
+  `EPO_OPS_KEY`/`EPO_OPS_SECRET` in the env (the EPO tools register only then);
+  `core.tests.test_static_references` needs the editor bundle built (`npm run build`); on Windows the
+  font-file test in `accounts.tests.test_slide_theme_endpoints` fails with WinError 32 (file still open
+  while its temp dir is deleted).
 - Run `python manage.py check` and `python manage.py makemigrations --dry-run` first — they're seconds and catch import/model errors before you spend minutes on tests.
 - Tracebacks like "DB locked", "Failed to write LLM call log", or `WARNING django.request: Forbidden:` lines are **expected** from error-handling and permission tests. Check the final summary line (`OK` / `FAILED`), not the noise above it.
 - When planning new features, always include good test coverage in the plan.
