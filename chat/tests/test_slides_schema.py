@@ -156,6 +156,21 @@ class ValidateDeckTests(SimpleTestCase):
         issues = schema.validate_deck(deck)
         self.assertTrue(any("Too many slides" in i["message"] for i in issues))
 
+    def test_sixty_slides_allowed(self):
+        self.assertEqual(schema.MAX_SLIDES_PER_DECK, 60)
+        deck = {"slides": [{} for _ in range(60)]}
+        self.assertEqual(schema.validate_deck(deck), [])
+
+    def test_layout_field_is_a_valid_slide_field(self):
+        from chat.slides.layouts import LAYOUT_IDS, get_layout
+
+        seed = get_layout("two_col")
+        self.assertEqual(seed["layout"], "two_col")
+        self.assertEqual(schema.validate_deck({"slides": [seed]}), [])
+        # Every premade layout still validates with its id recorded.
+        for lid in LAYOUT_IDS:
+            self.assertEqual(schema.validate_deck({"slides": [get_layout(lid)]}), [], lid)
+
     def test_table_span_rejected(self):
         deck = {"slides": [{"elements": [
             {"type": "table", "x": 1, "y": 1, "w": 1, "h": 1, "rows": [[{"t": "a", "span": 2}]]},

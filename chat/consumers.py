@@ -864,6 +864,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
         deck_id = data.get("deck_id")
 
         def _compose():
+            from django.utils import timezone
+
             from chat.models import SlideComment
 
             deck = self._owned_deck(thread_id, deck_id)
@@ -888,7 +890,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 )
                 lines.append(f"- {label} [{c.slide_id}]: {c.text}")
             SlideComment.objects.filter(pk__in=[c.pk for c in comments]).update(
-                status=SlideComment.Status.SENT
+                status=SlideComment.Status.SENT, sent_at=timezone.now()
             )
             return "\n".join(lines)
 

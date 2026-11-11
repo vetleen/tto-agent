@@ -540,6 +540,12 @@ class SlideSet(models.Model):
     base_template = models.CharField(max_length=100, blank=True, default="wilfred_default")
     is_active = models.BooleanField(default=False)
     last_activated_at = models.DateTimeField(null=True, blank=True)
+    # What the agent last saw of each slide: {slide_id: {"h": slide_seen_hash,
+    # "w": iso time of the agent's last write to it}}. Stamped only by the deck
+    # tools that return or write slide JSON (chat.slides.service.
+    # record_agent_slide_view); drives the outline's "changed since you read it"
+    # and unaddressed-comment flags. The deck sibling of ChatCanvas.agent_seen_sha.
+    agent_seen = models.JSONField(default=dict, blank=True)
     deleted_at = models.DateTimeField(null=True, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -614,6 +620,9 @@ class SlideComment(models.Model):
         max_length=10, choices=Status.choices, default=Status.OPEN, db_index=True
     )
     created_at = models.DateTimeField(auto_now_add=True)
+    # When the comment was sent to the assistant. A sent comment counts as
+    # unaddressed in the agent's deck outline until the agent writes its slide.
+    sent_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ["created_at"]

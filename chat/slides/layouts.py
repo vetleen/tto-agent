@@ -490,12 +490,14 @@ def get_layout(layout_id: str) -> dict | None:
 
     ``description`` is a catalogue-only field (see ``layout_catalog``) — it is
     stripped here so the returned dict is a valid Slide (the schema forbids
-    unknown keys). A seed's ``comment`` is a real Slide field and stays."""
+    unknown keys). A seed's ``comment`` is a real Slide field and stays, and
+    ``layout`` records the seed's id for the agent's deck outline."""
     seed = _LAYOUTS.get(layout_id)
     if seed is None:
         return None
     seed = copy.deepcopy(seed)
     seed.pop("description", None)
+    seed["layout"] = layout_id
     return seed
 
 

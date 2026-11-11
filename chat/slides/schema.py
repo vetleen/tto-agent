@@ -58,10 +58,10 @@ def image_placeholder_caption(token: str) -> str:
 
 
 # --- Limits -----------------------------------------------------------------
-DECK_MAX_CHARS = 120_000
+DECK_MAX_CHARS = 240_000
 MAX_SLIDE_SETS_PER_THREAD = 5
 MAX_ACTIVE_SLIDE_SETS = 1
-MAX_SLIDES_PER_DECK = 30
+MAX_SLIDES_PER_DECK = 60
 # Dense consulting exhibits — a maturity×applicability matrix, a process map, a
 # scorecard grid — legitimately place many small text/shape/icon elements, so
 # the cap is generous. It only guards against a runaway slide.
@@ -380,6 +380,9 @@ class Slide(_Strict):
     # rendered (unlike ``notes``, which becomes the .pptx speaker notes). Layout
     # seeds use it for per-layout guidance ("swap the bg for a photo…").
     comment: str = ""
+    # The premade layout the slide was seeded from (chat.slides.layouts) — shown
+    # in the agent's deck outline, never rendered. "" for hand-built slides.
+    layout: str = ""
     elements: list[Element] = Field(default_factory=list)
 
 
