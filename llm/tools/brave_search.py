@@ -136,33 +136,27 @@ def _parse_result_item(item: dict, category: str) -> dict:
     }
 
 
-def _search_core(
-    query: str,
-    count: int = 5,
-    freshness: str = "",
-    categories: list[str] | None = None,
+_WEB_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
+_LLM_CONTEXT_URL = "https://api.search.brave.com/res/v1/llm/context"
+
+
+def _brave_get_json(
+    url: str,
+    params: dict,
+    *,
     context=None,
+    timeout: float = 10,
+    query: str = "",
 ) -> dict:
-    """Run a Brave web search and return a result dict (no formatting).
+    """GET one Brave Search API endpoint and return its parsed JSON body.
 
-    Returns ``{"query", "results": [...], "count"}`` on success or
-    ``{"error": "...", "results": []}`` on failure. Each result item:
-    ``{type, title, url, description, age, extra_snippets}``.
+    Shared by every Brave endpoint (one subscription → one rate limiter): the
+    ``Api-Version`` pin, the response size cap, 429 backoff on
+    ``X-RateLimit-Reset``/``Retry-After``, exponential backoff on timeouts/5xx
+    (both capped by the run deadline) and the "don't retry" message on other
+    4xx. Returns the JSON dict on success or ``{"error": "..."}`` on failure.
     """
-    categories = categories or ["web"]
     api_key = _get_api_key()
-
-    params: dict = {
-        "q": query,
-        "count": count,
-        "extra_snippets": 1,
-        "result_filter": ",".join(categories),
-    }
-    if freshness:
-        params["freshness"] = freshness
-    # NOTE: Brave also supports `country` and `search_lang` (defaulting to
-    # US/en). Not exposed yet — candidates for org-locale settings or model
-    # inputs if US-biased results become a problem.
 
     headers = {
         "Accept": "application/json",
@@ -180,42 +174,22 @@ def _search_core(
         try:
             _brave_rate_limiter.acquire()
             response = requests.get(
-                "https://api.search.brave.com/res/v1/web/search",
+                url,
                 headers=headers,
                 params=params,
-                timeout=10,
+                timeout=timeout,
                 stream=True,
             )
             response.raise_for_status()
-            # Brave returns small JSON metadata, but cap the read anyway (on par
-            # with the fetch tool) so a malformed/huge body can't OOM the worker.
+            # Brave returns modest JSON, but cap the read anyway (on par with
+            # the fetch tool) so a malformed/huge body can't OOM the worker.
             from llm.tools.web_fetch import (
                 _enforce_size_and_buffer,
                 _max_response_bytes,
             )
 
             _enforce_size_and_buffer(response, _max_response_bytes())
-            data = response.json()
-
-            results = []
-            for category in categories:
-                section = data.get(category) or {}
-                for item in section.get("results", []) or []:
-                    results.append(_parse_result_item(item, category))
-
-            # Scan for prompt injection (log only, never blocks)
-            from guardrails.web_content import scan_web_content_from_tool
-
-            combined = "\n".join(
-                " ".join(
-                    [r.get("title", ""), r.get("description", "")]
-                    + (r.get("extra_snippets") or [])
-                )
-                for r in results
-            )
-            scan_web_content_from_tool(combined, context, source_label="brave_search")
-
-            return {"query": query, "results": results, "count": len(results)}
+            return response.json()
 
         except requests.exceptions.Timeout as e:
             last_exc = e
@@ -258,7 +232,7 @@ def _search_core(
                     " with a different query. Consider reporting this issue to the"
                     " user rather than continuing to search."
                 )
-                return {"error": error_msg, "results": []}
+                return {"error": error_msg}
             logger.warning("Brave Search HTTP %d (attempt %d) query=%r", response.status_code, attempt + 1, query)
         except requests.exceptions.RequestException as e:
             last_exc = e
@@ -270,7 +244,7 @@ def _search_core(
 
             if isinstance(e, _ResponseTooLarge):
                 logger.warning("Brave Search response too large query=%r: %s", query, e)
-                return {"error": "Brave Search returned an unexpectedly large response.", "results": []}
+                return {"error": "Brave Search returned an unexpectedly large response."}
             raise
 
         if attempt < _MAX_RETRIES:
@@ -287,15 +261,65 @@ def _search_core(
             "error": "Brave Search rate limited after retries."
             " Web search is temporarily unavailable."
             " Consider reporting this to the user rather than continuing to search.",
-            "results": [],
         }
     logger.error("Brave Search failed after retries query=%r", query, exc_info=last_exc)
     return {
         "error": "Brave Search failed after retries."
         " Web search is currently unavailable."
         " Consider reporting this to the user rather than continuing to search.",
-        "results": [],
     }
+
+
+def _search_core(
+    query: str,
+    count: int = 5,
+    freshness: str = "",
+    categories: list[str] | None = None,
+    context=None,
+) -> dict:
+    """Run a Brave web search and return a result dict (no formatting).
+
+    Returns ``{"query", "results": [...], "count"}`` on success or
+    ``{"error": "...", "results": []}`` on failure. Each result item:
+    ``{type, title, url, description, age, extra_snippets}``.
+    """
+    categories = categories or ["web"]
+
+    params: dict = {
+        "q": query,
+        "count": count,
+        "extra_snippets": 1,
+        "result_filter": ",".join(categories),
+    }
+    if freshness:
+        params["freshness"] = freshness
+    # NOTE: Brave also supports `country` and `search_lang` (defaulting to
+    # US/en). Not exposed yet — candidates for org-locale settings or model
+    # inputs if US-biased results become a problem.
+
+    data = _brave_get_json(_WEB_SEARCH_URL, params, context=context, query=query)
+    if "error" in data:
+        return {"error": data["error"], "results": []}
+
+    results = []
+    for category in categories:
+        section = data.get(category) or {}
+        for item in section.get("results", []) or []:
+            results.append(_parse_result_item(item, category))
+
+    # Scan for prompt injection (log only, never blocks)
+    from guardrails.web_content import scan_web_content_from_tool
+
+    combined = "\n".join(
+        " ".join(
+            [r.get("title", ""), r.get("description", "")]
+            + (r.get("extra_snippets") or [])
+        )
+        for r in results
+    )
+    scan_web_content_from_tool(combined, context, source_label="brave_search")
+
+    return {"query": query, "results": results, "count": len(results)}
 
 
 def _format_search_results(data: dict) -> str:
