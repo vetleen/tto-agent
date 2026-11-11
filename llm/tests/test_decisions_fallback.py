@@ -2,7 +2,7 @@
 from unittest.mock import MagicMock, patch
 
 from django.core.cache import cache
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, override_settings
 
 from llm.service import decisions_fallback
 from llm.service.decisions_fallback import FALLBACK_KIND, DecisionsRefused, decide_with_fallback
@@ -24,6 +24,7 @@ def _result(p=0.8):
     return DecisionsResult(answers=[PredicateAnswer(name="flagged", probability=p)], usage=Usage(), calls=[])
 
 
+@override_settings(DECISIONS_PRIMARY_ENABLED=True)
 class DecideWithFallbackTests(SimpleTestCase):
     def setUp(self):
         cache.clear()
@@ -110,3 +111,22 @@ class DecideWithFallbackTests(SimpleTestCase):
             self._run()
         levels = [r.levelname for r in logs.records]
         self.assertEqual(levels, ["WARNING", "INFO"])
+
+
+class KillSwitchTests(SimpleTestCase):
+    @override_settings(DECISIONS_PRIMARY_ENABLED=False)
+    def test_disabled_runs_the_legacy_path_untagged(self):
+        service = MagicMock()
+        fallback = MagicMock(return_value="legacy")
+        value = decide_with_fallback(
+            QUESTIONS, "text", feature_key="pii_scan", org_id=None,
+            interpret=lambda r: r, fallback=fallback, service=service,
+        )
+        self.assertEqual(value, "legacy")
+        fallback.assert_called_once_with({})
+        service.decide.assert_not_called()
+
+    def test_off_under_the_test_runner(self):
+        from django.conf import settings
+
+        self.assertFalse(settings.DECISIONS_PRIMARY_ENABLED)

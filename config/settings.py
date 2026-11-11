@@ -1006,6 +1006,15 @@ DECISIONS_STRUCTURED_BATCH_SIZE = _env_int("DECISIONS_STRUCTURED_BATCH_SIZE", "2
 # Cap on the shared input (cl100k estimate); over it the call raises instead of
 # trying either pathway. 0 = no cap.
 DECISIONS_MAX_INPUT_TOKENS = _env_int("DECISIONS_MAX_INPUT_TOKENS", "100000")
+# The classification jobs (chunk scan, chat/web/skill/identity classifiers, PII scan)
+# take their Layer-1 verdict from the Decisions service, with the legacy classifier as
+# the fallback (llm/service/decisions_fallback.py). False = every job uses the legacy
+# classifier directly: the operational kill switch. Forced off under `manage.py test`
+# so the existing classifier tests never reach a live pathway; tests of the Decisions
+# path opt in with override_settings.
+DECISIONS_PRIMARY_ENABLED = _get_env_bool(os.environ.get("DECISIONS_PRIMARY_ENABLED"), True)
+if TESTING:
+    DECISIONS_PRIMARY_ENABLED = False
 
 # Automatic model choice (chat/auto_model.py). A thread re-routes only at a cache
 # boundary: its first turn, after a history summarise, or once the provider's

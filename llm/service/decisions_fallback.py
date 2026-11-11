@@ -12,6 +12,9 @@
    every fallback is a countable ``LLMCallLog`` row:
    ``LLMCallLog.objects.filter(response_metadata__kind="decisions_fallback")``.
 
+``DECISIONS_PRIMARY_ENABLED=False`` skips Decisions entirely: ``fallback({})`` runs
+untagged (the kill switch; also the default under ``manage.py test``).
+
 Bad questions or input (``ValueError``/``ValidationError``) are validated up front
 and propagate: they are bugs, and the legacy path would not fix them. Anything that
 fails after that — provider errors, configuration errors, a refusal, an unexpected
@@ -72,13 +75,22 @@ def decide_with_fallback(
     fallback: Callable[[dict[str, Any]], T],
     context: RunContext | None = None,
     prompt_cache_key: str | None = None,
+    service=None,
 ) -> T:
-    """The job's verdict from Decisions, or from ``fallback(meta)`` when Decisions fails."""
+    """The job's verdict from Decisions, or from ``fallback(meta)`` when Decisions fails.
+
+    ``service`` defaults to the process-wide ``DecisionsService`` (callers pass their
+    own seam so tests can patch it per module)."""
+    from django.conf import settings
+
+    if not getattr(settings, "DECISIONS_PRIMARY_ENABLED", True):
+        # Kill switch: the legacy classifier is production. No fallback tag, no warning.
+        return fallback({})
     questions = validate_questions(questions)
     normalize_input(input)  # raises on bad input before any call
     context = context or RunContext.create()
     try:
-        result = _get_decisions_service().decide(
+        result = (service or _get_decisions_service()).decide(
             questions, input, feature_key=feature_key, org_id=org_id,
             context=context, prompt_cache_key=prompt_cache_key,
         )
