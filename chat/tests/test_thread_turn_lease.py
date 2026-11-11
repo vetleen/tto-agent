@@ -122,6 +122,37 @@ class WaitUntilFreeTests(SimpleTestCase):
         stop["now"] = True
         self.assertIsNone(await asyncio.wait_for(task, timeout=2))
 
+    async def test_cancel_during_the_cache_call_leaves_no_orphan_lease(self):
+        """Stop landing while try_acquire runs in its worker thread: the add still
+        happens, so the lease it took must be given back, not left for the TTL."""
+        from asgiref.sync import sync_to_async
+
+        entered = asyncio.Event()
+        finished = asyncio.Event()
+        loop = asyncio.get_running_loop()
+
+        def slow_acquire(thread_id, **kwargs):
+            loop.call_soon_threadsafe(entered.set)
+            time.sleep(0.2)
+            try:
+                return ttl.try_acquire(thread_id, **kwargs)
+            finally:
+                loop.call_soon_threadsafe(finished.set)
+
+        with patch.object(ttl, "_aio_try_acquire", sync_to_async(slow_acquire, thread_sensitive=False)):
+            task = asyncio.create_task(ttl.wait_until_free("t1", kind="chat", timeout=2))
+            await asyncio.wait_for(entered.wait(), timeout=2)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            # The cache call outlives the cancelled waiter: wait for it to land.
+            await asyncio.wait_for(finished.wait(), timeout=2)
+            await asyncio.sleep(0.05)
+            deadline = time.monotonic() + 2
+            while ttl.current("t1") is not None and time.monotonic() < deadline:
+                await asyncio.sleep(0.02)
+        self.assertIsNone(ttl.current("t1"))
+
     async def test_times_out(self):
         ttl.try_acquire("t1", kind="chat")
         with self.assertRaises(ttl.ThreadBusyTimeout):

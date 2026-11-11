@@ -190,6 +190,33 @@ async def keep_alive(lease: ThreadTurnLease) -> None:
         pass
 
 
+def _release_if_taken(future: asyncio.Future) -> None:
+    """Done-callback: give back a lease a cancelled waiter's cache call still took."""
+    if future.cancelled() or future.exception() is not None:
+        return
+    lease = future.result()
+    if lease is not None:
+        asyncio.get_running_loop().run_in_executor(None, release, lease)
+
+
+async def _try_acquire_cancel_safe(thread_id, *, kind, user_message_id=None):
+    """``try_acquire`` in a worker thread, safe against the caller's cancellation.
+
+    The cache call can't be interrupted: a Stop that cancels the waiting turn
+    mid-``cache.add`` would leave a lease in the cache that no one holds, keeping
+    the thread locked for the full TTL (staging, 2026-11-11). On cancellation the
+    call runs to the end and whatever it took is released.
+    """
+    future = asyncio.ensure_future(
+        _aio_try_acquire(thread_id, kind=kind, user_message_id=user_message_id)
+    )
+    try:
+        return await asyncio.shield(future)
+    except asyncio.CancelledError:
+        future.add_done_callback(_release_if_taken)
+        raise
+
+
 async def wait_until_free(
     thread_id,
     *,
@@ -212,7 +239,7 @@ async def wait_until_free(
     while True:
         if should_stop is not None and should_stop():
             return None
-        lease = await _aio_try_acquire(thread_id, kind=kind, user_message_id=user_message_id)
+        lease = await _try_acquire_cancel_safe(thread_id, kind=kind, user_message_id=user_message_id)
         if lease is not None:
             if notified:
                 lease.waited = True
