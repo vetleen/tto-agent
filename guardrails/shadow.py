@@ -25,7 +25,6 @@ the opposite comparison: production = the legacy classifier, shadow = Decisions.
 from __future__ import annotations
 
 import logging
-import threading
 import time
 import uuid
 from collections import Counter, defaultdict
@@ -65,39 +64,6 @@ class ProdVerdict:
     tags: list = field(default_factory=list)
     # allow | quarantine | threshold_quarantine | threshold_logged | ""
     review: str = ""
-
-
-# Own quick skip window for shadows that still call Decisions (removed once every
-# shadow runs the legacy classifier instead).
-SHADOW_SKIP_KEY = "decisions_quick_skip:shadow"
-_availability = None
-_service = None
-_lock = threading.Lock()
-
-
-def shadow_availability():
-    """The shadow's own quick skip window (never the live one)."""
-    global _availability
-    if _availability is None:
-        with _lock:
-            if _availability is None:
-                from llm.service.decisions_quick import QuickAvailability
-
-                _availability = QuickAvailability(key=SHADOW_SKIP_KEY)
-    return _availability
-
-
-def get_shadow_decisions_service():
-    """A DecisionsService bound to the shadow skip window."""
-    global _service
-    if _service is None:
-        availability = shadow_availability()  # takes the same lock: resolve it first
-        with _lock:
-            if _service is None:
-                from llm.service.decisions_service import DecisionsService
-
-                _service = DecisionsService(availability=availability)
-    return _service
 
 
 def day_bounds(day: date) -> tuple[datetime, datetime]:

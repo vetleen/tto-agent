@@ -556,6 +556,14 @@ def _scan_window(
     verdict = scan_pii_window(
         window_text, user_id=user_id, data_room_id=data_room_id, org_id=org_id,
     )
+    if verdict.source != "empty":
+        # The pending half of the nightly legacy shadow (ids and numbers; never raises).
+        from documents.services.pii_shadow import record_window_verdict
+
+        record_window_verdict(
+            version_id=version_id, document_id=document.id if document else None, org_id=org_id,
+            window_index=state.window_index, window=window, text=window_text, verdict=verdict,
+        )
     candidates = []
     for category, present in verdict.categories.items():
         if not present:

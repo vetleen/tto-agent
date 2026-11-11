@@ -5,6 +5,13 @@ Usage:
     python manage.py pii_shadow_report --date 2026-10-25 --days 1
     python manage.py pii_shadow_report --days 14 --disagreements
     python manage.py pii_shadow_report --run 2026-10-25       # run the shadow for that day first
+    python manage.py pii_shadow_report --direction decisions_shadow   # the pre-2026-11 comparison
+
+Directions: ``legacy_shadow`` (default; production = Decisions, the legacy structured
+classifier runs nightly as the shadow — adds a window-level comparison, since both
+verdicts are stored per window) and ``decisions_shadow`` (before 2026-11; production =
+the legacy classifier). "classifier" = the legacy classifier, "quick" = Decisions.
+Only completed rows are compared; pending and skipped rows are counted.
 
 Production stores the PII verdict per VERSION (its category tags) plus a review event
 per Art. 9/10 candidate window, so the headline comparison is version-level: a category
@@ -29,7 +36,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Q
 
 from documents.services.pii_scan import PII_CATEGORIES
-from documents.services.pii_shadow import SHADOW_FLAG_THRESHOLD
+from documents.services.pii_scan import PII_FLAG_THRESHOLD as SHADOW_FLAG_THRESHOLD
 from guardrails.shadow_stats import agreement, confusion, deciles, mean, pct
 
 _ARTICLE_ATTR = {"pii_special_category": "article_9", "pii_criminal_offence": "article_10"}
@@ -85,6 +92,19 @@ def summarize(rows) -> dict:
             "deciles": deciles(pairs),
         }
     out["per_category"] = per_category
+    # Window level: both verdicts are stored per window on legacy-shadow rows.
+    window_level = {}
+    for category in PII_CATEGORIES:
+        pairs = [
+            (category in (r.classifier_categories or []), (r.quick_probabilities or {}).get(category))
+            for r in quick_rows if r.direction == "legacy_shadow"
+        ]
+        pairs = [(flag, p) for flag, p in pairs if p is not None]
+        window_level[category] = {
+            "windows": len(pairs),
+            "confusion": confusion((flag, p >= SHADOW_FLAG_THRESHOLD) for flag, p in pairs),
+        }
+    out["window_level"] = window_level
 
     # Gated categories: the production reviewer on the classifier's candidate windows
     # vs. the same reviewer on quick-only candidates.
@@ -119,7 +139,7 @@ def summarize(rows) -> dict:
 
 
 class Command(BaseCommand):
-    help = "Report on the nightly PII shadow comparison (decisions quick pathway vs. the PII classifier)."
+    help = "Report on the nightly PII shadow (Decisions vs. the legacy PII classifier)."
 
     def add_arguments(self, parser):
         parser.add_argument("--date", help="Last day to report, YYYY-MM-DD (default: yesterday).")
@@ -128,6 +148,8 @@ class Command(BaseCommand):
                             help="List version/category disagreements with a live text preview.")
         parser.add_argument("--run", metavar="DATE",
                             help="Run the shadow for DATE first (fills in a skipped or partial night), then report.")
+        parser.add_argument("--direction", choices=("legacy_shadow", "decisions_shadow"), default="legacy_shadow",
+                            help="Which comparison to report (default: legacy_shadow, production = Decisions).")
 
     def handle(self, *args, **options):
         from django.utils import timezone
@@ -146,9 +168,16 @@ class Command(BaseCommand):
         days = max(1, options["days"])
         start_day = end_day - timedelta(days=days - 1)
 
-        rows = list(
-            PIIScanShadowResult.objects.filter(run_date__range=(start_day, end_day))
-            .order_by("run_date", "version_id", "window_index")
+        self.direction = options["direction"]
+        in_range = PIIScanShadowResult.objects.filter(run_date__range=(start_day, end_day), direction=self.direction)
+        rows = list(in_range.filter(state="done").order_by("run_date", "version_id", "window_index"))
+        skipped = Counter(in_range.filter(state="skipped").values_list("shadow_note", flat=True))
+        self.stdout.write(
+            f"direction: {self.direction} ("
+            + ("production = Decisions, shadow = legacy classifier" if self.direction == "legacy_shadow"
+               else "production = legacy classifier, shadow = Decisions")
+            + f")   pending: {in_range.filter(state='pending').count()}   skipped: "
+            + (" ".join(f"{k or '-'}={v}" for k, v in sorted(skipped.items())) or "-")
         )
         runs = list(PIIScanShadowRun.objects.filter(run_date__range=(start_day, end_day)).order_by("started_at"))
         if not rows and not runs:
@@ -183,6 +212,13 @@ class Command(BaseCommand):
               f" | agreement " + " ".join(f"@{t:.1f} {v}" for t, v in c["agreement"].items()))
             w(f"  {'':<28} deciles tagged     : " + " ".join(str(n) for n in c["deciles"]["prod_flagged"]))
             w(f"  {'':<28} deciles not tagged : " + " ".join(str(n) for n in c["deciles"]["prod_not_flagged"]))
+        if getattr(self, "direction", "legacy_shadow") == "legacy_shadow":
+            w(f"per category, window level (Decisions @{SHADOW_FLAG_THRESHOLD:.2f} vs. legacy classifier):")
+            for category, c in s["window_level"].items():
+                cells = c["confusion"]
+                w(f"  {category:<28} windows={c['windows']:<4} both_negative={cells['both_negative']}"
+                  f" both_positive={cells['both_positive']} classifier_only={cells['classifier_only']}"
+                  f" quick_only={cells['quick_only']}")
         g = s["gated"]
         actions = " ".join(f"{k}={v}" for k, v in sorted(g["prod_actions"].items())) or "-"
         quick_mean = f"{g['prod_candidates_quick_mean']:.2f}" if g["prod_candidates_quick_mean"] is not None else "-"
@@ -190,7 +226,8 @@ class Command(BaseCommand):
         w(f"  production candidate windows: {g['prod_candidate_windows']}   reviewer: {actions}"
           f"   quick on those candidates: flagged {g['prod_candidates_quick_flagged']}, mean p {quick_mean}")
         conf = f"{g['quick_only_mean_confidence']:.2f}" if g["quick_only_mean_confidence"] is not None else "-"
-        w(f"  quick-only candidate windows: {g['quick_only_windows']}   blind reviewer confirmed: {g['quick_only_confirmed']}"
+        one_sided = "legacy-only" if getattr(self, "direction", "legacy_shadow") == "legacy_shadow" else "quick-only"
+        w(f"  {one_sided} candidate windows: {g['quick_only_windows']}   blind reviewer confirmed: {g['quick_only_confirmed']}"
           f" (mean conf {conf})   no_model={g['quick_only_no_model']} errors={g['quick_only_errors']}"
           f" not_reviewed={g['quick_only_not_reviewed']}")
         w("")

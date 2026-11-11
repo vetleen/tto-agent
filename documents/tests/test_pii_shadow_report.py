@@ -73,6 +73,9 @@ class PIIShadowReportTests(TestCase):
 
     def _run(self, *args):
         out = StringIO()
+        # These fixtures are pre-2026-11 rows (production = the legacy classifier).
+        if "--direction" not in args:
+            args = (*args, "--direction", "decisions_shadow")
         call_command("pii_shadow_report", *args, stdout=out)
         return out.getvalue()
 
@@ -163,3 +166,28 @@ class PIIShadowReportTests(TestCase):
 
         with self.assertRaises(CommandError):
             self._run("--date", "25/10/2026")
+
+
+class LegacyShadowReportTests(TestCase):
+    """The default direction compares both verdicts window by window."""
+
+    def test_window_level_confusion_and_counts(self):
+        common = dict(run_date=DAY, version_id=1, chunk_index_from=0, chunk_index_to=0, window_tokens=1,
+                      window_chars=1, direction="legacy_shadow", quick_pathway="quick")
+        probs = {c: 0.05 for c in PII_CATEGORIES}
+        PIIScanShadowResult.objects.create(
+            window_index=0, state="done", quick_probabilities={**probs, "pii_ordinary_identity": 0.9},
+            classifier_categories=["pii_ordinary_financial"], **common,
+        )
+        PIIScanShadowResult.objects.create(window_index=1, state="pending", **common)
+        PIIScanShadowResult.objects.create(window_index=2, state="skipped", shadow_note="drifted", **common)
+        out = StringIO()
+        call_command("pii_shadow_report", "--date", DAY.isoformat(), "--days", "1", stdout=out)
+        text = out.getvalue()
+        self.assertIn("direction: legacy_shadow", text)
+        self.assertIn("pending: 1", text)
+        self.assertIn("drifted=1", text)
+        self.assertIn("window level (Decisions @0.50 vs. legacy classifier)", text)
+        s = summarize(list(PIIScanShadowResult.objects.filter(state="done")))
+        self.assertEqual(s["window_level"]["pii_ordinary_identity"]["confusion"]["quick_only"], 1)
+        self.assertEqual(s["window_level"]["pii_ordinary_financial"]["confusion"]["classifier_only"], 1)

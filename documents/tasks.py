@@ -756,8 +756,8 @@ def prune_document_versions() -> int:
 
 @shared_task(bind=True)
 def shadow_pii_scan_nightly(self) -> dict | str:
-    """Nightly shadow comparison of yesterday's PII scans against the decisions
-    service (documents.services.pii_shadow). A plain task, not DocumentPipelineTask:
+    """Nightly legacy-classifier shadow of the PII scan (documents.services.pii_shadow):
+    fills in the pending windows production recorded up to yesterday. A plain task, not DocumentPipelineTask:
     it holds no document slot and never touches versions, tags or review events.
     No retries — a partial night is completed by the next ``pii_shadow_report --run``.
     """

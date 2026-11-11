@@ -1,27 +1,29 @@
-"""Nightly shadow comparison of the PII category classifier against the decisions service.
+"""Nightly shadow of the PII scan: the legacy structured classifier against production.
 
 Production (``documents.services.pii_scan.scan_pii_categories_for_version``) windows a
-version's chunks, asks the cheap model for ten GDPR category booleans per window and
-escalates the two gated Article 9/10 candidates to the PII reviewer. It stores the
-per-version union as ``DataRoomDocumentTag`` rows and a ``PIIReviewEvent`` per reviewed
-window — not the per-window ordinary verdicts. This module re-runs the previous day's
-READY versions through the decisions quick pathway (the same windows via
-``iter_pii_windows``, the same system prompt and head/tail truncation, ten predicates
-named after the categories) and records, per window, the quick probabilities next to
-what production recorded for the window (the review event) and the version (its tags).
+version's chunks and asks the Decisions service ten GDPR category predicates per window
+(``scan_pii_window``); Art. 9/10 positives go to the PII reviewer. For every window it
+scans it calls :func:`record_window_verdict`, which writes one *pending*
+``PIIScanShadowResult`` (``direction="legacy_shadow"``): the Decisions probabilities,
+pathway and the window's chunk range — ids and numbers only. Every night
+:func:`run_pii_shadow_for_day` fills in the other half: it rebuilds each pending
+window with ``iter_pii_windows`` (skipped when the chunk range no longer matches), runs
+the legacy structured classifier (``pii_scan._scan_pii_categories_legacy``, same prompt
+and truncation) and records production's review event for the window and the
+version's tags.
 
-The PII reviewer is already blind — its Layer-1 block lists candidate categories only,
-no confidence or reasoning — so production's own review IS the blind verdict for the
-windows it flagged. The shadow therefore reviews only quick-only gated positives
-(quick ≥ 0.5 on Art. 9/10, no production candidate in that window and the category
-absent from the version's tags), with the same reviewer and prompt.
+The PII reviewer is blind (its Layer-1 block lists candidate categories only), so
+production's own review is the blind verdict for every window Decisions flagged. The
+shadow therefore reviews only legacy-only gated positives — the legacy classifier says
+Art. 9/10, Decisions said < 0.5, no production candidate in that window and the
+category absent from the version's tags — with the same reviewer and prompt.
 
-Side-effect free: it writes only ``PIIScanShadowRun``/``PIIScanShadowResult`` rows (ids
-and numbers, never text) and the ``LLMCallLog`` rows of its own calls (grouped by the
-run's trace_id). It never touches versions, tags or review events, and it shares the
-chunk shadow's decisions service and skip window (``decisions_quick_skip:shadow``) so a
-failure never routes live traffic to the structured pathway. The PII scan itself is
-unchanged. Report: ``manage.py pii_shadow_report``.
+Side-effect free: it writes only ``PIIScanShadowRun``/``PIIScanShadowResult`` rows
+(never text) and the ``LLMCallLog`` rows of its own calls (grouped by the run's
+trace_id). It never touches versions, tags or review events. Kill switch
+``PII_SHADOW_ENABLED`` (it also gates the pending-row writes); caps
+``PII_SHADOW_MAX_WINDOWS``/``_MAX_REVIEWS``. Report: ``manage.py pii_shadow_report``.
+Rows before 2026-11 (``direction="decisions_shadow"``) are the opposite comparison.
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import date
 
 from django.conf import settings
@@ -37,87 +39,62 @@ from django.conf import settings
 from documents.services.pii_scan import (
     GATED_CATEGORIES,
     PII_CATEGORIES,
-    _PII_SYSTEM_PROMPT,
+    PII_FLAG_THRESHOLD,
     iter_pii_windows,
-    build_pii_input,
-    build_pii_questions,
     pii_window_text,
 )
-from llm.types.decisions import InputMessage, Question
 
 logger = logging.getLogger(__name__)
 
 SHADOW_FEATURE_KEY = "shadow_pii_scan"
-# Quick probability at/above which a category counts as present (the report
-# recomputes agreement at other thresholds from the stored probabilities).
-SHADOW_FLAG_THRESHOLD = 0.5
-# Consecutive failed decide() calls after which the night is abandoned.
-CONSECUTIVE_DECIDE_ERRORS_ABORT = 3
-PATHWAY_QUICK = "quick"
+DIRECTION = "legacy_shadow"
+# Consecutive failed legacy calls after which the night is abandoned.
+CONSECUTIVE_ERRORS_ABORT = 3
 
 
 # ---------------------------------------------------------------------------
-# The decisions call
+# Production side: the pending half
 # ---------------------------------------------------------------------------
 
 
-def build_questions() -> list[Question]:
-    return build_pii_questions()
+def record_window_verdict(*, version_id, document_id, org_id, window_index, window: list[dict], text: str, verdict) -> None:
+    """One pending shadow row for a window production just scanned. Never raises.
 
+    ``verdict`` is the production ``PIIWindowVerdict``; a verdict the legacy classifier
+    produced (Decisions failed) is recorded with ``shadow_note="prod_legacy:<error>"``
+    and no probabilities.
+    """
+    if not getattr(settings, "PII_SHADOW_ENABLED", False) or not version_id or not window:
+        return
+    try:
+        from django.utils import timezone
 
-def build_input(window_text: str) -> list[InputMessage]:
-    return build_pii_input(window_text)
+        from documents.models import PIIScanShadowResult
 
-
-def decide_window(service, window_text: str, *, org_id, context) -> tuple[dict[str, float | None], str]:
-    """One decide() over a window → ``({category: probability | None}, pathway)``."""
-    result = service.decide(
-        build_questions(), build_input(window_text),
-        feature_key=SHADOW_FEATURE_KEY, org_id=org_id, context=context,
-    )
-    probabilities = {}
-    for category in PII_CATEGORIES:
-        answer = result[category]
-        probabilities[category] = answer.probability if answer.type == "predicate" else None
-    return probabilities, result.pathway
+        legacy = verdict.source != "decisions"
+        PIIScanShadowResult.objects.bulk_create([PIIScanShadowResult(
+            run_date=timezone.localdate(), org_id=org_id, version_id=version_id, document_id=document_id,
+            window_index=window_index,
+            chunk_index_from=window[0]["chunk_index"], chunk_index_to=window[-1]["chunk_index"],
+            window_tokens=sum(int(c.get("token_count") or 0) for c in window), window_chars=len(text),
+            quick_probabilities={} if legacy else dict(verdict.probabilities or {}),
+            quick_pathway="" if legacy else (verdict.pathway or "")[:12],
+            classifier_categories=sorted(verdict.categories) if legacy else [],
+            direction=DIRECTION, state="pending",
+            shadow_note=(f"prod_legacy:{verdict.decide_error}" if legacy else "")[:64],
+        )], ignore_conflicts=True)
+    except Exception:
+        logger.warning("shadow_pii_scan: recording a production verdict failed (non-fatal)", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
-# Selection and production verdicts
+# Production verdicts
 # ---------------------------------------------------------------------------
-
-
-def select_version_ids(day: date) -> list[int]:
-    """READY versions created on ``day`` (Oslo) that have chunks."""
-    from django.db.models import Exists, OuterRef
-
-    from documents.models import DataRoomDocument, DataRoomDocumentChunk, DataRoomDocumentVersion
-    from guardrails.shadow import day_bounds
-
-    start, end = day_bounds(day)
-    has_chunks = DataRoomDocumentChunk.objects.filter(version_id=OuterRef("pk"))
-    return list(
-        DataRoomDocumentVersion.objects.filter(
-            created_at__gte=start, created_at__lt=end, status=DataRoomDocument.Status.READY,
-        )
-        .filter(Exists(has_chunks))
-        .order_by("pk")
-        .values_list("pk", flat=True)
-    )
-
-
-def recorded_windows(day: date, version_id: int) -> set[int]:
-    from documents.models import PIIScanShadowResult
-
-    return set(
-        PIIScanShadowResult.objects.filter(run_date=day, version_id=version_id)
-        .values_list("window_index", flat=True)
-    )
 
 
 def production_window_events(version_id: int) -> dict[int, dict]:
-    """The PII review event per window index (the classifier's gated candidates and
-    the reviewer's verdict); windows without a candidate have none."""
+    """The PII review event per window index (production's gated candidates and the
+    reviewer's verdict); windows without a candidate have none."""
     from documents.models import PIIReviewEvent
 
     rows = (
@@ -164,30 +141,43 @@ def blind_review(window_text: str, candidates: list[str], *, document_title: str
 
 
 # ---------------------------------------------------------------------------
-# The run
+# The nightly run
 # ---------------------------------------------------------------------------
 
 
-def run_pii_shadow_for_day(day: date, *, max_windows: int | None = None, max_reviews: int | None = None) -> dict:
-    """Compare ``day``'s versions window by window; returns the summary (also stored
-    on the run row). Idempotent: windows already recorded for ``day`` are skipped, so a
-    retry or a manual ``--run`` fills in what a partial night left out.
-    """
-    import os
+def pending_rows(day: date):
+    """Pending rows recorded on or before ``day``."""
+    from documents.models import PIIScanShadowResult
 
+    return PIIScanShadowResult.objects.filter(direction=DIRECTION, state="pending", run_date__lte=day)
+
+
+_DONE_FIELDS = [
+    "classifier_categories", "prod_candidates", "prod_action", "prod_article_9", "prod_article_10",
+    "prod_version_categories", "blind_review", "blind_candidates", "blind_article_9", "blind_article_10",
+    "blind_confidence", "state", "shadow_note", "trace_id",
+]
+
+
+def run_pii_shadow_for_day(day: date, *, max_windows: int | None = None, max_reviews: int | None = None) -> dict:
+    """Fill in the legacy half of every pending window up to ``day``; returns the
+    summary (also stored on the run row). Resumable: only pending rows are selected
+    and each version is saved as it finishes.
+    """
     from django.db.models import Count, Sum
     from django.db.utils import InterfaceError, OperationalError
     from django.utils import timezone
 
     from documents.models import DataRoomDocumentVersion, PIIScanShadowResult, PIIScanShadowRun
-    from documents.services.pii_scan import org_id_for_document, resolve_pii_gate
-    from guardrails.shadow import get_shadow_decisions_service, shadow_availability
+    from documents.services.description import _prepare_document_text
+    from documents.services.pii_scan import _scan_pii_categories_legacy, org_id_for_document, resolve_pii_gate
     from llm.models import LLMCallLog
     from llm.types.context import RunContext
 
     t0 = time.perf_counter()
     trace_id = f"shadow-pii-{day:%Y%m%d}-{uuid.uuid4().hex[:12]}"
     context = RunContext(trace_id=trace_id)
+    log_metadata = {"kind": "shadow", "feature": SHADOW_FEATURE_KEY}
     windows_left = max_windows if max_windows is not None else int(settings.PII_SHADOW_MAX_WINDOWS)
     reviews_left = max_reviews if max_reviews is not None else int(settings.PII_SHADOW_MAX_REVIEWS)
     counters: Counter = Counter()
@@ -199,6 +189,7 @@ def run_pii_shadow_for_day(day: date, *, max_windows: int | None = None, max_rev
         out = dict(counters)
         out.update({
             "day": day.isoformat(),
+            "direction": DIRECTION,
             "trace_id": trace_id,
             "versions": len(versions_seen),
             "orgs": len(orgs_seen),
@@ -218,141 +209,134 @@ def run_pii_shadow_for_day(day: date, *, max_windows: int | None = None, max_rev
         )
         return out
 
+    def mark_skipped(rows, note):
+        for row in rows:
+            row.state, row.shadow_note = "skipped", note[:64]
+        PIIScanShadowResult.objects.bulk_update(rows, ["state", "shadow_note"])
+        skipped[note] += len(rows)
+
     try:
         run = PIIScanShadowRun.objects.create(run_date=day, trace_id=trace_id)
-        if not os.environ.get("OPENAI_API_KEY"):
-            skipped["no_openai_key"] += 1
-            return summary(run)
-        version_ids = select_version_ids(day)
+        by_version: dict[int, list] = defaultdict(list)
+        for row in pending_rows(day).order_by("version_id", "window_index", "run_date"):
+            by_version[row.version_id].append(row)
     except (OperationalError, InterfaceError):
         logger.info("shadow_pii_scan: DB unavailable; will retry next tick.", exc_info=True)
         return {"day": day.isoformat(), "skipped": {"db_unavailable": 1}}
 
-    from core.preferences import resolve_decisions_settings
-
-    service = get_shadow_decisions_service()
-    org_skip: dict = {}  # org_id -> skip reason or None
     consecutive_errors = 0
-    aborted = False
-
-    for version_id in version_ids:
-        if aborted:
-            break
+    for version_id, rows in by_version.items():
+        if windows_left <= 0:
+            skipped["cap_windows"] += len(rows)  # they stay pending
+            continue
         version = DataRoomDocumentVersion.objects.select_related("document").filter(pk=version_id).first()
         if version is None:
+            mark_skipped(rows, "version_gone")
             continue
         doc = version.document
         org_id = org_id_for_document(doc)
-        if org_id not in org_skip:
-            reason = None
-            pii_model, pii_enabled, _quarantine = resolve_pii_gate(org_id)
-            if not pii_model or not pii_enabled:
-                reason = "pii_off"
-            else:
-                prefs = resolve_decisions_settings(org_id)
-                if not prefs.quick_enabled or not prefs.quick_model:
-                    reason = "quick_off"
-            org_skip[org_id] = reason
-        if org_skip[org_id]:
-            skipped[org_skip[org_id]] += 1
+        pii_model, pii_enabled, _quarantine = resolve_pii_gate(org_id)
+        if not pii_model or not pii_enabled:
+            mark_skipped(rows, "pii_off")
             continue
-
-        already = recorded_windows(day, version_id)
+        wanted = {r.window_index: r for r in rows}
+        windows = {index: window for index, window in iter_pii_windows(version_id) if index in wanted}
+        drifted = [
+            r for r in rows
+            if r.window_index not in windows
+            or (windows[r.window_index][0]["chunk_index"], windows[r.window_index][-1]["chunk_index"])
+            != (r.chunk_index_from, r.chunk_index_to)
+        ]
+        if drifted:
+            mark_skipped(drifted, "drifted")
+        rows = [r for r in rows if r not in drifted]
+        if not rows:
+            continue
+        versions_seen.add(version_id)
+        orgs_seen.add(org_id)
         prod_events = production_window_events(version_id)
         prod_categories = production_version_categories(version_id)
         document_title = getattr(doc, "display_name", "") or ""
-        rows = []
-        for index, window in iter_pii_windows(version_id):
-            if index in already:
-                continue
+        done = []
+        for row in rows:
             if windows_left <= 0:
                 skipped["cap_windows"] += 1
                 continue
-            text = pii_window_text(window)
-            if not text.strip():
-                skipped["empty_window"] += 1
-                continue
-            if shadow_availability().is_suspended():
-                skipped["quick_suspended"] += 1
-                continue
-            try:
-                probabilities, pathway = decide_window(service, text, org_id=org_id, context=context)
-            except Exception:
-                logger.exception("shadow_pii_scan: decide failed version_id=%s window=%s", version_id, index)
-                counters["decide_errors"] += 1
-                consecutive_errors += 1
-                if consecutive_errors >= CONSECUTIVE_DECIDE_ERRORS_ABORT:
-                    skipped["aborted"] += 1
-                    aborted = True
-                    break
-                continue
-            consecutive_errors = 0
-            windows_left -= 1
-            versions_seen.add(version_id)
-            orgs_seen.add(org_id)
-            counters["windows"] += 1
-            if pathway != PATHWAY_QUICK:
-                counters["non_quick"] += 1
-            if any(p is None for p in probabilities.values()):
-                counters["refusals"] += 1
-
-            event = prod_events.get(index)
-            prod_candidates = list((event or {}).get("candidate_categories") or [])
-            quick_gated = [
-                c for c in GATED_CATEGORIES
-                if probabilities.get(c) is not None and probabilities[c] >= SHADOW_FLAG_THRESHOLD
-            ]
-            counters["quick_gated_windows"] += 1 if quick_gated else 0
-            counters["prod_gated_windows"] += 1 if prod_candidates else 0
-            # Production's own review is already blind, so only quick-only gated
-            # positives the version was never tagged with need a second opinion.
-            to_review = [c for c in quick_gated if c not in prod_candidates and c not in prod_categories]
-            blind, a9, a10, conf = "", None, None, None
-            if to_review:
-                if reviews_left > 0:
-                    reviews_left -= 1
-                    counters["reviews"] += 1
-                    blind, a9, a10, conf = blind_review(
-                        text, to_review, document_title=document_title, org_id=org_id, context=context,
+            text = pii_window_text(windows[row.window_index])
+            if not row.shadow_note.startswith("prod_legacy"):
+                try:
+                    categories = _scan_pii_categories_legacy(
+                        _prepare_document_text(text), None, org_id, context=context, log_metadata=log_metadata,
                     )
-                    if blind == "reviewed":
-                        confirmed = (a9 and "pii_special_category" in to_review) or (a10 and "pii_criminal_offence" in to_review)
-                        counters["blind_confirmed" if confirmed else "blind_dismissed"] += 1
-                    else:
-                        counters["blind_error"] += 1
-                else:
-                    blind = "not_reviewed"
-                    counters["reviews_capped"] += 1
-
-            rows.append(PIIScanShadowResult(
-                run_date=day, trace_id=trace_id, org_id=org_id,
-                version_id=version_id, document_id=doc.pk if doc else None,
-                window_index=index,
-                chunk_index_from=window[0]["chunk_index"], chunk_index_to=window[-1]["chunk_index"],
-                window_tokens=sum(int(c.get("token_count") or 0) for c in window), window_chars=len(text),
-                quick_probabilities=probabilities, quick_pathway=pathway,
-                prod_candidates=prod_candidates,
-                prod_action=str((event or {}).get("action") or ""),
-                prod_article_9=(event or {}).get("article_9") if event else None,
-                prod_article_10=(event or {}).get("article_10") if event else None,
-                prod_version_categories=prod_categories,
-                blind_review=blind, blind_candidates=to_review if blind else [],
-                blind_article_9=a9, blind_article_10=a10, blind_confidence=conf,
-            ))
-        if rows:
-            PIIScanShadowResult.objects.bulk_create(rows, ignore_conflicts=True)
+                except Exception:
+                    logger.exception("shadow_pii_scan: legacy classifier failed version_id=%s window=%s",
+                                     version_id, row.window_index)
+                    counters["classifier_errors"] += 1
+                    consecutive_errors += 1
+                    if consecutive_errors >= CONSECUTIVE_ERRORS_ABORT:
+                        skipped["aborted"] += 1
+                        if done:
+                            PIIScanShadowResult.objects.bulk_update(done, _DONE_FIELDS)
+                        return summary(run)
+                    continue
+                consecutive_errors = 0
+                row.classifier_categories = sorted(categories)
+                windows_left -= 1
+                counters["windows"] += 1
+            event = prod_events.get(row.window_index)
+            row.prod_candidates = list((event or {}).get("candidate_categories") or [])
+            row.prod_action = str((event or {}).get("action") or "")
+            row.prod_article_9 = event.get("article_9") if event else None
+            row.prod_article_10 = event.get("article_10") if event else None
+            row.prod_version_categories = prod_categories
+            row.trace_id = trace_id
+            row.state = "done"
+            done.append(row)
+            if row.shadow_note.startswith("prod_legacy"):
+                continue  # production already was the legacy classifier
+            probabilities = row.quick_probabilities or {}
+            legacy_gated = [c for c in GATED_CATEGORIES if c in row.classifier_categories]
+            counters["legacy_gated_windows"] += 1 if legacy_gated else 0
+            counters["prod_gated_windows"] += 1 if row.prod_candidates else 0
+            # Production's review is already blind, so only legacy-only gated positives
+            # the version was never tagged with need a second opinion.
+            to_review = [
+                c for c in legacy_gated
+                if (probabilities.get(c) or 0.0) < PII_FLAG_THRESHOLD
+                and c not in row.prod_candidates and c not in prod_categories
+            ]
+            if not to_review:
+                continue
+            if reviews_left <= 0:
+                row.blind_review = "not_reviewed"
+                row.blind_candidates = to_review
+                counters["reviews_capped"] += 1
+                continue
+            reviews_left -= 1
+            counters["reviews"] += 1
+            row.blind_review, row.blind_article_9, row.blind_article_10, row.blind_confidence = blind_review(
+                text, to_review, document_title=document_title, org_id=org_id, context=context,
+            )
+            row.blind_candidates = to_review
+            if row.blind_review == "reviewed":
+                confirmed = (row.blind_article_9 and "pii_special_category" in to_review) or (
+                    row.blind_article_10 and "pii_criminal_offence" in to_review)
+                counters["blind_confirmed" if confirmed else "blind_dismissed"] += 1
+            else:
+                counters["blind_error"] += 1
+        if done:
+            PIIScanShadowResult.objects.bulk_update(done, _DONE_FIELDS)
 
     return summary(run)
 
 
 __all__ = [
+    "DIRECTION",
     "SHADOW_FEATURE_KEY",
-    "SHADOW_FLAG_THRESHOLD",
-    "build_input",
-    "build_questions",
-    "decide_window",
+    "blind_review",
+    "pending_rows",
     "production_version_categories",
     "production_window_events",
+    "record_window_verdict",
     "run_pii_shadow_for_day",
-    "select_version_ids",
 ]
