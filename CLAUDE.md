@@ -126,6 +126,19 @@ For deploy details, config vars, rollback, and ops, see `RUNBOOK.md`.
 - **feedback/** — In-app feedback submissions (text + screenshot + console errors) via `/api/feedback/submit/`.
 - **core/** — Shared utilities (tokens, preferences), custom error pages, request-ID middleware.
 
+## Model Registry
+
+`llm/model_registry.py` keeps **one live model per line**: when a newer generation of the same
+line ships (Fable 5.1 → 5.2, GPT-6 Sol → 6.1 Sol) the older entry is deleted from `_MODELS` and
+forwarded with a `MODEL_REPLACEMENTS` row (rows are never repointed; chains resolve). A different
+line is never a successor (Gemini 3.1 Pro stays beside Gemini 4). **Every add or retire also
+updates `llm/model_benchmarks.py`**: look up the model's real scores on each source; where a source
+has not measured it yet, a model that replaces a retired generation borrows that predecessor's rows
+(`_PREDECESSORS`, marked in the guide as "Measured on …") until a real score exists, and a model
+with no predecessor stays unranked. Re-check the sources for models still on a stand-in each time.
+A deployed `LLM_ALLOWED_MODELS` naming a retired id forwards by itself; a brand-new line
+(e.g. `gemini/gemini-4-carbon`) must be added to that config var to appear.
+
 ## Decisions
 
 `llm/service/decisions_service.py` answers structured **predicate / choice / score** questions
@@ -374,8 +387,8 @@ dropped (the model can always call the tool again):
   fails safely (missing required field, or the tool rejects empty input), and
   `find_echoed_marker` stays as the backstop. Never trim content that has no read path
   (e.g. deck writes only when superseded).
-- **Preserved thinking**: `ModelInfo.binds_thinking_to_prefix` (False for all current
-  models; set it for Claude models released after 2026-10-01) makes the Anthropic adapter
+- **Preserved thinking**: `ModelInfo.binds_thinking_to_prefix` (True for Haiku 5.5 and
+  Fable 5.2; set it for every Claude model released after 2026-10-01) makes the Anthropic adapter
   send beta `thinking-binding-controls-2026-08-01` + `block_binding.prefix_mismatch_behavior:
   "drop_block"`, so an edit point drops replayed reasoning instead of 400ing;
   `WilfredChatAnthropic` keeps the stream's `input_transformations`.

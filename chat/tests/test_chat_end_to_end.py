@@ -162,11 +162,11 @@ class ChatEndToEndTests(TransactionTestCase):
     # create_chat_model, so no real API is called.
     @patch.dict(
         os.environ,
-        {"LLM_ALLOWED_MODELS": "openai/gpt-5.6-terra", "DEFAULT_LLM_MODEL": "openai/gpt-5.6-terra"},
+        {"LLM_ALLOWED_MODELS": "openai/gpt-6.1-terra", "DEFAULT_LLM_MODEL": "openai/gpt-6.1-terra"},
         clear=False,
     )
     async def test_user_message_to_llm_tokens_to_persisted_assistant(self):
-        fake = _FakeChatModel(model_name="openai/gpt-5.6-terra", tokens="Hello")
+        fake = _FakeChatModel(model_name="openai/gpt-6.1-terra", tokens="Hello")
         self._register_fake_model(fake)
 
         communicator = await self._connect()
@@ -211,18 +211,18 @@ class ChatEndToEndTests(TransactionTestCase):
         # User message has semi-static/dynamic context prepended for caching;
         # the original user text should still be present at the end.
         self.assertIn("Hi", req.messages[-1].content)
-        self.assertEqual(req.model, "openai/gpt-5.6-terra")
+        self.assertEqual(req.model, "openai/gpt-6.1-terra")
 
     @patch.dict(
         os.environ,
-        {"LLM_ALLOWED_MODELS": "openai/gpt-5.6-terra", "DEFAULT_LLM_MODEL": "openai/gpt-5.6-terra"},
+        {"LLM_ALLOWED_MODELS": "openai/gpt-6.1-terra", "DEFAULT_LLM_MODEL": "openai/gpt-6.1-terra"},
         clear=False,
     )
     async def test_first_message_canvas_injected_into_turn_one(self):
         # A canvas pasted before the thread existed (carried on the first
         # chat.message) must be persisted + activated BEFORE turn 1 assembles its
         # context — so the model sees it on the first message, not only the second.
-        fake = _FakeChatModel(model_name="openai/gpt-5.6-terra", tokens="Done")
+        fake = _FakeChatModel(model_name="openai/gpt-6.1-terra", tokens="Done")
         self._register_fake_model(fake)
 
         communicator = await self._connect()
@@ -265,7 +265,7 @@ class ChatEndToEndTests(TransactionTestCase):
 
     @patch.dict(
         os.environ,
-        {"LLM_ALLOWED_MODELS": "openai/gpt-5.6-terra", "DEFAULT_LLM_MODEL": "openai/gpt-5.6-terra"},
+        {"LLM_ALLOWED_MODELS": "openai/gpt-6.1-terra", "DEFAULT_LLM_MODEL": "openai/gpt-6.1-terra"},
         clear=False,
     )
     @patch("documents.services.retrieval.similarity_search_chunks")
@@ -280,7 +280,7 @@ class ChatEndToEndTests(TransactionTestCase):
         self.addCleanup(section_patch.stop)
 
         fake = _FakeChatModel(
-            model_name="openai/gpt-5.6-terra",
+            model_name="openai/gpt-6.1-terra",
             tokens="Done",
             tool_call_on_first_generate=True,
         )

@@ -853,7 +853,7 @@ class DescribeImageTests(TestCase):
 
         # Anthropic models spell the floor "off"; a model without reasoning
         # controls gets no level at all (the service then leaves it alone).
-        describe_image(b"\x89PNG", "image/png", self.user, model="anthropic/claude-sonnet-5")
+        describe_image(b"\x89PNG", "image/png", self.user, model="anthropic/claude-haiku-5-5")
         self.assertEqual(mock_svc.return_value.run.call_args[0][1].params["thinking_level"], "off")
         with patch("llm.display.supports_vision", return_value=True), \
              patch("llm.display.get_thinking_levels", return_value=[]):

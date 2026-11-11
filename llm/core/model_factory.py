@@ -299,7 +299,7 @@ def create_chat_model(model_name: str, **overrides):
 
     Args:
         model_name: Model name with optional provider prefix
-            (e.g. "gpt-5.6-terra", "anthropic/claude-sonnet-5").
+            (e.g. "gpt-6.1-terra", "anthropic/claude-sonnet-5-5").
         **overrides: Additional kwargs passed to init_chat_model.
 
     Returns:

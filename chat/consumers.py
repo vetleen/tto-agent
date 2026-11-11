@@ -194,6 +194,16 @@ def _skill_requires_refusal_reason(required_slug: str) -> str:
     )
 
 
+def _is_retired_model_id(model_id: object) -> bool:
+    """Whether *model_id* is a retired ID that forwards to a live model."""
+    from llm.model_registry import canonical_model_id
+
+    if not isinstance(model_id, str) or not model_id:
+        return False
+    canonical = canonical_model_id(model_id)
+    return canonical is not None and canonical.split("/", 1)[-1] != model_id.split("/", 1)[-1]
+
+
 def _resolve_reasoning_level(model: str | None, requested: object) -> str | None:
     """Apply a model's default or reject a level that its API cannot accept."""
     if not model:
@@ -2357,11 +2367,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
             try:
                 thinking_level = _resolve_reasoning_level(model, thinking_level)
             except ValueError as exc:
-                await self._sink.send_event({
-                    "event_type": "error",
-                    "data": {"message": str(exc), "error_code": "invalid_reasoning_level"},
-                })
-                return
+                if not _is_retired_model_id(requested_model):
+                    await self._sink.send_event({
+                        "event_type": "error",
+                        "data": {"message": str(exc), "error_code": "invalid_reasoning_level"},
+                    })
+                    return
+                # A page loaded before the model was retired still sends the old
+                # id with one of ITS levels; the successor may not offer it
+                # ("off" on Sonnet 5 -> 5.5). Use the successor's default.
+                thinking_level = _resolve_reasoning_level(model, None)
 
             # Remember the effective model on the thread so reopening honors it.
             if model and thread.model != model:

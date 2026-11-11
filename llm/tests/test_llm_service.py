@@ -673,7 +673,7 @@ class DefaultReasoningLevelTests(TestCase):
     def test_explicit_level_is_kept(self):
         params = self._run("openai/gpt-5.6-luna", {"thinking_level": "low"})
         self.assertEqual(params["thinking_level"], "low")
-        params = self._run("anthropic/claude-sonnet-5", {"thinking_level": "off"})
+        params = self._run("anthropic/claude-haiku-5-5", {"thinking_level": "off"})
         self.assertEqual(params["thinking_level"], "off")
 
     def test_unregistered_model_is_left_alone(self):

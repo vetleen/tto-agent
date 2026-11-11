@@ -23,7 +23,7 @@ class GetContextWindowTests(TestCase):
         self.assertEqual(get_context_window(""), 128_000)
 
     def test_openai_model(self):
-        # gpt-5.4 canonicalizes to gpt-5.6-terra (1,050,000).
+        # gpt-5.4 canonicalizes to gpt-6.1-terra (1,050,000).
         self.assertEqual(get_context_window("gpt-5.4"), 1_050_000)
 
     def test_gemini_model(self):

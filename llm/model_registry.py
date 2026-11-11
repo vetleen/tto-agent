@@ -89,8 +89,9 @@ class ModelInfo:
     # messages) and rejects/drops it if that prefix was edited. Mandatory on all
     # accounts for Claude models released after 2026-10-01. When True, the
     # Anthropic adapter opts into the beta header + drop_block so an edit point
-    # degrades (reasoning dropped) instead of failing with a 400. False for every
-    # current model: our pre-2026-08-31 account isn't enforced on them.
+    # degrades (reasoning dropped) instead of failing with a 400. False for the
+    # models released before that date: our pre-2026-08-31 account isn't
+    # enforced on them.
     binds_thinking_to_prefix: bool = False
     # Provider-billed input tokens ÷ our tiktoken (cl100k_base) estimate. Budget
     # ceilings are divided by it (llm.context_budget.request_input_ceiling) so
@@ -237,20 +238,6 @@ _MODELS: dict[str, ModelInfo] = {
         long_context_cache_write_price=Decimal("5.00"),
         long_context_output_price=Decimal("15.00"),
     ),
-    "openai/gpt-6-sol": ModelInfo(
-        display_name="GPT-6 Sol", provider="openai", api_model="gpt-6-sol",
-        stars=4,
-        reasoning_levels=_GPT56_LEVELS, default_reasoning_level="medium",
-        uses_responses_api=True, input_modalities=_MULTIMODAL,
-        context_window=1_050_000, max_output_tokens=128_000,
-        input_price=Decimal("2.00"), cached_input_price=Decimal("0.20"),
-        cache_write_price=Decimal("2.50"), output_price=Decimal("10.00"),
-        long_context_threshold=272_000,
-        long_context_input_price=Decimal("4.00"),
-        long_context_cached_input_price=Decimal("0.40"),
-        long_context_cache_write_price=Decimal("5.00"),
-        long_context_output_price=Decimal("15.00"),
-    ),
     "openai/gpt-6.1-terra": ModelInfo(
         display_name="GPT-6.1 Terra", provider="openai", api_model="gpt-6.1-terra",
         stars=3,
@@ -283,36 +270,6 @@ _MODELS: dict[str, ModelInfo] = {
         long_context_cache_write_price=Decimal("0.25"),
         long_context_output_price=Decimal("0.75"),
     ),
-    "openai/gpt-5.6-sol": ModelInfo(
-        display_name="GPT-5.6 Sol", provider="openai", api_model="gpt-5.6-sol",
-        stars=4,
-        reasoning_levels=_GPT56_LEVELS, default_reasoning_level="medium",
-        uses_responses_api=True, input_modalities=_MULTIMODAL,
-        context_window=1_050_000, max_output_tokens=128_000,
-        # Promotional pricing through at least 2026-11-21; list price is
-        # $5.00/$30.00 (LC $10/$45) — restore it when OpenAI ends the promo.
-        input_price=Decimal("4.00"), cached_input_price=Decimal("0.40"),
-        cache_write_price=Decimal("5.00"), output_price=Decimal("20.00"),
-        long_context_threshold=272_000,
-        long_context_input_price=Decimal("8.00"),
-        long_context_cached_input_price=Decimal("0.80"),
-        long_context_cache_write_price=Decimal("10.00"),
-        long_context_output_price=Decimal("30.00"),
-    ),
-    "openai/gpt-5.6-terra": ModelInfo(
-        display_name="GPT-5.6 Terra", provider="openai", api_model="gpt-5.6-terra",
-        stars=3,
-        reasoning_levels=_GPT56_LEVELS, default_reasoning_level="medium",
-        uses_responses_api=True, input_modalities=_MULTIMODAL,
-        context_window=1_050_000, max_output_tokens=128_000,
-        input_price=Decimal("2.00"), cached_input_price=Decimal("0.20"),
-        cache_write_price=Decimal("2.50"), output_price=Decimal("12.00"),
-        long_context_threshold=272_000,
-        long_context_input_price=Decimal("4.00"),
-        long_context_cached_input_price=Decimal("0.40"),
-        long_context_cache_write_price=Decimal("5.00"),
-        long_context_output_price=Decimal("18.00"),
-    ),
     "openai/gpt-5.4-nano": ModelInfo(
         display_name="GPT-5.4 Nano", provider="openai", api_model="gpt-5.4-nano",
         stars=1,
@@ -324,28 +281,20 @@ _MODELS: dict[str, ModelInfo] = {
         output_price=Decimal("1.25"),
     ),
     # Anthropic
-    "anthropic/claude-fable-5-1": ModelInfo(
-        display_name="Claude Fable 5.1", provider="anthropic",
-        api_model="claude-fable-5-1", stars=5, flagship=True,
+    "anthropic/claude-fable-5-2": ModelInfo(
+        display_name="Claude Fable 5.2", provider="anthropic",
+        api_model="claude-fable-5-2", stars=5, flagship=True,
+        # Thinking is always on (no "off"); provider default effort is high.
         reasoning_levels=("low", "medium", "high", "xhigh", "max"),
         default_reasoning_level="high", thinking_mode="adaptive",
         token_estimate_factor=1.4,  # unmeasured; same tokenizer family
+        # Released 2026-11-09: preserved thinking is enforced on every account.
+        binds_thinking_to_prefix=True,
         input_modalities=_MULTIMODAL, context_window=1_000_000,
-        max_output_tokens=128_000, input_price=Decimal("10.00"),
-        # Anthropic prices Fable 5.1 cache reads at 0.025x, not the usual 0.1x.
-        cached_input_price=Decimal("0.25"), cache_write_price=Decimal("12.50"),
-        cache_write_1h_price=Decimal("20.00"), output_price=Decimal("50.00"),
-    ),
-    "anthropic/claude-fable-5": ModelInfo(
-        display_name="Claude Fable 5", provider="anthropic", api_model="claude-fable-5",
-        stars=5, flagship=True,
-        reasoning_levels=("low", "medium", "high", "xhigh", "max"),
-        default_reasoning_level="high", thinking_mode="adaptive",
-        token_estimate_factor=1.4,  # unmeasured; same tokenizer family
-        input_modalities=_MULTIMODAL, context_window=1_000_000,
-        max_output_tokens=128_000, input_price=Decimal("10.00"),
-        cached_input_price=Decimal("1.00"), cache_write_price=Decimal("12.50"),
-        cache_write_1h_price=Decimal("20.00"), output_price=Decimal("50.00"),
+        max_output_tokens=128_000, input_price=Decimal("8.00"),
+        # Anthropic prices Fable cache reads at 0.025x, not the usual 0.1x.
+        cached_input_price=Decimal("0.20"), cache_write_price=Decimal("10.00"),
+        cache_write_1h_price=Decimal("16.00"), output_price=Decimal("40.00"),
     ),
     "anthropic/claude-opus-5-5": ModelInfo(
         display_name="Claude Opus 5.5", provider="anthropic",
@@ -374,17 +323,6 @@ _MODELS: dict[str, ModelInfo] = {
         cached_input_price=Decimal("0.10"), cache_write_price=Decimal("2.50"),
         cache_write_1h_price=Decimal("4.00"), output_price=Decimal("10.00"),
     ),
-    "anthropic/claude-sonnet-5": ModelInfo(
-        display_name="Claude Sonnet 5", provider="anthropic", api_model="claude-sonnet-5",
-        stars=3,
-        reasoning_levels=("off", "low", "medium", "high", "xhigh", "max"),
-        default_reasoning_level="high", thinking_mode="adaptive",
-        token_estimate_factor=1.4,  # unmeasured; same tokenizer family
-        input_modalities=_MULTIMODAL, context_window=1_000_000,
-        max_output_tokens=128_000, input_price=Decimal("2.00"),
-        cached_input_price=Decimal("0.20"), cache_write_price=Decimal("2.50"),
-        cache_write_1h_price=Decimal("4.00"), output_price=Decimal("10.00"),
-    ),
     "anthropic/claude-haiku-5-5": ModelInfo(
         display_name="Claude Haiku 5.5", provider="anthropic", api_model="claude-haiku-5-5",
         stars=2,
@@ -411,6 +349,37 @@ _MODELS: dict[str, ModelInfo] = {
         display_long_context_price=True,
     ),
     # Google Gemini
+    "gemini/gemini-4-carbon": ModelInfo(
+        display_name="Gemini 4 Carbon", provider="google_genai",
+        api_model="gemini-4-carbon", stars=5, flagship=True,
+        # Same request schema as Argon: no off/minimal, provider default medium,
+        # one 1M window shared by input and output.
+        reasoning_levels=("low", "medium", "high"), default_reasoning_level="medium",
+        input_modalities=_MULTIMODAL, context_window=1_048_576,
+        max_output_tokens=65_536,
+        # Carbon thinks longer per turn than Argon; Google's guidance is a
+        # client timeout of at least 15 minutes.
+        request_timeout_seconds=900,
+        warning=ModelWarning(
+            summary="Gemini 4 Carbon can be slow",
+            detail=(
+                "Gemini 4 Carbon is Google's most thorough model and thinks longer "
+                "than Gemini 4 Argon before it answers. Large requests can take "
+                "several minutes, so we allow up to 15 minutes before timing out. "
+                "If you find yourself waiting too long, consider switching to "
+                "Gemini 4 Argon or another model."
+            ),
+            icon="clock",
+        ),
+        # Introductory pricing through 2026-11-30; no long-context band.
+        input_price=Decimal("2.00"), cached_input_price=Decimal("0.10"),
+        output_price=Decimal("10.00"),
+        price_changes=(PriceChange(
+            starts_on=date(2026, 12, 1), input_price=Decimal("4.00"),
+            cached_input_price=Decimal("0.20"), cache_write_price=None,
+            cache_write_1h_price=None, output_price=Decimal("20.00"),
+        ),),
+    ),
     "gemini/gemini-4-argon": ModelInfo(
         display_name="Gemini 4 Argon", provider="google_genai",
         api_model="gemini-4-argon", stars=5, flagship=True,
@@ -487,17 +456,32 @@ _MODELS: dict[str, ModelInfo] = {
 # add one row here pointing at its successor. Rows are never repointed — lookups
 # follow the chain (A → B, later B → C, so A resolves to C). To un-retire a
 # model, delete its own row here.
+#
+# One live model per line: when a newer generation of the SAME line ships
+# (Fable 5.1 → 5.2, GPT-6 Sol → 6.1 Sol), the older one is retired and forwarded.
+# A different line is never a successor (Gemini 3.1 Pro stays next to Gemini 4;
+# Sonnet never forwards to Opus).
+#
+# Every time a model is added or retired, update llm/model_benchmarks.py too:
+# look up the new model's real scores, and see that module's docstring for the
+# predecessor stand-in a model gets until a source has measured it.
 MODEL_REPLACEMENTS: dict[str, str] = {
     "openai/gpt-5.5": "openai/gpt-5.6-sol",
     "openai/gpt-5.4": "openai/gpt-5.6-terra",
     "openai/gpt-5.4-mini": "openai/gpt-5.6-luna",
     "openai/gpt-5.6-luna": "openai/gpt-6-luna",
+    "openai/gpt-5.6-sol": "openai/gpt-6-sol",
+    "openai/gpt-6-sol": "openai/gpt-6.1-sol",
+    "openai/gpt-5.6-terra": "openai/gpt-6.1-terra",
     "anthropic/claude-opus-4-7": "anthropic/claude-opus-5",
     "anthropic/claude-opus-4-6": "anthropic/claude-opus-5-5",
     "anthropic/claude-opus-4-8": "anthropic/claude-opus-5-5",
     "anthropic/claude-opus-5": "anthropic/claude-opus-5-5",
     "anthropic/claude-sonnet-4-6": "anthropic/claude-sonnet-5",
+    "anthropic/claude-sonnet-5": "anthropic/claude-sonnet-5-5",
     "anthropic/claude-haiku-4-5": "anthropic/claude-haiku-5-5",
+    "anthropic/claude-fable-5": "anthropic/claude-fable-5-1",
+    "anthropic/claude-fable-5-1": "anthropic/claude-fable-5-2",
     "gemini/gemini-3.5-flash": "gemini/gemini-3.7-flash",
     "gemini/gemini-3.7-flash": "gemini/gemini-3.8-flash",
     "gemini/gemini-3.1-flash-lite": "gemini/gemini-3.5-flash-lite",

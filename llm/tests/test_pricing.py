@@ -15,16 +15,8 @@ class PricingLookupTests(SimpleTestCase):
             (Decimal("10.00"), Decimal("1.00"), Decimal("12.50"), Decimal("50.00")),
         )
         self.assertEqual(
-            get_model_pricing("openai/gpt-5.6-sol"),
-            (Decimal("4.00"), Decimal("0.40"), Decimal("5.00"), Decimal("20.00")),
-        )
-        self.assertEqual(
             get_model_pricing("gpt-5.4-nano"),
             (Decimal("0.20"), Decimal("0.02"), Decimal("0.25"), Decimal("1.25")),
-        )
-        self.assertEqual(
-            get_model_pricing("openai/gpt-6-sol"),
-            (Decimal("2.00"), Decimal("0.20"), Decimal("2.50"), Decimal("10.00")),
         )
         # Cache reads are 0.05x input on GPT-6.1 Sol (not the usual 0.1x).
         self.assertEqual(
@@ -46,6 +38,13 @@ class PricingLookupTests(SimpleTestCase):
         self.assertEqual(
             get_model_pricing("anthropic/claude-opus-5-5"),
             (Decimal("4.00"), Decimal("0.20"), Decimal("5.00"), Decimal("20.00")),
+        )
+
+    def test_fable_52_prices(self):
+        # Cache reads are 0.025x input on Fable 5.2.
+        self.assertEqual(
+            get_model_pricing("anthropic/claude-fable-5-2"),
+            (Decimal("8.00"), Decimal("0.20"), Decimal("10.00"), Decimal("40.00")),
         )
 
     def test_sonnet_55_prices(self):
@@ -79,27 +78,24 @@ class PricingLookupTests(SimpleTestCase):
 
     def test_long_context_pricing_applies_to_entire_request(self):
         self.assertEqual(
-            get_model_pricing("gpt-5.6-terra", input_tokens=272_000),
-            (Decimal("2.00"), Decimal("0.20"), Decimal("2.50"), Decimal("12.00")),
+            get_model_pricing("gpt-6.1-terra", input_tokens=272_000),
+            (Decimal("1.00"), Decimal("0.05"), Decimal("1.25"), Decimal("5.00")),
         )
         self.assertEqual(
-            get_model_pricing("gpt-5.6-terra", input_tokens=272_001),
-            (Decimal("4.00"), Decimal("0.40"), Decimal("5.00"), Decimal("18.00")),
+            get_model_pricing("gpt-6.1-terra", input_tokens=272_001),
+            (Decimal("2.00"), Decimal("0.10"), Decimal("2.50"), Decimal("7.50")),
         )
         self.assertEqual(
             get_model_pricing("gpt-6-astra", input_tokens=272_001),
             (Decimal("20.00"), Decimal("2.00"), Decimal("25.00"), Decimal("75.00")),
         )
         self.assertEqual(
-            get_model_pricing("gpt-6-sol", input_tokens=272_001),
-            (Decimal("4.00"), Decimal("0.40"), Decimal("5.00"), Decimal("15.00")),
-        )
-        self.assertEqual(
             get_model_pricing("gpt-6.1-sol", input_tokens=272_001),
             (Decimal("4.00"), Decimal("0.20"), Decimal("5.00"), Decimal("15.00")),
         )
+        # A retired ID is priced on its successor's bands.
         self.assertEqual(
-            get_model_pricing("gpt-6.1-terra", input_tokens=272_001),
+            get_model_pricing("gpt-5.6-terra", input_tokens=272_001),
             (Decimal("2.00"), Decimal("0.10"), Decimal("2.50"), Decimal("7.50")),
         )
         self.assertEqual(
@@ -111,16 +107,15 @@ class PricingLookupTests(SimpleTestCase):
             (Decimal("4.00"), Decimal("0.40"), Decimal("4.00"), Decimal("18.00")),
         )
 
-    def test_sonnet_5_price_increase_was_cancelled(self):
-        # Anthropic cancelled the scheduled 2026-09-01 rise to $3/$15 on
-        # 2026-08-11; $2/$10 is permanent on both sides of that date.
+    def test_gemini_4_carbon_introductory_price_schedule(self):
+        # Gemini has no cache-write charge: those tokens bill as plain input.
         self.assertEqual(
-            get_model_pricing("claude-sonnet-5", as_of=date(2026, 8, 31)),
-            (Decimal("2.00"), Decimal("0.20"), Decimal("2.50"), Decimal("10.00")),
+            get_model_pricing("gemini-4-carbon", as_of=date(2026, 11, 30)),
+            (Decimal("2.00"), Decimal("0.10"), Decimal("2.00"), Decimal("10.00")),
         )
         self.assertEqual(
-            get_model_pricing("claude-sonnet-5", as_of=date(2026, 9, 1)),
-            (Decimal("2.00"), Decimal("0.20"), Decimal("2.50"), Decimal("10.00")),
+            get_model_pricing("gemini-4-carbon", as_of=date(2026, 12, 1)),
+            (Decimal("4.00"), Decimal("0.20"), Decimal("4.00"), Decimal("20.00")),
         )
 
     def test_gemini_flash_introductory_price_schedule(self):
@@ -136,7 +131,15 @@ class PricingLookupTests(SimpleTestCase):
     def test_retired_alias_uses_replacement_price(self):
         self.assertEqual(
             get_model_pricing("openai/gpt-5.5"),
-            get_model_pricing("openai/gpt-5.6-sol"),
+            get_model_pricing("openai/gpt-6.1-sol"),
+        )
+        self.assertEqual(
+            get_model_pricing("anthropic/claude-sonnet-5"),
+            get_model_pricing("anthropic/claude-sonnet-5-5"),
+        )
+        self.assertEqual(
+            get_model_pricing("anthropic/claude-fable-5"),
+            get_model_pricing("anthropic/claude-fable-5-2"),
         )
 
     def test_unknown_model(self):
@@ -184,14 +187,16 @@ class CostTests(SimpleTestCase):
     def test_cache_read_and_both_anthropic_write_ttls(self):
         self.assertEqual(
             calculate_cost(
-                "claude-fable-5",
+                "claude-fable-5-2",
                 1_000,
                 100,
                 cached_input_tokens=300,
                 cache_write_tokens=200,
                 cache_write_1h_tokens=100,
             ),
-            Decimal("0.01355"),
+            # 400 regular at $8 + 300 reads at $0.20 + 200 5m writes at $10
+            # + 100 1h writes at $16 + 100 output at $40.
+            Decimal("0.01066"),
         )
 
     def test_haiku_55_long_context_cost_includes_1h_writes(self):
@@ -212,8 +217,8 @@ class CostTests(SimpleTestCase):
 
     def test_long_context_cost(self):
         self.assertEqual(
-            calculate_cost("gpt-5.6-terra", 300_000, 1_000),
-            Decimal("1.218"),
+            calculate_cost("gpt-6.1-terra", 300_000, 1_000),
+            Decimal("0.6075"),
         )
         self.assertEqual(
             calculate_cost("gpt-6-astra", 300_000, 1_000),

@@ -1415,7 +1415,7 @@ class PreservedThinkingOptInTests(SimpleTestCase):
 
         self.assertEqual(
             [k for k, v in _MODELS.items() if v.binds_thinking_to_prefix],
-            ["anthropic/claude-haiku-5-5"],
+            ["anthropic/claude-fable-5-2", "anthropic/claude-haiku-5-5"],
         )
 
     def test_flag_only_valid_on_adaptive_anthropic(self):

@@ -80,6 +80,24 @@ class AnthropicReasoningTests(SimpleTestCase):
         self.assertEqual(kwargs["max_tokens"], 128_000)
 
     @patch("llm.core.providers.anthropic.create_variant_client")
+    def test_fable_52_is_adaptive_with_drop_block(self, create_variant):
+        # Released 2026-11-09: preserved thinking is enforced, like Haiku 5.5.
+        create_variant.return_value = MagicMock()
+        model = AnthropicChatModel("anthropic/claude-fable-5-2", MagicMock())
+        model._get_streaming_client(_request("xhigh"))
+        kwargs = create_variant.call_args.kwargs
+        self.assertEqual(
+            kwargs["thinking"],
+            {
+                "type": "adaptive",
+                "display": "summarized",
+                "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+            },
+        )
+        self.assertEqual(kwargs["output_config"], {"effort": "xhigh"})
+        self.assertEqual(kwargs["max_tokens"], 128_000)
+
+    @patch("llm.core.providers.anthropic.create_variant_client")
     def test_haiku_55_off_disables_thinking(self, create_variant):
         create_variant.return_value = MagicMock()
         model = AnthropicChatModel("anthropic/claude-haiku-5-5", MagicMock())
@@ -109,7 +127,7 @@ class AnthropicReasoningTests(SimpleTestCase):
     @patch("llm.core.providers.anthropic.create_variant_client")
     def test_adaptive_effort_is_sent_in_output_config(self, create_variant):
         create_variant.return_value = MagicMock()
-        model = AnthropicChatModel("anthropic/claude-fable-5", MagicMock())
+        model = AnthropicChatModel("anthropic/claude-opus-5-5", MagicMock())
         model._get_streaming_client(_request("xhigh"))
         kwargs = create_variant.call_args.kwargs
         self.assertEqual(kwargs["thinking"], {"type": "adaptive", "display": "summarized"})
@@ -136,7 +154,7 @@ class AnthropicReasoningTests(SimpleTestCase):
         self.assertEqual(kwargs["max_tokens"], 16_384)
 
     def test_refusal_content_is_visible(self):
-        model = AnthropicChatModel("anthropic/claude-fable-5", MagicMock())
+        model = AnthropicChatModel("anthropic/claude-fable-5-2", MagicMock())
         chunk = SimpleNamespace(content=[{"type": "refusal", "refusal": "I can't help."}])
         self.assertEqual(model._parse_chunk(chunk), [("token", {"text": "I can't help."})])
 
@@ -151,7 +169,7 @@ class OpenAIReasoningTests(SimpleTestCase):
     @patch("llm.core.providers.openai.create_variant_client")
     def test_all_gpt56_levels_are_forwarded_without_clamping(self, create_variant):
         create_variant.return_value = MagicMock()
-        model = OpenAIChatModel("openai/gpt-5.6-sol", MagicMock())
+        model = OpenAIChatModel("openai/gpt-6.1-terra", MagicMock())
         for level in ("none", "low", "medium", "high", "xhigh", "max"):
             with self.subTest(level=level):
                 create_variant.reset_mock()
@@ -174,7 +192,7 @@ class OpenAIReasoningTests(SimpleTestCase):
         variant.with_structured_output.assert_called_once_with(schema, include_raw=True)
 
     def test_reasoning_summary_is_parsed_from_responses_content(self):
-        model = OpenAIChatModel("openai/gpt-5.6-terra", MagicMock())
+        model = OpenAIChatModel("openai/gpt-6.1-terra", MagicMock())
         chunk = SimpleNamespace(
             additional_kwargs={},
             content=[
@@ -188,7 +206,7 @@ class OpenAIReasoningTests(SimpleTestCase):
         )
 
     def test_encrypted_reasoning_is_preserved_for_replay(self):
-        model = OpenAIChatModel("openai/gpt-5.6-terra", MagicMock())
+        model = OpenAIChatModel("openai/gpt-6.1-terra", MagicMock())
         content = [
             {"type": "reasoning", "id": "rs_1", "encrypted_content": "cipher", "summary": []},
             {"type": "text", "text": "Calling a tool"},
@@ -201,7 +219,7 @@ class OpenAIReasoningTests(SimpleTestCase):
 
     @patch("llm.core.providers.openai.create_variant_client", side_effect=ValueError("bad effort"))
     def test_invalid_provider_config_is_not_silently_disabled(self, _create_variant):
-        model = OpenAIChatModel("openai/gpt-5.6-terra", MagicMock())
+        model = OpenAIChatModel("openai/gpt-6.1-terra", MagicMock())
         with self.assertRaisesRegex(ValueError, "bad effort"):
             model._get_streaming_client(_request("max"))
 
@@ -322,10 +340,10 @@ class OutputCapBindingTests(SimpleTestCase):
     def test_openai_binds_max_tokens(self, create_variant):
         variant = MagicMock()
         create_variant.return_value = variant
-        model = OpenAIChatModel("openai/gpt-5.6-sol", MagicMock())
+        model = OpenAIChatModel("openai/gpt-6.1-sol", MagicMock())
         result = model._get_streaming_client(_request("high"))
         variant.bind.assert_called_once_with(
-            max_tokens=output_token_cap("openai/gpt-5.6-sol", "high")
+            max_tokens=output_token_cap("openai/gpt-6.1-sol", "high")
         )
         self.assertIs(result, variant.bind.return_value)
 
@@ -333,20 +351,20 @@ class OutputCapBindingTests(SimpleTestCase):
     def test_openai_cap_is_bound_after_tools(self, create_variant):
         variant = MagicMock()
         create_variant.return_value = variant
-        model = OpenAIChatModel("openai/gpt-5.6-sol", MagicMock())
+        model = OpenAIChatModel("openai/gpt-6.1-sol", MagicMock())
         req = _request("medium").model_copy(update={"tool_schemas": [MagicMock()]})
         result = model._get_streaming_client(req)
         with_tools = variant.bind_tools.return_value
         with_tools.bind.assert_called_once_with(
-            max_tokens=output_token_cap("openai/gpt-5.6-sol", "medium")
+            max_tokens=output_token_cap("openai/gpt-6.1-sol", "medium")
         )
         self.assertIs(result, with_tools.bind.return_value)
 
     def test_openai_without_reasoning_level_still_capped(self):
         client = MagicMock()
-        model = OpenAIChatModel("openai/gpt-5.6-sol", client)
+        model = OpenAIChatModel("openai/gpt-6.1-sol", client)
         model._get_streaming_client(_request(None))
-        client.bind.assert_called_once_with(max_tokens=output_token_cap("openai/gpt-5.6-sol", None))
+        client.bind.assert_called_once_with(max_tokens=output_token_cap("openai/gpt-6.1-sol", None))
 
     @patch("llm.core.providers.openai.create_variant_client")
     def test_openai_generate_uses_the_capped_client(self, create_variant):
@@ -356,7 +374,7 @@ class OutputCapBindingTests(SimpleTestCase):
         create_variant.return_value = variant
         bound = variant.bind.return_value
         bound.invoke.return_value = AIMessage(content="hi")
-        model = OpenAIChatModel("openai/gpt-5.6-sol", MagicMock())
+        model = OpenAIChatModel("openai/gpt-6.1-sol", MagicMock())
         response = model.generate(_request("high"))
         bound.invoke.assert_called_once()
         self.assertEqual(response.message.content, "hi")
@@ -385,5 +403,5 @@ class OutputCapBindingTests(SimpleTestCase):
     def test_structured_client_is_not_capped(self, create_variant):
         variant = MagicMock()
         create_variant.return_value = variant
-        OpenAIChatModel("openai/gpt-5.6-sol", MagicMock()).structured_client(_request("max"), object())
+        OpenAIChatModel("openai/gpt-6.1-sol", MagicMock()).structured_client(_request("max"), object())
         variant.bind.assert_not_called()
