@@ -350,6 +350,49 @@ class RerenderHandlerTests(TransactionTestCase):
         self.assertEqual(sent[0]["purpose"], "user_preview")
 
 
+class MidTurnRenderDispatchTests(TransactionTestCase):
+    """Slides render as the agent writes them: each deck tool's result queues a
+    USER_PREVIEW run, coalesced while one is still waiting to start."""
+
+    def setUp(self):
+        from chat.models import ChatThread, SlideSet
+
+        user = get_user_model().objects.create_user(email=f"mt+{uuid.uuid4().hex[:6]}@ex.com", password="x")
+        self.thread = ChatThread.objects.create(created_by=user, title="t")
+        self.deck = SlideSet.objects.create(
+            thread=self.thread, title="Deck",
+            content={"version": 1, "slides": [{"id": "s1", "name": "A", "elements": []}]},
+        )
+
+    def _dispatch(self, **kw):
+        from chat.consumers import ChatConsumer
+
+        with mock.patch("chat.tasks.render_deck_task.delay", return_value=mock.Mock(id="t")) as m_delay:
+            async_to_sync(ChatConsumer()._dispatch_deck_previews)([str(self.deck.pk)], **kw)
+        return m_delay.call_count
+
+    def test_coalesces_while_a_run_waits_but_not_once_it_started(self):
+        from chat.models import SlideRenderRun
+
+        self.assertEqual(self._dispatch(coalesce=True), 1)
+        self.assertEqual(self._dispatch(coalesce=True), 0)  # the pending run will see this write
+        SlideRenderRun.objects.filter(slide_set=self.deck).update(status=SlideRenderRun.Status.RUNNING)
+        self.assertEqual(self._dispatch(coalesce=True), 1)  # it may have read the deck already
+        # The turn-end catch-all never coalesces.
+        self.assertEqual(self._dispatch(), 1)
+
+    def test_a_stale_pending_run_does_not_block(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from chat.models import SlideRenderRun
+
+        self._dispatch(coalesce=True)
+        SlideRenderRun.objects.filter(slide_set=self.deck).update(created_at=timezone.now() - timedelta(hours=1))
+        self.assertEqual(self._dispatch(coalesce=True), 1)
+
+
 class SlidesOpenOwnershipTests(TransactionTestCase):
     """`chat.slides_open` must not leak another user's active deck for a guessed
     thread_id (the deck_id-omitted path used to skip the ownership check)."""

@@ -614,8 +614,20 @@ class ChatConsumer(AsyncWebsocketConsumer):
         }
 
     @database_sync_to_async
-    def _dispatch_deck_previews(self, deck_ids):
-        """Enqueue a user-preview render for each changed deck (best-effort)."""
+    def _dispatch_deck_previews(self, deck_ids, *, coalesce: bool = False):
+        """Enqueue a user-preview render for each changed deck (best-effort).
+
+        ``coalesce`` (the mid-turn dispatch after each deck tool, so slides render
+        as the agent writes them): skip a deck that already has a user-preview run
+        waiting to start — the worker reads the deck when the run starts, so it
+        picks up this change too. A run that is already rendering doesn't count
+        (it may have read the deck before this write). Waiting runs older than
+        SLIDE_RENDER_TIMEOUT are ignored so a lost task can't block renders."""
+        from datetime import timedelta
+
+        from django.conf import settings
+        from django.utils import timezone
+
         from chat.models import SlideRenderRun, SlideSet
         from chat.tasks import render_deck_task
 
@@ -623,6 +635,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
             deck = SlideSet.objects.filter(pk=deck_id, deleted_at__isnull=True).first()
             if deck is None:
                 continue
+            if coalesce:
+                fresh = timezone.now() - timedelta(seconds=int(getattr(settings, "SLIDE_RENDER_TIMEOUT", 120)))
+                if SlideRenderRun.objects.filter(
+                    slide_set=deck, purpose=SlideRenderRun.Purpose.USER_PREVIEW,
+                    status=SlideRenderRun.Status.PENDING, created_at__gte=fresh,
+                ).exists():
+                    continue
             run = SlideRenderRun.objects.create(
                 slide_set=deck, purpose=SlideRenderRun.Purpose.USER_PREVIEW, slide_ids=[]
             )
@@ -3463,6 +3482,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
                                     "slide_ids": result.get("slide_ids"),
                                     "changed_slide_ids": result.get("changed_slide_ids", []),
                                 })
+                                # Render now, not only at turn end, so the user
+                                # watches each slide appear as it is written.
+                                if result.get("changed_slide_ids"):
+                                    try:
+                                        await self._dispatch_deck_previews([deck_id], coalesce=True)
+                                    except Exception:
+                                        logger.exception("Failed to dispatch a mid-turn deck render")
                         except (json.JSONDecodeError, AttributeError):
                             pass
                     if tool_name == "slide_canvas_activate":
