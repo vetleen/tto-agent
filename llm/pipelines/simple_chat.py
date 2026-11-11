@@ -191,6 +191,18 @@ def _timed_out_label(result_str: str) -> str | None:
     return f"Timed out after {timeout_s} s" if timeout_s else "Not run — round timed out"
 
 
+def _runs_first(tool, tc) -> bool:
+    """``tool.runs_first(args)``, False for an unknown tool or a hook that raises
+    (ordering is an optimisation of correctness, never a reason to break a batch)."""
+    if tool is None:
+        return False
+    try:
+        return bool(tool.runs_first(tc.arguments or {}))
+    except Exception:
+        logger.exception("runs_first raised for %s", tc.name)
+        return False
+
+
 def _run_round_with_timeouts(tool_calls, tool_by_name, run_one, context) -> list:
     """Run a sub-agent round's calls in parallel, each under its tool's timeout.
 
@@ -587,15 +599,31 @@ class SimpleChatPipeline(BasePipeline):
                 )
             return (tc, result_str)
 
-        if tool_calls and context is not None and context.agent_kind == "subagent":
-            return _run_round_with_timeouts(tool_calls, tool_by_name, _run_one, context)
+        subagent = context is not None and context.agent_kind == "subagent"
 
-        if len(tool_calls) <= 1:
-            return [_run_one(tc) for tc in tool_calls]
+        def _run_group(calls: List[ToolCall]) -> List[Tuple[ToolCall, str]]:
+            if calls and subagent:
+                return _run_round_with_timeouts(calls, tool_by_name, _run_one, context)
+            if len(calls) <= 1:
+                return [_run_one(tc) for tc in calls]
+            with ThreadPoolExecutor(max_workers=min(len(calls), 4)) as pool:
+                futures = [pool.submit(_run_one, tc) for tc in calls]
+                return [f.result() for f in futures]
 
-        with ThreadPoolExecutor(max_workers=min(len(tool_calls), 4)) as pool:
-            futures = [pool.submit(_run_one, tc) for tc in tool_calls]
-            return [f.result() for f in futures]
+        # Calls that change what the others resolve against (ContextAwareTool.
+        # runs_first: create/rename/delete/restore/activate a deck) run one at a
+        # time, in the order sent, before the rest of the batch.
+        first_idx = [i for i, tc in enumerate(tool_calls) if _runs_first(tool_by_name.get(tc.name), tc)]
+        if not first_idx or len(tool_calls) <= 1:
+            return _run_group(tool_calls)
+
+        results: dict[int, Tuple[ToolCall, str]] = {}
+        for i in first_idx:
+            results[i] = _run_group([tool_calls[i]])[0]
+        rest_idx = [i for i in range(len(tool_calls)) if i not in results]
+        for i, pair in zip(rest_idx, _run_group([tool_calls[i] for i in rest_idx])):
+            results[i] = pair
+        return [results[i] for i in range(len(tool_calls))]
 
     @staticmethod
     def _append_pending_native_assets(new_messages: List[Message], req: ChatRequest) -> None:

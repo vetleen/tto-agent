@@ -108,6 +108,18 @@ class ContextAwareTool(BaseTool):
         completion label depends on the result (counts, names, status, etc.)."""
         return None
 
+    def runs_first(self, args: dict) -> bool:
+        """True when this call must finish before the rest of its batch starts.
+
+        A round's calls normally run in parallel, so a call that changes what
+        the others resolve against — creating, renaming, deleting, restoring or
+        activating a deck — would race them (a ``slides_set_theme`` next to the
+        ``slides_create_deck`` it targets saw no deck, and the agent concluded
+        the create had failed). The pipeline runs such calls one at a time, in
+        the order the model sent them, before the others
+        (``SimpleChatPipeline._execute_tool_calls``)."""
+        return False
+
     def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> "ArgTrim | dict | None":
         """Return a shrunken copy of an OLD call's arguments, or None to keep them.
 

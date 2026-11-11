@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 import json
 from unittest.mock import MagicMock, patch
 
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from pydantic import BaseModel, Field
 
 from llm.pipelines.simple_chat import SimpleChatPipeline
@@ -1353,6 +1353,84 @@ class SimpleChatPipelineTests(TestCase):
         self.assertEqual(response.message.content, "Done.")
         self.assertEqual(ctx.observability["rounds"], 2)
         self.assertEqual(ctx.observability["loop_stop"], "answered")
+
+
+class RunsFirstOrderingTests(SimpleTestCase):
+    """ContextAwareTool.runs_first: such calls finish, one at a time and in the
+    order sent, before the rest of the batch starts (2026-11-11 prod: a
+    slides_set_theme racing the slides_create_deck it targeted saw no deck)."""
+
+    def _tools(self, first_names=(), sleep=0.0):
+        import threading
+        import time as _time
+
+        log: list[str] = []
+        lock = threading.Lock()
+
+        def make(name):
+            tool = MagicMock()
+            tool.timeout_seconds = None
+            tool.runs_first.side_effect = lambda args, n=name: n in first_names
+
+            def invoke(args, n=name):
+                with lock:
+                    log.append(f"start:{n}:{args.get('k')}")
+                _time.sleep(sleep)
+                with lock:
+                    log.append(f"end:{n}:{args.get('k')}")
+                return json.dumps({"tool": n, "k": args.get("k")})
+
+            tool.invoke.side_effect = invoke
+            return tool
+
+        names = ("create", "delete", "edit", "theme")
+        return {n: make(n) for n in names}, log
+
+    @staticmethod
+    def _calls(*specs):
+        return [ToolCall(id=f"c{i}", name=n, arguments={"k": i}) for i, n in enumerate(specs)]
+
+    def test_first_call_finishes_before_others_start(self):
+        tools, log = self._tools(first_names=("create",), sleep=0.05)
+        calls = self._calls("theme", "create", "edit")
+        SimpleChatPipeline._execute_tool_calls(calls, tools)
+        self.assertEqual(log[:2], ["start:create:1", "end:create:1"])
+        self.assertEqual(len(log), 6)
+
+    def test_first_calls_keep_sent_order_and_run_serially(self):
+        tools, log = self._tools(first_names=("create", "delete"), sleep=0.02)
+        calls = self._calls("edit", "delete", "theme", "create")
+        SimpleChatPipeline._execute_tool_calls(calls, tools)
+        self.assertEqual(log[:4], ["start:delete:1", "end:delete:1", "start:create:3", "end:create:3"])
+
+    def test_results_come_back_in_original_order(self):
+        tools, _log = self._tools(first_names=("create",))
+        calls = self._calls("theme", "create", "edit")
+        results = SimpleChatPipeline._execute_tool_calls(calls, tools)
+        self.assertEqual([tc.id for tc, _ in results], ["c0", "c1", "c2"])
+        self.assertEqual([json.loads(r)["tool"] for _, r in results], ["theme", "create", "edit"])
+
+    def test_no_first_calls_runs_everything_as_before(self):
+        tools, log = self._tools(sleep=0.05)
+        calls = self._calls("theme", "edit")
+        results = SimpleChatPipeline._execute_tool_calls(calls, tools)
+        self.assertEqual(len(results), 2)
+        # Parallel: both start before either ends.
+        self.assertTrue(log[0].startswith("start") and log[1].startswith("start"))
+
+    def test_raising_hook_counts_as_false(self):
+        tools, _log = self._tools()
+        tools["create"].runs_first.side_effect = RuntimeError("boom")
+        results = SimpleChatPipeline._execute_tool_calls(self._calls("create", "edit"), tools)
+        self.assertEqual(len(results), 2)
+
+    def test_subagent_round_runs_first_calls_first(self):
+        tools, log = self._tools(first_names=("create",), sleep=0.05)
+        ctx = RunContext.create()
+        ctx.agent_kind = "subagent"
+        results = SimpleChatPipeline._execute_tool_calls(self._calls("edit", "create"), tools, ctx)
+        self.assertEqual(log[:2], ["start:create:1", "end:create:1"])
+        self.assertEqual([tc.id for tc, _ in results], ["c0", "c1"])
 
 
 class IterationNoticeTests(TestCase):

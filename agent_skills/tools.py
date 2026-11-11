@@ -1269,6 +1269,11 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
     args_schema: type[BaseModel] = LoadTemplateToCanvasInput
     section: str = "skills"
 
+    def runs_first(self, args: dict) -> bool:
+        # target="deck" can create (and activate) a deck the batch's other deck
+        # calls then resolve against — see ContextAwareTool.runs_first.
+        return (args or {}).get("target") == "deck"
+
     def trim_result_at_edit_point(self, result: str, args: dict, *, later_calls: list) -> str | None:
         # The slide JSON of a target="deck" result stays reachable with slides_read
         # (see chat/slide_tools.py); canvas results carry no such field.

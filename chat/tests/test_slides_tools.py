@@ -1016,3 +1016,27 @@ class ThemeToolTests(SlideToolTests):
         deck = SlideSet.objects.get(pk=r["deck_id"])
         self.assertEqual(deck.content["theme"]["_theme_id"], "tuser1")
         self.assertEqual(deck.content["theme"]["footer"]["sections"][0]["content"], "logo")
+
+
+class RunsFirstTests(TestCase):
+    """Deck lifecycle calls finish before the rest of their batch
+    (ContextAwareTool.runs_first; the pipeline side is in
+    llm/tests/test_simple_chat_pipeline.py)."""
+
+    def test_lifecycle_tools_run_first(self):
+        for tool in (CreateDeckTool(), DeleteDeckTool(), ActivateDeckTool()):
+            with self.subTest(tool=tool.name):
+                self.assertTrue(tool.runs_first({}))
+
+    def test_content_tools_do_not(self):
+        for tool in (EditDeckTool(), AddSlideTool(), SetThemeTool(), PreviewSlidesTool()):
+            with self.subTest(tool=tool.name):
+                self.assertFalse(tool.runs_first({}))
+
+    def test_skill_resource_load_runs_first_only_for_a_deck(self):
+        from agent_skills.tools import LoadTemplateToCanvasTool
+
+        tool = LoadTemplateToCanvasTool()
+        self.assertTrue(tool.runs_first({"target": "deck"}))
+        self.assertFalse(tool.runs_first({"target": "canvas"}))
+        self.assertFalse(tool.runs_first({}))

@@ -330,10 +330,15 @@ class ActivateDeckTool(ContextAwareTool):
     end_label: str = "Deck opened"
     description: str = (
         "Switch which of the thread's decks is the active one you work on. Only one deck is active "
-        "at a time; the active deck's full JSON + theme is included in your context. "
-        "Activating a deck deactivates the others, but they stay saved."
+        "at a time; the active deck's outline is in your context (read slides with slides_read), "
+        "and deck tools called without deck_name work on it. "
+        "Activating a deck deactivates the others, but they stay saved. Runs before the other "
+        "calls in the same batch."
     )
     args_schema: type[BaseModel] = ActivateDeckInput
+
+    def runs_first(self, args: dict) -> bool:
+        return True  # the batch's other deck calls default to the active deck
 
     def _run(self, deck_names: list[str], **kwargs) -> str:
         from chat.slides import service, schema
@@ -376,9 +381,15 @@ class CreateDeckTool(ContextAwareTool):
         "narrative first, then pick one layout per point. The slides are seeded with placeholder "
         "text and the user watches them appear; the result lists each slide's id and layout. Then "
         "fill the slides in one at a time — slides_write_slide with the full slide, or slides_read "
-        "+ slide_canvas_edit for small changes. Available layouts:\n" + _LAYOUT_MENU
+        "+ slide_canvas_edit for small changes. Runs before the other calls in the same batch, so "
+        "they can already target the new deck. Keep one deck per conversation unless the user "
+        "asks for more; to start over, rework this deck (slide_canvas_write) rather than creating "
+        "another. Available layouts:\n" + _LAYOUT_MENU
     )
     args_schema: type[BaseModel] = CreateDeckInput
+
+    def runs_first(self, args: dict) -> bool:
+        return True
 
     def _run(self, title: str, layouts=None, **kwargs) -> str:
         from chat.slides import layouts as layouts_mod
@@ -1004,9 +1015,13 @@ class DeleteDeckTool(ContextAwareTool):
     end_label: str = "Deleted deck"
     description: str = (
         "Soft-delete a slide deck from this conversation. Content and history are "
-        "preserved and the user can undo, so this is safe. Provide the exact title."
+        "preserved and the user can undo, so this is safe. Provide the exact title. Runs before "
+        "the other calls in the same batch."
     )
     args_schema: type[BaseModel] = DeleteDeckInput
+
+    def runs_first(self, args: dict) -> bool:
+        return True
 
     def _run(self, deck_name: str, **kwargs) -> str:
         from chat.slides import service
