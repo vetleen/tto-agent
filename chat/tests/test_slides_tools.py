@@ -349,6 +349,30 @@ class SlideToolTests(TestCase):
         self.assertNotIn("Zweite", json.dumps(deck.content["slides"][0]))
         self.assertIn("Zweite", json.dumps(deck.content["slides"][1]))
 
+    def test_edit_top_level_slide_id_applies_to_unnamed_edits(self):
+        """Seen live (Haiku 5.5): slide_id passed next to `edits` instead of inside
+        each one — it must target that slide, not the deck settings."""
+        self._run(CreateDeckTool(), title="Deck A", layouts=["title", "bullets"])
+        r = self._run(EditDeckTool(), slide_id="s2", edits=[
+            {"old_text": '"t": "Slide title"', "new_text": '"t": "Zweite"'},
+        ])
+        self.assertEqual(r["status"], "ok", r)
+        self.assertEqual(r["changed_slide_ids"], ["s2"])
+
+    def test_rewrites_keep_the_seed_layout(self):
+        from chat.slide_tools import WriteSlideTool
+
+        self._run(CreateDeckTool(), title="Deck A", layouts=["title", "bullets"])
+        self._run(WriteSlideTool(), slide_id="s2", content={"name": "Market", "elements": []})
+        deck = SlideSet.objects.get(title="Deck A")
+        self.assertEqual(deck.content["slides"][1]["layout"], "bullets")
+        full = json.loads(canonical_deck_text(deck.content))
+        for s in full["slides"]:
+            s.pop("layout")
+        self._run(WriteDeckTool(), content=full)
+        deck.refresh_from_db()
+        self.assertEqual([s.get("layout") for s in deck.content["slides"]], ["title", "bullets"])
+
     def test_edit_deck_settings(self):
         self._run(CreateDeckTool(), title="Deck A", layouts=["title"])
         r = self._run(EditDeckTool(), edits=[{"slide_id": "", "old_text": '"version": 1', "new_text": '"version": 1'}])

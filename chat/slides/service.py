@@ -333,13 +333,17 @@ def _mutate_deck(deck_pk, mutate, *, description: str):
 
 
 def replace_slide(deck_pk, slide_id: str, slide: dict, *, description: str = ""):
-    """Replace one slide wholesale, keeping its id (the payload's id is ignored)."""
+    """Replace one slide wholesale, keeping its id (the payload's id is ignored)
+    and, when the payload doesn't set one, its seed ``layout`` (models rewriting a
+    slide rarely carry it over, and the outline would lose it)."""
     def _mutate(content):
         idx = slide_index(content, slide_id)
         if idx is None:
             raise SlideOpError(f"No slide with id '{slide_id}' in this deck.")
         new = copy.deepcopy(slide)
         new["id"] = slide_id
+        if not new.get("layout") and content["slides"][idx].get("layout"):
+            new["layout"] = content["slides"][idx]["layout"]
         content["slides"][idx] = new
 
     return _mutate_deck(deck_pk, _mutate, description=description or f"Rewrote slide {slide_id}")

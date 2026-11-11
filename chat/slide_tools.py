@@ -163,6 +163,10 @@ class EditDeckInput(ReasonBaseModel):
     edits: list[DeckEditItem] = Field(
         description="Targeted find-replace edits, each scoped to one slide's canonical JSON text.",
     )
+    slide_id: str = Field(
+        default="",
+        description="Slide for the edits that don't name their own `slide_id` (all edits on one slide).",
+    )
     deck_name: str = Field(default="", description="Deck title to edit. Empty = the active deck.")
 
     @field_validator("edits", mode="before")
@@ -531,6 +535,14 @@ class WriteDeckTool(ContextAwareTool):
             return json.dumps({"status": "error", "message": "Deck JSON is invalid.", "issues": issues[:20]})
 
         schema.mint_ids(deck)
+        # Carry each kept slide's seed layout over (outline only; models drop it).
+        old_layouts = {
+            s.get("id"): s.get("layout") for s in (target.content or {}).get("slides") or []
+            if isinstance(s, dict) and s.get("layout")
+        }
+        for s in deck.get("slides") or []:
+            if not s.get("layout") and old_layouts.get(s.get("id")):
+                s["layout"] = old_layouts[s["id"]]
 
         # Keep the deck's theme across a rewrite when the model didn't set one (so a
         # user's picker choice survives); a theme-less deck falls back to the default
@@ -649,7 +661,7 @@ class EditDeckTool(ContextAwareTool):
             return None
         return drop_args(args, {"edits": edits_description(args["edits"])}, SLIDES_READ_WHERE)
 
-    def _run(self, edits, deck_name: str = "", **kwargs) -> str:
+    def _run(self, edits, deck_name: str = "", slide_id: str = "", **kwargs) -> str:
         from chat.slides import service
 
         thread_id, deck, error = _resolve_target(self, deck_name)
@@ -659,7 +671,11 @@ class EditDeckTool(ContextAwareTool):
         def _get(e, key):
             return (e.get(key, "") if isinstance(e, dict) else getattr(e, key, "")) or ""
 
-        triples = [(_get(e, "slide_id"), _get(e, "old_text"), _get(e, "new_text")) for e in edits]
+        # A top-level slide_id applies to edits that don't name one (a live model
+        # put it there and every edit then missed against the deck settings).
+        triples = [
+            (_get(e, "slide_id") or slide_id, _get(e, "old_text"), _get(e, "new_text")) for e in edits
+        ]
         # Matching and rewriting happen under the row lock against content re-read
         # inside it (service._mutate_deck), so a parallel deck tool in the same batch
         # can't have its write reverted here.
