@@ -248,10 +248,13 @@ def save_deck_content(deck, content: dict):
 def insert_slide(deck_pk, slide: dict, *, position: int = -1, description: str = ""):
     """Insert ``slide`` into a deck under its row lock, mint ids, validate, checkpoint.
 
-    Returns ``(deck, content, idx, issues)``. ``deck`` is ``None`` when the deck was
-    deleted in the race; non-empty ``issues`` means the insert would make the deck
-    invalid and nothing was saved. The slide should carry no slide-level id (or one
-    that is unique in the deck) — ``mint_ids`` only fills in missing ids.
+    Returns ``(deck, old_content, content, idx, issues)``. ``deck`` is ``None`` when
+    the deck was deleted in the race; non-empty ``issues`` means the insert would make
+    the deck invalid and nothing was saved. ``old_content`` is what the insert
+    replaced, read under the lock (the caller's pre-lock snapshot may predate a
+    sibling call's write and would report its slides as changed again). The slide
+    should carry no slide-level id (or one that is unique in the deck) —
+    ``mint_ids`` only fills in missing ids.
 
     Everything that reads and rewrites deck.content happens under the lock, against
     content re-read inside it — a parallel insert in the same tool batch would
@@ -259,9 +262,10 @@ def insert_slide(deck_pk, slide: dict, *, position: int = -1, description: str =
     """
     with locked_deck(deck_pk) as deck:
         if deck is None:
-            return None, None, None, []
+            return None, None, None, None, []
 
-        content = copy.deepcopy(deck.content or {})
+        old = deck.content or {}
+        content = copy.deepcopy(old)
         content.setdefault("version", 1)
         content.setdefault("size", {"w": 960, "h": 540})
         slides = content.setdefault("slides", [])
@@ -271,11 +275,11 @@ def insert_slide(deck_pk, slide: dict, *, position: int = -1, description: str =
 
         issues = schema.validate_deck(content)
         if issues:
-            return deck, content, idx, issues
+            return deck, old, content, idx, issues
 
         save_deck_content(deck, content)
         create_deck_checkpoint(deck, source="ai_edit", description=description)
-    return deck, content, idx, []
+    return deck, old, content, idx, []
 
 
 # ---------------------------------------------------------------------------

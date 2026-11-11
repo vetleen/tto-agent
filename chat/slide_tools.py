@@ -39,6 +39,15 @@ _LAYOUT_MENU = "\n".join(f'- {c["id"]}: {c["description"]}' for c in layout_cata
 # (chat/canvas_tools.py). Recency still protects recent calls as usual.
 SLIDES_READ_WHERE = "Re-read the current slides with slides_read."
 
+# Every tool that reads or writes a deck's content names this group, so a round's
+# deck calls run in the order the model sent them (ContextAwareTool.serial_group):
+# three slides appended in one round otherwise land in thread-scheduling order.
+DECK_SERIAL_GROUP = "slide_deck"
+
+
+def _deck_serial_group(self, args: dict) -> str:
+    return DECK_SERIAL_GROUP
+
 
 def trim_slide_result_fields(result: str, fields: dict) -> str | None:
     """Shrink a deck tool's RESULT: remove the big JSON field(s) in ``fields``
@@ -466,6 +475,7 @@ class WriteDeckTool(ContextAwareTool):
     section: str = "skills"
     start_label: str = "Writing slides..."
     end_label: str = "Wrote the slide deck"
+    serial_group = _deck_serial_group
     description: str = (
         "Completely restructure an EXISTING deck by replacing its entire JSON — a rework tool for "
         "when the deck needs rebuilding around a new narrative, not how decks are created (use "
@@ -633,6 +643,7 @@ class EditDeckTool(ContextAwareTool):
     section: str = "skills"
     start_label: str = "Editing slides..."
     end_label: str = "Edited the slide deck"
+    serial_group = _deck_serial_group
 
     def end_label_for_result(self, result: dict) -> str | None:
         if result.get("status") != "ok":
@@ -709,6 +720,7 @@ class ReadSlidesTool(ContextAwareTool):
     section: str = "skills"
     start_label: str = "Reading slides..."
     end_label: str = "Read slides"
+    serial_group = _deck_serial_group
     stub_despite_recency: bool = True  # big, and a re-read is a local query
 
     def end_label_for_result(self, result: dict) -> str | None:
@@ -806,6 +818,7 @@ class WriteSlideTool(ContextAwareTool):
     section: str = "skills"
     start_label: str = "Writing slide..."
     end_label: str = "Wrote a slide"
+    serial_group = _deck_serial_group
 
     def end_label_for_result(self, result: dict) -> str | None:
         if result.get("status") != "ok" or not result.get("slide"):
@@ -845,8 +858,7 @@ class WriteSlideTool(ContextAwareTool):
             target = slide_id
         else:
             slide = {k: v for k, v in slide.items() if k != "id"}
-            old = deck.content or {}
-            locked, new, idx, issues = service.insert_slide(
+            locked, old, new, idx, issues = service.insert_slide(
                 deck.pk, slide, position=position, description="Added a slide"
             )
             target = new["slides"][idx].get("id") if new and not issues else ""
@@ -871,6 +883,7 @@ class MoveSlidesTool(ContextAwareTool):
     section: str = "skills"
     start_label: str = "Moving slides..."
     end_label: str = "Moved slides"
+    serial_group = _deck_serial_group
 
     def end_label_for_result(self, result: dict) -> str | None:
         moved = result.get("moved") or []
@@ -914,6 +927,7 @@ class DeleteSlidesTool(ContextAwareTool):
     section: str = "skills"
     start_label: str = "Deleting slides..."
     end_label: str = "Deleted slides"
+    serial_group = _deck_serial_group
 
     def end_label_for_result(self, result: dict) -> str | None:
         deleted = result.get("deleted") or []
@@ -957,6 +971,7 @@ class DuplicateSlideTool(ContextAwareTool):
     section: str = "skills"
     start_label: str = "Duplicating slide..."
     end_label: str = "Duplicated a slide"
+    serial_group = _deck_serial_group
 
     def end_label_for_result(self, result: dict) -> str | None:
         if result.get("status") != "ok" or not result.get("source"):
@@ -1001,6 +1016,7 @@ class AddSlideTool(ContextAwareTool):
     section: str = "skills"
     start_label: str = "Adding slide..."
     end_label: str = "Added a slide"
+    serial_group = _deck_serial_group
 
     def end_label_for_result(self, result: dict) -> str | None:
         layout = result.get("layout")
@@ -1030,8 +1046,7 @@ class AddSlideTool(ContextAwareTool):
                 "available_layouts": [c["id"] for c in layouts.layout_catalog()],
             })
 
-        old = deck.content or {}
-        deck, content, idx, issues = service.insert_slide(
+        deck, old, content, idx, issues = service.insert_slide(
             deck.pk, seed, position=position, description=f"Added a '{layout}' slide"
         )
         if deck is None:
@@ -1395,6 +1410,7 @@ class SetThemeTool(ContextAwareTool):
     section: str = "skills"
     start_label: str = "Applying theme..."
     end_label: str = "Applied the theme"
+    serial_group = _deck_serial_group
 
     def end_label_for_result(self, result: dict) -> str | None:
         name = result.get("applied")

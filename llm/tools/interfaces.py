@@ -120,6 +120,17 @@ class ContextAwareTool(BaseTool):
         (``SimpleChatPipeline._execute_tool_calls``)."""
         return False
 
+    def serial_group(self, args: dict) -> str | None:
+        """A name shared by calls that must run one after another, in the order the
+        model sent them; ``None`` (the default) runs the call in parallel.
+
+        Unlike :meth:`runs_first` the calls keep their place in the batch: only
+        calls naming the same group wait for each other. For writes whose result
+        depends on order — three slides appended to a deck in one round landed in
+        whatever order the worker threads won the row lock. Main agent only (no
+        sub-agent tool needs it; ``_run_round_with_timeouts`` ignores it)."""
+        return None
+
     def trim_args_at_edit_point(self, args: dict, *, later_calls: list) -> "ArgTrim | dict | None":
         """Return a shrunken copy of an OLD call's arguments, or None to keep them.
 

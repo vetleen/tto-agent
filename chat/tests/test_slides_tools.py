@@ -624,6 +624,21 @@ class DeckConcurrentWriteTests(TestCase):
         ids = [s["id"] for s in slides]
         self.assertEqual(len(set(ids)), 2, f"slide ids collided: {ids}")
         self.assertNotEqual(first["slide_id"], second["slide_id"])
+        # The diff is against the content read under the lock: the sibling's slide
+        # is not reported as changed again.
+        self.assertEqual(second["changed_slide_ids"], [second["slide_id"]])
+
+    def test_write_slide_insert_diffs_against_the_locked_content(self):
+        from chat.slide_tools import WriteSlideTool
+
+        w = self._run(CreateDeckTool(), title="Deck A")
+        stale = self._stale(w["deck_id"])  # zero slides
+        first = self._run(AddSlideTool(), layout="bullets")
+        with mock.patch("chat.slides.service.resolve_deck", return_value=(stale, None)):
+            second = self._run(WriteSlideTool(), content={"name": "New", "elements": []})
+        self.assertEqual(second["status"], "ok", second)
+        self.assertEqual(second["changed_slide_ids"], [second["slide_id"]])
+        self.assertNotIn(first["slide_id"], second["changed_slide_ids"])
 
     def test_edit_deck_reads_fresh_content_under_lock(self):
         w = self._run(CreateDeckTool(), title="Deck A", layouts=["title"])
@@ -1131,6 +1146,22 @@ class RunsFirstTests(TestCase):
         for tool in (EditDeckTool(), AddSlideTool(), SetThemeTool(), PreviewSlidesTool()):
             with self.subTest(tool=tool.name):
                 self.assertFalse(tool.runs_first({}))
+
+    def test_deck_content_tools_share_one_serial_group(self):
+        """A round's deck reads and writes run in the order sent (serial_group)."""
+        from chat.slide_tools import (
+            DECK_SERIAL_GROUP, DeleteSlidesTool, DuplicateSlideTool, MoveSlidesTool, ReadSlidesTool,
+            WriteSlideTool,
+        )
+
+        for tool in (
+            WriteSlideTool(), AddSlideTool(), EditDeckTool(), MoveSlidesTool(), DeleteSlidesTool(),
+            DuplicateSlideTool(), ReadSlidesTool(), SetThemeTool(), WriteDeckTool(),
+        ):
+            with self.subTest(tool=tool.name):
+                self.assertEqual(tool.serial_group({}), DECK_SERIAL_GROUP)
+        self.assertIsNone(PreviewSlidesTool().serial_group({}))
+        self.assertIsNone(CreateDeckTool().serial_group({}))
 
     def test_skill_resource_load_runs_first_only_for_a_deck(self):
         from agent_skills.tools import LoadTemplateToCanvasTool

@@ -1433,6 +1433,66 @@ class RunsFirstOrderingTests(SimpleTestCase):
         self.assertEqual([tc.id for tc, _ in results], ["c0", "c1"])
 
 
+class SerialGroupTests(SimpleTestCase):
+    """ContextAwareTool.serial_group: calls naming the same group run one after
+    another in the order sent, in place; the rest of the batch stays parallel
+    (three slides appended in one round landed in thread-scheduling order)."""
+
+    def _tools(self, groups, sleep=0.03):
+        import threading
+        import time as _time
+
+        log: list[str] = []
+        lock = threading.Lock()
+
+        def make(name):
+            tool = MagicMock()
+            tool.timeout_seconds = None
+            tool.runs_first.side_effect = lambda args: False
+            tool.serial_group.side_effect = lambda args, n=name: groups.get(n)
+
+            def invoke(args, n=name):
+                with lock:
+                    log.append(f"start:{n}:{args.get('k')}")
+                _time.sleep(sleep)
+                with lock:
+                    log.append(f"end:{n}:{args.get('k')}")
+                return json.dumps({"tool": n, "k": args.get("k")})
+
+            tool.invoke.side_effect = invoke
+            return tool
+
+        return {n: make(n) for n in ("write", "edit", "search")}, log
+
+    @staticmethod
+    def _calls(*specs):
+        return [ToolCall(id=f"c{i}", name=n, arguments={"k": i}) for i, n in enumerate(specs)]
+
+    def test_grouped_calls_run_serially_in_sent_order(self):
+        tools, log = self._tools({"write": "deck", "edit": "deck"})
+        results = SimpleChatPipeline._execute_tool_calls(self._calls("write", "edit", "write", "write"), tools)
+        self.assertEqual(log, [
+            "start:write:0", "end:write:0", "start:edit:1", "end:edit:1",
+            "start:write:2", "end:write:2", "start:write:3", "end:write:3",
+        ])
+        self.assertEqual([tc.id for tc, _ in results], ["c0", "c1", "c2", "c3"])
+
+    def test_ungrouped_call_overlaps_the_chain_and_results_keep_their_place(self):
+        tools, log = self._tools({"write": "deck"})
+        results = SimpleChatPipeline._execute_tool_calls(self._calls("write", "search", "write"), tools)
+        deck = [entry for entry in log if ":write:" in entry]
+        self.assertEqual(deck, ["start:write:0", "end:write:0", "start:write:2", "end:write:2"])
+        # The search started while the first write was still running.
+        self.assertLess(log.index("start:search:1"), log.index("end:write:0"))
+        self.assertEqual([json.loads(r)["k"] for _, r in results], [0, 1, 2])
+
+    def test_raising_hook_is_ungrouped(self):
+        tools, _log = self._tools({"write": "deck"})
+        tools["write"].serial_group.side_effect = RuntimeError("boom")
+        results = SimpleChatPipeline._execute_tool_calls(self._calls("write", "write"), tools)
+        self.assertEqual(len(results), 2)
+
+
 class IterationNoticeTests(TestCase):
     """_iteration_notice: sub-agents get a round-budget countdown with a pacing
     stage every round; main chat keeps the warn-only-near-the-end behavior."""

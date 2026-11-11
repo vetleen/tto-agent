@@ -1400,7 +1400,7 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
                     thread_id, {"version": 1, "size": {"w": 960, "h": 540}, "slides": [slide]},
                     title=title or tmpl.name, note=note, loaded_as="slide",
                 )
-            deck, content, idx, issues = service.insert_slide(
+            deck, _old, content, idx, issues = service.insert_slide(
                 deck.pk, slide, position=position,
                 description=f"Added a slide from template: {tmpl.name}",
             )

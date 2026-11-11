@@ -203,6 +203,31 @@ def _runs_first(tool, tc) -> bool:
         return False
 
 
+def _serial_chains(tool_calls, tool_by_name) -> list[list[int]]:
+    """Indexes of ``tool_calls`` split into chains: calls naming the same
+    ``ContextAwareTool.serial_group`` share one chain (in the order sent), every
+    other call is a chain of its own. An unknown tool or a hook that raises is
+    ungrouped, as in :func:`_runs_first`."""
+    chains: list[list[int]] = []
+    by_group: dict[str, list[int]] = {}
+    for i, tc in enumerate(tool_calls):
+        tool = tool_by_name.get(tc.name)
+        group = None
+        if tool is not None:
+            try:
+                group = tool.serial_group(tc.arguments or {})
+            except Exception:
+                logger.exception("serial_group raised for %s", tc.name)
+        if not group or not isinstance(group, str):
+            chains.append([i])
+        elif group in by_group:
+            by_group[group].append(i)
+        else:
+            by_group[group] = [i]
+            chains.append(by_group[group])
+    return chains
+
+
 def _run_round_with_timeouts(tool_calls, tool_by_name, run_one, context) -> list:
     """Run a sub-agent round's calls in parallel, each under its tool's timeout.
 
@@ -544,7 +569,8 @@ class SimpleChatPipeline(BasePipeline):
         """Execute a batch of tool calls and return (tool_call, result_json) pairs.
 
         When multiple tool calls are present, they execute concurrently via
-        ThreadPoolExecutor (capped at 4 workers).  Single calls skip the pool.
+        ThreadPoolExecutor (capped at 4 workers).  Single calls skip the pool,
+        and calls sharing a ``serial_group`` run in the order sent (_serial_chains).
         A sub-agent's calls always go through the pool, each under its tool's
         timeout (_run_round_with_timeouts); the main agent waits as long as a
         tool takes.
@@ -604,11 +630,21 @@ class SimpleChatPipeline(BasePipeline):
         def _run_group(calls: List[ToolCall]) -> List[Tuple[ToolCall, str]]:
             if calls and subagent:
                 return _run_round_with_timeouts(calls, tool_by_name, _run_one, context)
-            if len(calls) <= 1:
+            # Calls sharing a serial_group (writes to one deck) run one after
+            # another on one worker, in the order sent; the rest run in parallel.
+            chains = _serial_chains(calls, tool_by_name)
+            if len(chains) <= 1:
                 return [_run_one(tc) for tc in calls]
-            with ThreadPoolExecutor(max_workers=min(len(calls), 4)) as pool:
-                futures = [pool.submit(_run_one, tc) for tc in calls]
-                return [f.result() for f in futures]
+
+            def _run_chain(chain: list[int]) -> list[Tuple[ToolCall, str]]:
+                return [_run_one(calls[i]) for i in chain]
+
+            out: dict[int, Tuple[ToolCall, str]] = {}
+            with ThreadPoolExecutor(max_workers=min(len(chains), 4)) as pool:
+                futures = [pool.submit(_run_chain, chain) for chain in chains]
+                for chain, future in zip(chains, futures):
+                    out.update(zip(chain, future.result()))
+            return [out[i] for i in range(len(calls))]
 
         # Calls that change what the others resolve against (ContextAwareTool.
         # runs_first: create/rename/delete/restore/activate a deck) run one at a
