@@ -1343,7 +1343,9 @@ class ListThemesTool(ContextAwareTool):
         "its palette and footer, and the deck's current theme is flagged. A new deck already "
         "carries the user's (else the org's) default theme, so only look for another when the "
         "user wants a different look. Apply one with slides_set_theme; you cannot create or save "
-        "named themes — the user manages those from the deck panel."
+        "named themes — the user manages those from the deck panel. The summary is not the "
+        "deck's theme JSON: to change single colours, read it with slides_read(deck_settings=true) "
+        "first."
     )
     args_schema: type[BaseModel] = ListThemesInput
 
@@ -1381,7 +1383,8 @@ class SetThemeTool(ContextAwareTool):
     description: str = (
         "Set the active deck's theme (palette, fonts, tables and footer) by name or id — get the "
         "choices from slides_list_themes. Applies to the whole deck; you can still fine-tune "
-        "individual colours afterwards with slide_canvas_edit. If the theme carries a logo, place it "
+        "individual colours afterwards with slide_canvas_edit on the deck settings (slide_id "
+        "empty), after reading them with slides_read(deck_settings=true). If the theme carries a logo, place it "
         "where it fits (e.g. the cover) with the token [[image:company-logo]]."
     )
     args_schema: type[BaseModel] = SetThemeInput
