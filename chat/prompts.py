@@ -742,47 +742,74 @@ def _fmt_time(dt) -> str | None:
     return local.strftime("%d.%m.%y %H:%M")
 
 
-# -- Active slide deck: the per-turn section and its edit-point twin ------------
-# Usage text of the per-turn "Active Slide Deck" section (last user message).
+# -- Active slide deck: the per-turn outline section -----------------------------
+# Usage text of the per-turn "Active Slide Deck" section (last user message). No
+# deck JSON is ever injected — the agent reads slides with slides_read (the deck
+# sibling of the canvas workspace list).
 ACTIVE_DECK_PREAMBLE_INTRO = (
-    "This is the deck the user sees rendered in the side panel — edit it with "
-    "`slide_canvas_edit` (find/replace on this EXACT JSON) or `slide_canvas_write` "
-    "(full rewrite). Slide/element ids are permanent; the user comments by slide id.\n"
+    "This is the deck the user sees rendered in the side panel. Below is its OUTLINE "
+    "only — read a slide's JSON with `slides_read` before you change it, then use "
+    "`slides_write_slide` (one whole slide), `slide_canvas_edit` (find/replace within "
+    "a slide), or the move/delete/duplicate tools. Slide/element ids are permanent; "
+    "the user comments by slide id.\n"
 )
-# The consolidated block the tool loop appends at a mid-turn edit point (see
-# llm/pipelines/edit_points.py + chat/slides/deck_block.py): the same section,
-# re-read from storage, so the model edits against ONE current copy and the
-# slide tools can trim the deck JSON out of their earlier call arguments.
-ACTIVE_DECK_BLOCK_HEADER = "# Active Slide Deck (current state)"
-ACTIVE_DECK_BLOCK_INTRO = (
-    "This is the active deck as it is NOW, re-read from storage after the tool calls "
-    "above. It supersedes the \"Active Slide Deck\" section in the user message above "
-    "and any deck JSON in earlier tool calls or results (some were omitted from this "
-    "transcript to save space). Make further changes with `slide_canvas_edit` "
-    "(find/replace on THIS exact JSON) or `slide_canvas_write` (full rewrite). "
-    "Slide/element ids are permanent; the user comments by slide id.\n"
-)
+# Per slide: at most this many unaddressed comments, each capped at this many chars.
+DECK_OUTLINE_MAX_COMMENTS = 3
+DECK_OUTLINE_COMMENT_CHARS = 200
+_DECK_SEEN_TEXT = {
+    "changed": " — changed since you last read it",
+    "never": "",  # most slides are unread; flagging them all would be noise
+}
 
 
-def render_active_deck_section(
-    active_slide_set, slide_decks: list[dict] | None = None, *,
-    header: str | None = None, intro: str | None = None,
-) -> str:
-    """The "Active Slide Deck" section: header, usage text, the thread's deck
-    inventory (when it has several), the resolved theme, and the canonical deck
-    JSON. ``""`` without a deck. The defaults reproduce the per-turn preamble
-    section exactly; the edit-point block passes its own header and intro."""
+def _render_deck_outline(outline: list[dict]) -> str:
+    lines = []
+    for o in outline:
+        line = f'{o["n"]:>3}. {o["id"]}  {o["layout"]}  "{o["title"]}"'
+        line += _DECK_SEEN_TEXT.get(o.get("seen") or "", "")
+        lines.append(line)
+        comments = o.get("comments") or []
+        for text in comments[:DECK_OUTLINE_MAX_COMMENTS]:
+            text = " ".join((text or "").split())
+            if len(text) > DECK_OUTLINE_COMMENT_CHARS:
+                text = text[: DECK_OUTLINE_COMMENT_CHARS - 1] + "…"
+            lines.append(f'       💬 "{text}"')
+        if len(comments) > DECK_OUTLINE_MAX_COMMENTS:
+            lines.append(f"       💬 +{len(comments) - DECK_OUTLINE_MAX_COMMENTS} more")
+    return "\n".join(lines)
+
+
+def render_active_deck_section(active_slide_set, slide_decks: list[dict] | None = None) -> str:
+    """The "Active Slide Deck" section: header (slide count, size), usage text,
+    the thread's deck inventory (when it has several), the resolved theme, and
+    the slide OUTLINE — one line per slide (number, id, layout, title, "changed
+    since you last read it"), plus the sent comments the agent hasn't acted on.
+    ``""`` without a deck. The outline comes from the active deck's
+    ``slide_decks`` entry (see chat.slides.service.active_deck_for_prompt), else
+    it is computed here (sync callers)."""
     if not active_slide_set:
         return ""
+    from core.tokens import count_tokens
     from chat.slides.schema import canonical_deck_text
     from chat.slides.theme import resolve_theme
 
-    section = (header or f'# Active Slide Deck: "{active_slide_set.title}"') + "\n"
-    section += ACTIVE_DECK_PREAMBLE_INTRO if intro is None else intro
+    content = active_slide_set.content or {}
+    outline = next((d.get("outline") for d in slide_decks or [] if d.get("outline") is not None), None)
+    if outline is None:
+        from chat.slides.service import deck_outline
+
+        outline = deck_outline(active_slide_set)
+    n = len(outline)
+    tokens = count_tokens(canonical_deck_text(content))
+    section = (
+        f'# Active Slide Deck: "{active_slide_set.title}" '
+        f'({n} slide{"" if n == 1 else "s"}, ~{tokens:,} tokens of JSON)\n'
+    )
+    section += ACTIVE_DECK_PREAMBLE_INTRO
     # Inventory of this thread's decks, so you know what you can switch between.
     if slide_decks and len(slide_decks) > 1:
         names = ", ".join(
-            f'"{d["title"]}"' + (" (active)" if d.get("active") else "")
+            f'"{d["title"]}" ({d.get("slides", 0)} slides)' + (" (active)" if d.get("active") else "")
             for d in slide_decks
         )
         section += (
@@ -792,7 +819,7 @@ def render_active_deck_section(
     # The resolved theme — reference the NAMES in the JSON (so the deck re-themes
     # cleanly); the hexes/fonts are for your judgement (matching a colour in an
     # image prompt, or choosing a harmonious literal).
-    theme = resolve_theme(active_slide_set.content or {})
+    theme = resolve_theme(content)
     colours = theme.get("colors", {})
     fonts = theme.get("fonts", {})
     pal = ", ".join(
@@ -804,7 +831,7 @@ def render_active_deck_section(
     fnt = ", ".join(f"{k}={fonts[k]}" for k in ("headline", "subhead", "body", "data") if k in fonts)
     # Which named theme the deck carries (provenance written by the theme
     # tools / picker); no override at all == the built-in Forest default.
-    override = (active_slide_set.content or {}).get("theme") or {}
+    override = content.get("theme") or {}
     theme_label = override.get("_theme_label") or (
         "Forest (built-in default)" if not override else "a deck-level custom palette"
     )
@@ -813,19 +840,12 @@ def render_active_deck_section(
         "`slides_set_theme` only if they want a different look.\n"
     )
     section += f"Theme colours (name=hex): {pal}.\nTheme fonts: {fnt}.\n"
-    section += f"```json\n{canonical_deck_text(active_slide_set.content or {})}\n```"
+    if outline:
+        section += "Slides (number. id  layout  \"title\"; 💬 = a comment the user sent that you haven't acted on):\n"
+        section += _render_deck_outline(outline)
+    else:
+        section += "The deck has no slides yet."
     return section
-
-
-def render_active_deck_block(active_slide_set, slide_decks: list[dict] | None = None) -> str:
-    """The edit-point "current state" twin of :func:`render_active_deck_section`."""
-    if not active_slide_set:
-        return ""
-    return render_active_deck_section(
-        active_slide_set, slide_decks,
-        header=f'{ACTIVE_DECK_BLOCK_HEADER}: "{active_slide_set.title}"',
-        intro=ACTIVE_DECK_BLOCK_INTRO,
-    )
 
 
 def build_dynamic_context(

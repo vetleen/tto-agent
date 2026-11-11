@@ -17,8 +17,8 @@ edit point costs one cache break and (on Anthropic) one reasoning drop:
    (``trim_args_at_edit_point`` / ``trim_result_at_edit_point``),
 3. pruning of old tool results (forced, or early past a fraction of the ceiling),
 4. native-asset eviction with hysteresis (early threshold, low watermark),
-5. refreshing the consolidated trailing blocks (old ones removed, fresh ones
-   appended: the main agent's current-deck block, then the scratchpad block last).
+5. refreshing the consolidated scratchpad block (the old one removed, a fresh
+   one appended last).
 
 The same code runs for the main agent and sub-agents and for every provider.
 """
@@ -40,10 +40,6 @@ logger = logging.getLogger(__name__)
 # replaced at the next edit point.
 SCRATCHPAD_BLOCK_HEADER = "# Scratchpad (your private notes)"
 SCRATCHPAD_BLOCK_KEY = "wf_scratchpad_block"
-# The main agent's consolidated "current deck" block (rendered by the consumer-
-# supplied ``RunContext.deck_block_provider``); replaced at the next edit point
-# like the scratchpad block, and always placed just before it.
-DECK_BLOCK_KEY = "wf_deck_block"
 # Assistant-message metadata: ids of tool calls whose args were already trimmed.
 TRIMMED_ARGS_KEY = "wf_trimmed_args"
 # Assistant-message metadata: ``{call_id: note}`` for trimmed calls whose tool
@@ -606,21 +602,11 @@ class EditPointManager:
         original = messages
         before = _provider_view(messages)
 
-        # 0. The current-deck block, read BEFORE any trimming so the slide tools
-        #    know whether the copy their markers point at will exist (a failed read
-        #    makes them keep their payloads this edit point). One provider call per
-        #    edit point — also paid by an edit point that turns out to change nothing.
-        deck_text, deck_failed = self._deck_block_text(ctx)
-        if ctx is not None:
-            ctx.deck_block_failed = deck_failed
-        if deck_failed:
-            logger.warning("Deck block unavailable at this edit point; slide payloads are kept")
-
         # 1. Dedup: re-decide append-only redactions as keep-newest.
         messages = normalize_keep_newest(messages)
 
-        # 2. Per-tool argument trimming (needs ctx: the trailing blocks below are
-        #    what make a trimmed note / deck recoverable). The current round is
+        # 2. Per-tool argument trimming (needs ctx: the trailing scratchpad block
+        #    is what makes a trimmed note recoverable). The current round is
         #    always protected; recency protects unless the tool opts out.
         trimmed = 0
         trimmed_results = 0
@@ -687,12 +673,8 @@ class EditPointManager:
             )
             return original
 
-        # 5. Consolidated trailing blocks: the current deck (main agent, when the
-        #    deck changed this turn — read in step 0), then the scratchpad block,
-        #    always last.
-        messages, deck_block = self._refresh_trailing_blocks(
-            messages, req, deck_text, deck_failed=deck_failed,
-        )
+        # 5. The consolidated scratchpad block, always last.
+        messages = self._refresh_trailing_blocks(messages, req)
         self._seed_pending = False
 
         self.edit_rounds.append(self._round)
@@ -700,14 +682,11 @@ class EditPointManager:
             ctx.bump_stat("edit_points_total", 1)
             for kind in dict.fromkeys(kinds):
                 ctx.bump_stat(f"edit_point:{kind}", 1)
-            if deck_block:
-                # Not an ``edit_point:*`` key — the logger maps those to trigger kinds.
-                ctx.bump_stat("deck_block_refreshes", 1)
         logger.info(
             "Tool-loop edit point (%s): pruned=%d dropped_stub_calls=%d trimmed_args=%d "
-            "trimmed_results=%d evicted_native=%d deck_block=%s (projected ~%d / ceiling %d, "
+            "trimmed_results=%d evicted_native=%d (projected ~%d / ceiling %d, "
             "model %s, agent %s)",
-            ",".join(kinds), pruned, dropped, trimmed, trimmed_results, evicted, deck_block,
+            ",".join(kinds), pruned, dropped, trimmed, trimmed_results, evicted,
             projected, ceiling or 0, req.model, self.agent_kind,
         )
         return messages
@@ -738,51 +717,15 @@ class EditPointManager:
             f"```\n{notes}\n```"
         )
 
-    def _refresh_trailing_blocks(
-        self, messages, req, deck: str, *, deck_failed: bool = False,
-    ) -> tuple[List[Message], bool]:
-        """Drop the previous trailing blocks and append fresh ones: the current
-        deck block ``deck`` (when there is one), then the scratchpad block, always
-        last. A failed deck re-read (``deck_failed``) keeps the last good deck
-        block in place — payloads trimmed at earlier edit points point at it.
-        Returns ``(messages, deck_block_appended)``."""
-        def keep(m: Message) -> bool:
-            meta = m.metadata or {}
-            if meta.get(SCRATCHPAD_BLOCK_KEY):
-                return False
-            if meta.get(DECK_BLOCK_KEY):
-                return deck_failed
-            return True
-
-        messages = [m for m in messages if keep(m)]
-        if deck:
-            messages.append(Message(
-                role="user", content=deck, metadata={DECK_BLOCK_KEY: True},
-            ))
+    def _refresh_trailing_blocks(self, messages, req) -> List[Message]:
+        """Drop the previous scratchpad block and append a fresh one, always last."""
+        messages = [m for m in messages if not (m.metadata or {}).get(SCRATCHPAD_BLOCK_KEY)]
         text = self._block_text(req.context)
         if text:
             messages.append(Message(
                 role="user", content=text, metadata={SCRATCHPAD_BLOCK_KEY: True},
             ))
-        return messages, bool(deck)
-
-    def _deck_block_text(self, ctx) -> tuple[str, bool]:
-        """``(text, failed)`` — the main agent's "current deck" block, rendered by
-        the consumer-supplied ``RunContext.deck_block_provider`` (re-reads the
-        active deck from the DB; ``""`` when there is none or it is unchanged
-        since the preamble; ``None`` or a raise = the read failed). Never raises —
-        the block is best-effort."""
-        provider = getattr(ctx, "deck_block_provider", None)
-        if provider is None or self.agent_kind != "main":
-            return "", False
-        try:
-            text = provider()
-        except Exception:  # noqa: BLE001
-            logger.exception("deck_block_provider failed")
-            return "", True
-        if text is None:
-            return "", True
-        return (text if isinstance(text, str) else ""), False
+        return messages
 
     def _append_seed_scratchpad(self, messages, req) -> None:
         if not self._seed_pending:
@@ -846,7 +789,6 @@ class EditPointManager:
 
 
 __all__ = [
-    "DECK_BLOCK_KEY",
     "EditPointManager",
     "SCRATCHPAD_BLOCK_HEADER",
     "RESULT_NOTE_FIELD",

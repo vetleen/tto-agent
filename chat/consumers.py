@@ -149,6 +149,7 @@ CANVAS_UPDATED_TOOLS = (
 # (target="deck"), and each branch below only fires on its own id.
 SLIDES_UPDATED_TOOLS = (
     "slides_create_deck", "slide_canvas_write", "slide_canvas_edit", "slides_add_slide",
+    "slides_write_slide", "slides_move_slides", "slides_delete_slides", "slides_duplicate_slide",
     "slides_set_theme", "skill_resource_load",
 )
 
@@ -3217,20 +3218,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 s["slug"]: s["tool_names"] for s in prefs.allowed_skills
             }
 
-        # Lets the tool loop append ONE current copy of the active deck at edit
-        # points (re-read from the DB), so the slide tools can trim the deck JSON
-        # out of their earlier call arguments and the model edits against the
-        # real canonical text. The baseline is the preamble's snapshot: an
-        # unchanged deck yields no block (the snapshot is still exact). Main
-        # agent only — sub-agents have no deck tools.
-        from chat.slides.deck_block import make_deck_block_provider
-        from chat.slides.service import deck_version
-
-        context.deck_block_provider = make_deck_block_provider(
-            str(thread.id),
-            baseline=deck_version(dynamic_context_data.get("active_slide_set")),
-        )
-
         # Use pre-resolved model from _handle_chat_message, or resolve here
         model = resolved_model
         if model is None:
@@ -5956,8 +5943,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         messages: list[dict] = []
         trim_eligible_ids: set[str] = set()
         # Calls / results inside the raw window: recency protects them unless their
-        # tool opts out (trim_despite_recency — the slide tools, whose deck JSON
-        # the regenerated Active Slide Deck section covers).
+        # tool opts out (trim_despite_recency).
         recent_call_ids: set[str] = set()
         raw_results: list[tuple[str, str]] = []
         if thread.summary and not scoped:
@@ -6003,10 +5989,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 msg_dict["message_id"] = str(m.id)
             messages.append(msg_dict)
 
-        # 4b. Shrink big arguments of those same old calls (canvas text, deck
+        # 4b. Shrink big arguments of those same old calls (canvas text, slide
         #     JSON, scratchpad notes …) per each tool's trim_args_at_edit_point —
-        #     the content stays reachable (canvas_read, document_read, the
-        #     scratchpad preamble). Same window as the result stubbing above,
+        #     the content stays reachable (canvas_read, slides_read, document_read,
+        #     the scratchpad preamble). Same window as the result stubbing above,
         #     plus the raw window for tools that opt out of recency protection.
         #     (The call dicts are captured before any rewrite so later_calls carry
         #     the original arguments.)
@@ -6030,9 +6016,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                         ]
 
         # 4c. Shrink big bodies of raw-window results whose tool opts out of
-        #     recency protection (the deck JSON in slides_create_deck /
-        #     skill_resource_load results — the Active Slide Deck section is the
-        #     copy that counts) per trim_result_at_edit_point. Dicts only; the
+        #     recency protection per trim_result_at_edit_point. Dicts only; the
         #     stored rows are never modified.
         if raw_results:
             from llm.pipelines.edit_points import trim_history_results

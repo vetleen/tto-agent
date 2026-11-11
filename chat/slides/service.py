@@ -32,28 +32,23 @@ def get_active_deck(thread_id):
 
 
 def active_deck_for_prompt(thread_id):
-    """``(active deck | None, [{"title", "active"} ...] for every live deck)`` —
-    the active deck is injected in full (per-turn preamble and the edit-point deck
-    block); the list lets the model know what decks it can switch between with
-    slide_canvas_activate."""
+    """``(active deck | None, [{"title", "active", "slides"} ...] for every live
+    deck)`` — the per-turn preamble shows the active deck's outline (never its
+    JSON); the list lets the model know what decks it can switch between with
+    slide_canvas_activate. The active deck's entry also carries its ``outline``
+    (:func:`deck_outline`), computed here because the prompt is rendered on the
+    event loop, where the comment query can't run."""
     active = get_active_deck(thread_id)
-    decks = [
-        {"title": d["title"], "active": d["is_active"]}
-        for d in SlideSet.objects.filter(thread_id=thread_id, deleted_at__isnull=True)
-        .order_by("created_at").values("title", "is_active")
-    ]
+    decks = []
+    for d in (
+        SlideSet.objects.filter(thread_id=thread_id, deleted_at__isnull=True)
+        .order_by("created_at").only("title", "is_active", "content", "agent_seen")
+    ):
+        entry = {"title": d.title, "active": d.is_active, "slides": len((d.content or {}).get("slides") or [])}
+        if active is not None and d.pk == active.pk:
+            entry["outline"] = deck_outline(active)
+        decks.append(entry)
     return active, decks
-
-
-def deck_version(deck):
-    """``(pk, updated_at)`` of a deck, or ``None`` — what the edit-point deck block
-    compares against the preamble snapshot to tell whether the deck the model
-    already sees is still current. ``updated_at`` only moves on content/title
-    writes (activation saves with ``update_fields``); the pk covers a switch to
-    another deck."""
-    if deck is None:
-        return None
-    return (deck.pk, deck.updated_at)
 
 
 def resolve_deck(thread_id, name: str | None = None):
@@ -509,9 +504,9 @@ def deck_outline(deck, *, with_comments: bool = True) -> list[dict]:
     from chat.models import SlideComment
 
     slides = [s for s in (deck.content or {}).get("slides") or [] if isinstance(s, dict)]
-    seen = deck.agent_seen or {}
+    seen = getattr(deck, "agent_seen", None) or {}
     pending: dict[str, list[str]] = {}
-    if with_comments and slides:
+    if with_comments and slides and getattr(deck, "pk", None):
         rows = (
             SlideComment.objects.filter(
                 slide_set_id=deck.pk, status=SlideComment.Status.SENT, sent_at__isnull=False

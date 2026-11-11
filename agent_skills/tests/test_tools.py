@@ -1143,29 +1143,20 @@ class LoadResourceToDeckTests(TestCase):
 
         return ToolCall(id="later", name=name, arguments=args)
 
-    def test_result_hook_trims_deck_json_using_deduplicated_title(self):
-        """The result's (de-duplicated) title identifies the deck: a later write
-        naming the ORIGINAL title is another deck, so the JSON must stay."""
+    def test_deck_load_returns_an_outline_not_the_deck_json(self):
+        """The agent reads the loaded deck's slides with slides_read; the result
+        carries ids + an outline only, so there is nothing big to trim."""
         self._make_deck("Full Deck")
         raw = self.tool._run(template_name="Full Deck", target="deck")
         data = json.loads(raw)
         self.assertEqual(data["title"], "Full Deck (2)")
-        out = json.loads(self.tool.trim_result_at_edit_point(
-            raw, {"template_name": "Full Deck", "target": "deck"}, later_calls=[],
-        ))
-        self.assertNotIn("deck_json", out)
-        self.assertIn("loaded deck JSON", out["omitted_fields_note"])
-        self.assertEqual(out["title"], "Full Deck (2)")
-        self.assertEqual(out["slide_ids"], data["slide_ids"])
-        self.assertIsNone(self.tool.trim_result_at_edit_point(
-            raw, {}, later_calls=[self._later("slide_canvas_write", deck_name="Full Deck")],
-        ))
-        out2 = json.loads(self.tool.trim_result_at_edit_point(
-            raw, {}, later_calls=[self._later("slide_canvas_write", deck_name="Full Deck (2)")],
-        ))
-        self.assertIn("replaced", out2["omitted_fields_note"])
+        self.assertNotIn("deck_json", data)
+        self.assertEqual(len(data["outline"]), data["slide_count"])
+        self.assertIsNone(self.tool.trim_result_at_edit_point(raw, {}, later_calls=[]))
 
     def test_result_hook_trims_slide_json_of_slide_load(self):
+        from chat.models import SlideSet
+
         self._make_deck()
         raw = self.tool._run(template_name="One Slide", target="deck")
         data = json.loads(raw)
@@ -1173,8 +1164,11 @@ class LoadResourceToDeckTests(TestCase):
         out = json.loads(self.tool.trim_result_at_edit_point(raw, {}, later_calls=[]))
         self.assertNotIn("slide_json", out)
         self.assertIn("loaded slide JSON", out["omitted_fields_note"])
+        self.assertIn("slides_read", out["omitted_fields_note"])
         self.assertEqual(out["slide_id"], data["slide_id"])
         self.assertEqual(out["slide_ids"], data["slide_ids"])
+        # The agent saw the loaded slide's JSON in the result.
+        self.assertIn(data["slide_id"], SlideSet.objects.get(pk=data["deck_id"]).agent_seen)
 
     def test_result_hook_leaves_canvas_result_alone(self):
         SkillTemplate.objects.create(skill=self.skill, name="Memo", content="Dear all, " * 400)
@@ -1259,7 +1253,7 @@ class LoadResourceToDeckTests(TestCase):
         self.assertEqual(first["loaded_as"], "deck")
         self.assertEqual(first["title"], "Full Deck (2)")
         self.assertEqual(first["slide_count"], 2)
-        self.assertIn("deck_json", first)
+        self.assertEqual(len(first["outline"]), 2)
         self.assertEqual(second["title"], "Full Deck (3)")
         existing.refresh_from_db()
         self.assertEqual(existing.content, existing_content)
@@ -1300,7 +1294,7 @@ class LoadResourceToDeckTests(TestCase):
                 result = self._load(name)
                 self.assertEqual(result["status"], "error")
                 self.assertIn("couldn't be verified as a valid slide or deck", result["message"])
-                self.assertIn("slide_canvas_edit", result["message"])
+                self.assertIn("slides_write_slide", result["message"])
                 self.assertTrue(result["issues"])
         deck.refresh_from_db()
         self.assertEqual(deck.content, content)

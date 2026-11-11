@@ -46,20 +46,13 @@ class SlideToolTests(TestCase):
         tool.set_context(self.ctx)
         return json.loads(tool._run(**kw))
 
-    def test_create_result_hook_round_trips_real_result(self):
-        """The create tool's own result drops deck_json (a note says where the
-        deck is) while the ids the model needs for later edits stay."""
-        tool = CreateDeckTool()
-        tool.set_context(self.ctx)
-        raw = tool._run(title="Deck A", layouts=["title", "bullets"])
-        data = json.loads(raw)
-        self.assertIn("Presentation title", data["deck_json"])
-        out = json.loads(tool.trim_result_at_edit_point(raw, {"title": "Deck A"}, later_calls=[]))
-        self.assertNotIn("deck_json", out)
-        self.assertIn("Active Slide Deck", out["omitted_fields_note"])
-        self.assertEqual(out["slide_ids"], data["slide_ids"])
-        self.assertEqual(out["deck_id"], data["deck_id"])
-        self.assertLess(len(json.dumps(out)), len(raw))
+    def test_create_result_carries_an_outline_not_the_deck_json(self):
+        """The agent reads or writes each slide next; creation returns ids + an
+        outline, never the deck JSON."""
+        r = self._run(CreateDeckTool(), title="Deck A", layouts=["title", "bullets"])
+        self.assertNotIn("deck_json", r)
+        self.assertNotIn("Presentation title", json.dumps(r))
+        self.assertEqual(r["outline"], ['1. s1 title "Title"', '2. s2 bullets "Bullets"'])
 
     def test_create_empty_deck(self):
         r = self._run(CreateDeckTool(), title="Scratch")
@@ -74,16 +67,17 @@ class SlideToolTests(TestCase):
         self.assertEqual(seed["status"], "ok")
 
     def test_create_with_layouts_storyboard(self):
-        """The ordered layouts list seeds one slide per id, in order, and the result
-        carries the full seeded deck JSON — the model edits placeholders from it,
-        since the deck JSON in the turn context is a pre-turn snapshot."""
+        """The ordered layouts list seeds one slide per id, in order, each tagged
+        with its layout."""
         r = self._run(CreateDeckTool(), title="Deck A", layouts=["title", "bullets", "closing"])
         self.assertEqual(r["status"], "ok")
         self.assertEqual(r["slide_ids"], ["s1", "s2", "s3"])
         self.assertEqual(r["changed_slide_ids"], ["s1", "s2", "s3"])
         self.assertEqual(r["slide_count"], 3)
-        self.assertIn("Presentation title", r["deck_json"])  # title_01 placeholder text
         deck = SlideSet.objects.get(pk=r["deck_id"])
+        self.assertEqual([s["layout"] for s in deck.content["slides"]], ["title", "bullets", "closing"])
+        # The agent hasn't seen any slide JSON yet.
+        self.assertEqual(deck.agent_seen, {})
         self.assertTrue(deck.is_active)
         self.assertEqual(len(deck.content["slides"]), 3)
         self.assertEqual(deck.content["slides"][0]["name"], "Title")
@@ -190,7 +184,9 @@ class SlideToolTests(TestCase):
         self.assertEqual(added["slide_ids"], ["s1", "s2"])
         self.assertEqual(added["changed_slide_ids"], ["s2"])
         self.assertEqual(added["slide_count"], 2)
-        edited = self._run(EditDeckTool(), edits=[{"old_text": '"Presentation title"', "new_text": '"Hi"'}])
+        edited = self._run(EditDeckTool(), edits=[
+            {"slide_id": "s1", "old_text": '"Presentation title"', "new_text": '"Hi"'},
+        ])
         self.assertEqual(edited["slide_ids"], ["s1", "s2"])
 
     def test_add_slide_unknown_layout(self):
@@ -260,20 +256,27 @@ class SlideToolTests(TestCase):
 
     def test_edit_valid(self):
         w = self._run(CreateDeckTool(), title="Deck A", layouts=["title"])
-        r = self._run(EditDeckTool(), edits=[{"old_text": '"Presentation title"', "new_text": '"Welcome"'}])
+        r = self._run(EditDeckTool(), edits=[
+            {"slide_id": "s1", "old_text": '"Presentation title"', "new_text": '"Welcome"'},
+        ])
         self.assertEqual(r["status"], "ok")
         self.assertEqual(r["applied"], 1)
         self.assertEqual(r["changed_slide_ids"], ["s1"])
+        self.assertEqual(r["edited"], ["slide 1 · Title"])
+        self.assertEqual(EditDeckTool().end_label_for_result(r), "Edited slide 1 · Title")
         deck = SlideSet.objects.get(pk=w["deck_id"])
         self.assertIn("Welcome", json.dumps(deck.content))
+        self.assertIn("s1", deck.agent_seen)  # an edit is a write: the slide counts as seen
 
     def test_edit_json_guard_rejects_and_preserves(self):
         w = self._run(CreateDeckTool(), title="Deck A", layouts=["title"])
         deck = SlideSet.objects.get(pk=w["deck_id"])
         before = json.dumps(deck.content, sort_keys=True)
-        r = self._run(EditDeckTool(), edits=[{"old_text": '"version": 1', "new_text": '"version": 1 OOPS'}])
+        r = self._run(EditDeckTool(), edits=[
+            {"slide_id": "s1", "old_text": '"skip_footer": true', "new_text": '"skip_footer": true OOPS'},
+        ])
         self.assertEqual(r["status"], "error")
-        self.assertEqual(r["applied"], 0)
+        self.assertIn("invalid JSON", r["message"])
         deck.refresh_from_db()
         self.assertEqual(json.dumps(deck.content, sort_keys=True), before)
         # no ai_edit checkpoint created for the rejected edit
@@ -286,9 +289,173 @@ class SlideToolTests(TestCase):
         ]})
         self._run(CreateDeckTool(), title="Deck A")
         self._run(WriteDeckTool(), content_json=json_deck)
-        r = self._run(EditDeckTool(), edits=[{"old_text": '"t": "dup"', "new_text": '"t": "x"'}])
+        r = self._run(EditDeckTool(), edits=[{"slide_id": "s1", "old_text": '"t": "dup"', "new_text": '"t": "x"'}])
         self.assertEqual(r["status"], "error")
         self.assertTrue(any("matches" in f["error"] for f in r["failed"]))
+
+    def test_edit_text_shared_by_two_slides_is_unique_per_slide(self):
+        self._run(CreateDeckTool(), title="Deck A", layouts=["bullets", "bullets"])
+        r = self._run(EditDeckTool(), edits=[
+            {"slide_id": "s2", "old_text": '"t": "Slide title"', "new_text": '"t": "Zweite"'},
+        ])
+        self.assertEqual(r["status"], "ok", r)
+        deck = SlideSet.objects.get(title="Deck A")
+        self.assertNotIn("Zweite", json.dumps(deck.content["slides"][0]))
+        self.assertIn("Zweite", json.dumps(deck.content["slides"][1]))
+
+    def test_edit_deck_settings(self):
+        self._run(CreateDeckTool(), title="Deck A", layouts=["title"])
+        r = self._run(EditDeckTool(), edits=[{"slide_id": "", "old_text": '"version": 1', "new_text": '"version": 1'}])
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(EditDeckTool().end_label_for_result(r), "Edited the deck settings")
+
+    # -- slides_read ------------------------------------------------------------
+    def test_read_by_ids_returns_canonical_slide_json_and_stamps_seen(self):
+        from chat.slide_tools import ReadSlidesTool
+
+        self._run(CreateDeckTool(), title="Deck A", layouts=["title", "bullets", "closing"])
+        r = self._run(ReadSlidesTool(), slide_ids=["s3", "nope"])
+        self.assertEqual([s["n"] for s in r["slides"]], [3])
+        self.assertEqual(r["unknown_slide_ids"], ["nope"])
+        deck = SlideSet.objects.get(title="Deck A")
+        self.assertEqual(r["slides"][0]["json"], canonical_deck_text(deck.content["slides"][2]))
+        self.assertEqual(set(deck.agent_seen), {"s3"})
+        self.assertEqual(ReadSlidesTool().end_label_for_result(r), "Read slide 3")
+        # The JSON it returned is exactly what the edit tool matches against.
+        e = self._run(EditDeckTool(), edits=[
+            {"slide_id": "s3", "old_text": r["slides"][0]["json"][:40], "new_text": r["slides"][0]["json"][:40]},
+        ])
+        self.assertEqual(e["status"], "ok")
+
+    def test_read_range_and_label(self):
+        from chat.slide_tools import ReadSlidesTool
+
+        self._run(CreateDeckTool(), title="Deck A", layouts=["title", "bullets", "bullets", "closing"])
+        r = self._run(ReadSlidesTool(), start=2, end=4)
+        self.assertEqual([s["n"] for s in r["slides"]], [2, 3, 4])
+        self.assertNotIn("next_start", r)
+        self.assertEqual(ReadSlidesTool().end_label_for_result(r), "Read slides 2–4")
+
+    def test_read_pages_at_the_token_cap(self):
+        from chat.slide_tools import ReadSlidesTool
+
+        self._run(CreateDeckTool(), title="Deck A", layouts=["bullets"] * 5)
+        with mock.patch("llm.context_budget.canvas_read_token_cap", return_value=1):
+            r = self._run(ReadSlidesTool())
+        self.assertEqual([s["n"] for s in r["slides"]], [1])  # at least one slide
+        self.assertEqual(r["next_start"], 2)
+        with mock.patch("llm.context_budget.canvas_read_token_cap", return_value=1):
+            by_id = self._run(ReadSlidesTool(), slide_ids=["s4", "s5"])
+        self.assertEqual(by_id["not_included_slide_ids"], ["s5"])
+
+    def test_read_deck_settings_only(self):
+        from chat.slide_tools import ReadSlidesTool
+
+        self._run(CreateDeckTool(), title="Deck A", layouts=["title"])
+        r = self._run(ReadSlidesTool(), deck_settings=True)
+        self.assertEqual(r["slides"], [])
+        self.assertIn('"size"', r["deck_settings"])
+        self.assertNotIn('"slides"', r["deck_settings"])
+
+    def test_read_include_render_uses_the_preview_helper(self):
+        from chat.slide_tools import ReadSlidesTool
+
+        self._run(CreateDeckTool(), title="Deck A", layouts=["title", "bullets"])
+        with mock.patch("chat.slide_tools._render_and_attach", return_value={"status": "ok"}) as render:
+            r = self._run(ReadSlidesTool(), slide_ids=["s2"], include_render=True)
+        self.assertEqual(r["render"], {"status": "ok"})
+        self.assertEqual(render.call_args.args[2], ["s2"])
+
+    # -- slides_write_slide / move / delete / duplicate ----------------------------
+    def _slide(self, title):
+        return {"name": title, "elements": [
+            {"type": "text", "x": 40, "y": 40, "w": 880, "h": 60, "class": "headline",
+             "paragraphs": [{"runs": [{"t": title}]}]},
+        ]}
+
+    def test_write_slide_replaces_in_place(self):
+        from chat.slide_tools import WriteSlideTool
+
+        self._run(CreateDeckTool(), title="Deck A", layouts=["title", "bullets"])
+        r = self._run(WriteSlideTool(), slide_id="s2", content=self._slide("Market size"))
+        self.assertEqual(r["status"], "ok", r)
+        self.assertEqual(r["slide_ids"], ["s1", "s2"])
+        self.assertEqual(r["changed_slide_ids"], ["s2"])
+        self.assertEqual(WriteSlideTool().end_label_for_result(r), "Wrote slide 2 · Market size")
+        deck = SlideSet.objects.get(title="Deck A")
+        self.assertIn("w", deck.agent_seen["s2"])
+
+    def test_write_slide_inserts_and_accepts_a_string(self):
+        from chat.slide_tools import WriteSlideTool
+
+        self._run(CreateDeckTool(), title="Deck A", layouts=["title"])
+        r = self._run(WriteSlideTool(), content=json.dumps(self._slide("Agenda")), position=0)
+        self.assertEqual(r["status"], "ok", r)
+        self.assertEqual(r["slide_ids"][0], r["slide_id"])
+        self.assertEqual(WriteSlideTool().end_label_for_result(r), "Added slide 1 · Agenda")
+
+    def test_write_slide_rejects_a_deck_and_invalid_slides(self):
+        from chat.slide_tools import WriteSlideTool
+
+        self._run(CreateDeckTool(), title="Deck A", layouts=["title"])
+        self.assertEqual(self._run(WriteSlideTool(), content={"slides": []})["status"], "error")
+        bad = self._run(WriteSlideTool(), slide_id="s1", content={"elements": [{"type": "bogus"}]})
+        self.assertEqual(bad["status"], "error")
+        self.assertTrue(bad["issues"])
+        self.assertEqual(self._run(WriteSlideTool(), slide_id="s9", content=self._slide("x"))["status"], "error")
+
+    def test_move_delete_duplicate(self):
+        from chat.slide_tools import DeleteSlidesTool, DuplicateSlideTool, MoveSlidesTool
+
+        self._run(CreateDeckTool(), title="Deck A", layouts=["title", "bullets", "closing"])
+        m = self._run(MoveSlidesTool(), slide_ids=["s3"], position=0)
+        self.assertEqual(m["slide_ids"], ["s3", "s1", "s2"])
+        self.assertEqual(MoveSlidesTool().end_label_for_result(m), "Moved slide 1 · Closing")
+        self.assertEqual(m["outline"][0], '1. s3 closing "Closing"')
+        dup = self._run(DuplicateSlideTool(), slide_id="s2")
+        self.assertEqual(dup["slide_ids"][3], dup["slide_id"])
+        self.assertEqual(dup["changed_slide_ids"], [dup["slide_id"]])
+        self.assertEqual(DuplicateSlideTool().end_label_for_result(dup), "Duplicated slide 3 · Bullets")
+        d = self._run(DeleteSlidesTool(), slide_ids=["s1"])
+        self.assertEqual(d["slide_ids"], ["s3", "s2", dup["slide_id"]])
+        self.assertEqual(DeleteSlidesTool().end_label_for_result(d), "Deleted slide 2 · Title")
+        everything = self._run(DeleteSlidesTool(), slide_ids=d["slide_ids"])
+        self.assertEqual(everything["status"], "error")
+
+    def test_move_only_reports_slides_whose_pixels_change(self):
+        """With the default theme the page number is drawn, so the moved slides and
+        the ones they jumped over change — skip_footer slides (title/closing) don't."""
+        from chat.slide_tools import MoveSlidesTool
+
+        self._run(CreateDeckTool(), title="Deck A", layouts=["title", "bullets", "bullets", "closing"])
+        m = self._run(MoveSlidesTool(), slide_ids=["s3"], position=1)
+        self.assertEqual(m["slide_ids"], ["s1", "s3", "s2", "s4"])
+        self.assertEqual(sorted(m["changed_slide_ids"]), ["s2", "s3"])
+
+    # -- trimming ------------------------------------------------------------------
+    def test_trim_hooks_point_at_slides_read(self):
+        from chat.slide_tools import WriteSlideTool
+
+        for tool, args in (
+            (WriteDeckTool(), {"content": {"slides": []}}),
+            (EditDeckTool(), {"edits": [{"slide_id": "s1", "old_text": "a", "new_text": "b"}]}),
+            (WriteSlideTool(), {"content": {"name": "x"}, "slide_id": "s1"}),
+        ):
+            trim = tool.trim_args_at_edit_point(args, later_calls=[])
+            self.assertIn("slides_read", trim.note, tool.name)
+            self.assertFalse({"content", "edits"} & set(trim.args), tool.name)
+            self.assertFalse(tool.trim_despite_recency, tool.name)
+
+    def test_add_slide_result_hook_drops_slide_json(self):
+        raw_tool = AddSlideTool()
+        raw_tool.set_context(self.ctx)
+        self._run(CreateDeckTool(), title="Deck A")
+        raw = raw_tool._run(layout="bullets")
+        out = json.loads(raw_tool.trim_result_at_edit_point(raw, {}, later_calls=[]))
+        self.assertNotIn("slide_json", out)
+        self.assertIn("slides_read", out["omitted_fields_note"])
+        self.assertEqual(out["slide_id"], json.loads(raw)["slide_id"])
+        self.assertIsNone(raw_tool.trim_result_at_edit_point(json.dumps(out), {}, later_calls=[]))
 
     def test_activate_and_delete(self):
         self._run(CreateDeckTool(), title="Deck A")
@@ -367,7 +534,9 @@ class DeckConcurrentWriteTests(TestCase):
         self.assertEqual(added["status"], "ok")
 
         with mock.patch("chat.slides.service.resolve_deck", return_value=(stale, None)):
-            r = self._run(EditDeckTool(), edits=[{"old_text": '"Presentation title"', "new_text": '"Welcome"'}])
+            r = self._run(EditDeckTool(), edits=[
+                {"slide_id": "s1", "old_text": '"Presentation title"', "new_text": '"Welcome"'},
+            ])
 
         deck = SlideSet.objects.get(pk=w["deck_id"])
         # Whether the edit applied or cleanly failed, the concurrently added slide
@@ -388,7 +557,9 @@ class DeckConcurrentWriteTests(TestCase):
         w = self._run(CreateDeckTool(), title="Deck A", layouts=["title"])
         self._run(AddSlideTool(), layout="bullets")
         self._run(AddSlideTool(), layout="closing")
-        self._run(EditDeckTool(), edits=[{"old_text": '"Presentation title"', "new_text": '"Welcome"'}])
+        self._run(EditDeckTool(), edits=[
+            {"slide_id": "s1", "old_text": '"Presentation title"', "new_text": '"Welcome"'},
+        ])
 
         deck = SlideSet.objects.get(pk=w["deck_id"])
         orders = list(deck.checkpoints.order_by("id").values_list("order", flat=True))
@@ -845,77 +1016,3 @@ class ThemeToolTests(SlideToolTests):
         deck = SlideSet.objects.get(pk=r["deck_id"])
         self.assertEqual(deck.content["theme"]["_theme_id"], "tuser1")
         self.assertEqual(deck.content["theme"]["footer"]["sections"][0]["content"], "logo")
-
-
-class DeckBlockProviderTests(TestCase):
-    """``chat.slides.deck_block.make_deck_block_provider`` — the "current deck"
-    block the tool loop appends at an edit point, re-read from the DB."""
-
-    def setUp(self):
-        User = get_user_model()
-        self.user = User.objects.create_user(email=f"db+{uuid.uuid4().hex[:6]}@ex.com", password="x")
-        self.thread = ChatThread.objects.create(created_by=self.user, title="t")
-        self.ctx = RunContext(run_id="r1", conversation_id=str(self.thread.id), user_id=str(self.user.id))
-
-    def _run(self, tool, **kw):
-        tool.set_context(self.ctx)
-        return json.loads(tool._run(**kw))
-
-    def _provider(self, baseline):
-        from chat.slides.deck_block import make_deck_block_provider
-
-        return make_deck_block_provider(str(self.thread.id), baseline=baseline)
-
-    def _active_version(self):
-        from chat.slides.service import deck_version, get_active_deck
-
-        return deck_version(get_active_deck(str(self.thread.id)))
-
-    def test_no_deck_returns_empty(self):
-        self.assertEqual(self._provider(None)(), "")
-
-    def test_unchanged_deck_returns_empty(self):
-        """The preamble snapshot is still exact → no block (it would be dead weight)."""
-        self._run(CreateDeckTool(), title="Deck A", layouts=["title"])
-        self.assertEqual(self._provider(self._active_version())(), "")
-
-    def test_changed_deck_renders_current_canonical_json(self):
-        from chat.prompts import ACTIVE_DECK_BLOCK_HEADER
-
-        self._run(CreateDeckTool(), title="Deck A", layouts=["title"])
-        baseline = self._active_version()
-        r = self._run(WriteDeckTool(), content=_deck_json())
-        self.assertEqual(r["status"], "ok")
-        deck = SlideSet.objects.get(pk=r["deck_id"])
-        block = self._provider(baseline)()
-        self.assertTrue(block.startswith(f'{ACTIVE_DECK_BLOCK_HEADER}: "Deck A"'))
-        self.assertIn("supersedes", block)
-        self.assertIn(canonical_deck_text(deck.content), block)
-        self.assertIn("Hello Deck", block)
-
-    def test_switched_active_deck_renders_block_with_inventory(self):
-        """Activating an unmodified deck changes the pk, not updated_at — the block
-        must still appear (the preamble shows the wrong deck)."""
-        self._run(CreateDeckTool(), title="Deck A", layouts=["title"])
-        self._run(CreateDeckTool(), title="Deck B", layouts=["title"])  # B is active now
-        baseline = self._active_version()  # the preamble rendered B
-        r = self._run(ActivateDeckTool(), deck_names=["Deck A"])
-        self.assertEqual(r["status"], "ok")
-        block = self._provider(baseline)()
-        self.assertIn('(current state): "Deck A"', block)
-        self.assertIn('Decks in this thread: "Deck A" (active), "Deck B"', block)
-
-    def test_new_deck_from_no_deck_baseline_renders_block(self):
-        self._run(CreateDeckTool(), title="Fresh", layouts=["title", "bullets"])
-        block = self._provider(None)()
-        self.assertIn('"Fresh"', block)
-        self.assertIn('"s2"', block)
-
-    def test_provider_returns_none_on_failure(self):
-        """A failed read is logged and reported as None (not ""), so the tool loop
-        can flag RunContext.deck_block_failed and the slide tools keep their JSON."""
-        self._run(CreateDeckTool(), title="Deck A", layouts=["title"])
-        with mock.patch(
-            "chat.slides.service.active_deck_for_prompt", side_effect=RuntimeError("db down"),
-        ), self.assertLogs("chat.slides.deck_block", level="ERROR"):
-            self.assertIsNone(self._provider(None)())

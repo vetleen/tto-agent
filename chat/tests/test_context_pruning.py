@@ -191,8 +191,7 @@ class LoadHistoryStubbingTests(TransactionTestCase):
     @override_settings(CONTEXT_RAW_TOOL_TURNS=2)
     async def test_old_slide_write_args_trimmed_between_turns(self):
         """An old slide_canvas_write's deck JSON is dropped and its result points
-        at the Active Slide Deck section the next preamble regenerates; a recent edit keeps its args and
-        the stored row is untouched."""
+        at slides_read; a recent edit keeps its args and the stored row is untouched."""
         deck = {"version": 1, "slides": [{"id": "s1", "name": "x" * 3000}]}
         await self._msg("Question one", role="user")
         await self._msg("", role="assistant", tool_calls=[
@@ -202,7 +201,7 @@ class LoadHistoryStubbingTests(TransactionTestCase):
         await self._msg("Question two", role="user")
         await self._msg("Answer two", role="assistant")
         await self._msg("Question three", role="user")
-        edits = [{"old_text": "a", "new_text": "b"}]
+        edits = [{"slide_id": "s1", "old_text": "a", "new_text": "b"}]
         await self._msg("", role="assistant", tool_calls=[
             {"id": "e-new", "name": "slide_canvas_edit", "arguments": {"edits": edits}},
         ])
@@ -212,7 +211,7 @@ class LoadHistoryStubbingTests(TransactionTestCase):
         calls = {tc["id"]: tc for m in messages for tc in m.get("tool_calls") or []}
         self.assertNotIn("content", calls["d-old"]["arguments"])
         d_old = next(m["content"] for m in messages if m.get("tool_call_id") == "d-old")
-        self.assertIn("Active Slide Deck", d_old)
+        self.assertIn("slides_read", d_old)
         self.assertEqual(calls["e-new"]["arguments"]["edits"], edits)
         stored = await database_sync_to_async(
             lambda: ChatMessage.objects.filter(thread=self.thread, role="assistant").order_by("created_at").first()
@@ -220,9 +219,8 @@ class LoadHistoryStubbingTests(TransactionTestCase):
         self.assertEqual(stored.metadata["tool_calls"][0]["arguments"]["content"], deck)
 
     @override_settings(CONTEXT_RAW_TOOL_TURNS=2)
-    async def test_old_slide_write_kept_when_deck_switched_in_a_later_turn(self):
-        """A later turn activated another deck, so the preamble no longer shows
-        this call's deck — its JSON must stay."""
+    async def test_old_slide_write_trimmed_even_after_a_deck_switch(self):
+        """slides_read reaches any deck, so which deck is active no longer matters."""
         deck = {"version": 1, "slides": [{"id": "s1", "name": "x" * 3000}]}
         await self._msg("Question one", role="user")
         await self._msg("", role="assistant", tool_calls=[
@@ -239,16 +237,16 @@ class LoadHistoryStubbingTests(TransactionTestCase):
 
         messages = (await self.consumer._load_history(self.thread))["messages"]
         calls = {tc["id"]: tc for m in messages for tc in m.get("tool_calls") or []}
-        self.assertEqual(calls["d-old"]["arguments"]["content"], deck)
+        self.assertNotIn("content", calls["d-old"]["arguments"])
+        self.assertEqual(calls["d-old"]["arguments"]["deck_name"], "Pitch")
 
-    # -- coverage beats recency: slide payloads inside the raw window ---------
+    # -- recency protects slide payloads like any other tool's ----------------
 
     @override_settings(CONTEXT_RAW_TOOL_TURNS=2)
-    async def test_recent_slide_write_args_trimmed_between_turns(self):
-        """A slide write inside the raw window is trimmed anyway — the next
-        preamble's Active Slide Deck section is the copy that counts (recency only
-        protects tools that don't opt out; a recent canvas write stays whole, see
-        test_old_big_call_args_trimmed_recent_kept)."""
+    async def test_recent_slide_write_args_kept_between_turns(self):
+        """Nothing else in the prompt holds slide JSON any more, so a slide write
+        inside the raw window stays whole — like a recent canvas write (see
+        test_old_big_call_args_trimmed_recent_kept). No between-turn rewrite."""
         deck = {"version": 1, "slides": [{"id": "s1", "name": "x" * 3000}]}
         await self._msg("Question one", role="user")
         await self._msg("Answer one", role="assistant")
@@ -260,17 +258,14 @@ class LoadHistoryStubbingTests(TransactionTestCase):
 
         messages = (await self.consumer._load_history(self.thread))["messages"]
         calls = {tc["id"]: tc for m in messages for tc in m.get("tool_calls") or []}
-        self.assertNotIn("content", calls["d-new"]["arguments"])
+        self.assertEqual(calls["d-new"]["arguments"]["content"], deck)
         d_new = json.loads(next(m["content"] for m in messages if m.get("tool_call_id") == "d-new"))
-        self.assertEqual(d_new["status"], "ok")
-        self.assertIn("Active Slide Deck", d_new["omitted_args_note"])
-        stored = await database_sync_to_async(
-            lambda: ChatMessage.objects.filter(thread=self.thread, role="assistant").order_by("-created_at").first()
-        )()
-        self.assertEqual(stored.metadata["tool_calls"][0]["arguments"]["content"], deck)
+        self.assertEqual(d_new, {"status": "ok"})
 
     @override_settings(CONTEXT_RAW_TOOL_TURNS=2)
-    async def test_recent_create_result_deck_json_shrunk_between_turns(self):
+    async def test_recent_legacy_create_result_kept_between_turns(self):
+        """A pre-migration slides_create_deck result (with deck_json) inside the raw
+        window is replayed as sent."""
         result = {
             "status": "ok", "deck_id": "7", "title": "Pitch", "slide_ids": ["s1"],
             "changed_slide_ids": ["s1"], "slide_count": 1, "deck_json": "{" + "x" * 3000 + "}",
@@ -283,13 +278,7 @@ class LoadHistoryStubbingTests(TransactionTestCase):
 
         messages = (await self.consumer._load_history(self.thread))["messages"]
         body = json.loads(next(m["content"] for m in messages if m.get("tool_call_id") == "k-1"))
-        self.assertNotIn("deck_json", body)
-        self.assertIn("Active Slide Deck", body["omitted_fields_note"])
-        self.assertEqual(body["slide_ids"], ["s1"])
-        stored = await database_sync_to_async(
-            lambda: ChatMessage.objects.filter(thread=self.thread, role="tool").first()
-        )()
-        self.assertEqual(json.loads(stored.content)["deck_json"], result["deck_json"])
+        self.assertEqual(body, result)
 
     @override_settings(CONTEXT_RAW_TOOL_TURNS=2)
     async def test_recent_create_result_kept_when_deck_switched_in_a_later_turn(self):

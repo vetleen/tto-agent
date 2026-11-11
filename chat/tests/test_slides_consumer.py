@@ -82,10 +82,9 @@ class SkillWiringTests(SimpleTestCase):
 @override_settings(
     CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
 )
-class DeckBlockWiringTests(TransactionTestCase):
-    """The consumer hands the tool loop a deck-block provider whose baseline is
-    the deck the preamble rendered: unchanged → "", changed mid-turn → the deck
-    as it is now (what the edit point appends as the current-deck block)."""
+class DeckOutlinePreambleTests(TransactionTestCase):
+    """The turn preamble carries the active deck's outline — never its JSON —
+    and the tool loop gets no deck block (the agent reads slides on demand)."""
 
     def setUp(self):
         from chat.models import ChatThread, SlideSet
@@ -110,10 +109,9 @@ class DeckBlockWiringTests(TransactionTestCase):
         gr.start()
         self.addCleanup(gr.stop)
 
-    async def test_provider_wired_with_preamble_baseline(self):
+    async def test_turn_preamble_carries_the_outline_not_the_deck_json(self):
         import asyncio
 
-        from channels.db import database_sync_to_async
         from channels.routing import URLRouter
         from channels.testing import WebsocketCommunicator
 
@@ -143,24 +141,13 @@ class DeckBlockWiringTests(TransactionTestCase):
             await communicator.disconnect()
 
         self.assertEqual(len(captured), 1)
-        provider = captured[0].context.deck_block_provider
-        self.assertTrue(callable(provider))
-        # Unchanged since the preamble: the snapshot is exact, no block.
-        self.assertEqual(await database_sync_to_async(provider)(), "")
-
-        # A rewrite mid-turn: the block carries the deck as it is now.
-        def rewrite():
-            from chat.slides.service import write_deck
-
-            write_deck(
-                str(self.thread.id), title="Deck", deck_name="Deck",
-                content={**self.deck.content, "slides": [{"id": "s1", "name": "Renamed", "elements": []}]},
-            )
-
-        await database_sync_to_async(rewrite)()
-        block = await database_sync_to_async(provider)()
-        self.assertIn('(current state): "Deck"', block)
-        self.assertIn("Renamed", block)
+        self.assertFalse(hasattr(captured[0].context, "deck_block_provider"))
+        last_user = [m for m in captured[0].messages if m.role == "user"][-1]
+        text = last_user.content if isinstance(last_user.content, str) else json.dumps(last_user.content)
+        self.assertIn('# Active Slide Deck: "Deck" (1 slide,', text)
+        self.assertIn('1. s1  custom  "A"', text)
+        self.assertIn("slides_read", text)
+        self.assertNotIn('"elements"', text)  # no deck JSON in the prompt
 
 
 class SetThemeHandlerTests(TransactionTestCase):

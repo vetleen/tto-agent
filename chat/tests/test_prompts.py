@@ -851,41 +851,61 @@ class BuildDynamicContextTests(TestCase):
         self.assertIn("Theme: a deck-level custom palette", result)
         self.assertIn("accent1=#123456", result)
 
-    def test_render_active_deck_section_matches_preamble_section(self):
-        """The shared renderer IS the preamble section (byte-identical), so the
-        edit-point deck block can reuse it without the two drifting apart."""
+    def test_render_active_deck_section_is_the_preamble_section(self):
         from chat.prompts import render_active_deck_section
 
         class FakeDeck:
             title = "Board deck"
             content = {"version": 1, "size": {"w": 960, "h": 540}, "slides": []}
 
-        decks = [{"title": "Board deck", "active": True}, {"title": "Other", "active": False}]
+        decks = [{"title": "Board deck", "active": True, "slides": 0, "outline": []},
+                 {"title": "Other", "active": False, "slides": 7}]
         section = render_active_deck_section(FakeDeck(), decks)
-        self.assertTrue(section.startswith('# Active Slide Deck: "Board deck"\n'))
+        self.assertTrue(section.startswith('# Active Slide Deck: "Board deck" (0 slides, ~'))
         self.assertIn(section, build_dynamic_context(active_slide_set=FakeDeck(), slide_decks=decks))
-        self.assertIn('Decks in this thread: "Board deck" (active), "Other"', section)
+        self.assertIn('Decks in this thread: "Board deck" (0 slides) (active), "Other" (7 slides)', section)
+        self.assertIn("The deck has no slides yet.", section)
         self.assertEqual(render_active_deck_section(None), "")
 
-    def test_render_active_deck_block_has_its_own_header_and_intro(self):
-        from chat.prompts import (
-            ACTIVE_DECK_BLOCK_HEADER, render_active_deck_block, render_active_deck_section,
-        )
-        from chat.slides.schema import canonical_deck_text
+    def test_deck_section_is_an_outline_never_the_json(self):
+        from chat.prompts import DECK_OUTLINE_COMMENT_CHARS, render_active_deck_section
 
         class FakeDeck:
-            title = "Board deck"
-            content = {"version": 1, "size": {"w": 960, "h": 540}, "slides": []}
+            title = "Q3"
+            content = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [
+                {"id": "s1", "name": "Q3 Licensing Review", "layout": "title", "elements": []},
+                {"id": "s3", "name": "Pipeline by stage", "layout": "two_col", "elements": []},
+            ]}
 
-        block = render_active_deck_block(FakeDeck())
-        self.assertTrue(block.startswith(f'{ACTIVE_DECK_BLOCK_HEADER}: "Board deck"\n'))
-        self.assertIn("supersedes", block)
-        self.assertIn("Theme: Forest (built-in default)", block)
-        self.assertIn(f"```json\n{canonical_deck_text(FakeDeck.content)}\n```", block)
-        # Same body as the preamble section once past the header/intro.
+        outline = [
+            {"n": 1, "id": "s1", "layout": "title", "title": "Q3 Licensing Review", "seen": "", "comments": []},
+            {"n": 2, "id": "s3", "layout": "two_col", "title": "Pipeline by stage", "seen": "changed",
+             "comments": ["Make this a funnel", "x" * 500, "three", "four"]},
+        ]
+        section = render_active_deck_section(FakeDeck(), [{"title": "Q3", "active": True, "outline": outline}])
+        self.assertIn('(2 slides, ~', section)
+        self.assertIn('  1. s1  title  "Q3 Licensing Review"\n', section)
+        self.assertIn('  2. s3  two_col  "Pipeline by stage" — changed since you last read it', section)
+        self.assertIn('💬 "Make this a funnel"', section)
+        self.assertIn("💬 +1 more", section)
+        self.assertIn("x" * (DECK_OUTLINE_COMMENT_CHARS - 1) + "…", section)
+        self.assertNotIn("x" * DECK_OUTLINE_COMMENT_CHARS, section)
+        self.assertIn("slides_read", section)
+        self.assertNotIn("```json", section)
+        self.assertNotIn('"elements"', section)
+
+    def test_deck_section_computes_the_outline_without_one(self):
+        """Sync callers without a precomputed outline get one from the deck itself
+        (layout falls back to "custom" for hand-built slides; nothing was read)."""
+        from chat.prompts import render_active_deck_section
+
+        class FakeDeck:
+            title = "D"
+            content = {"slides": [{"id": "s1", "name": "Hand built", "elements": []}]}
+
         section = render_active_deck_section(FakeDeck())
-        self.assertEqual(block.split("Theme:", 1)[1], section.split("Theme:", 1)[1])
-        self.assertEqual(render_active_deck_block(None), "")
+        self.assertIn('  1. s1  custom  "Hand built"', section)
+        self.assertNotIn("changed since", section)
 
     def test_tasks_rendered(self):
         tasks = [

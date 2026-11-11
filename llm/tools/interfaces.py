@@ -93,8 +93,7 @@ class ContextAwareTool(BaseTool):
     trim_args_min_chars: int = 2000
     # Recency alone never protects this tool's payloads (arguments AND results) at
     # an edit point / between turns; the current round still does. Opt in only
-    # when a consolidated copy of the payload is always in the context (the slide
-    # tools: the current-deck block / Active Slide Deck section).
+    # when a consolidated copy of the payload is always in the context.
     trim_despite_recency: bool = False
     # When True, a prune stubs this tool's results even among the most recent
     # CONTEXT_MIDTURN_KEEP_TOOL_RESULTS (the current round is still protected).

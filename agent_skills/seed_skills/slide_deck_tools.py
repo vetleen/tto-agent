@@ -1,10 +1,11 @@
 """Slide Deck Tools (seed toolkit).
 
 A main-agent toolkit that unlocks the slide-deck tools (``slides_create_deck``,
-``slide_canvas_write``, ``slide_canvas_edit``, ``slide_canvas_activate``,
-``slide_canvas_delete``, ``slides_add_slide``, ``slides_preview_slide``,
-``slides_list_themes`` and ``slides_set_theme``; all ``section="skills"``,
-``audience="main"``). Off by default per org — enable via
+``slides_read``, ``slides_write_slide``, ``slide_canvas_edit``, ``slides_add_slide``,
+``slides_move_slides``, ``slides_delete_slides``, ``slides_duplicate_slide``,
+``slide_canvas_write``, ``slide_canvas_activate``, ``slide_canvas_delete``,
+``slides_preview_slide``, ``slides_list_themes`` and ``slides_set_theme``; all
+``section="skills"``, ``audience="main"``). Off by default per org — enable via
 ``org.preferences["skills"]["slide_deck_tools"]["enabled"] = True``.
 
 The element vocabularies the instructions advertise (shapes, themed boxes, chart
@@ -46,6 +47,25 @@ they never see or edit the JSON. When you finish, refer to the deck (e.g. "I've 
 8 slides in the panel — comment on any slide"); do NOT paste the JSON into chat, or refer to it. These are non-technical users.
 
 **This skill provides the tools and the technical description of how to create a slide set, another skill may provide more detailed instructions around design/taste or specific types of decks. These work *with* this skill.**
+
+## Working slide by slide
+Your context shows only the active deck's OUTLINE — one line per slide: number, id, layout,
+title, "changed since you last read it", and 💬 comments the user sent that you haven't acted on.
+It never shows the JSON:
+- **Read before you edit.** `slides_read` returns slides' JSON by `slide_ids` or a `start`/`end`
+  range of slide numbers (paged: continue at `next_start`); `deck_settings` adds the deck-level
+  JSON (size, theme overrides). Re-read a slide if it is marked changed or you no longer have
+  its JSON in view.
+- **Write one slide at a time.** `slides_write_slide` replaces one slide's whole JSON (or inserts
+  a new one); `slide_canvas_edit` makes find/replace edits within named slides (`slide_id`, empty
+  for the deck settings) against the exact text `slides_read` returned. The user watches each
+  slide render as you write it.
+- **Restructure without rewriting.** `slides_move_slides`, `slides_delete_slides` and
+  `slides_duplicate_slide` reorder, remove and copy slides. `slide_canvas_write` replaces the
+  whole deck — only for a real rebuild, after reading every slide you keep.
+- **Deck-wide changes go slide by slide** (e.g. renaming a term everywhere): read the slides,
+  then edit each one that needs it.
+- When the user refers to "this slide" without saying which, ask which slide (number or title).
 
 ## The deck format
 A deck is JSON: `{"version":1,"size":{"w":960,"h":540},"slides":[ ... ]}`.
@@ -324,7 +344,8 @@ __LAYOUT_CATALOGUE__
 - **Slide templates from other skills.** When an attached skill has a resource holding slide
   JSON (one slide, or a full deck), load it with `skill_resource_load(target="deck")`: a single
   slide is added to the active deck (or `deck_name`, at `position`), a full deck becomes a new
-  deck. Then fill in its text with `slide_canvas_edit`.
+  deck. Then read it with `slides_read` and fill in its text with `slide_canvas_edit` or
+  `slides_write_slide`.
 - **Colours & fonts: prefer the theme, but literals are allowed.** Lean on the theme colour
   names (`dk1, lt1, dk2, lt2, accent1..accent6, success, warning, danger`) and text classes so a
   slide re-themes cleanly — but you *may* set a raw `#RRGGBB` colour on any run/shape, or a
@@ -400,10 +421,12 @@ __LAYOUT_CATALOGUE__
 ## Workflow
 1. Consider if another slide design skill should be added for taste guidance. Once added, prefer its workflow.
 2. Create the deck with `slides_create_deck`, passing the ordered list of layout ids as your
-   storyboard — plan the narrative first and pick one layout per point. The result returns the
-   full seeded deck JSON (minted ids, placeholder text); fill the placeholders in with
-   `slide_canvas_edit`. (`slide_canvas_write` is only for rebuilding an existing deck around a
-   new narrative, never for creating one.)
+   storyboard — plan the narrative first and pick one layout per point. The slides are seeded
+   with placeholder text and the result lists their ids and layouts. Then fill them in ONE AT A
+   TIME, in order: `slides_read` the seeded slide (its `comment` carries the layout's tips), then
+   `slides_write_slide` with the finished slide (or `slide_canvas_edit` for a few text swaps).
+   (`slide_canvas_write` is only for rebuilding an existing deck around a new narrative, never
+   for creating one.)
 3. Add and design beautiful slides with relevant content. Vary layouts and use images and other design elements where appropriate. Design should support the point being made, not the other way around.
 4. Preview created/updated slides and fix any issues you can see. Aim for perfection in layout, at least. For example if the headline breaks into an additional line, and therefore overlaps other content, either move that content or shorten the headline so it fits beautifully.
 5. Hand back by referring to the panel and inviting comments (and noting any assumptions you
@@ -447,10 +470,15 @@ SLIDE_DECK_TOOLS = {
     "tool_names": [
         "slide_canvas_activate",
         "slides_create_deck",
-        "slide_canvas_write",
+        "slides_read",
+        "slides_write_slide",
         "slide_canvas_edit",
-        "slide_canvas_delete",
         "slides_add_slide",
+        "slides_move_slides",
+        "slides_delete_slides",
+        "slides_duplicate_slide",
+        "slide_canvas_write",
+        "slide_canvas_delete",
         "slides_preview_slide",
         "slides_list_themes",
         "slides_set_theme",

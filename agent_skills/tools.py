@@ -1268,21 +1268,13 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
     )
     args_schema: type[BaseModel] = LoadTemplateToCanvasInput
     section: str = "skills"
-    # Deck/slide JSON in a target="deck" result is covered by the current-deck
-    # block from the next edit point on (see chat/slide_tools.py); canvas results
-    # carry neither field and are left alone.
-    trim_despite_recency: bool = True
 
     def trim_result_at_edit_point(self, result: str, args: dict, *, later_calls: list) -> str | None:
-        from chat.slide_tools import _deck_block_unavailable, _trim_deck_result
+        # The slide JSON of a target="deck" result stays reachable with slides_read
+        # (see chat/slide_tools.py); canvas results carry no such field.
+        from chat.slide_tools import trim_slide_result_fields
 
-        if _deck_block_unavailable(self):
-            return None
-        return _trim_deck_result(
-            result,
-            fields={"deck_json": "loaded deck JSON", "slide_json": "loaded slide JSON"},
-            fallback_title="", later_calls=later_calls,
-        )
+        return trim_slide_result_fields(result, {"slide_json": "loaded slide JSON"})
 
     def _run(self, template_name: str, canvas_name: str = "",
              skill_slug: str = "", target: str = "canvas", deck_name: str = "",
@@ -1418,6 +1410,7 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
             service.activate_deck(thread_id, deck)
 
             inserted = content["slides"][idx]
+            service.record_agent_slide_view(deck.pk, [inserted])
             slide_ids = [s.get("id") for s in content["slides"]]
             result = {
                 "status": "ok",
@@ -1430,6 +1423,7 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
                 "slide_ids": slide_ids,
                 "changed_slide_ids": [inserted.get("id")],
                 "slide_count": len(slide_ids),
+                "outline": service.compact_outline(content),
             }
             if note:
                 result["note"] = note
@@ -1471,7 +1465,8 @@ class LoadTemplateToCanvasTool(ContextAwareTool):
             "slide_ids": slide_ids,
             "changed_slide_ids": slide_ids,
             "slide_count": len(slide_ids),
-            "deck_json": schema.canonical_deck_text(deck),
+            # No deck JSON: the agent reads the slides it needs with slides_read.
+            "outline": service.compact_outline(deck),
         }
         if note:
             result["note"] = note
@@ -1484,7 +1479,7 @@ def _deck_unverified(resource_name: str, issues: list[dict]) -> str:
         "message": (
             f"The resource '{resource_name}' couldn't be verified as a valid slide "
             "or deck, so the tool couldn't load it. You can still write the "
-            "resource to the deck manually with the edit tool (slide_canvas_edit)."
+            "resource to the deck manually (slides_write_slide)."
         ),
         "issues": issues[:20],
     })
