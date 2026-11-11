@@ -178,6 +178,33 @@ class ThreadTurnQueueTests(TransactionTestCase):
         await self._settle(tab2)
         self.assertEqual([r[1] for r in rows], ["First question", "Hi", "Again?", "SECOND"])
 
+    @patch("llm.get_llm_service")
+    async def test_queued_turn_survives_its_tab_closing(self, get_service):
+        """Tab 2 queues behind tab 1, then closes (reload, tab closed): its message
+        is still answered, detached, after tab 1's reply — not left unanswered."""
+        dispatcher = tg.StreamDispatcher(2)
+        self._second_reply(dispatcher)
+        get_service.return_value = self._service(dispatcher)
+
+        tab1, thread_id = await self._start_first_turn(dispatcher)
+        tab2 = await self._connect()
+        await tab2.send_json_to({"type": "chat.message", "content": "Follow-up",
+                                 "thread_id": thread_id})
+        queued = await self._read_until(tab2, "turn.queued")
+        self.assertEqual(queued["data"]["reason"], "thread_busy")
+        await tab2.disconnect()
+
+        dispatcher.streams[0].release.set()
+        await tg._until(lambda: dispatcher.streams[1].started.is_set(),
+                        message="the queued turn was dropped when its tab closed")
+        dispatcher.streams[1].release.set()
+        rows = await self._wait_visible(
+            thread_id, lambda rows: ("assistant", "SECOND") in rows, "queued reply missing",
+        )
+        await self._settle(tab1)
+        self.assertEqual([r[1] for r in rows], ["First question", "Hi", "Follow-up", "SECOND"])
+        self.assertIsNone(thread_turn_lease.current(thread_id))
+
     @override_settings(CHAT_THREAD_TURN_WAIT_SECONDS=0.2)
     @patch("llm.get_llm_service")
     async def test_timeout_reports_thread_busy_and_keeps_the_message(self, get_service):
