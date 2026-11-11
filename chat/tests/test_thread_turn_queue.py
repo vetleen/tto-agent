@@ -246,8 +246,11 @@ class ThreadTurnQueueTests(TransactionTestCase):
         tab2 = await self._connect()
         await tab2.send_json_to({"type": "chat.message", "content": "Waiting in vain",
                                  "thread_id": thread_id})
-        error = await self._read_until(tab2, "error")
+        with self.assertLogs("chat.consumers", level="INFO") as logs:
+            error = await self._read_until(tab2, "error")
         self.assertEqual(error["data"]["error_code"], "thread_busy_timeout")
+        # The user got an error: that is a WARNING (Sentry event).
+        self.assertEqual([r.levelname for r in self._gave_up(logs)], ["WARNING"])
         self.assertEqual(dispatcher.streams[1].calls, 0)
         self.assertIn(("user", "Waiting in vain"), await self._visible(thread_id))
 
@@ -256,6 +259,46 @@ class ThreadTurnQueueTests(TransactionTestCase):
             thread_id, lambda rows: ("assistant", "Hi") in rows, "first reply missing",
         )
         await self._settle(tab1, tab2)
+
+    @staticmethod
+    def _gave_up(logs):
+        return [r for r in logs.records if "gave up waiting for the thread's running turn" in r.getMessage()]
+
+    @override_settings(CHAT_THREAD_TURN_WAIT_SECONDS=0.2)
+    @patch("llm.get_llm_service")
+    async def test_seeded_turn_timeout_is_quiet_and_logged_at_info(self, get_service):
+        """WILFRED-AR: a seeded turn that outwaits a long running turn is not a warning."""
+        dispatcher = tg.StreamDispatcher(1)
+        get_service.return_value = self._service(dispatcher)
+
+        @database_sync_to_async
+        def setup():
+            thread = ChatThread.objects.create(
+                created_by=self.user, title="Seeded", metadata={"pending_initial_turn": True},
+            )
+            ChatMessage.objects.create(
+                thread=thread, role="user", content="Greet the user.", is_hidden_from_user=True,
+            )
+            return str(thread.id)
+
+        thread_id = await setup()
+        holder = thread_turn_lease.try_acquire(thread_id, kind="chat")  # a turn elsewhere
+
+        tab = await self._connect()
+        with self.assertLogs("chat.consumers", level="INFO") as logs:
+            await tab.send_json_to({"type": "chat.load_thread", "thread_id": thread_id})
+            await self._read_until(tab, "turn.queued")
+            await tg._until(lambda: self._gave_up(logs), message="the seeded turn never gave up")
+        self.assertEqual([r.levelname for r in self._gave_up(logs)], ["INFO"])
+        self.assertEqual(dispatcher.streams[0].calls, 0)
+
+        # Quiet: no "send again" error for a turn the user never sent.
+        await thread_turn_lease.aio_release(holder)
+        await asyncio.sleep(0.2)
+        while not await tab.receive_nothing(timeout=0.05):
+            event = await tab.receive_json_from(timeout=1)
+            self.assertNotEqual(event.get("event_type"), "error")
+        await tab.disconnect()
 
     @patch("llm.get_llm_service")
     async def test_stop_while_queued_leaves_the_running_turn_alone(self, get_service):

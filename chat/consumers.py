@@ -2931,7 +2931,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     },
                 })
         except thread_turn_lease.ThreadBusyTimeout:
-            logger.warning(
+            # A user's turn that gives up is an error they see (WARNING). A seeded
+            # continuation that gives up is the expected outcome of a running turn
+            # that outlasts the wait — nothing is lost, the result is re-claimed —
+            # so it is INFO: seven of these in a row were WILFRED-AR.
+            logger.log(
+                logging.INFO if seed_mode else logging.WARNING,
                 "chat turn gave up waiting for the thread's running turn thread=%s seed=%s",
                 thread.id, seed_mode,
             )
