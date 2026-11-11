@@ -153,6 +153,54 @@ class ThreadTurnLiveViewTests(TransactionTestCase):
         stream.release.set()
         await self._settle(tab1, tab2)
 
+    @patch("llm.get_llm_service")
+    async def test_open_page_is_told_when_a_turn_starts_elsewhere(self, get_service):
+        """A page that had the thread open BEFORE the turn started (second tab or
+        device) gets ``turn.in_flight`` when the turn takes the lease, then the
+        reply — it used to hear nothing and keep its composer unlocked."""
+        dispatcher = tg.StreamDispatcher(2)
+        service = MagicMock()
+        service.astream = dispatcher.astream
+        get_service.return_value = service
+        first, second = dispatcher.streams
+
+        tab1 = await self._connect()
+        await tab1.send_json_to({"type": "chat.message", "content": "Hello"})
+        created, _ = await self._read_until(tab1, "thread.created")
+        thread_id = created["thread_id"]
+        await tg._until(lambda: first.started.is_set(), message="turn never reached the LLM")
+        first.release.set()
+        await self._read_until(tab1, "message_end")
+        await tg._until(
+            lambda: thread_turn_lease.current(thread_id) is None,
+            message="the first turn kept its lease",
+        )
+
+        tab2 = await self._connect()
+        loaded = await self._load(tab2, thread_id)
+        self.assertIsNone(loaded["turn_in_flight"])
+
+        await tab1.send_json_to(
+            {"type": "chat.message", "content": "Again", "thread_id": thread_id}
+        )
+        await tg._until(lambda: second.started.is_set(), message="second turn never started")
+        in_flight, _ = await self._read_until(tab2, "turn.in_flight")
+        self.assertEqual(
+            in_flight["data"]["token"], thread_turn_lease.current(thread_id)["token"],
+        )
+        self.assertEqual(in_flight["data"]["kind"], "chat")
+
+        second.release.set()
+        finished, seen = await self._read_until(tab2, "turn.finished")
+        self.assertEqual(finished["data"]["token"], in_flight["data"]["token"])
+        self.assertEqual(finished["data"]["reply"]["content"], "Hi")
+        self.assertNotIn("token", seen)
+
+        # The socket that runs the turn is not told about its own turn.
+        _, own_seen = await self._read_until(tab1, "message_end")
+        self.assertNotIn("turn.in_flight", own_seen)
+        await self._settle(tab1, tab2)
+
     async def test_idle_thread_has_no_turn_in_flight(self):
         from channels.db import database_sync_to_async
 
@@ -184,6 +232,59 @@ class ThreadTurnWatchUnitTests(SimpleTestCase):
         consumer._turn.thread_lease = lease
         self.assertIsNone(await consumer._foreign_turn_in_flight("t1"))
         self.assertIsNone(await consumer._foreign_turn_in_flight("t2"))
+
+    def _idle_consumer(self):
+        consumer = ChatConsumer()
+        consumer._turn = None
+        consumer._current_thread_id = "t1"
+        consumer._thread_turn_watch_task = None
+        consumer.send = AsyncMock()
+        consumer._start_thread_turn_watch = MagicMock()
+        return consumer
+
+    async def test_turn_started_ignores_stale_and_other_thread_announcements(self):
+        consumer = self._idle_consumer()
+        lease = thread_turn_lease.try_acquire("t1", kind="seed")
+
+        await consumer.turn_started({"thread_id": "t1", "token": "not-the-holder"})
+        await consumer.turn_started({"thread_id": "t2", "token": lease.token})
+        consumer.send.assert_not_awaited()
+        consumer._start_thread_turn_watch.assert_not_called()
+
+        await consumer.turn_started({"thread_id": "t1", "token": lease.token})
+        consumer.send.assert_awaited_once()
+        consumer._start_thread_turn_watch.assert_called_once()
+        self.assertEqual(consumer._start_thread_turn_watch.call_args.args[1]["kind"], "seed")
+
+    async def test_turn_started_ignores_own_turn_and_a_running_watch(self):
+        consumer = self._idle_consumer()
+        lease = thread_turn_lease.try_acquire("t1", kind="chat")
+        consumer._turn = _TurnState(cancel_event=threading.Event(), stream_finished=asyncio.Event())
+        consumer._turn.thread_lease = lease
+        await consumer.turn_started({"thread_id": "t1", "token": lease.token})
+        consumer.send.assert_not_awaited()
+
+        consumer._turn = None
+        consumer._thread_turn_watch_task = asyncio.create_task(asyncio.sleep(30))
+        try:
+            await consumer.turn_started({"thread_id": "t1", "token": lease.token})
+        finally:
+            consumer._thread_turn_watch_task.cancel()
+        consumer.send.assert_not_awaited()
+        consumer._start_thread_turn_watch.assert_not_called()
+
+    async def test_degraded_lease_is_not_announced(self):
+        consumer = ChatConsumer()
+        consumer.channel_layer = MagicMock()
+        consumer.channel_layer.group_send = AsyncMock()
+        lease = thread_turn_lease.ThreadTurnLease(thread_id="t1", token="x", degraded=True)
+        await consumer._announce_turn_started("t1", lease)
+        consumer.channel_layer.group_send.assert_not_awaited()
+
+        consumer.channel_layer.group_send.side_effect = RuntimeError("layer down")
+        ok = thread_turn_lease.try_acquire("t1", kind="chat")
+        await consumer._announce_turn_started("t1", ok)  # swallowed
+        consumer.channel_layer.group_send.assert_awaited_once()
 
     async def test_cancel_stops_the_watch(self):
         consumer = ChatConsumer()

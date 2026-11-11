@@ -2890,6 +2890,39 @@ class SubagentWatchdogTests(TransactionTestCase):
             {"thread_id": str(self.thread.id), "content": ""}, seed_mode=True,
         )
 
+    async def test_tick_leaves_results_to_a_turn_running_elsewhere(self):
+        """Another socket's turn holds the thread: no claim, no queued wake-up
+        turn — the watchdog keeps watching and claims once that turn is over."""
+        from django.core.cache import cache
+        from django.test import override_settings
+
+        from chat import thread_turn_lease
+
+        locmem = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+                              "LOCATION": "subagent-watchdog-foreign-turn"}}
+        with override_settings(CACHES=locmem):
+            cache.clear()
+            run = await self._make_completed_unreported_run()
+            lease = thread_turn_lease.try_acquire(str(self.thread.id), kind="seed")
+            try:
+                self.assertTrue(await self._tick())
+                await self.consumer.subagent_completed(
+                    {"run_id": str(run.id), "thread_id": str(self.thread.id)}
+                )
+                self.consumer._handle_chat_message.assert_not_awaited()
+                await database_sync_to_async(run.refresh_from_db)()
+                self.assertIsNone(run.reported_at)
+
+                thread_turn_lease.release(lease)
+                self.assertTrue(await self._tick())
+                self.consumer._handle_chat_message.assert_awaited_once_with(
+                    {"thread_id": str(self.thread.id), "content": ""}, seed_mode=True,
+                )
+            finally:
+                thread_turn_lease.release(lease)
+                await self.consumer._cancel_subagent_watch()
+                cache.clear()
+
     async def test_tick_stops_when_idle(self):
         """Nothing running, nothing unreported → the watchdog retires."""
         self.assertFalse(await self._tick())

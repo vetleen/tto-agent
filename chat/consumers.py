@@ -17,6 +17,7 @@ from chat.assistant_replay import build_assistant_replay, replay_metadata_for
 from chat.history_checkpoint import HistoryTooLarge, history_too_large_message
 from core.observability import sentry_scope
 from core.redis_errors import REDIS_BLIP as _REDIS_BLIP
+from core.redis_errors import log_broadcast_failure
 
 logger = logging.getLogger(__name__)
 
@@ -565,12 +566,59 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         if self._stream_task and not self._stream_task.done():
             return
+        # Another socket's turn is running on the thread: leave the result to
+        # that turn's post-stream claim (or to the watchdog above once it ends).
+        # Claiming here would queue a wake-up turn behind it on a page that
+        # shows nothing, and a turn longer than the claim lease would hand the
+        # claim back and forth (production, 2026-11-11).
+        if await self._foreign_turn_in_flight(thread_id):
+            return
         if not await self._claim_unreported_subagents(thread_id):
             return
         await self._handle_chat_message(
             {"thread_id": thread_id, "content": ""},
             seed_mode=True,
         )
+
+    async def turn_started(self, event):
+        """Channel layer handler: another socket's turn took this thread's lease.
+
+        A page that already has the thread open (second tab or device) shows the
+        locked "still working" bubble and follows the turn to ``turn.finished``,
+        exactly as a page that loads the thread mid-turn does.
+        """
+        thread_id = event.get("thread_id")
+        token = event.get("token")
+        if not thread_id or not token or str(self._current_thread_id) != str(thread_id):
+            return
+        watch = self._thread_turn_watch_task
+        if watch and not watch.done():
+            return  # already following a turn; the loop announces the next one
+        in_flight = await self._foreign_turn_in_flight(thread_id)
+        if not in_flight or in_flight.get("token") != token:
+            return  # our own turn, or the announcement is stale
+        await self.send(text_data=json.dumps({
+            "event_type": "turn.in_flight", "data": in_flight,
+        }))
+        self._start_thread_turn_watch(thread_id, in_flight)
+
+    async def _announce_turn_started(self, thread_id, lease) -> None:
+        """Tell the thread's other sockets that this turn now holds the lease.
+
+        Best-effort, one small group message per turn. Skipped for a degraded
+        lease (nothing in the cache for a watcher to follow).
+        """
+        if lease is None or lease.degraded:
+            return
+        try:
+            await self.channel_layer.group_send(
+                f"thread_{thread_id}",
+                {"type": "turn.started", "thread_id": str(thread_id), "token": lease.token},
+            )
+        except Exception as exc:
+            log_broadcast_failure(
+                logger, exc, "Could not announce the turn on thread %s", thread_id,
+            )
 
     # -- Slide deck render group handlers (from render_deck_task via group_send) --
     async def slidedeck_render_started(self, event):
@@ -1545,7 +1593,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
             # Kick off the seed assistant turn if one was pending, or if
             # subagents completed while the user was disconnected.
             needs_seed = pending_consumed
-            if not needs_seed and self._has_tool("chat_subagent_create"):
+            if turn_in_flight:
+                # The running turn (or the watchdog, once it ends) delivers any
+                # sub-agent result; see subagent_completed.
+                self._ensure_subagent_watch(thread_id)
+            elif not needs_seed and self._has_tool("chat_subagent_create"):
                 needs_seed = await self._claim_unreported_subagents(thread_id)
             if needs_seed:
                 await self._handle_chat_message(
@@ -1842,6 +1894,14 @@ class ChatConsumer(AsyncWebsocketConsumer):
             return False
 
         unreported = await self._get_unreported_subagent_run_ids(thread_id)
+        if (
+            unreported
+            and self._has_tool("chat_subagent_create")
+            and await self._foreign_turn_in_flight(thread_id)
+        ):
+            # Another socket's turn is running: keep watching, claim once it
+            # has ended without delivering them (see subagent_completed).
+            return True
         if (
             unreported
             and self._has_tool("chat_subagent_create")
@@ -2757,6 +2817,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 return
             turn.thread_lease = lease
             turn.lease_keepalive_task = asyncio.create_task(thread_turn_lease.keep_alive(lease))
+            await self._announce_turn_started(thread.id, lease)
             if lease.waited and turn.user_message_id and not seed_mode:
                 # The message was saved when it was sent — before the reply of the
                 # turn it waited for. Move it after that reply, so history (and the
