@@ -686,6 +686,15 @@ CHAT_ATTACHMENT_READY_MAX_SECONDS = _env_int("CHAT_ATTACHMENT_READY_MAX_SECONDS"
 # up to this many seconds for the save, instead of cancelling the turn and losing
 # the reply (chat/consumers.py:_await_reply_persisted). Normally one DB write.
 CHAT_REPLY_PERSIST_WAIT_SECONDS = _env_int("CHAT_REPLY_PERSIST_WAIT_SECONDS", "30")
+# One turn at a time per thread across tabs/devices/processes (chat/thread_turn_lease.py):
+# a turn holds a cache lease on its thread until its reply is saved; another turn
+# on the same thread waits for it (and then sees that reply). LEASE = TTL (a crashed
+# holder frees the thread after this), REFRESH = keep-alive interval, WAIT = how
+# long a turn waits before giving up with "thread_busy_timeout". Keep WAIT at or
+# below SUBAGENT_REPORT_LEASE_MINUTES*60, like CHAT_TURN_QUEUE_TIMEOUT_SECONDS.
+CHAT_THREAD_TURN_LEASE_SECONDS = _env_int("CHAT_THREAD_TURN_LEASE_SECONDS", "120")
+CHAT_THREAD_TURN_REFRESH_SECONDS = _env_int("CHAT_THREAD_TURN_REFRESH_SECONDS", "30")
+CHAT_THREAD_TURN_WAIT_SECONDS = _env_int("CHAT_THREAD_TURN_WAIT_SECONDS", "300")
 # Decks above this many slides get text only (no renders); attachments are not
 # gated by a PII scan, so this only bounds render time and storage.
 CHAT_ATTACHMENT_RENDER_MAX_SLIDES = _env_int("CHAT_ATTACHMENT_RENDER_MAX_SLIDES", "50")

@@ -12,7 +12,7 @@ from autobahn.exception import Disconnected
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
 
-from chat import turn_gate
+from chat import thread_turn_lease, turn_gate
 from chat.assistant_replay import build_assistant_replay, replay_metadata_for
 from chat.history_checkpoint import HistoryTooLarge, history_too_large_message
 from core.observability import sentry_scope
@@ -69,6 +69,10 @@ class _TurnState:
     # on this before cancelling the turn (_await_reply_persisted) — NOT on
     # stream_finished, which only fires after the LLMCallLog write.
     reply_persisted: asyncio.Event = field(default_factory=asyncio.Event)
+    # This turn's per-thread lease (chat.thread_turn_lease) and the task that
+    # keeps it alive; released by _release_thread_turn once the reply is saved.
+    thread_lease: object | None = None
+    lease_keepalive_task: asyncio.Task | None = None
 
 
 # Seconds between processing-state polls while a turn waits for its attachments
@@ -2590,6 +2594,33 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     thinking_level = _resolve_reasoning_level(resolved_model, None)
                 await self._apply_auto_route(thread, decision, thinking_level, turn)
 
+            # One turn at a time per thread, across tabs, devices and processes
+            # (a detached turn, a loop turn on the worker): wait here — after the
+            # attachment hold, before the gate, so no gate slot is held while
+            # waiting — until the running turn has saved its reply, so this one
+            # is assembled on a history that has it. Fail-open on cache trouble.
+            lease = await thread_turn_lease.wait_until_free(
+                str(thread.id),
+                kind="seed" if seed_mode else "chat",
+                user_message_id=turn.user_message_id,
+                should_stop=lambda: (
+                    self._stopped or turn.cancel_event.is_set() or self._turn is not turn
+                ),
+                on_waiting=lambda: _on_queued("thread_busy", 1),
+            )
+            if lease is None:
+                # Stopped or superseded while waiting: same exit as above.
+                if self._turn is turn:
+                    self._cancel_event = None
+                return
+            turn.thread_lease = lease
+            turn.lease_keepalive_task = asyncio.create_task(thread_turn_lease.keep_alive(lease))
+            if lease.waited and turn.user_message_id and not seed_mode:
+                # The message was saved when it was sent — before the reply of the
+                # turn it waited for. Move it after that reply, so history (and the
+                # thread on reload) reads question → answer → this question.
+                await self._move_user_message_to_now(turn.user_message_id)
+
             async with turn_gate.slot(self.user.pk, on_queued=_on_queued):
                 if queue_hb is not None:
                     queue_hb.cancel()
@@ -2643,6 +2674,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 # check (chat.auto_model.is_cache_warm). Manual turns too, so
                 # switching to Automatic keeps a warm model.
                 await self._record_turn_end(thread, resolved_model, thinking_level)
+                # The reply is saved (and redacted if intercepted): a turn queued
+                # on this thread may start now, before title/cost work below.
+                await self._release_thread_turn(turn)
             # --- slot released here ---
 
             if self._stopped or turn.guardrail_intercepted:
@@ -2693,6 +2727,26 @@ class ChatConsumer(AsyncWebsocketConsumer):
                         "error_code": "turn_queue_timeout",
                     },
                 })
+        except thread_turn_lease.ThreadBusyTimeout:
+            logger.warning(
+                "chat turn gave up waiting for the thread's running turn thread=%s seed=%s",
+                thread.id, seed_mode,
+            )
+            if self._turn is turn:
+                self._cancel_event = None
+            # Same as the gate timeout: the user message stays saved; a seeded
+            # continuation stays quiet (its reported_at lease re-claims it).
+            if not seed_mode and not self._stopped and not turn.cancel_event.is_set():
+                await self._sink.send_event({
+                    "event_type": "error",
+                    "data": {
+                        "message": (
+                            "Wilfred is still working on the previous message in this "
+                            "chat. Please send yours again in a moment."
+                        ),
+                        "error_code": "thread_busy_timeout",
+                    },
+                })
         except HistoryTooLarge:
             # Logged (Sentry) and marked in the thread by _fit_history.
             if self._turn is turn:
@@ -2727,6 +2781,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
             # turn was stopped / cancelled / disconnected mid-flight (the try above
             # returns early on stop). Idempotent via turn.guardrail_redacted.
             await self._finalize_guardrail(thread, turn)
+            # Free the thread for a queued turn (idempotent; normally already done
+            # after the stream). Before the seed-continuation block below, so a
+            # continuation never waits on its own parent's lease.
+            await self._release_thread_turn(turn)
 
             # Render the decks this turn changed so the user's filmstrip refreshes
             # (worker task; the per-slide render cache makes an already-previewed
@@ -2767,6 +2825,39 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     {"thread_id": str(thread.id), "content": ""},
                     seed_mode=True,
                 )
+
+    @database_sync_to_async
+    def _move_user_message_to_now(self, message_id) -> None:
+        from django.utils import timezone
+
+        from chat.models import ChatMessage
+
+        ChatMessage.objects.filter(pk=message_id, role="user").update(created_at=timezone.now())
+
+    async def _release_thread_turn(self, turn) -> None:
+        """Release this turn's per-thread lease (thread_turn_lease). Idempotent.
+
+        The cache call runs as an executor job awaited through ``shield``: if the
+        turn is being cancelled (again) while releasing, the job still finishes
+        and the thread is not left locked until the lease's TTL.
+        """
+        if turn is None:
+            return
+        task = turn.lease_keepalive_task
+        turn.lease_keepalive_task = None
+        if task is not None:
+            task.cancel()
+        lease = turn.thread_lease
+        turn.thread_lease = None
+        if lease is None:
+            return
+        future = asyncio.get_running_loop().run_in_executor(None, thread_turn_lease.release, lease)
+        try:
+            await asyncio.shield(future)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception("Failed to release the thread turn lease thread=%s", lease.thread_id)
 
     async def _finalize_guardrail(self, thread, turn):
         """Await this turn's guardrail pipeline and redact any intercepted content.

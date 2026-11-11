@@ -9,6 +9,7 @@ to a ``BroadcastSink`` so a browser viewing the thread can watch it live.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from datetime import timedelta
@@ -88,16 +89,34 @@ class HeadlessTurnRunner(ChatConsumer):
         self.data_room_ids = data_room_ids
         self.active_skill_ids = active_skill_ids
 
-        # Persist the loop's prompt as a real, visible user message and let any
-        # connected viewer render it before the assistant turn begins.
-        await self._create_message(
-            thread, "user", content, metadata={"loop_run": True},
-        )
-        await self._sink.send_event({"event_type": "loop.user_message", "content": content})
+        # One turn at a time per thread: wait for a user turn still running on
+        # this thread (any tab/process) before posting the loop's prompt, so the
+        # prompt and its reply land together, after that turn's reply.
+        from chat import thread_turn_lease
 
-        await self.run_turn_to_completion(
-            thread, content, history_mode=history_mode, is_loop_turn=True,
-        )
+        try:
+            lease = await thread_turn_lease.wait_until_free(str(thread.id), kind="loop")
+        except thread_turn_lease.ThreadBusyTimeout:
+            logger.warning(
+                "Loop turn skipped for thread %s: another turn kept the thread busy",
+                thread.id,
+            )
+            return False
+        keepalive = asyncio.create_task(thread_turn_lease.keep_alive(lease))
+        try:
+            # Persist the loop's prompt as a real, visible user message and let any
+            # connected viewer render it before the assistant turn begins.
+            await self._create_message(
+                thread, "user", content, metadata={"loop_run": True},
+            )
+            await self._sink.send_event({"event_type": "loop.user_message", "content": content})
+
+            await self.run_turn_to_completion(
+                thread, content, history_mode=history_mode, is_loop_turn=True,
+            )
+        finally:
+            keepalive.cancel()
+            await thread_turn_lease.aio_release(lease)
         return True
 
 

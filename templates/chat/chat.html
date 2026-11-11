@@ -3656,7 +3656,10 @@
       // bubble already carries and just retitle it; the first token removes it
       // via hideWaitingIndicator(). No position is shown — it would go stale.
       var queuedLabel = currentStreamingElement && currentStreamingElement.querySelector(".waiting-indicator span");
-      if (queuedLabel) queuedLabel.textContent = ((data.data && data.data.reason) === "user")
+      var queuedReason = data.data && data.data.reason;
+      if (queuedLabel) queuedLabel.textContent = queuedReason === "thread_busy"
+        ? ASSISTANT_NAME + " is still working on the previous message…"
+        : queuedReason === "user"
         ? "Waiting for your other chat to finish…"
         : "Waiting for a free slot…";
       return;
