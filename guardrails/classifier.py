@@ -1,8 +1,11 @@
-"""Layer 1: Cheap model classifier for guardrail content screening.
+"""Layer 1: the text classifiers for guardrail content screening.
 
-Uses the cheap LLM tier via run_structured() to classify user messages
-for potential prompt injection, jailbreak, data extraction, and other
-adversarial patterns. Conservative — flags anything suspicious.
+Chat messages, fetched web content, skill content and the identity fields are
+classified through the Decisions service (``guardrails.decisions``): the family's
+system prompt as the developer message, a predicate (flagged at probability ≥ 0.5)
+and a concern choice. The legacy cheap-model classifier (``_run_classifier``,
+``run_structured`` → ``ClassifierResult``) answers only when Decisions fails
+(``llm.service.decisions_fallback``), and runs as the nightly shadow.
 """
 
 from __future__ import annotations
@@ -14,6 +17,13 @@ from django.conf import settings
 
 from llm import get_llm_service
 
+from guardrails.decisions import (
+    PrimaryClassifierResult,
+    build_text_input,
+    build_text_questions,
+    interpret_text_result,
+    wrap_legacy_text,
+)
 from guardrails.schemas import ClassifierResult
 
 logger = logging.getLogger(__name__)
@@ -58,8 +68,11 @@ def _run_classifier(
     system_prompt: str,
     org_id: int | None = None,
     feature_key: str = "guardrails_classifier",
+    *,
+    context=None,
+    log_metadata: dict | None = None,
 ) -> ClassifierResult:
-    """Synchronous core: build a ChatRequest and call run_structured().
+    """The legacy classifier: build a ChatRequest and call run_structured().
 
     ``feature_key`` selects which per-feature cheap model resolves — user-message
     and identity-field classifiers share ``guardrails_classifier``; web-content
@@ -79,10 +92,14 @@ def _run_classifier(
             f"No model configured for the guardrail classifier ({feature_key})."
         )
 
-    context = RunContext.create(
-        user_id=user_id,
-        conversation_id=conversation_id,
-    )
+    if context is None:
+        context = RunContext.create(
+            user_id=user_id,
+            conversation_id=conversation_id,
+        )
+    params = org_feature_reasoning_params(org_id, feature_key, cheap_model)
+    if log_metadata:
+        params = {**(params or {}), "_log_metadata": dict(log_metadata)}
     request = ChatRequest(
         messages=[
             Message(role="system", content=system_prompt),
@@ -92,12 +109,47 @@ def _run_classifier(
         stream=False,
         tools=[],
         context=context,
-        params=org_feature_reasoning_params(org_id, feature_key, cheap_model),
+        params=params,
     )
 
     service = _get_llm_service()
     parsed, usage = service.run_structured(request, ClassifierResult)
     return parsed
+
+
+def _classify_text(
+    text: str,
+    user_id: int | None,
+    conversation_id: str | None,
+    system_prompt: str,
+    org_id: int | None,
+    feature_key: str,
+    *,
+    prompt_key: str,
+) -> PrimaryClassifierResult:
+    """The production verdict: Decisions, or the legacy classifier when Decisions fails.
+
+    ``prompt_key`` names the system prompt so each one gets its own prompt-cache
+    prefix on the Decisions endpoint (one feature key serves several prompts).
+    """
+    from llm.service.decisions_fallback import decide_with_fallback
+    from llm.types import RunContext
+
+    context = RunContext.create(user_id=user_id, conversation_id=conversation_id)
+
+    def legacy(meta: dict) -> PrimaryClassifierResult:
+        result = _run_classifier(
+            text, user_id, conversation_id, system_prompt, org_id, feature_key,
+            context=context, log_metadata=meta,
+        )
+        return wrap_legacy_text(result, meta)
+
+    return decide_with_fallback(
+        build_text_questions(), build_text_input(system_prompt, text),
+        feature_key=feature_key, org_id=org_id, context=context,
+        prompt_cache_key=f"decisions:{feature_key}:{prompt_key}",
+        interpret=interpret_text_result, fallback=legacy, service=_get_decisions_service(),
+    )
 
 
 async def classify_message(
@@ -112,7 +164,8 @@ async def classify_message(
     Returns a ClassifierResult with is_suspicious, concern_tags, confidence, reasoning.
     """
     return await asyncio.to_thread(
-        _run_classifier, text, user_id, conversation_id, _CLASSIFIER_SYSTEM_PROMPT, org_id,
+        _classify_text, text, user_id, conversation_id, _CLASSIFIER_SYSTEM_PROMPT, org_id,
+        "guardrails_classifier", prompt_key="chat_message",
     )
 
 
@@ -146,7 +199,10 @@ def classify_description_sync(
     assistant's system prompt. For the *organization description* — which
     legitimately carries operating policy — use classify_org_description_sync.
     """
-    return _run_classifier(text, user_id, None, _DESCRIPTION_CLASSIFIER_PROMPT, org_id)
+    return _classify_text(
+        text, user_id, None, _DESCRIPTION_CLASSIFIER_PROMPT, org_id, "guardrails_classifier",
+        prompt_key="profile_description",
+    )
 
 
 _ORG_DESCRIPTION_CLASSIFIER_PROMPT = """\
@@ -192,7 +248,10 @@ def classify_org_description_sync(
     approached. Still blocks genuine injection, override, extraction, and
     escalation. Called from the sync org-description view before saving.
     """
-    return _run_classifier(text, user_id, None, _ORG_DESCRIPTION_CLASSIFIER_PROMPT, org_id)
+    return _classify_text(
+        text, user_id, None, _ORG_DESCRIPTION_CLASSIFIER_PROMPT, org_id, "guardrails_classifier",
+        prompt_key="org_description",
+    )
 
 
 _SOUL_CLASSIFIER_PROMPT = f"""\
@@ -232,7 +291,10 @@ def classify_soul_sync(
     injection, identity replacement, escalation, and extraction. Called from sync
     Django views before saving a SOUL that will be injected into the system prompt.
     """
-    return _run_classifier(text, user_id, None, _SOUL_CLASSIFIER_PROMPT, org_id)
+    return _classify_text(
+        text, user_id, None, _SOUL_CLASSIFIER_PROMPT, org_id, "guardrails_classifier",
+        prompt_key="soul",
+    )
 
 
 _SKILL_CLASSIFIER_PROMPT = """\
@@ -280,9 +342,9 @@ def classify_skill_content_sync(
     injection. Reuses the ``guardrail_web_scan`` cheap model. Called from
     ``agent_skills.resources._scan_text_guardrail`` (sync context / worker).
     """
-    return _run_classifier(
-        text, user_id, None, _SKILL_CLASSIFIER_PROMPT, org_id,
-        feature_key="guardrail_web_scan",
+    return _classify_text(
+        text, user_id, None, _SKILL_CLASSIFIER_PROMPT, org_id, "guardrail_web_scan",
+        prompt_key="skill_content",
     )
 
 
@@ -333,12 +395,19 @@ def classify_web_content_sync(
     ``scan_web_content_task`` Celery task (sync context). ``conversation_id``
     bills the call to the thread that fetched the content.
     """
-    return _run_classifier(
-        text, user_id, conversation_id, _WEB_CLASSIFIER_SYSTEM_PROMPT, org_id,
-        feature_key="guardrail_web_scan",
+    return _classify_text(
+        text, user_id, conversation_id, _WEB_CLASSIFIER_SYSTEM_PROMPT, org_id, "guardrail_web_scan",
+        prompt_key="web_content",
     )
 
 
 def _get_llm_service():
     """Get LLM service — extracted for testability."""
     return get_llm_service()
+
+
+def _get_decisions_service():
+    """Get the Decisions service — extracted for testability."""
+    from llm.service.decisions_service import get_decisions_service
+
+    return get_decisions_service()

@@ -9,7 +9,9 @@ shadows both import from here, so the two can never drift apart.
 
 from __future__ import annotations
 
-from guardrails.schemas import CONCERN_TAGS
+from typing import Literal
+
+from guardrails.schemas import CONCERN_TAGS, ChunkClassification, ClassifierResult
 from llm.types.decisions import Choice, InputMessage, JsonPart, Question, TextPart
 
 # Probability at/above which a chunk or text counts as flagged.
@@ -118,3 +120,109 @@ def build_chunk_input(batch: list[dict], system_prompt: str, max_chunk_chars: in
         InputMessage(role="developer", content=[TextPart(text=system_prompt)]),
         InputMessage(role="user", content=[JsonPart(data=payload)]),
     ]
+
+
+# ---------------------------------------------------------------------------
+# Verdicts: the Decisions answers as the classifiers' own result objects
+# ---------------------------------------------------------------------------
+
+Source = Literal["decisions", "legacy"]
+
+
+class PrimaryClassifierResult(ClassifierResult):
+    """A ``ClassifierResult`` that also says which system answered.
+
+    A subclass, so every call site and reviewer reads it unchanged; the base model
+    stays the legacy classifier's structured-output schema. ``confidence`` is the
+    Decisions probability that the text is adversarial (``probability``), or the
+    legacy classifier's own confidence when it answered (``source == "legacy"``).
+    """
+
+    probability: float | None = None
+    concern: str = ""
+    pathway: str = ""
+    source: Source = "decisions"
+    decide_error: str = ""
+
+
+class PrimaryChunkClassification(ChunkClassification):
+    """A ``ChunkClassification`` with the same provenance fields."""
+
+    probability: float | None = None
+    concern: str = ""
+    pathway: str = ""
+    source: Source = "decisions"
+    decide_error: str = ""
+
+
+def concern_tags_for(choice_answer, flagged: bool) -> tuple[list[str], str]:
+    """``(concern_tags, concern)`` for a verdict.
+
+    ``concern`` is the raw choice ("" on a refusal). A positive whose top choice is
+    "none" takes the likeliest real concern, so a reviewer never sees a flag with
+    no concern; a negative carries no tags.
+    """
+    if choice_answer is None or choice_answer.type != "choice":
+        return [], ""
+    concern = choice_answer.choice
+    if not flagged:
+        return [], concern
+    if concern != "none":
+        return [concern], concern
+    ranked = sorted(
+        (p for p in choice_answer.probabilities if p.value != "none"),
+        key=lambda p: p.probability, reverse=True,
+    )
+    return ([ranked[0].value] if ranked else []), concern
+
+
+def _predicate_probability(answer) -> float:
+    from llm.service.decisions_fallback import DecisionsRefused
+
+    if answer.type != "predicate":
+        raise DecisionsRefused(f"no probability for {answer.name}")
+    return answer.probability
+
+
+def interpret_text_result(result) -> PrimaryClassifierResult:
+    p = _predicate_probability(result[QUESTION_ADVERSARIAL])
+    flagged = p >= FLAG_THRESHOLD
+    tags, concern = concern_tags_for(result[QUESTION_CONCERN], flagged)
+    return PrimaryClassifierResult(
+        is_suspicious=flagged,
+        concern_tags=tags,
+        confidence=p,
+        reasoning=REASONING_PLACEHOLDER_TEXT if flagged else f"Not flagged by the probabilistic classifier (p={p:.2f}).",
+        probability=p, concern=concern, pathway=result.pathway, source="decisions",
+    )
+
+
+def interpret_chunk_result(result, batch: list[dict]) -> dict[int, PrimaryChunkClassification]:
+    verdicts: dict[int, PrimaryChunkClassification] = {}
+    for chunk in batch:
+        idx = chunk["chunk_index"]
+        adversarial, concern_name = chunk_question_names(idx)
+        p = _predicate_probability(result[adversarial])
+        flagged = p >= FLAG_THRESHOLD
+        tags, concern = concern_tags_for(result[concern_name], flagged)
+        verdicts[idx] = PrimaryChunkClassification(
+            chunk_index=idx,
+            is_suspicious=flagged,
+            concern_tags=tags,
+            confidence=p,
+            reasoning=REASONING_PLACEHOLDER_CHUNK if flagged else f"Not flagged by the probabilistic classifier (p={p:.2f}).",
+            probability=p, concern=concern, pathway=result.pathway, source="decisions",
+        )
+    return verdicts
+
+
+def wrap_legacy_text(result: ClassifierResult, meta: dict) -> PrimaryClassifierResult:
+    return PrimaryClassifierResult(
+        **result.model_dump(), source="legacy", decide_error=str(meta.get("decide_error") or ""),
+    )
+
+
+def wrap_legacy_chunk(result: ChunkClassification, meta: dict) -> PrimaryChunkClassification:
+    return PrimaryChunkClassification(
+        **result.model_dump(), source="legacy", decide_error=str(meta.get("decide_error") or ""),
+    )
