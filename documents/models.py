@@ -550,7 +550,20 @@ class PIIScanShadowResult(models.Model):
     window_chars = models.PositiveIntegerField()
     # Decisions quick pathway: {category: probability}; None = the endpoint refused.
     quick_probabilities = models.JSONField(default=dict, blank=True)
-    quick_pathway = models.CharField(max_length=12)  # quick | structured | mixed
+    quick_pathway = models.CharField(max_length=12, blank=True, default="")  # quick | structured | mixed | ""
+    # The legacy structured classifier's categories for this window (the shadow
+    # since 2026-11; empty on rows where it was production).
+    classifier_categories = models.JSONField(default=list, blank=True)
+    # Which system made the production verdict: "decisions_shadow" (before 2026-11:
+    # production = the legacy classifier, shadow = Decisions) or "legacy_shadow"
+    # (production = Decisions, shadow = the legacy classifier). Columns are named by
+    # system, not role: classifier_* = legacy classifier, quick_* = Decisions.
+    direction = models.CharField(max_length=16, default="decisions_shadow")
+    # pending = production half written, the nightly shadow has not run yet;
+    # done = both halves; skipped = the shadow could not run (shadow_note says why).
+    state = models.CharField(max_length=12, default="done")
+    shadow_note = models.CharField(max_length=64, blank=True, default="")
+
     # Production, this window (PIIReviewEvent): the classifier's Art. 9/10 candidate
     # flags and the reviewer's verdict. Empty when the classifier raised none here.
     prod_candidates = models.JSONField(default=list, blank=True)
@@ -573,6 +586,9 @@ class PIIScanShadowResult(models.Model):
             models.UniqueConstraint(
                 fields=["run_date", "version_id", "window_index"], name="documents_piishadow_day_win",
             ),
+        ]
+        indexes = [
+            models.Index(fields=["state", "run_date"], name="documents_piishadow_state"),
         ]
 
     def __str__(self) -> str:

@@ -48,7 +48,7 @@ def summarize_family(rows, family: str) -> dict:
     verdicts = family_verdicts(family)
     allow, act = verdicts["allow"], verdicts["act"]
     headline = [r for r in rows if r.quick_pathway == "quick" and r.quick_probability is not None]
-    pairs = [(r.prod_flagged, r.quick_probability) for r in headline]
+    pairs = [(r.classifier_flagged, r.quick_probability) for r in headline]
     out = {
         "rows": len(rows),
         "compared": len(headline),
@@ -57,11 +57,11 @@ def summarize_family(rows, family: str) -> dict:
         "non_quick": sum(1 for r in rows if r.quick_pathway != "quick" and not r.decide_error),
         "refusals": sum(1 for r in rows if r.quick_pathway == "quick" and r.quick_probability is None),
         "decide_errors": sum(1 for r in rows if r.decide_error),
-        "confusion": confusion((r.prod_flagged, r.quick_flagged) for r in headline),
+        "confusion": confusion((r.classifier_flagged, r.quick_flagged) for r in headline),
         "agreement": agreement(pairs),
         "deciles": deciles(pairs),
     }
-    clf_pos = [r for r in headline if r.prod_flagged]
+    clf_pos = [r for r in headline if r.classifier_flagged]
     quick_pos = [r for r in headline if r.quick_flagged]
     both_judged = [
         r for r in clf_pos
@@ -75,7 +75,7 @@ def summarize_family(rows, family: str) -> dict:
             sum(1 for r in both_judged if (r.blind_review in allow) == (r.prod_review in allow)), len(both_judged),
         ),
     }
-    out["prod_reviews"] = dict(Counter(r.prod_review or "-" for r in rows if r.prod_flagged))
+    out["prod_reviews"] = dict(Counter(r.prod_review or "-" for r in rows if r.classifier_flagged))
     reviewed = [r for r in rows if r.blind_review in allow | act]
     by_verdict = {}
     for verdict in sorted({r.blind_review for r in reviewed}):
@@ -195,18 +195,18 @@ class Command(BaseCommand):
     def _write_disagreements(self, rows) -> None:
         disagreeing = [
             r for r in rows
-            if r.quick_pathway == "quick" and r.quick_probability is not None and r.prod_flagged != r.quick_flagged
+            if r.quick_pathway == "quick" and r.quick_probability is not None and r.classifier_flagged != r.quick_flagged
         ]
         self.stdout.write(f"disagreements (classifier_only / quick_only): {len(disagreeing)}")
         previews = self._chat_previews(disagreeing)
         for r in disagreeing:
-            kind = "classifier_only" if r.prod_flagged else "quick_only"
+            kind = "classifier_only" if r.classifier_flagged else "quick_only"
             p = f"{r.quick_probability:.2f}"
             blind = f"{r.blind_review or '-'}({r.blind_review_source})" if r.blind_review_source else (r.blind_review or "-")
             subject = " ".join(f"{k}={v}" for k, v in sorted((r.subject or {}).items()) if v not in (None, ""))
             line = (
                 f"  {r.created_at:%Y-%m-%d %H:%M} {kind} p={p} concern={r.quick_concern or '-'}"
-                f" tags={r.prod_tags} prod={r.prod_review or '-'} blind={blind} | {subject or '-'}"
+                f" tags={r.classifier_tags} prod={r.prod_review or '-'} blind={blind} | {subject or '-'}"
                 f" sha={r.text_sha256[:12]}"
             )
             if r.family == "chat_message":

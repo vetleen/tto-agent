@@ -143,8 +143,8 @@ class ChunkScanShadowResult(models.Model):
     chunk_id = models.BigIntegerField()
     chunk_index = models.PositiveIntegerField()
     chunk_chars = models.PositiveIntegerField()
-    # Production (from GuardrailEvents carrying chunk_id).
-    classifier_flagged = models.BooleanField()
+    # The legacy chunk classifier (production before 2026-11, the shadow after).
+    classifier_flagged = models.BooleanField(default=False)
     classifier_confidence = models.FloatField(null=True, blank=True)
     classifier_tags = models.JSONField(default=list, blank=True)
     # allow | quarantine (reviewer) | threshold_quarantine | threshold_logged | "" (not flagged)
@@ -153,7 +153,16 @@ class ChunkScanShadowResult(models.Model):
     quick_probability = models.FloatField(null=True, blank=True)
     quick_concern = models.CharField(max_length=32, blank=True, default="")
     quick_flagged = models.BooleanField(default=False)  # probability >= SHADOW_FLAG_THRESHOLD
-    quick_pathway = models.CharField(max_length=12)  # quick | structured | mixed
+    quick_pathway = models.CharField(max_length=12, blank=True, default="")  # quick | structured | mixed | ""
+    # Which system made the production verdict: "decisions_shadow" (before 2026-11:
+    # production = the legacy classifier, shadow = Decisions) or "legacy_shadow"
+    # (production = Decisions, shadow = the legacy classifier). Columns are named by
+    # system, not role: classifier_* = legacy classifier, quick_* = Decisions.
+    direction = models.CharField(max_length=16, default="decisions_shadow")
+    # pending = production half written, the nightly shadow has not run yet;
+    # done = both halves; skipped = the shadow could not run (shadow_note says why).
+    state = models.CharField(max_length=12, default="done")
+    shadow_note = models.CharField(max_length=64, blank=True, default="")
     # Blind reviewer verdict for a positive under either system:
     # allow | quarantine | error | no_model | not_reviewed | "" (not a positive)
     blind_review = models.CharField(max_length=24, blank=True, default="")
@@ -168,6 +177,9 @@ class ChunkScanShadowResult(models.Model):
             models.UniqueConstraint(
                 fields=["run_date", "chunk_id"], name="guardrails_shadow_unique_day_chunk"
             ),
+        ]
+        indexes = [
+            models.Index(fields=["state", "run_date"], name="guardrails_chunkshadow_state"),
         ]
 
     def __str__(self) -> str:
@@ -195,10 +207,11 @@ class ClassifierShadowResult(models.Model):
     subject = models.JSONField(default=dict, blank=True)
     text_chars = models.PositiveIntegerField()
     text_sha256 = models.CharField(max_length=64)
-    # Production: the classifier's verdict and what its reviewer decided.
-    prod_flagged = models.BooleanField()
-    prod_confidence = models.FloatField(null=True, blank=True)
-    prod_tags = models.JSONField(default=list, blank=True)
+    # The legacy text classifier (production before 2026-11, the shadow after).
+    classifier_flagged = models.BooleanField(default=False)
+    classifier_confidence = models.FloatField(null=True, blank=True)
+    classifier_tags = models.JSONField(default=list, blank=True)
+    # What production's reviewer decided (whichever system produced the verdict):
     # web: allow | withhold | no_model | error; skill: allow | quarantine |
     # threshold_quarantine | threshold_logged | no_model; chat: dismiss | warn |
     # block | suspend | no_model | error; identity: blocked; "" = not flagged.
@@ -216,10 +229,20 @@ class ClassifierShadowResult(models.Model):
     blind_review_severity = models.CharField(max_length=10, blank=True, default="")
     trace_id = models.CharField(max_length=64, blank=True, default="")
     decide_error = models.CharField(max_length=64, blank=True, default="")  # exception class name
+    # Which system made the production verdict: "decisions_shadow" (before 2026-11:
+    # production = the legacy classifier, shadow = Decisions) or "legacy_shadow"
+    # (production = Decisions, shadow = the legacy classifier). Columns are named by
+    # system, not role: classifier_* = legacy classifier, quick_* = Decisions.
+    direction = models.CharField(max_length=16, default="decisions_shadow")
+    # pending = production half written, the nightly shadow has not run yet;
+    # done = both halves; skipped = the shadow could not run (shadow_note says why).
+    state = models.CharField(max_length=12, default="done")
+    shadow_note = models.CharField(max_length=64, blank=True, default="")
 
     class Meta:
         indexes = [
             models.Index(fields=["family", "created_at"], name="guardrails_clfshadow_fam_crt"),
+            models.Index(fields=["state", "created_at"], name="guardrails_clfshadow_state"),
         ]
 
     def __str__(self) -> str:

@@ -163,7 +163,7 @@ class RunTests(_Base):
         row = self._run()
         self.assertIsNotNone(row)
         self.assertEqual(row.family, "web_content")
-        self.assertFalse(row.prod_flagged)
+        self.assertFalse(row.classifier_flagged)
         self.assertEqual(row.prod_review, "")
         self.assertAlmostEqual(row.quick_probability, 0.05)
         self.assertFalse(row.quick_flagged)
@@ -217,9 +217,9 @@ class RunTests(_Base):
             family="skill_content", prod=_flagged("quarantine", tags=("jailbreak",), confidence=0.72),
             subject={"skill_id": 5, "window": 0}, review_label="My Skill: instructions",
         )
-        self.assertTrue(row.prod_flagged)
+        self.assertTrue(row.classifier_flagged)
         self.assertEqual(row.prod_review, "quarantine")
-        self.assertEqual(row.prod_tags, ["jailbreak"])
+        self.assertEqual(row.classifier_tags, ["jailbreak"])
         self.assertFalse(row.quick_flagged)
         self.assertEqual(row.blind_review, "quarantine")
         self.assertEqual(row.blind_review_source, "classifier")

@@ -56,7 +56,7 @@ class ReportTests(TestCase):
         def row(family, **kw):
             base = dict(
                 family=family, org_id=1, user_id=self.user.pk, subject={}, text_chars=10, text_sha256="ab" * 32,
-                prod_flagged=False, prod_confidence=0.1, prod_tags=[], prod_review="",
+                classifier_flagged=False, classifier_confidence=0.1, classifier_tags=[], prod_review="",
                 quick_probability=0.05, quick_concern="none", quick_flagged=False, quick_pathway="quick",
                 trace_id=day_trace_id(family, DAY),
             )
@@ -69,11 +69,11 @@ class ReportTests(TestCase):
         # web: both negative, both positive (withhold / blind withhold), classifier-only (allow / blind allow),
         # quick-only (blind allow), a structured row, a refusal, a decide error.
         row("web_content", subject={"source_label": "web_fetch"})
-        row("web_content", prod_flagged=True, prod_confidence=0.9, prod_tags=["prompt_injection"], prod_review="withhold",
+        row("web_content", classifier_flagged=True, classifier_confidence=0.9, classifier_tags=["prompt_injection"], prod_review="withhold",
             quick_probability=0.9, quick_flagged=True, quick_concern="prompt_injection",
             blind_review="withhold", blind_review_source="classifier", blind_review_confidence=0.95,
             blind_review_severity="high")
-        row("web_content", prod_flagged=True, prod_confidence=0.55, prod_tags=["social_engineering"], prod_review="allow",
+        row("web_content", classifier_flagged=True, classifier_confidence=0.55, classifier_tags=["social_engineering"], prod_review="allow",
             quick_probability=0.2, blind_review="allow", blind_review_source="classifier",
             blind_review_confidence=0.9, blind_review_severity="low")
         row("web_content", quick_probability=0.8, quick_flagged=True, quick_concern="data_extraction",
@@ -86,11 +86,11 @@ class ReportTests(TestCase):
         row("chat_message", quick_probability=0.7, quick_flagged=True, quick_concern="jailbreak",
             blind_review="dismiss", blind_review_source="quick", blind_review_confidence=0.8,
             subject={"message_id": str(self.live.pk), "thread_id": str(self.thread.pk)})
-        row("chat_message", prod_flagged=True, prod_confidence=0.8, prod_tags=["jailbreak"], prod_review="block",
+        row("chat_message", classifier_flagged=True, classifier_confidence=0.8, classifier_tags=["jailbreak"], prod_review="block",
             quick_probability=0.1, blind_review="block", blind_review_source="classifier", blind_review_confidence=0.7,
             blind_review_severity="high", subject={"message_id": str(self.redacted.pk), "thread_id": str(self.thread.pk)})
         # identity: agreement only.
-        row("identity_field", prod_flagged=True, prod_review="blocked", quick_probability=0.95, quick_flagged=True,
+        row("identity_field", classifier_flagged=True, prod_review="blocked", quick_probability=0.95, quick_flagged=True,
             quick_concern="prompt_injection", subject={"field": "soul"})
         # A row the day before (outside a --days 1 window).
         row("web_content", created_at=self.at - timedelta(days=1))
@@ -140,7 +140,7 @@ class ReportTests(TestCase):
         rows = []
         for review, blind in (("threshold_logged", "allow"), ("threshold_quarantine", "quarantine"), ("allow", "quarantine")):
             rows.append(ClassifierShadowResult(
-                family="skill_content", prod_flagged=True, prod_confidence=0.5, prod_tags=["jailbreak"],
+                family="skill_content", classifier_flagged=True, classifier_confidence=0.5, classifier_tags=["jailbreak"],
                 prod_review=review, quick_probability=0.9, quick_flagged=True, quick_pathway="quick",
                 blind_review=blind, blind_review_source="classifier", blind_review_confidence=0.9,
                 text_chars=1, text_sha256="x",
