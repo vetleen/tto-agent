@@ -630,6 +630,7 @@ See `.env.example` for the full list with comments. Key production variables:
 | `GEMINI_API_KEY` | No | Google Gemini LLM provider |
 | `MOONSHOT_API_KEY` | No | Moonshot/Kimi LLM provider |
 | `BRAVE_SEARCH_API_KEY` | No | Web search tool in chat |
+| `WEB_SEARCH_READ_BACKEND` | No | `web_search_read` backend: `llm_context` (default — Brave LLM Context, query-relevant extracts in one call, sized by the tool's `depth`) or `fetch` (rollback — Brave web search + fetch each result page) |
 | `SENTRY_DSN` | No | Error tracking (disabled if unset) |
 | `SENTRY_ENVIRONMENT` | No | Sentry environment tag (default: `production`) |
 | `EMAIL_SENDING_ENABLED` | No | Enable email delivery (default: `false`) |
