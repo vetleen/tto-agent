@@ -386,6 +386,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
         self._stopped: bool = False
         self._stream_task: asyncio.Task | None = None
         self._subagent_watch_task: asyncio.Task | None = None
+        # Follows a turn another socket/process runs on the viewed thread
+        # (_thread_turn_watch_loop); cancelled on thread switch and disconnect.
+        self._thread_turn_watch_task: asyncio.Task | None = None
         # History checkpoint scheduled after a turn; its own task so a new
         # message (which cancels _stream_task) can't lose it.
         self._checkpoint_task: asyncio.Task | None = None
@@ -500,6 +503,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         # Cancel the sub-agent self-heal watchdog
         await self._cancel_subagent_watch()
+        await self._cancel_thread_turn_watch()
 
     async def loop_event(self, event):
         """Channel-layer handler: forward a headless loop turn's event to this socket.
@@ -1434,8 +1438,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if self._current_thread_id and self._current_thread_id != thread_id:
             await self._safe_group_discard(f"thread_{self._current_thread_id}")
             await self._cancel_subagent_watch()
+        await self._cancel_thread_turn_watch()
         self._current_thread_id = thread_id
         await self._safe_group_add(f"thread_{thread_id}")
+        # A turn another tab / device / process is running on this thread right
+        # now (taken after the group add, so no broadcast event is missed).
+        turn_in_flight = await self._foreign_turn_in_flight(thread_id)
 
         # If this thread was created with a pending initial assistant turn
         # (e.g. via the "edit skill in chat" flow), fire it now. The flag is
@@ -1492,7 +1500,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "model": effective_model,
                 "model_display": get_display_name(effective_model) if effective_model else "",
                 "auto": thread_auto,
+                # {token, kind, started_at} of a turn running elsewhere on this
+                # thread: the page shows a "still working" bubble and locks the
+                # composer until turn.finished (see _thread_turn_watch_loop).
+                "turn_in_flight": turn_in_flight,
             }))
+            if turn_in_flight:
+                self._start_thread_turn_watch(thread_id, turn_in_flight)
             if canvases_data:
                 await self.send(text_data=json.dumps({
                     "event_type": "canvases.loaded",
@@ -1666,6 +1680,113 @@ class ChatConsumer(AsyncWebsocketConsumer):
         self._subagent_watch_task = asyncio.create_task(
             self._subagent_watch_loop(str(thread_id))
         )
+
+    # -- turn in flight elsewhere on the viewed thread ----------------------
+
+    # Seconds between lease checks while a page shows another socket's turn.
+    THREAD_TURN_WATCH_INTERVAL_SECONDS = 1.5
+    # Heartbeats keep the browser's stream timeout from firing on a long turn.
+    THREAD_TURN_WATCH_HEARTBEAT_SECONDS = 30
+
+    async def _foreign_turn_in_flight(self, thread_id) -> dict | None:
+        """The running turn on ``thread_id`` unless it is this socket's own one."""
+        value = await thread_turn_lease.aio_current(thread_id)
+        if not value:
+            return None
+        own = getattr(getattr(self, "_turn", None), "thread_lease", None)
+        if own is not None and getattr(own, "token", None) == value.get("token"):
+            return None
+        return {
+            "token": value.get("token"),
+            "kind": value.get("kind"),
+            "started_at": value.get("started_at"),
+        }
+
+    def _start_thread_turn_watch(self, thread_id, in_flight: dict) -> None:
+        self._thread_turn_watch_task = asyncio.create_task(
+            self._thread_turn_watch_loop(str(thread_id), dict(in_flight))
+        )
+
+    async def _cancel_thread_turn_watch(self) -> None:
+        task = getattr(self, "_thread_turn_watch_task", None)
+        self._thread_turn_watch_task = None
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    @database_sync_to_async
+    def _reply_since(self, thread_id, started_at) -> dict | None:
+        """The newest visible assistant reply saved on ``thread_id`` since ``started_at``."""
+        from datetime import datetime
+
+        from chat.models import ChatMessage
+
+        try:
+            since = datetime.fromisoformat(started_at) if started_at else None
+        except (TypeError, ValueError):
+            since = None
+        qs = (
+            ChatMessage.objects.filter(
+                thread_id=thread_id, role="assistant",
+                is_hidden_from_user=False, is_redacted=False,
+            )
+            .exclude(metadata__has_key="tool_calls")
+            .exclude(metadata__has_key="ui_only")
+        )
+        if since is not None:
+            qs = qs.filter(created_at__gte=since)
+        msg = qs.order_by("-created_at").first()
+        return {"id": str(msg.id), "content": msg.content} if msg else None
+
+    async def _thread_turn_watch_loop(self, thread_id: str, in_flight: dict) -> None:
+        """Follow a turn running elsewhere on the viewed thread until it ends.
+
+        A detached or loop turn's events reach this page live via ``loop.event``;
+        a turn running in another tab does not broadcast. Either way, once its
+        lease is released this sends ``turn.finished`` with the saved reply, so
+        the page's "still working" bubble is filled and the composer unlocked.
+        If another foreign turn already holds the thread, it is announced with
+        ``turn.in_flight`` and followed in turn. Polls the lease (cache) — no
+        channel-layer traffic.
+        """
+        import time as _time
+
+        last_beat = _time.monotonic()
+        try:
+            while True:
+                await asyncio.sleep(self.THREAD_TURN_WATCH_INTERVAL_SECONDS)
+                if self._current_thread_id != thread_id:
+                    return
+                current = await thread_turn_lease.aio_current(thread_id)
+                if current and current.get("token") == in_flight.get("token"):
+                    if _time.monotonic() - last_beat >= self.THREAD_TURN_WATCH_HEARTBEAT_SECONDS:
+                        last_beat = _time.monotonic()
+                        await self.send(text_data=json.dumps({"event_type": "heartbeat"}))
+                    continue
+                reply = await self._reply_since(thread_id, in_flight.get("started_at"))
+                await self.send(text_data=json.dumps({
+                    "event_type": "turn.finished",
+                    "data": {"token": in_flight.get("token"), "reply": reply},
+                }))
+                following = await self._foreign_turn_in_flight(thread_id)
+                if not following:
+                    return
+                in_flight = following
+                await self.send(text_data=json.dumps({
+                    "event_type": "turn.in_flight", "data": following,
+                }))
+        except asyncio.CancelledError:
+            pass
+        except Disconnected:
+            pass  # the page went away; disconnect() cancels us anyway
+        except RuntimeError as exc:
+            if "closed" not in str(exc):
+                logger.exception("thread turn watch failed thread=%s", thread_id)
+        except Exception:
+            logger.exception("thread turn watch failed thread=%s", thread_id)
 
     async def _cancel_subagent_watch(self) -> None:
         task = self._subagent_watch_task

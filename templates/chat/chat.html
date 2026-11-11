@@ -3401,6 +3401,18 @@
       lockForServerTurn();
     }
   }
+  // A turn running elsewhere on this thread (thread.loaded.turn_in_flight /
+  // turn.in_flight): open a locked "still working" bubble tagged with its lease
+  // token; its loop.events (if broadcast) render into it, turn.finished closes it.
+  function showTurnInFlight(t) {
+    if (!t || !t.token || currentStreamingElement) return;
+    if (messagesContainer.querySelector('[data-server-turn="' + t.token + '"]')) return;
+    ensureBubble();
+    currentStreamingElement.setAttribute("data-server-turn", t.token);
+    var label = currentStreamingElement.querySelector(".waiting-indicator span");
+    if (label) label.textContent = ASSISTANT_NAME + " is still working on this chat…";
+    scrollToBottom();
+  }
   function hideWaitingIndicator() { if (!currentStreamingElement) return; const el = currentStreamingElement.querySelector(".waiting-indicator"); if (el) el.remove(); }
   function createThinkingBlock() {
     const block = document.createElement("div");
@@ -3664,6 +3676,28 @@
         : "Waiting for a free slot…";
       return;
     }
+    if (et === "turn.in_flight") { showTurnInFlight(data.data || {}); return; }
+    if (et === "turn.finished") {
+      // The turn behind a "still working" bubble ended elsewhere: show its saved
+      // reply (idempotent if loop.events already streamed it here) and unlock.
+      var fin = data.data || {};
+      var finEl = fin.token && messagesContainer.querySelector('[data-server-turn="' + fin.token + '"]');
+      if (!finEl) return;
+      var finWait = finEl.querySelector(".waiting-indicator"); if (finWait) finWait.remove();
+      var finContent = finEl.querySelector(".message-content");
+      if (fin.reply && fin.reply.content) {
+        if (finContent) { finContent.innerHTML = renderMarkdown(fin.reply.content); renderMermaidBlocks(finContent); renderEmailBlocks(finContent); renderImageBlocks(finContent); renderFileChips(finContent); }
+        markToolGroupsDone(finEl); foldTimeline(finEl, true);
+      } else if (!finContent || !finContent.textContent.trim()) {
+        finEl.remove();  // nothing was saved (stopped or failed where it ran)
+      }
+      if (currentStreamingElement === finEl) {
+        if (currentThinkingBlock) collapseThinking();
+        currentStreamingElement = null; accumulatedContent = "";
+        clearTimeout(streamingTimeout); enableInput();
+      }
+      scrollToBottom(); return;
+    }
     if (et === "provider_retry") { showProviderRetry(data.data || {}); return; }
     if (et === "turn.auto_routed") {
       // Automatic picked this turn's model: a quiet line under the reply.
@@ -3909,6 +3943,8 @@
       // Update thread cost and sub-agent status
       updateThreadCost(data.thread_cost_usd);
       setSubagentRuns(data.subagent_runs, data.server_now);
+      // A turn another tab / device / process is still running on this thread.
+      if (data.turn_in_flight) showTurnInFlight(data.turn_in_flight);
       // Restore the thread's model into the picker ("Automatic" when the
       // thread routes itself; data.model is then its last concrete model).
       if (data.model || data.auto) {
