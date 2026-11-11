@@ -20,7 +20,12 @@ from llm.tools._throttle import (
     TokenBucketRateLimiter as _TokenBucketRateLimiter,
     deadline_capped_wait as _deadline_capped_wait,
     parse_rpm as _parse_rpm,
+    wait_budget as _wait_budget,
 )
+
+# A retry is not started with less than this left before the deadline: it could
+# not finish, and would only send a request from a call the round has abandoned.
+_MIN_RETRY_SECONDS = 2.0
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +141,8 @@ def _parse_result_item(item: dict, category: str) -> dict:
     }
 
 
+_SEARCH_CACHE_TTL = 900  # seconds a web_search result is served from the cache
+
 _WEB_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
 _LLM_CONTEXT_URL = "https://api.search.brave.com/res/v1/llm/context"
 
@@ -171,13 +178,22 @@ def _brave_get_json(
 
     last_exc = None
     for attempt in range(1 + _MAX_RETRIES):
+        # Each attempt fits in what is left of the deadline (the run's and, for a
+        # sub-agent, the tool call's timeout): a 20 s attempt started 3 s before a
+        # 45 s timeout ran on for 17 s after the round had moved on.
+        attempt_timeout = timeout
+        budget = _wait_budget(context)
+        if budget is not None:
+            if attempt and budget < _MIN_RETRY_SECONDS:
+                break
+            attempt_timeout = max(1.0, min(timeout, budget))
         try:
             _brave_rate_limiter.acquire()
             response = requests.get(
                 url,
                 headers=headers,
                 params=params,
-                timeout=timeout,
+                timeout=attempt_timeout,
                 stream=True,
             )
             response.raise_for_status()
@@ -307,7 +323,13 @@ def _search_core(
         for item in section.get("results", []) or []:
             results.append(_parse_result_item(item, category))
 
-    # Scan for prompt injection (log only, never blocks)
+    _scan_search_results(results, context)
+
+    return {"query": query, "results": results, "count": len(results)}
+
+
+def _scan_search_results(results: list[dict], context) -> None:
+    """Scan web_search results for prompt injection (log only, never blocks)."""
     from guardrails.web_content import scan_web_content_from_tool
 
     combined = "\n".join(
@@ -319,7 +341,15 @@ def _search_core(
     )
     scan_web_content_from_tool(combined, context, source_label="brave_search")
 
-    return {"query": query, "results": results, "count": len(results)}
+
+def _scan_llm_context_results(results: list[dict], context) -> None:
+    """Scan LLM Context extracts for prompt injection (log only, never blocks)."""
+    from guardrails.web_content import scan_web_content_from_tool
+
+    combined = "\n".join(
+        " ".join([r.get("title", "")] + (r.get("snippets") or [])) for r in results
+    )
+    scan_web_content_from_tool(combined, context, source_label="brave_llm_context")
 
 
 # Brave LLM Context timeout: one search + server-side extraction (their docs
@@ -402,12 +432,7 @@ def _llm_context_core(
             "snippets": snippets,
         })
 
-    from guardrails.web_content import scan_web_content_from_tool
-
-    combined = "\n".join(
-        " ".join([r["title"]] + r["snippets"]) for r in results
-    )
-    scan_web_content_from_tool(combined, context, source_label="brave_llm_context")
+    _scan_llm_context_results(results, context)
 
     return {"query": query, "results": results, "count": len(results)}
 
@@ -509,9 +534,16 @@ class BraveSearchTool(ContextAwareTool):
         except Exception:
             logger.debug("brave_search: cache read failed, proceeding without cache")
             cached = None
+        from guardrails.web_content import claim_thread_scan
+
         if cached is not None:
             logger.debug("Brave Search cache hit for query=%r count=%d", query, count)
-            return _format_search_results(json.loads(cached))
+            data = json.loads(cached)
+            # The cache is shared across threads: a thread served from it still
+            # gets its own scan (once per entry).
+            if claim_thread_scan(cache, cache_key, self.context, _SEARCH_CACHE_TTL):
+                _scan_search_results(data.get("results") or [], self.context)
+            return _format_search_results(data)
 
         data = _search_core(
             query,
@@ -521,8 +553,9 @@ class BraveSearchTool(ContextAwareTool):
             context=self.context,
         )
         if "error" not in data:
+            claim_thread_scan(cache, cache_key, self.context, _SEARCH_CACHE_TTL)  # scanned above
             try:
-                cache.set(cache_key, json.dumps(data), timeout=900)
+                cache.set(cache_key, json.dumps(data), timeout=_SEARCH_CACHE_TTL)
             except Exception:
                 logger.debug("brave_search: cache write failed, continuing")
         return _format_search_results(data)

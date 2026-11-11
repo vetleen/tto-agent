@@ -317,6 +317,30 @@ class WebFetchCacheTests(TestCase):
         self.assertIn("Cached content", result2)
         mock_get.assert_not_called()
 
+    @patch("guardrails.web_content.scan_web_content_from_tool")
+    @patch("llm.tools.web_fetch._pinned_get")
+    def test_cache_hit_is_scanned_once_per_thread(self, mock_get, mock_scan):
+        """The cache is shared across threads: a thread served from it gets its own
+        scan, once — not once per page of a paginated read."""
+        from llm.types.context import RunContext
+
+        mock_get.return_value = _mock_response(
+            content_type="text/html",
+            text="<html><body><p>Shared page " + "x" * 500 + "</p></body></html>",
+        )
+        url = "https://example.com/shared"
+        self.tool.set_context(RunContext(run_id="r1", conversation_id="thread-a", user_id="1"))
+        self.tool.invoke({"url": url, "max_chars": 100})
+        self.tool.invoke({"url": url, "max_chars": 100, "start_index": 100})
+        self.assertEqual(mock_scan.call_count, 1)
+        self.tool.set_context(RunContext(run_id="r2", conversation_id="thread-b", user_id="2"))
+        self.tool.invoke({"url": url, "max_chars": 100})
+        self.tool.invoke({"url": url, "max_chars": 100, "start_index": 100})
+        mock_get.assert_called_once()
+        self.assertEqual(mock_scan.call_count, 2)
+        self.assertIn("Shared page", mock_scan.call_args.args[0])
+        self.assertEqual(mock_scan.call_args.kwargs["source_label"], "web_fetch")
+
     @patch("llm.tools.web_fetch._pinned_get")
     def test_cache_hit_re_slices(self, mock_get):
         mock_get.return_value = _mock_response(

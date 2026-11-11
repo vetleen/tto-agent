@@ -47,6 +47,27 @@ def scan_web_content_from_tool(text: str, context, *, source_label: str) -> None
         logger.debug("web content scan enqueue failed (non-fatal) source=%s", source_label)
 
 
+def claim_thread_scan(cache, cache_key: str, context, ttl: int) -> bool:
+    """Whether this thread still needs its scan of the cached web entry ``cache_key``
+    — and, if so, mark it done for ``ttl`` seconds (the entry's own lifetime).
+
+    Web results are cached across threads and orgs, and the scan only runs where
+    the content is fetched; a thread served from the cache would otherwise get the
+    content with no scan and no ``GuardrailEvent`` of its own. Call sites scan on
+    a cache hit when this returns True, and call it (ignoring the result) after
+    scanning a fresh result, so one thread paging through a cached page is scanned
+    once, not once per page. Without a thread, or when the cache fails, it answers
+    True: scanning twice is the safe side. Never raises.
+    """
+    thread_id = getattr(context, "conversation_id", None) if context is not None else None
+    if not thread_id:
+        return True
+    try:
+        return bool(cache.add(f"web_scan_seen:{thread_id}:{cache_key}", 1, timeout=ttl))
+    except Exception:
+        return True
+
+
 def _resolve_org_id(user_id_int: int) -> int | None:
     """Look up the user's first org membership. Returns None if not found.
 

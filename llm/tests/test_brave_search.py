@@ -665,6 +665,30 @@ class BraveSearchCacheTests(TestCase):
         BRAVE_SEARCH_API_KEY="test-key",
         CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
     )
+    @patch("guardrails.web_content.scan_web_content_from_tool")
+    @patch("llm.tools.brave_search.requests.get")
+    def test_cache_hit_is_scanned_once_per_thread(self, mock_get, mock_scan):
+        from llm.types.context import RunContext
+
+        mock_get.return_value = _mock_ok(
+            {"web": {"results": [{"title": "CachedResult", "url": "https://r.co", "description": "d"}]}}
+        )
+        self.tool.set_context(RunContext(run_id="r1", conversation_id="thread-a", user_id="1"))
+        self.tool.invoke({"query": "shared"})
+        self.tool.invoke({"query": "shared"})
+        self.assertEqual(mock_scan.call_count, 1)
+        self.tool.set_context(RunContext(run_id="r2", conversation_id="thread-b", user_id="2"))
+        self.tool.invoke({"query": "shared"})
+        self.tool.invoke({"query": "shared"})
+        mock_get.assert_called_once()
+        self.assertEqual(mock_scan.call_count, 2)
+        self.assertIn("CachedResult", mock_scan.call_args.args[0])
+        self.assertEqual(mock_scan.call_args.kwargs["source_label"], "brave_search")
+
+    @override_settings(
+        BRAVE_SEARCH_API_KEY="test-key",
+        CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
+    )
     @patch("llm.tools.brave_search.requests.get")
     def test_cache_key_varies_with_freshness(self, mock_get):
         mock_get.return_value = _mock_ok()

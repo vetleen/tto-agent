@@ -938,8 +938,11 @@ def _images_from_jina(data: dict) -> list[dict]:
     return out
 
 
-def _cache_result(cache, cache_key: str, result: dict) -> dict:
+def _cache_result(cache, cache_key: str, result: dict, context=None) -> dict:
     """Cache a successful fetch result dict (full content) and return it.
+
+    ``context`` is the fetching run: its thread is marked as already scanned for
+    this entry (the fetch scanned it), so its later cache hits don't scan again.
 
     Skips an empty extraction (no content) so a transient failure — a
     JS-rendered page, or Jina being down/declined — isn't pinned for the full
@@ -959,6 +962,10 @@ def _cache_result(cache, cache_key: str, result: dict) -> dict:
         cache.set(cache_key, blob, timeout=_cache_ttl())
     except Exception:
         logger.debug("web_fetch: cache write failed, continuing")
+        return result
+    from guardrails.web_content import claim_thread_scan
+
+    claim_thread_scan(cache, cache_key, context, _cache_ttl())
     return result
 
 
@@ -1002,6 +1009,13 @@ def _fetch_core(url: str, cache, context=None) -> dict:
             logger.debug("web_fetch: unreadable cache entry for url=%s, refetching", url)
         else:
             logger.debug("Web fetch cache hit for url=%s", url)
+            # The cache is shared across threads: a thread served from it still
+            # gets its own scan — once per entry, not once per page it reads.
+            from guardrails.web_content import claim_thread_scan
+
+            if claim_thread_scan(cache, cache_key, context, _cache_ttl()):
+                alt_blob = _alt_text_blob(data.get("images") or [])
+                _run_web_scan((data.get("content") or "") + (("\n" + alt_blob) if alt_blob else ""), context)
             return data
 
     inflight = _get_inflight_semaphore()
@@ -1043,22 +1057,22 @@ def _fetch_uncached(url: str, cache, cache_key: str, context=None) -> dict:
     except requests.exceptions.Timeout:
         jina = _fetch_via_jina(url, context, reason="timeout")
         if jina:
-            return _cache_result(cache, cache_key, jina)
+            return _cache_result(cache, cache_key, jina, context)
         return {"error": "Request timed out", "url": url}
     except requests.exceptions.ConnectionError:
         jina = _fetch_via_jina(url, context, reason="connection_error")
         if jina:
-            return _cache_result(cache, cache_key, jina)
+            return _cache_result(cache, cache_key, jina, context)
         return {"error": "Connection failed", "url": url}
     except requests.exceptions.HTTPError:
         jina = _fetch_via_jina(url, context, reason=f"http_{response.status_code}")
         if jina:
-            return _cache_result(cache, cache_key, jina)
+            return _cache_result(cache, cache_key, jina, context)
         return {"error": f"HTTP {response.status_code}", "url": url}
     except requests.exceptions.RequestException:
         jina = _fetch_via_jina(url, context, reason="request_error")
         if jina:
-            return _cache_result(cache, cache_key, jina)
+            return _cache_result(cache, cache_key, jina, context)
         return {"error": "Request failed", "url": url}
 
     # Check content type
@@ -1067,7 +1081,7 @@ def _fetch_uncached(url: str, cache, cache_key: str, context=None) -> dict:
         # Jina Reader parses PDFs natively; direct extraction can't.
         jina = _fetch_via_jina(url, context, reason="pdf")
         if jina:
-            return _cache_result(cache, cache_key, jina)
+            return _cache_result(cache, cache_key, jina, context)
         return {"error": "PDF could not be processed (Jina Reader unavailable)", "url": url}
     if not any(ct in content_type for ct in ("text/html", "text/plain", "application/xhtml", "text/xml", "application/xml")):
         return {"error": f"Non-text content type: {content_type}", "url": url}
@@ -1155,7 +1169,7 @@ def _fetch_uncached(url: str, cache, cache_key: str, context=None) -> dict:
                 alt_blob = _alt_text_blob(images)
                 if alt_blob:
                     _run_web_scan(alt_blob, context)
-            return _cache_result(cache, cache_key, jina)
+            return _cache_result(cache, cache_key, jina, context)
 
     text, truncated_at = _cap_content(text)
 
@@ -1173,7 +1187,7 @@ def _fetch_uncached(url: str, cache, cache_key: str, context=None) -> dict:
     }
     if truncated_at is not None:
         result["truncated_at"] = truncated_at
-    return _cache_result(cache, cache_key, result)
+    return _cache_result(cache, cache_key, result, context)
 
 
 def _format_fetch_error(data: dict) -> str:

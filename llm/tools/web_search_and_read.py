@@ -256,7 +256,8 @@ class WebSearchAndReadTool(ContextAwareTool):
     ) -> str:
         from django.core.cache import cache
 
-        from llm.tools.brave_search import _llm_context_core
+        from guardrails.web_content import claim_thread_scan
+        from llm.tools.brave_search import _llm_context_core, _scan_llm_context_results
 
         max_tokens = DEPTH_TOKEN_BUDGETS[depth]
         cache_key = "web_search_read_ctx_v1:" + hashlib.sha256(
@@ -269,6 +270,10 @@ class WebSearchAndReadTool(ContextAwareTool):
             cached = None
         if cached is not None:
             data = json.loads(cached)
+            # The cache is shared across threads: a thread served from it still
+            # gets its own scan (once per entry).
+            if claim_thread_scan(cache, cache_key, self.context, _LLM_CONTEXT_CACHE_TTL):
+                _scan_llm_context_results(data.get("results") or [], self.context)
         else:
             data = _llm_context_core(
                 query,
@@ -279,6 +284,7 @@ class WebSearchAndReadTool(ContextAwareTool):
             )
             if "error" in data:
                 return f"Search error: {data['error']}"
+            claim_thread_scan(cache, cache_key, self.context, _LLM_CONTEXT_CACHE_TTL)  # scanned in the core
             try:
                 cache.set(cache_key, json.dumps(data), timeout=_LLM_CONTEXT_CACHE_TTL)
             except Exception:

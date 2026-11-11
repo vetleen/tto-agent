@@ -382,7 +382,56 @@ class LLMContextBackendTests(TestCase):
         self.assertIn("Relevant passage one.", result)
         self.assertEqual(mock_get.call_count, 2)
 
+    @patch("llm.tools.brave_search.time.sleep")
+    @patch("llm.tools.brave_search.requests.get")
+    def test_no_retry_that_cannot_finish_before_the_call_deadline(self, mock_get, _sleep):
+        """A sub-agent call near its timeout: the attempt is clipped to what is
+        left and no retry is sent from the abandoned call."""
+        import requests
+
+        from llm.tools._throttle import set_call_deadline
+
+        self.addCleanup(set_call_deadline, None)
+        set_call_deadline(1.5)
+        mock_get.side_effect = requests.exceptions.Timeout()
+        result = self.tool.invoke({"query": "q"})
+        self.assertIn("Search error", result)
+        mock_get.assert_called_once()
+        self.assertLessEqual(mock_get.call_args.kwargs["timeout"], 1.5)
+
+    @patch("llm.tools.brave_search.requests.get")
+    def test_without_a_deadline_the_attempt_keeps_its_full_timeout(self, mock_get):
+        mock_get.return_value = _mock_response()
+        self.tool.invoke({"query": "q"})
+        self.assertEqual(mock_get.call_args.kwargs["timeout"], 20)
+
     # --- cache + guardrail ----------------------------------------------
+
+    @override_settings(CACHES=_LOCMEM_CACHE)
+    @patch("guardrails.web_content.scan_web_content_from_tool")
+    @patch("llm.tools.brave_search.requests.get")
+    def test_cache_hit_is_scanned_once_per_thread(self, mock_get, mock_scan):
+        """The cache is shared across threads; each thread served from it gets one
+        scan of its own."""
+        from django.core.cache import cache
+
+        from llm.types.context import RunContext
+
+        cache.clear()
+        self.addCleanup(cache.clear)
+        mock_get.return_value = _mock_response()
+        self.tool.set_context(RunContext(run_id="r1", conversation_id="thread-a", user_id="1"))
+        self.tool.invoke({"query": "shared q"})
+        self.tool.invoke({"query": "shared q"})  # same thread, cache hit: already scanned
+        self.assertEqual(mock_scan.call_count, 1)
+        self.tool.set_context(RunContext(run_id="r2", conversation_id="thread-b", user_id="2"))
+        self.tool.invoke({"query": "shared q"})
+        self.tool.invoke({"query": "shared q"})
+        mock_get.assert_called_once()
+        self.assertEqual(mock_scan.call_count, 2)
+        self.assertIn("Relevant passage one.", mock_scan.call_args.args[0])
+        self.assertEqual(mock_scan.call_args.args[1].conversation_id, "thread-b")
+        self.assertEqual(mock_scan.call_args.kwargs["source_label"], "brave_llm_context")
 
     @override_settings(CACHES=_LOCMEM_CACHE)
     @patch("llm.tools.brave_search.requests.get")
