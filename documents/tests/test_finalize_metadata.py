@@ -46,6 +46,13 @@ def _reviewer_decision(article_9=False, article_10=False, findings="", reasoning
     )
 
 
+
+def _window(categories):
+    """A Layer-1 PII verdict for one window (what ``scan_pii_window`` returns)."""
+    from documents.services.pii_scan import PIIWindowVerdict
+
+    return PIIWindowVerdict(categories=dict(categories))
+
 class FinalizeDocumentMetadataTests(TestCase):
     """Description + PII now run in finalize_document_metadata, not process_document."""
 
@@ -471,8 +478,8 @@ class ScanPIICategoriesForDocumentTests(TestCase):
         from documents.services.pii_scan import scan_pii_categories_for_version
 
         doc = self._doc_with_chunks(2, token_each=10)  # each chunk fills its own window
-        with patch("documents.services.pii_scan.scan_pii_categories",
-                   side_effect=[{"pii_ordinary_identity": True}, {"pii_special_category": True}]) as mock_scan, \
+        with patch("documents.services.pii_scan.scan_pii_window",
+                   side_effect=[_window({"pii_ordinary_identity": True}), _window({"pii_special_category": True})]) as mock_scan, \
              patch(self._REVIEWER, return_value=_reviewer_decision(article_9=True, findings="f")):
             result = scan_pii_categories_for_version(doc.current_version_id)
 
@@ -483,8 +490,8 @@ class ScanPIICategoriesForDocumentTests(TestCase):
         from documents.services.pii_scan import scan_pii_categories_for_version
 
         doc = self._doc_with_chunks(2, token_each=10)  # default budget (6000) -> one window
-        with patch("documents.services.pii_scan.scan_pii_categories",
-                   return_value={"pii_ordinary_identity": True}) as mock_scan, \
+        with patch("documents.services.pii_scan.scan_pii_window",
+                   return_value=_window({"pii_ordinary_identity": True})) as mock_scan, \
              patch(self._REVIEWER) as mock_review:
             result = scan_pii_categories_for_version(doc.current_version_id)
 
@@ -498,7 +505,7 @@ class ScanPIICategoriesForDocumentTests(TestCase):
 
         doc = self._doc_with_chunks(5, token_each=10)  # 5 windows available
         all_true = {cat: True for cat in PII_CATEGORIES}
-        with patch("documents.services.pii_scan.scan_pii_categories", return_value=all_true) as mock_scan, \
+        with patch("documents.services.pii_scan.scan_pii_window", return_value=_window(all_true)) as mock_scan, \
              patch(self._REVIEWER,
                    return_value=_reviewer_decision(article_9=True, article_10=True, findings="f")):
             result = scan_pii_categories_for_version(doc.current_version_id)
@@ -514,8 +521,8 @@ class ScanPIICategoriesForDocumentTests(TestCase):
         from documents.services.pii_scan import scan_pii_categories_for_version
 
         doc = self._doc_with_chunks(2, token_each=10)
-        with patch("documents.services.pii_scan.scan_pii_categories",
-                   side_effect=[RuntimeError("boom"), {"pii_ordinary_identity": True}]):
+        with patch("documents.services.pii_scan.scan_pii_window",
+                   side_effect=[RuntimeError("boom"), _window({"pii_ordinary_identity": True})]):
             with self.assertRaises(RuntimeError):
                 scan_pii_categories_for_version(doc.current_version_id)
 
@@ -526,8 +533,8 @@ class ScanPIICategoriesForDocumentTests(TestCase):
         from documents.services.pii_scan import scan_pii_categories_for_version
 
         doc = self._doc_with_chunks(1)
-        with patch("documents.services.pii_scan.scan_pii_categories",
-                   return_value={"pii_special_category": True}), \
+        with patch("documents.services.pii_scan.scan_pii_window",
+                   return_value=_window({"pii_special_category": True})), \
              patch(self._REVIEWER,
                    return_value=_reviewer_decision(
                        article_9=True, findings="Row 3 states a named patient's diagnosis.",
@@ -562,8 +569,8 @@ class ScanPIICategoriesForDocumentTests(TestCase):
         from documents.services.pii_scan import scan_pii_categories_for_version
 
         doc = self._doc_with_chunks(1)
-        with patch("documents.services.pii_scan.scan_pii_categories",
-                   return_value={"pii_ordinary_identity": True, "pii_special_category": True}), \
+        with patch("documents.services.pii_scan.scan_pii_window",
+                   return_value=_window({"pii_ordinary_identity": True, "pii_special_category": True})), \
              patch(self._REVIEWER,
                    return_value=_reviewer_decision(
                        findings="Anonymous cohort references are not personal data.",
@@ -584,8 +591,8 @@ class ScanPIICategoriesForDocumentTests(TestCase):
         from documents.services.pii_scan import scan_pii_categories_for_version
 
         doc = self._doc_with_chunks(1)
-        with patch("documents.services.pii_scan.scan_pii_categories",
-                   return_value={"pii_special_category": True}), \
+        with patch("documents.services.pii_scan.scan_pii_window",
+                   return_value=_window({"pii_special_category": True})), \
              patch(self._REVIEWER, return_value=None):
             result = scan_pii_categories_for_version(doc.current_version_id)
 
@@ -603,8 +610,8 @@ class ScanPIICategoriesForDocumentTests(TestCase):
         from documents.services.pii_scan import scan_pii_categories_for_version
 
         doc = self._doc_with_chunks(3, token_each=10)
-        with patch("documents.services.pii_scan.scan_pii_categories",
-                   return_value={"pii_special_category": True}), \
+        with patch("documents.services.pii_scan.scan_pii_window",
+                   return_value=_window({"pii_special_category": True})), \
              patch(self._REVIEWER,
                    return_value=_reviewer_decision(article_9=True, findings="f")) as mock_review:
             result = scan_pii_categories_for_version(doc.current_version_id)
@@ -621,8 +628,8 @@ class ScanPIICategoriesForDocumentTests(TestCase):
         from documents.services.pii_scan import scan_pii_categories_for_version
 
         doc = self._doc_with_chunks(2, token_each=10)
-        with patch("documents.services.pii_scan.scan_pii_categories",
-                   return_value={"pii_special_category": True}), \
+        with patch("documents.services.pii_scan.scan_pii_window",
+                   return_value=_window({"pii_special_category": True})), \
              patch(self._REVIEWER,
                    side_effect=[
                        _reviewer_decision(findings="benign"),
@@ -642,8 +649,8 @@ class ScanPIICategoriesForDocumentTests(TestCase):
         from documents.services.pii_scan import scan_pii_categories_for_version
 
         doc = self._doc_with_chunks(1)
-        with patch("documents.services.pii_scan.scan_pii_categories",
-                   return_value={"pii_special_category": True}), \
+        with patch("documents.services.pii_scan.scan_pii_window",
+                   return_value=_window({"pii_special_category": True})), \
              patch(self._REVIEWER, side_effect=RuntimeError("reviewer down")):
             with self.assertRaises(RuntimeError):
                 scan_pii_categories_for_version(doc.current_version_id)

@@ -261,30 +261,62 @@ def build_pii_input(window_text: str):
     ]
 
 
-def scan_pii_categories(
-    text: str,
-    user_id: int | None = None,
-    data_room_id: int | None = None,
-    org_id: int | None = None,
-) -> dict[str, bool]:
-    """Classify document text into GDPR PII categories.
+@dataclass(frozen=True)
+class PIIWindowVerdict:
+    """One window's Layer-1 PII verdict.
 
-    Returns a dict of only the categories detected as ``True``.
+    ``categories`` holds only the categories present (``True``), as the legacy
+    ``scan_pii_categories`` returned; ``probabilities`` are the Decisions answers
+    (``None`` when the legacy classifier answered); ``source`` says which did.
     """
+
+    categories: dict[str, bool] = field(default_factory=dict)
+    probabilities: dict[str, float] | None = None
+    pathway: str = ""
+    source: str = "decisions"
+    decide_error: str = ""
+
+
+def _get_decisions_service():
+    """The Decisions service — extracted for testability."""
+    from llm.service.decisions_service import get_decisions_service
+
+    return get_decisions_service()
+
+
+def _interpret_pii_result(result) -> PIIWindowVerdict:
+    from llm.service.decisions_fallback import DecisionsRefused
+
+    probabilities = {}
+    for category in PII_CATEGORIES:
+        answer = result[category]
+        if answer.type != "predicate":
+            raise DecisionsRefused(f"no probability for {category}")
+        probabilities[category] = answer.probability
+    return PIIWindowVerdict(
+        categories={c: True for c, p in probabilities.items() if p >= PII_FLAG_THRESHOLD},
+        probabilities=probabilities, pathway=result.pathway, source="decisions",
+    )
+
+
+def _scan_pii_categories_legacy(
+    document_text: str,
+    user_id: int | None,
+    org_id: int | None,
+    *,
+    context=None,
+    log_metadata: dict | None = None,
+) -> dict[str, bool]:
+    """The legacy structured classifier over an already-truncated text."""
     from core.preferences import org_feature_reasoning_params, resolve_org_feature_model
     from llm import get_llm_service
     from llm.types import ChatRequest, Message, RunContext
     from llm.types.structured import PIICategoryOutput
 
-    if not text.strip():
-        return {}
-
-    from documents.services.description import _prepare_document_text
-
-    document_text = _prepare_document_text(text)
     model = resolve_org_feature_model(org_id, "pii_scan")
-
-    context = RunContext.create(user_id=user_id)
+    params = org_feature_reasoning_params(org_id, "pii_scan", model)
+    if log_metadata:
+        params = {**(params or {}), "_log_metadata": dict(log_metadata)}
     request = ChatRequest(
         messages=[
             Message(role="system", content=_PII_SYSTEM_PROMPT),
@@ -293,24 +325,67 @@ def scan_pii_categories(
         model=model,
         stream=False,
         tools=[],
-        context=context,
-        params=org_feature_reasoning_params(org_id, "pii_scan", model),
+        context=context or RunContext.create(user_id=user_id),
+        params=params,
     )
 
     service = get_llm_service()
     parsed, usage = service.run_structured(request, PIICategoryOutput)
+    return {category: True for category in PII_CATEGORIES if getattr(parsed, category, False)}
 
-    result = {}
-    for category in PII_CATEGORIES:
-        if getattr(parsed, category, False):
-            result[category] = True
 
-    logger.info(
-        "scan_pii_categories: user_id=%s detected=%s",
-        user_id,
-        list(result.keys()),
+def scan_pii_window(
+    text: str,
+    user_id: int | None = None,
+    data_room_id: int | None = None,
+    org_id: int | None = None,
+) -> PIIWindowVerdict:
+    """Classify one window into GDPR PII categories: the Decisions service (ten
+    predicates, present at probability ≥ 0.5), or the legacy structured classifier
+    when Decisions fails (``llm.service.decisions_fallback``)."""
+    from llm.service.decisions_fallback import decide_with_fallback
+    from llm.types import RunContext
+
+    if not text.strip():
+        return PIIWindowVerdict(source="empty")
+
+    from documents.services.description import _prepare_document_text
+
+    context = RunContext.create(user_id=user_id)
+
+    def legacy(meta: dict) -> PIIWindowVerdict:
+        categories = _scan_pii_categories_legacy(
+            _prepare_document_text(text), user_id, org_id, context=context, log_metadata=meta,
+        )
+        return PIIWindowVerdict(
+            categories=categories, source="legacy", decide_error=str(meta.get("decide_error") or ""),
+        )
+
+    verdict = decide_with_fallback(
+        build_pii_questions(), build_pii_input(text),
+        feature_key="pii_scan", org_id=org_id, context=context,
+        prompt_cache_key="decisions:pii_scan",
+        interpret=_interpret_pii_result, fallback=legacy, service=_get_decisions_service(),
     )
-    return result
+    logger.info(
+        "scan_pii_window: user_id=%s source=%s detected=%s",
+        user_id, verdict.source, list(verdict.categories),
+    )
+    return verdict
+
+
+def scan_pii_categories(
+    text: str,
+    user_id: int | None = None,
+    data_room_id: int | None = None,
+    org_id: int | None = None,
+) -> dict[str, bool]:
+    """Classify document text into GDPR PII categories.
+
+    Returns a dict of only the categories detected as ``True`` (``scan_pii_window``'s
+    categories; kept for the skill PII scan and ``backfill_pii_tags``).
+    """
+    return scan_pii_window(text, user_id=user_id, data_room_id=data_room_id, org_id=org_id).categories
 
 
 @dataclass(frozen=True)
@@ -478,11 +553,11 @@ def _scan_window(
     if not window:
         return
     window_text = pii_window_text(window)
-    result = scan_pii_categories(
+    verdict = scan_pii_window(
         window_text, user_id=user_id, data_room_id=data_room_id, org_id=org_id,
     )
     candidates = []
-    for category, present in result.items():
+    for category, present in verdict.categories.items():
         if not present:
             continue
         if category in GATED_CATEGORIES:
