@@ -47,19 +47,47 @@ def active_deck_for_prompt(thread_id):
     deck)`` — the per-turn preamble shows the active deck's outline (never its
     JSON); the list lets the model know what decks it can switch between with
     slide_canvas_activate. The active deck's entry also carries its ``outline``
-    (:func:`deck_outline`), computed here because the prompt is rendered on the
-    event loop, where the comment query can't run."""
+    (:func:`deck_outline`) and ``tokens`` (:func:`deck_token_count`), computed
+    here because the prompt is rendered on the event loop, where the comment
+    query can't run and tokenising a whole deck doesn't belong.
+
+    Only the active deck's JSON is loaded (once, by :func:`get_active_deck`); the
+    others are listed from ``slide_count``."""
     active = get_active_deck(thread_id)
     decks = []
-    for d in (
+    rows = (
         SlideSet.objects.filter(thread_id=thread_id, deleted_at__isnull=True)
-        .order_by("created_at").only("title", "is_active", "content", "agent_seen")
-    ):
-        entry = {"title": d.title, "active": d.is_active, "slides": len((d.content or {}).get("slides") or [])}
-        if active is not None and d.pk == active.pk:
+        .order_by("created_at").values("pk", "title", "is_active", "slide_count")
+    )
+    for row in rows:
+        is_active_deck = active is not None and row["pk"] == active.pk
+        slides = SlideSet.count_slides(active.content) if is_active_deck else row["slide_count"]
+        if slides is None:
+            # Written before the column existed: count once and store it.
+            content = SlideSet.objects.filter(pk=row["pk"]).values_list("content", flat=True).first()
+            slides = SlideSet.count_slides(content)
+            SlideSet.objects.filter(pk=row["pk"], slide_count__isnull=True).update(slide_count=slides)
+        entry = {"title": row["title"], "active": row["is_active"], "slides": slides}
+        if is_active_deck:
             entry["outline"] = deck_outline(active)
+            entry["tokens"] = deck_token_count(active)
         decks.append(entry)
     return active, decks
+
+
+def deck_token_count(deck) -> int:
+    """Tokens of the deck's canonical JSON, cached on the row and keyed by the
+    content's sha (the ChatCanvas pattern, chat.services.canvas_prompt_entry): a
+    recount happens only when the content changed, whoever wrote it."""
+    from core.tokens import count_tokens
+
+    text = schema.canonical_deck_text(deck.content or {})
+    sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    if deck.token_count is None or deck.content_sha != sha:
+        deck.token_count = count_tokens(text)
+        deck.content_sha = sha
+        SlideSet.objects.filter(pk=deck.pk).update(content_sha=sha, token_count=deck.token_count)
+    return deck.token_count
 
 
 def live_deck_titles(thread_id) -> list[str]:

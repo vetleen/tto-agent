@@ -546,6 +546,15 @@ class SlideSet(models.Model):
     # record_agent_slide_view); drives the outline's "changed since you read it"
     # and unaddressed-comment flags. The deck sibling of ChatCanvas.agent_seen_sha.
     agent_seen = models.JSONField(default=dict, blank=True)
+    # Number of slides in ``content``, kept by save() so the per-turn deck list
+    # never loads the decks' JSON to count them. None = written before the column
+    # (or by an old dyno during a release): active_deck_for_prompt heals it.
+    slide_count = models.PositiveSmallIntegerField(null=True, blank=True)
+    # Token count of the canonical deck JSON as of ``content_sha`` — the sha-keyed
+    # cache ChatCanvas has, so no write path has to invalidate it
+    # (chat.slides.service.deck_token_count).
+    content_sha = models.CharField(max_length=64, blank=True, default="", db_default="")
+    token_count = models.PositiveIntegerField(null=True, blank=True)
     deleted_at = models.DateTimeField(null=True, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -566,6 +575,20 @@ class SlideSet(models.Model):
 
     def __str__(self):
         return f"SlideSet for thread {self.thread_id}: {self.title}"
+
+    @staticmethod
+    def count_slides(content) -> int:
+        slides = content.get("slides") if isinstance(content, dict) else None
+        return len(slides) if isinstance(slides, list) else 0
+
+    def save(self, *args, **kwargs):
+        # Every content write goes through save()/create(); keep slide_count with it.
+        update_fields = kwargs.get("update_fields")
+        if update_fields is None or "content" in update_fields:
+            self.slide_count = self.count_slides(self.content)
+            if update_fields is not None:
+                kwargs["update_fields"] = [*update_fields, "slide_count"]
+        super().save(*args, **kwargs)
 
 
 class SlideSetCheckpoint(models.Model):

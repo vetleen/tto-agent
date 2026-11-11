@@ -2,7 +2,7 @@
 
 import uuid
 from types import SimpleNamespace
-from unittest.mock import MagicMock, PropertyMock
+from unittest.mock import MagicMock, PropertyMock, patch
 
 from django.conf import settings
 from django.test import TestCase
@@ -893,6 +893,22 @@ class BuildDynamicContextTests(TestCase):
         self.assertIn("slides_read", section)
         self.assertNotIn("```json", section)
         self.assertNotIn('"elements"', section)
+
+    def test_deck_section_uses_the_precomputed_token_count(self):
+        """The section is rendered on the event loop several times a turn: with the
+        entry's ``tokens`` it never tokenises the deck."""
+        from chat.prompts import render_active_deck_section
+
+        class FakeDeck:
+            title = "Q3"
+            content = {"version": 1, "size": {"w": 960, "h": 540}, "slides": []}
+
+        with patch("core.tokens.count_tokens") as counter:
+            section = render_active_deck_section(
+                FakeDeck(), [{"title": "Q3", "active": True, "slides": 0, "outline": [], "tokens": 12345}],
+            )
+        counter.assert_not_called()
+        self.assertIn("(0 slides, ~12,345 tokens of JSON)", section)
 
     def test_deck_section_computes_the_outline_without_one(self):
         """Sync callers without a precomputed outline get one from the deck itself

@@ -189,6 +189,68 @@ class SlideServiceTests(TestCase):
         self.assertNotEqual(before, after_delete)
         self.assertEqual(set(deck.agent_seen), {"s1", "s2"})
 
+    # -- per-turn prompt entry ---------------------------------------------------
+    def test_slide_count_follows_every_content_write(self):
+        count = lambda: SlideSet.objects.get(pk=self.deck.pk).slide_count  # noqa: E731
+        self.assertEqual(count(), 3)  # create
+        service.insert_slide(self.deck.pk, _text_slide("Four"))
+        self.assertEqual(count(), 4)
+        service.delete_slides(self.deck.pk, ["s1", "s2"])
+        self.assertEqual(count(), 2)
+        content = {"version": 1, "size": {"w": 960, "h": 540}, "slides": [_text_slide("Only")]}
+        schema.mint_ids(content)
+        service.write_deck(self.thread.id, title="Deck", content=content)  # full rewrite
+        self.assertEqual(count(), 1)
+        self.deck.refresh_from_db()
+        service.activate_deck(self.thread.id, self.deck)  # not a content write
+        self.assertEqual(count(), 1)
+
+    def test_prompt_entry_lists_other_decks_without_loading_their_json(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        other, _c, _o = service.write_deck(
+            self.thread.id, title="Other",
+            content={"version": 1, "size": {"w": 960, "h": 540}, "slides": [_text_slide("A"), _text_slide("B")]},
+        )
+        service.activate_deck(self.thread.id, self.deck)
+        with CaptureQueriesContext(connection) as queries:
+            active, decks = service.active_deck_for_prompt(self.thread.id)
+        self.assertEqual(active.pk, self.deck.pk)
+        self.assertEqual([(d["title"], d["active"], d["slides"]) for d in decks],
+                         [("Deck", True, 3), ("Other", False, 2)])
+        self.assertEqual(len(decks[0]["outline"]), 3)
+        self.assertNotIn("outline", decks[1])
+        content_selects = [
+            q["sql"] for q in queries
+            if q["sql"].lstrip().upper().startswith("SELECT") and '"chat_slideset"."content"' in q["sql"]
+        ]
+        self.assertEqual(len(content_selects), 1, content_selects)  # the active deck, once
+
+    def test_prompt_entry_heals_a_missing_slide_count(self):
+        SlideSet.objects.filter(pk=self.deck.pk).update(slide_count=None, is_active=False)
+        _active, decks = service.active_deck_for_prompt(self.thread.id)
+        self.assertEqual(decks[0]["slides"], 3)
+        self.assertEqual(SlideSet.objects.get(pk=self.deck.pk).slide_count, 3)
+
+    def test_token_count_is_cached_until_the_content_changes(self):
+        from unittest import mock
+
+        from core.tokens import count_tokens
+
+        service.activate_deck(self.thread.id, self.deck)
+        _a, decks = service.active_deck_for_prompt(self.thread.id)
+        self.deck.refresh_from_db()
+        expected = count_tokens(schema.canonical_deck_text(self.deck.content))
+        self.assertEqual((decks[0]["tokens"], self.deck.token_count), (expected, expected))
+        with mock.patch("core.tokens.count_tokens") as counter:
+            _a, again = service.active_deck_for_prompt(self.thread.id)
+        counter.assert_not_called()
+        self.assertEqual(again[0]["tokens"], expected)
+        service.insert_slide(self.deck.pk, _text_slide("Four", body="more text " * 50))
+        _a, changed = service.active_deck_for_prompt(self.thread.id)
+        self.assertGreater(changed[0]["tokens"], expected)
+
     def test_compact_outline(self):
         lines = service.compact_outline(self.deck.content)
         self.assertEqual(lines[0], '1. s1 custom "One"')

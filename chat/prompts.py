@@ -784,23 +784,28 @@ def render_active_deck_section(active_slide_set, slide_decks: list[dict] | None 
     the thread's deck inventory (when it has several), the resolved theme, and
     the slide OUTLINE — one line per slide (number, id, layout, title, "changed
     since you last read it"), plus the sent comments the agent hasn't acted on.
-    ``""`` without a deck. The outline comes from the active deck's
-    ``slide_decks`` entry (see chat.slides.service.active_deck_for_prompt), else
-    it is computed here (sync callers)."""
+    ``""`` without a deck. The outline and the token count come from the active
+    deck's ``slide_decks`` entry (see chat.slides.service.active_deck_for_prompt:
+    this runs on the event loop, several times a turn), else they are computed
+    here (sync callers)."""
     if not active_slide_set:
         return ""
-    from core.tokens import count_tokens
-    from chat.slides.schema import canonical_deck_text
     from chat.slides.theme import resolve_theme
 
     content = active_slide_set.content or {}
-    outline = next((d.get("outline") for d in slide_decks or [] if d.get("outline") is not None), None)
+    entry = next((d for d in slide_decks or [] if d.get("outline") is not None), None) or {}
+    outline = entry.get("outline")
     if outline is None:
         from chat.slides.service import deck_outline
 
         outline = deck_outline(active_slide_set)
     n = len(outline)
-    tokens = count_tokens(canonical_deck_text(content))
+    tokens = entry.get("tokens")
+    if tokens is None:
+        from core.tokens import count_tokens
+        from chat.slides.schema import canonical_deck_text
+
+        tokens = count_tokens(canonical_deck_text(content))
     section = (
         f'# Active Slide Deck: "{active_slide_set.title}" '
         f'({n} slide{"" if n == 1 else "s"}, ~{tokens:,} tokens of JSON)\n'
