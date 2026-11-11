@@ -322,6 +322,96 @@ def _search_core(
     return {"query": query, "results": results, "count": len(results)}
 
 
+# Brave LLM Context timeout: one search + server-side extraction (their docs
+# suggest a 30 s client timeout; typical responses are ~1 s).
+_LLM_CONTEXT_TIMEOUT_SECONDS = 20
+
+
+def _context_age(source: dict | None) -> str:
+    """Readable age from a ``sources[url].age`` array.
+
+    Brave returns ``[full date, YYYY-MM-DD, relative age, ISO timestamp]`` (empty
+    when the page has no known date). Prefer the relative age, like ``web_search``.
+    """
+    age = (source or {}).get("age") or []
+    if isinstance(age, str):
+        return age
+    if not isinstance(age, list):
+        return ""
+    for idx in (2, 1, 0):
+        if len(age) > idx and isinstance(age[idx], str) and age[idx].strip():
+            return age[idx].strip()
+    return ""
+
+
+def _llm_context_core(
+    query: str,
+    *,
+    max_urls: int,
+    max_tokens: int,
+    freshness: str = "",
+    context=None,
+) -> dict:
+    """Run a Brave LLM Context search and return a result dict (no formatting).
+
+    One call returns query-relevant extracts ("snippets") from the top pages,
+    sized to ``max_tokens`` (Brave's approximate tokens). Returns
+    ``{"query", "results": [...], "count"}`` on success or
+    ``{"error": "...", "results": []}``. Each result item:
+    ``{title, url, age, snippets: [str, ...]}``.
+    """
+    from llm.tools._text_cleaning import normalize_text
+
+    params: dict = {
+        "q": query,
+        "maximum_number_of_urls": max_urls,
+        "maximum_number_of_tokens": max_tokens,
+    }
+    if freshness:
+        params["freshness"] = freshness
+
+    data = _brave_get_json(
+        _LLM_CONTEXT_URL,
+        params,
+        context=context,
+        timeout=_LLM_CONTEXT_TIMEOUT_SECONDS,
+        query=query,
+    )
+    if "error" in data:
+        return {"error": data["error"], "results": []}
+
+    sources = data.get("sources") or {}
+    results = []
+    for item in (data.get("grounding") or {}).get("generic") or []:
+        url = item.get("url", "")
+        snippets = []
+        for s in item.get("snippets") or []:
+            if not isinstance(s, str):
+                # Tables/schemas can arrive structured; keep them as JSON text.
+                s = json.dumps(s, ensure_ascii=False)
+            s = normalize_text(s).strip()
+            if s:
+                snippets.append(s)
+        if not snippets:
+            continue
+        source = sources.get(url) if isinstance(sources, dict) else None
+        results.append({
+            "title": _clean_field(item.get("title") or (source or {}).get("title") or ""),
+            "url": url,
+            "age": _context_age(source),
+            "snippets": snippets,
+        })
+
+    from guardrails.web_content import scan_web_content_from_tool
+
+    combined = "\n".join(
+        " ".join([r["title"]] + r["snippets"]) for r in results
+    )
+    scan_web_content_from_tool(combined, context, source_label="brave_llm_context")
+
+    return {"query": query, "results": results, "count": len(results)}
+
+
 def _format_search_results(data: dict) -> str:
     """Format a _search_core result dict as markdown for the LLM."""
     from llm.tools._text_cleaning import (

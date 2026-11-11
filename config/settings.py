@@ -967,6 +967,10 @@ LLM_DEFAULT_MEDIUM_MODEL = os.environ.get("LLM_DEFAULT_MEDIUM_MODEL") or os.envi
 LLM_DEFAULT_CHEAP_MODEL = os.environ.get("LLM_DEFAULT_CHEAP_MODEL", "")
 LLM_ENABLE_THINKING = os.environ.get("LLM_ENABLE_THINKING", "true").lower() in ("true", "1", "yes")
 BRAVE_SEARCH_API_KEY = os.environ.get("BRAVE_SEARCH_API_KEY", "")
+# web_search_read backend: "llm_context" = Brave LLM Context (query-relevant page
+# extracts in one call); "fetch" = the old path (Brave web search + fetch each
+# result page ourselves). Rollback switch — see llm/tools/web_search_and_read.py.
+WEB_SEARCH_READ_BACKEND = os.environ.get("WEB_SEARCH_READ_BACKEND", "llm_context").strip().lower() or "llm_context"
 JINA_API_KEY = os.environ.get("JINA_API_KEY", "")
 
 # EPO Open Patent Services (OPS) — patent search tools. A single shared Wilfred
