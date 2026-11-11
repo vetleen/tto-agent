@@ -1107,6 +1107,12 @@ class RestoreDeckToolTests(TestCase):
         self.assertEqual(r["active_deck"], "Keep")
         self.assertEqual(r["undo"], "slides_restore_deck(deck_name='Gone')")
 
+    def test_delete_of_an_inactive_deck_reports_the_deck_still_active(self):
+        """Smoke test 2026-11-11: deleting a non-active deck reported null."""
+        self._run(CreateDeckTool(), title="Old", layouts=["title"])
+        self._run(CreateDeckTool(), title="Current")  # active
+        self.assertEqual(self._delete("Old")["active_deck"], "Current")
+
     def test_delete_of_the_last_deck_reports_no_active_deck(self):
         self._run(CreateDeckTool(), title="Only")
         self.assertIsNone(self._delete("Only")["active_deck"])

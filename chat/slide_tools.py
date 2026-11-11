@@ -1061,14 +1061,17 @@ class DeleteDeckTool(ContextAwareTool):
             return json.dumps({"status": "error", "message": "deck_name is required: the exact title of the deck to delete."})
         title = deck.title
         slide_count = len((deck.content or {}).get("slides") or [])
-        promoted = service.soft_delete_deck(thread_id, deck)
+        service.soft_delete_deck(thread_id, deck)
+        # The deck the "no deck_name" tools now target: the one promoted in its
+        # place, or the one that was already active when this one wasn't.
+        active = service.get_active_deck(thread_id)
         return json.dumps({
             "status": "ok", "deck_id": str(deck.pk), "deck_title": title,
             # What was lost and what the "no deck_name" tools now target, so a
             # delete of the wrong deck is noticed (2026-11-11 prod: the agent
             # deleted its finished 14-slide deck as a stale duplicate).
             "slide_count": slide_count,
-            "active_deck": promoted.title if promoted else None,
+            "active_deck": active.title if active else None,
             "undo": f"slides_restore_deck(deck_name={title!r})",
         }, ensure_ascii=False)
 
