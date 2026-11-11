@@ -18,7 +18,7 @@ class SlidesUpdatedToolsMembershipTests(SimpleTestCase):
         from chat.consumers import SLIDES_UPDATED_TOOLS
 
         for name in ("slides_create_deck", "slide_canvas_write", "slide_canvas_edit", "slides_add_slide",
-                     "skill_resource_load"):
+                     "slides_set_theme", "skill_resource_load"):
             self.assertIn(name, SLIDES_UPDATED_TOOLS)
 
     def test_skill_resource_load_still_refreshes_canvases(self):

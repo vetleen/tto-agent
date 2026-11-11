@@ -1019,7 +1019,7 @@ class SetThemeTool(ContextAwareTool):
         res = {
             "status": "ok", "applied": chosen["label"], "theme_id": chosen["id"],
             "deck_id": str(deck.pk), "title": deck.title,
-            "slide_ids": slide_ids, "changed_slide_ids": slide_ids,
+            "slide_ids": slide_ids, "changed_slide_ids": slide_ids, "slide_count": len(slide_ids),
         }
         if chosen.get("logo_ext"):
             res["note"] = ("This theme has a logo — place it where it fits (e.g. the cover) "
