@@ -116,9 +116,55 @@ class SlideToolTests(TestCase):
 
     def test_write_can_rename(self):
         self._run(CreateDeckTool(), title="Deck A")
-        r = self._run(WriteDeckTool(), title="Deck B", content_json=_deck_json())
+        r = self._run(WriteDeckTool(), rename_to="Deck B", content_json=_deck_json())
         self.assertEqual(r["status"], "ok")
         self.assertEqual(r["title"], "Deck B")
+        self.assertEqual(r["renamed_from"], "Deck A")
+
+    def test_write_without_rename_keeps_title_and_says_nothing(self):
+        self._run(CreateDeckTool(), title="Deck A")
+        r = self._run(WriteDeckTool(), content_json=_deck_json())
+        self.assertEqual(r["title"], "Deck A")
+        self.assertNotIn("renamed_from", r)
+
+    def test_legacy_title_arg_does_not_rename(self):
+        """2026-11-11 prod: `title` silently renamed the target deck. An old call
+        replaying it writes the content and keeps the name."""
+        self._run(CreateDeckTool(), title="Deck A")
+        r = self._run(WriteDeckTool(), title="Deck B", content_json=_deck_json())
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(r["title"], "Deck A")
+        self.assertNotIn("title", WriteDeckTool().args_schema.model_fields)
+
+    def test_rename_onto_another_decks_title_is_refused_and_writes_nothing(self):
+        self._run(CreateDeckTool(), title="Deck A", layouts=["title"])
+        self._run(CreateDeckTool(), title="Deck B", layouts=["bullets"])  # now active
+        before = SlideSet.objects.get(thread=self.thread, title="Deck B")
+        r = self._run(WriteDeckTool(), rename_to="Deck A", content_json=_deck_json())
+        self.assertEqual(r["status"], "error")
+        self.assertIn("already exists", r["message"])
+        self.assertIn("deck_name='Deck A'", r["message"])
+        self.assertEqual(sorted(r["available_decks"]), ["Deck A", "Deck B"])
+        after = SlideSet.objects.get(pk=before.pk)
+        self.assertEqual(after.title, "Deck B")
+        self.assertEqual(after.content, before.content)
+        self.assertEqual(after.checkpoints.count(), before.checkpoints.count())
+
+    def test_rename_collision_in_a_race_is_still_structured(self):
+        """The unique constraint catches a title taken between check and save."""
+        from django.db import IntegrityError
+
+        self._run(CreateDeckTool(), title="Deck A")
+        with mock.patch("chat.slides.service.create_deck_checkpoint", side_effect=IntegrityError("dup")):
+            r = self._run(WriteDeckTool(), rename_to="Deck Z", content_json=_deck_json())
+        self.assertEqual(r["status"], "error")
+        self.assertIn("'Deck Z' already exists", r["message"])
+        self.assertEqual(SlideSet.objects.get(thread=self.thread).title, "Deck A")
+
+    def test_write_runs_first_only_when_renaming(self):
+        self.assertTrue(WriteDeckTool().runs_first({"rename_to": "New"}))
+        self.assertFalse(WriteDeckTool().runs_first({"rename_to": "  "}))
+        self.assertFalse(WriteDeckTool().runs_first({"content": {}}))
 
     def test_write_without_deck_errors(self):
         """Creation moved to slides_create_deck — a rewrite with no deck must point there."""

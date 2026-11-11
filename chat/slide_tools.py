@@ -131,13 +131,16 @@ class WriteDeckInput(ReasonBaseModel):
             "comments by id); leave ids off anything new and they are minted."
         ),
     )
-    title: str = Field(
-        default="",
-        description="Rename the deck. Empty = keep the deck's current title.",
-    )
     deck_name: str = Field(
         default="",
         description="Title of the deck to rewrite. Empty = the active deck.",
+    )
+    rename_to: str = Field(
+        default="",
+        description=(
+            "New title for the deck. Empty (the default) = keep its title. Only for renaming — "
+            "never needed to write content, and it must not be another deck's title."
+        ),
     )
 
 
@@ -474,9 +477,18 @@ class WriteDeckTool(ContextAwareTool):
             return None
         return drop_args(args, {"content": "the deck JSON"}, SLIDES_READ_WHERE)
 
-    def _run(self, content=None, title: str = "", deck_name: str = "", **kwargs) -> str:
+    def runs_first(self, args: dict) -> bool:
+        # A rename changes the title the batch's other calls target by.
+        return bool(((args or {}).get("rename_to") or "").strip())
+
+    def _run(self, content=None, deck_name: str = "", rename_to: str = "", **kwargs) -> str:
+        # ``title`` was the old rename parameter: it renamed the target deck
+        # silently whenever it differed (2026-11-11 prod: the agent passed another
+        # deck's title, renamed its real deck, then deleted it as "the old one").
+        # An old call replaying it is ignored; renames go through rename_to only.
         from chat.slides import schema, service
 
+        rename_to = (rename_to or "").strip()[:255]
         thread_id = _thread_id(self)
         if not thread_id:
             return json.dumps({"status": "error", "message": "No thread context available."})
@@ -540,16 +552,28 @@ class WriteDeckTool(ContextAwareTool):
             # write_deck checkpoints the result itself, inside the row lock it takes
             # for the overwrite path, so the checkpoint order stays monotonic. Looking
             # the target up by its current title pins the overwrite path; an empty
-            # `title` keeps that name.
+            # `rename_to` keeps that name.
+            old_title = target.title
             obj, created, old = service.write_deck(
-                thread_id, title=(title or target.title), content=deck, deck_name=target.title
+                thread_id, title=(rename_to or old_title), content=deck, deck_name=old_title
             )
+        except service.DeckTitleTaken as exc:
+            return json.dumps({
+                "status": "error",
+                "message": (
+                    f"A deck titled '{exc.title}' already exists in this thread, so '{old_title}' "
+                    "was not renamed and nothing was written. Pick another title for rename_to, or "
+                    f"write to that deck instead with deck_name='{exc.title}'."
+                ),
+                "available_decks": service.live_deck_titles(thread_id),
+            }, ensure_ascii=False)
         except service.DeckLimitError as exc:
             return json.dumps({"status": "error", "message": str(exc)})
 
         service.activate_deck(thread_id, obj)
         service.record_agent_slide_view(obj.pk, deck.get("slides") or [], wrote=True)
-        return json.dumps(_deck_result(obj, None if created else old, deck), ensure_ascii=False)
+        extra = {"renamed_from": old_title} if obj.title != old_title else {}
+        return json.dumps(_deck_result(obj, None if created else old, deck, **extra), ensure_ascii=False)
 
 
 def _resolve_target(tool, deck_name: str = ""):

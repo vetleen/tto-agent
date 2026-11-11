@@ -23,6 +23,17 @@ class DeckLimitError(Exception):
     """Raised when the per-thread deck cap is reached."""
 
 
+class DeckTitleTaken(DeckLimitError):
+    """Raised when renaming a deck to a title another live deck in the thread has.
+
+    A subclass of DeckLimitError so a caller that only handles that one still
+    returns a readable message instead of a raw IntegrityError."""
+
+    def __init__(self, title: str):
+        self.title = title
+        super().__init__(f"A deck titled '{title}' already exists in this thread.")
+
+
 def get_active_deck(thread_id):
     return (
         SlideSet.objects.filter(thread_id=thread_id, is_active=True, deleted_at__isnull=True)
@@ -51,6 +62,15 @@ def active_deck_for_prompt(thread_id):
     return active, decks
 
 
+def live_deck_titles(thread_id) -> list[str]:
+    """Titles of the thread's live (non-deleted) decks, oldest first."""
+    return list(
+        SlideSet.objects.filter(thread_id=thread_id, deleted_at__isnull=True)
+        .order_by("created_at")
+        .values_list("title", flat=True)
+    )
+
+
 def resolve_deck(thread_id, name: str | None = None):
     """Return ``(deck, error)``. ``name`` targets by title; else the active deck."""
     if name:
@@ -58,12 +78,10 @@ def resolve_deck(thread_id, name: str | None = None):
             thread_id=thread_id, title=name, deleted_at__isnull=True
         ).first()
         if deck is None:
-            available = list(
-                SlideSet.objects.filter(thread_id=thread_id, deleted_at__isnull=True)
-                .order_by("created_at")
-                .values_list("title", flat=True)
-            )
-            return None, {"message": f"No deck named '{name}' in this thread.", "available_decks": available}
+            return None, {
+                "message": f"No deck named '{name}' in this thread.",
+                "available_decks": live_deck_titles(thread_id),
+            }
         return deck, None
     return get_active_deck(thread_id), None
 
@@ -161,7 +179,9 @@ def write_deck(thread_id, *, title: str, content: dict, deck_name: str = ""):
     than by the caller so it lands inside the same row lock as the overwrite and its
     ``order`` stays monotonic under concurrent writes.
 
-    Raises :class:`DeckLimitError` when creating past the per-thread cap.
+    Raises :class:`DeckLimitError` when creating past the per-thread cap, and
+    :class:`DeckTitleTaken` when an overwrite would rename the deck to a title
+    another live deck has (the deck is left untouched).
     """
     title = (title or "Untitled deck")[:255]
     lookup = (deck_name or title)[:255]
@@ -170,13 +190,25 @@ def write_deck(thread_id, *, title: str, content: dict, deck_name: str = ""):
         # Re-read under the row lock so ``old`` is the content we actually replace
         # (it feeds changed_slide_ids) and the checkpoint order is serialized. The
         # content itself is last-writer-wins by design — this is a full rewrite.
-        with locked_deck(existing.pk) as locked:
-            deck = locked if locked is not None else existing
-            old = deck.content
-            deck.title = title
-            deck.content = content
-            deck.save(update_fields=["title", "content", "updated_at"])
-            create_deck_checkpoint(deck, source="ai_edit", description="Full rewrite")
+        if title != existing.title and SlideSet.objects.filter(
+            thread_id=thread_id, title=title, deleted_at__isnull=True,
+        ).exclude(pk=existing.pk).exists():
+            raise DeckTitleTaken(title)
+        try:
+            with locked_deck(existing.pk) as locked:
+                deck = locked if locked is not None else existing
+                old = deck.content
+                deck.title = title
+                deck.content = content
+                deck.save(update_fields=["title", "content", "updated_at"])
+                create_deck_checkpoint(deck, source="ai_edit", description="Full rewrite")
+        except IntegrityError:
+            # Another deck took the title between the check and the save (the
+            # partial unique (thread, title) constraint); the atomic block rolled
+            # the overwrite back.
+            if title != existing.title:
+                raise DeckTitleTaken(title) from None
+            raise
         return deck, False, old
 
     deck = SlideSet.objects.filter(
