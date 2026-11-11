@@ -775,6 +775,17 @@ class ReadSlidesTool(ContextAwareTool):
             first = max(1, start or 1)
             last = min(total, end or total)
             wanted = list(range(first - 1, last))
+            if not wanted and total:
+                # A stale next_start, or a range from before slides were deleted:
+                # an empty "ok" reads as "those slides are blank or gone".
+                return json.dumps({
+                    "status": "error",
+                    "message": (
+                        f"No slides in that range: the deck has {total} slide(s) and you asked for "
+                        f"{first}–{end or total}. Pick slide numbers from the outline."
+                    ),
+                    "slide_count": total, "outline": service.compact_outline(content),
+                }, ensure_ascii=False)
 
         cap = canvas_read_token_cap(getattr(self.context, "max_context_tokens", None))
         used = 0
@@ -797,6 +808,8 @@ class ReadSlidesTool(ContextAwareTool):
             result["deck_settings"] = schema.canonical_deck_text(service.deck_settings(content))
         if unknown:
             result["unknown_slide_ids"] = unknown
+        if not total:
+            result["note"] = "This deck has no slides yet."
         if cut_at is not None:
             rest = wanted[cut_at:]
             if slide_ids:

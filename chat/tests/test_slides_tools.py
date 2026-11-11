@@ -435,6 +435,28 @@ class SlideToolTests(TestCase):
         self.assertNotIn("next_start", r)
         self.assertEqual(ReadSlidesTool().end_label_for_result(r), "Read slides 2–4")
 
+    def test_read_range_outside_the_deck_is_an_error_with_the_outline(self):
+        from chat.slide_tools import ReadSlidesTool
+
+        self._run(CreateDeckTool(), title="Deck A", layouts=["title", "bullets"])
+        for kwargs in ({"start": 5}, {"start": 2, "end": 1}):
+            with self.subTest(**kwargs):
+                r = self._run(ReadSlidesTool(), **kwargs)
+                self.assertEqual(r["status"], "error")
+                self.assertEqual(r["slide_count"], 2)
+                self.assertEqual(r["outline"], ['1. s1 title "Title"', '2. s2 bullets "Bullets"'])
+                self.assertIn("2 slide(s)", r["message"])
+        # Deck settings alongside an out-of-range start: still the error, not a silent empty read.
+        self.assertEqual(self._run(ReadSlidesTool(), start=9, deck_settings=True)["status"], "error")
+
+    def test_read_an_empty_deck_says_so(self):
+        from chat.slide_tools import ReadSlidesTool
+
+        self._run(CreateDeckTool(), title="Scratch")
+        r = self._run(ReadSlidesTool())
+        self.assertEqual((r["status"], r["slides"]), ("ok", []))
+        self.assertIn("no slides", r["note"])
+
     def test_read_pages_at_the_token_cap(self):
         from chat.slide_tools import ReadSlidesTool
 
