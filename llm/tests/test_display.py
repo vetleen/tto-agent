@@ -268,7 +268,10 @@ class ModelWarningTests(SimpleTestCase):
     def test_carbon_carries_its_slowness_warning(self):
         warning = get_model_warning("gemini/gemini-4-carbon")
         self.assertEqual(warning["summary"], "Gemini 4 Carbon can be slow")
-        self.assertIn("15 minutes", warning["detail"])
+        self.assertEqual(
+            warning["detail"],
+            get_model_warning("gemini/gemini-4-argon")["detail"].replace("Argon", "Carbon"),
+        )
         self.assertEqual(warning["icon"], "clock")
 
     def test_detail_is_optional(self):

@@ -363,11 +363,10 @@ _MODELS: dict[str, ModelInfo] = {
         warning=ModelWarning(
             summary="Gemini 4 Carbon can be slow",
             detail=(
-                "Gemini 4 Carbon is Google's most thorough model and thinks longer "
-                "than Gemini 4 Argon before it answers. Large requests can take "
-                "several minutes, so we allow up to 15 minutes before timing out. "
-                "If you find yourself waiting too long, consider switching to "
-                "Gemini 4 Argon or another model."
+                "Gemini 4 Carbon has sometimes been very slow to reply in Wilfred. Large "
+                "requests regularly take 5–10 minutes, so we allow up to 10 minutes "
+                "before timing out. If you find yourself waiting too long, or it times "
+                "out repeatedly, consider switching to another model."
             ),
             icon="clock",
         ),
