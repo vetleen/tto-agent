@@ -14,7 +14,7 @@ from chat.models import ChatThread, SlideSet, SlideRenderRun
 from chat.slides.schema import canonical_deck_text
 from chat.slide_tools import (
     ActivateDeckTool, AddSlideTool, CreateDeckTool, DeleteDeckTool, EditDeckTool,
-    ListThemesTool, PreviewSlidesTool, SetThemeTool, WriteDeckTool,
+    ListThemesTool, PreviewSlidesTool, RestoreDeckTool, SetThemeTool, WriteDeckTool,
 )
 from llm.types.context import RunContext
 
@@ -1086,3 +1086,92 @@ class RunsFirstTests(TestCase):
         self.assertTrue(tool.runs_first({"target": "deck"}))
         self.assertFalse(tool.runs_first({"target": "canvas"}))
         self.assertFalse(tool.runs_first({}))
+
+
+class RestoreDeckToolTests(TestCase):
+    """slides_restore_deck: the agent's way back from a mistaken delete
+    (2026-11-11 prod: it deleted its finished 14-slide deck as a duplicate)."""
+
+    setUp = SlideToolTests.setUp
+    _run = SlideToolTests._run
+
+    def _delete(self, title):
+        return self._run(DeleteDeckTool(), deck_name=title)
+
+    def test_delete_result_says_what_was_lost_and_how_to_undo(self):
+        self._run(CreateDeckTool(), title="Keep", layouts=["title"])
+        self._run(CreateDeckTool(), title="Gone", layouts=["title", "bullets"])  # active
+        r = self._delete("Gone")
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(r["slide_count"], 2)
+        self.assertEqual(r["active_deck"], "Keep")
+        self.assertEqual(r["undo"], "slides_restore_deck(deck_name='Gone')")
+
+    def test_delete_of_the_last_deck_reports_no_active_deck(self):
+        self._run(CreateDeckTool(), title="Only")
+        self.assertIsNone(self._delete("Only")["active_deck"])
+
+    def test_list_deleted_decks_newest_first(self):
+        self._run(CreateDeckTool(), title="A", layouts=["title"])
+        self._run(CreateDeckTool(), title="B", layouts=["title", "bullets"])
+        self._delete("A")
+        self._delete("B")
+        r = self._run(RestoreDeckTool())
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual([d["title"] for d in r["deleted_decks"]], ["B", "A"])
+        self.assertEqual(r["deleted_decks"][0]["slide_count"], 2)
+
+    def test_list_when_nothing_was_deleted(self):
+        r = self._run(RestoreDeckTool())
+        self.assertEqual(r["deleted_decks"], [])
+        self.assertIn("No deleted decks", r["message"])
+
+    def test_restore_brings_back_content_ids_and_makes_it_active(self):
+        created = self._run(CreateDeckTool(), title="Deck A", layouts=["title", "bullets"])
+        self._run(CreateDeckTool(), title="Deck B")
+        before = SlideSet.objects.get(pk=created["deck_id"]).content
+        self._delete("Deck A")
+        r = self._run(RestoreDeckTool(), deck_name="Deck A")
+        self.assertEqual(r["status"], "ok")
+        self.assertTrue(r["restored"])
+        self.assertEqual(r["deck_id"], created["deck_id"])
+        self.assertEqual(r["slide_ids"], ["s1", "s2"])
+        self.assertEqual(r["changed_slide_ids"], [])
+        self.assertNotIn("renamed_to", r)
+        deck = SlideSet.objects.get(pk=created["deck_id"])
+        self.assertIsNone(deck.deleted_at)
+        self.assertTrue(deck.is_active)
+        self.assertEqual(deck.content, before)
+        self.assertFalse(SlideSet.objects.get(thread=self.thread, title="Deck B").is_active)
+
+    def test_restore_when_the_title_was_taken_renames_and_says_so(self):
+        first = self._run(CreateDeckTool(), title="Deck A")
+        self._delete("Deck A")
+        self._run(CreateDeckTool(), title="Deck A")
+        r = self._run(RestoreDeckTool(), deck_name="Deck A")
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(r["deck_id"], first["deck_id"])
+        self.assertEqual(r["renamed_to"], "Deck A (2)")
+        self.assertEqual(r["title"], "Deck A (2)")
+
+    def test_restore_unknown_name_lists_deleted_titles(self):
+        self._run(CreateDeckTool(), title="Deck A")
+        self._delete("Deck A")
+        r = self._run(RestoreDeckTool(), deck_name="Nope")
+        self.assertEqual(r["status"], "error")
+        self.assertEqual(r["deleted_decks"], ["Deck A"])
+
+    def test_restore_at_the_deck_cap_is_refused(self):
+        from chat.slides.schema import MAX_SLIDE_SETS_PER_THREAD
+
+        self._run(CreateDeckTool(), title="Old")
+        self._delete("Old")
+        for i in range(MAX_SLIDE_SETS_PER_THREAD):
+            self._run(CreateDeckTool(), title=f"Deck {i}")
+        r = self._run(RestoreDeckTool(), deck_name="Old")
+        self.assertEqual(r["status"], "error")
+        self.assertIn("maximum", r["message"])
+        self.assertIsNotNone(SlideSet.objects.get(thread=self.thread, title="Old").deleted_at)
+
+    def test_restore_runs_first(self):
+        self.assertTrue(RestoreDeckTool().runs_first({}))

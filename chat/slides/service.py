@@ -591,6 +591,8 @@ def unique_deck_title(thread_id, base: str, *, exclude_pk=None) -> str:
 
 
 def soft_delete_deck(thread_id, deck):
+    """Soft-delete ``deck``; returns the deck promoted to active in its place
+    (or ``None`` when it wasn't active, or no other deck remains)."""
     was_active = deck.is_active
     deck.deleted_at = timezone.now()
     deck.is_active = False
@@ -606,6 +608,16 @@ def soft_delete_deck(thread_id, deck):
         )
         if nxt is not None:
             activate_deck(thread_id, nxt)
+        return nxt
+    return None
+
+
+def deleted_decks(thread_id, *, limit: int = 10):
+    """The thread's soft-deleted decks, most recently deleted first."""
+    return list(
+        SlideSet.objects.filter(thread_id=thread_id, deleted_at__isnull=False)
+        .order_by("-deleted_at")[:limit]
+    )
 
 
 def restore_deck(thread_id, deck):

@@ -4,7 +4,7 @@ A main-agent toolkit that unlocks the slide-deck tools (``slides_create_deck``,
 ``slides_read``, ``slides_write_slide``, ``slide_canvas_edit``, ``slides_add_slide``,
 ``slides_move_slides``, ``slides_delete_slides``, ``slides_duplicate_slide``,
 ``slide_canvas_write``, ``slide_canvas_activate``, ``slide_canvas_delete``,
-``slides_preview_slide``, ``slides_list_themes`` and ``slides_set_theme``; all
+``slides_restore_deck``, ``slides_preview_slide``, ``slides_list_themes`` and ``slides_set_theme``; all
 ``section="skills"``, ``audience="main"``). Off by default per org — enable via
 ``org.preferences["skills"]["slide_deck_tools"]["enabled"] = True``.
 
@@ -63,6 +63,8 @@ It never shows the JSON:
 - **Restructure without rewriting.** `slides_move_slides`, `slides_delete_slides` and
   `slides_duplicate_slide` reorder, remove and copy slides. `slide_canvas_write` replaces the
   whole deck — only for a real rebuild, after reading every slide you keep.
+- **One deck per conversation** unless the user asks for more. Deleted a deck by mistake?
+  `slides_restore_deck` brings it back intact (call it without a name to list deleted decks).
 - **Deck-wide changes go slide by slide** (e.g. renaming a term everywhere): read the slides,
   then edit each one that needs it.
 - When the user refers to "this slide" without saying which, ask which slide (number or title).
@@ -479,6 +481,7 @@ SLIDE_DECK_TOOLS = {
         "slides_duplicate_slide",
         "slide_canvas_write",
         "slide_canvas_delete",
+        "slides_restore_deck",
         "slides_preview_slide",
         "slides_list_themes",
         "slides_set_theme",

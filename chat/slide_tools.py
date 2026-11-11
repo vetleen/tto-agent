@@ -1039,8 +1039,8 @@ class DeleteDeckTool(ContextAwareTool):
     end_label: str = "Deleted deck"
     description: str = (
         "Soft-delete a slide deck from this conversation. Content and history are "
-        "preserved and the user can undo, so this is safe. Provide the exact title. Runs before "
-        "the other calls in the same batch."
+        "preserved, and a mistaken delete can be undone with slides_restore_deck. Provide the "
+        "exact title. Runs before the other calls in the same batch."
     )
     args_schema: type[BaseModel] = DeleteDeckInput
 
@@ -1057,9 +1057,107 @@ class DeleteDeckTool(ContextAwareTool):
         deck, err = service.resolve_deck(thread_id, deck_name)
         if err:
             return json.dumps({"status": "error", **err})
+        if deck is None:
+            return json.dumps({"status": "error", "message": "deck_name is required: the exact title of the deck to delete."})
         title = deck.title
-        service.soft_delete_deck(thread_id, deck)
-        return json.dumps({"status": "ok", "deck_id": str(deck.pk), "deck_title": title})
+        slide_count = len((deck.content or {}).get("slides") or [])
+        promoted = service.soft_delete_deck(thread_id, deck)
+        return json.dumps({
+            "status": "ok", "deck_id": str(deck.pk), "deck_title": title,
+            # What was lost and what the "no deck_name" tools now target, so a
+            # delete of the wrong deck is noticed (2026-11-11 prod: the agent
+            # deleted its finished 14-slide deck as a stale duplicate).
+            "slide_count": slide_count,
+            "active_deck": promoted.title if promoted else None,
+            "undo": f"slides_restore_deck(deck_name={title!r})",
+        }, ensure_ascii=False)
+
+
+class RestoreDeckInput(ReasonBaseModel):
+    deck_name: str = Field(
+        default="",
+        description="Exact title of the deleted deck to restore. Empty = list the deleted decks.",
+    )
+
+
+class RestoreDeckTool(ContextAwareTool):
+    name: str = "slides_restore_deck"
+    audience: str = "main"
+    section: str = "skills"
+    start_label: str = "Restoring deck..."
+    end_label: str = "Restored deck"
+    description: str = (
+        "Bring back a deck deleted with slide_canvas_delete — content, slide ids and history "
+        "intact — and make it the active deck. Call without deck_name to list this "
+        "conversation's deleted decks (newest first, with slide counts). Runs before the other "
+        "calls in the same batch."
+    )
+    args_schema: type[BaseModel] = RestoreDeckInput
+
+    def end_label_for_result(self, result: dict) -> str | None:
+        if result.get("status") == "ok" and result.get("deleted_decks") is not None:
+            return "Listed deleted decks"
+        return None
+
+    def runs_first(self, args: dict) -> bool:
+        return True
+
+    def _run(self, deck_name: str = "", **kwargs) -> str:
+        from chat.models import SlideSet
+        from chat.slides import schema, service
+
+        thread_id = _thread_id(self)
+        if not thread_id:
+            return json.dumps({"status": "error", "message": "No thread context available."})
+
+        deleted = service.deleted_decks(thread_id)
+        listing = [
+            {
+                "title": d.title, "deck_id": str(d.pk),
+                "slide_count": len((d.content or {}).get("slides") or []),
+                "deleted_at": d.deleted_at.isoformat() if d.deleted_at else None,
+            }
+            for d in deleted
+        ]
+        name = (deck_name or "").strip()
+        if not name:
+            return json.dumps({
+                "status": "ok", "deleted_decks": listing,
+                "message": ("Call again with deck_name to restore one." if listing
+                            else "No deleted decks in this conversation."),
+            }, ensure_ascii=False)
+
+        deck = next((d for d in deleted if d.title == name), None)
+        if deck is None:
+            return json.dumps({
+                "status": "error",
+                "message": f"No deleted deck named '{name}' in this conversation.",
+                "deleted_decks": [d["title"] for d in listing],
+            }, ensure_ascii=False)
+
+        live = SlideSet.objects.filter(thread_id=thread_id, deleted_at__isnull=True).count()
+        if live >= schema.MAX_SLIDE_SETS_PER_THREAD:
+            return json.dumps({
+                "status": "error",
+                "message": (
+                    f"This conversation already has the maximum of {schema.MAX_SLIDE_SETS_PER_THREAD} "
+                    "decks. Delete one you no longer need first."
+                ),
+                "available_decks": service.live_deck_titles(thread_id),
+            }, ensure_ascii=False)
+
+        old_title = deck.title
+        service.restore_deck(thread_id, deck)
+        service.activate_deck(thread_id, deck)
+        content = deck.content or {}
+        extra = {"restored": True}
+        if deck.title != old_title:
+            extra["renamed_to"] = deck.title  # a live deck had taken the title meanwhile
+        result = _deck_result(deck, None, content, **extra)
+        # Nothing changed on the slides themselves; the panel reloads the deck
+        # from slidedeck.state (chat/consumers.py), not a re-render.
+        result["changed_slide_ids"] = []
+        return json.dumps(result, ensure_ascii=False)
 
 
 class PreviewSlidesTool(ContextAwareTool):
@@ -1354,6 +1452,7 @@ _registry.register_tool(MoveSlidesTool())
 _registry.register_tool(DeleteSlidesTool())
 _registry.register_tool(DuplicateSlideTool())
 _registry.register_tool(DeleteDeckTool())
+_registry.register_tool(RestoreDeckTool())
 _registry.register_tool(PreviewSlidesTool())
 _registry.register_tool(ListThemesTool())
 _registry.register_tool(SetThemeTool())

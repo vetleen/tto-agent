@@ -439,6 +439,45 @@ class SlidesOpenOwnershipTests(TransactionTestCase):
         self.assertNotIn("slides", sent[0])
 
 
+class RestoredDeckEventTests(TransactionTestCase):
+    """A slides_restore_deck result switches the panel with the same
+    slidedeck.state the UI's own restore sends (ChatConsumer._restored_deck_event)."""
+
+    def setUp(self):
+        from chat.models import ChatThread, SlideSet
+
+        User = get_user_model()
+        self.owner = User.objects.create_user(email=f"rs+{uuid.uuid4().hex[:6]}@ex.com", password="x")
+        self.thread = ChatThread.objects.create(created_by=self.owner, title="t")
+        self.deck = SlideSet.objects.create(
+            thread=self.thread, title="Back Again", is_active=True,
+            content={"version": 1, "size": {"w": 960, "h": 540},
+                     "slides": [{"id": "s1", "name": "One", "elements": []}]},
+        )
+
+    def _event(self, user, result):
+        from chat.consumers import ChatConsumer
+
+        consumer = ChatConsumer()
+        consumer.user = user
+        return consumer._restored_deck_event(str(self.thread.pk), result)
+
+    def test_restore_result_becomes_slidedeck_state(self):
+        ev = self._event(self.owner, {"status": "ok", "restored": True, "deck_id": str(self.deck.pk)})
+        self.assertEqual(ev["event_type"], "slidedeck.state")
+        self.assertEqual(ev["deck_id"], str(self.deck.pk))
+        self.assertEqual(ev["title"], "Back Again")
+        self.assertEqual([s["slide_id"] for s in ev["slides"]], ["s1"])
+
+    def test_listing_or_error_results_send_nothing(self):
+        self.assertIsNone(self._event(self.owner, {"status": "ok", "deleted_decks": []}))
+        self.assertIsNone(self._event(self.owner, {"status": "error", "message": "x"}))
+
+    def test_foreign_user_gets_nothing(self):
+        other = get_user_model().objects.create_user(email=f"rx+{uuid.uuid4().hex[:6]}@ex.com", password="x")
+        self.assertIsNone(self._event(other, {"status": "ok", "restored": True, "deck_id": str(self.deck.pk)}))
+
+
 class ServiceRobustnessTests(TransactionTestCase):
     """Edge cases in chat.slides.service that would otherwise raise IntegrityError."""
 

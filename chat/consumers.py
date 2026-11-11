@@ -706,6 +706,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
             ],
         }
 
+    def _restored_deck_event(self, thread_id, result: dict):
+        """The ``slidedeck.state`` event for a successful ``slides_restore_deck``
+        result (the same event the UI's own restore sends), or ``None``."""
+        if not isinstance(result, dict) or result.get("status") != "ok":
+            return None
+        if not (result.get("restored") and result.get("deck_id")):
+            return None
+        state = self._slides_state_sync(thread_id, self._owned_deck(thread_id, str(result["deck_id"])))
+        return {"event_type": "slidedeck.state", **state} if state else None
+
     def _user_org(self):
         """The acting user's organization (for the org slide theme), or ``None``."""
         try:
@@ -3510,6 +3520,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
                                     "deck_id": str(result["deck_id"]),
                                     "deck_title": result.get("deck_title", ""),
                                 })
+                        except (json.JSONDecodeError, AttributeError):
+                            pass
+                    # The tool restored + activated the deck; send the same
+                    # slidedeck.state the UI's own restore produces, so the panel
+                    # switches to it (slidedeck.updated assumes it is showing).
+                    if tool_name == "slides_restore_deck":
+                        try:
+                            result = json.loads(event.data.get("result", "{}"))
+                            restored = await database_sync_to_async(self._restored_deck_event)(
+                                str(thread.id), result,
+                            )
+                            if restored:
+                                await self._sink.send_event(restored)
                         except (json.JSONDecodeError, AttributeError):
                             pass
                     # Intercept task tool results and broadcast tasks.updated
