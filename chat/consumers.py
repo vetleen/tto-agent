@@ -2159,16 +2159,20 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         # Cancel any active subagents for this thread
         thread_id = data.get("thread_id") or getattr(self, "_active_thread_id", None)
-        if thread_id:
-            await self._cancel_active_subagents(thread_id)
-            await self.send(text_data=json.dumps({
-                "event_type": "subagents.updated",
-                "active_count": 0,
-                "waiting_count": 0,
-                "runs": [],
-            }))
-
-        await self.send(text_data=json.dumps({"event_type": "stream.cancelled"}))
+        try:
+            if thread_id:
+                await self._cancel_active_subagents(thread_id)
+                await self.send(text_data=json.dumps({
+                    "event_type": "subagents.updated",
+                    "active_count": 0,
+                    "waiting_count": 0,
+                    "runs": [],
+                }))
+        except Exception:
+            logger.exception("Failed to cancel sub-agents on stop thread=%s", thread_id)
+        finally:
+            # Always ack: the page ignores the stopped turn's events until it does.
+            await self.send(text_data=json.dumps({"event_type": "stream.cancelled"}))
 
     @database_sync_to_async
     def _cancel_active_subagents(self, thread_id):

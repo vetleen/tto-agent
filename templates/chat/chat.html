@@ -3148,6 +3148,7 @@
   // chat.stop requests whose stream.cancelled ack hasn't arrived yet. Stop is
   // applied locally at the click, so the ack must not finish a newer bubble.
   var pendingStopAcks = 0;
+  var stopAckTimer = null;
   function renderTaskPlan(tasks) {
     if (tasks !== undefined) latestTasks = tasks;
     if (!taskPlanCard || !taskPlanList || !taskPlanBadge) return;
@@ -3311,6 +3312,7 @@
       updateConnectionStatus(false, true);
       ws = new WebSocket(getWsUrl());
       ws.onopen = function() {
+        pendingStopAcks = 0;  // a new socket owes no acks
         if (droppedMidTurn) {
           droppedMidTurn = false;
           window.location.reload();
@@ -3652,7 +3654,12 @@
     // this tab no longer renders that turn's forwarded stream (it would land in
     // whatever bubble is current); turn.finished fills its bubble at the end.
     // Workspace updates (canvas, deck, tasks, sub-agents, title) still apply.
-    if (data.via_broadcast && dismissedServerTurn && !/^(canvas|slidedeck\.|tasks\.|subagents\.|thread\.)/.test(et || "")) return;
+    var workspaceEvent = /^(canvas|slidedeck\.|tasks\.|subagents\.|thread\.|heartbeat$)/.test(et || "");
+    if (data.via_broadcast && dismissedServerTurn && !workspaceEvent) return;
+    // Between a Stop click and its stream.cancelled ack, every turn event on this
+    // socket is from the stopped turn (the server handles chat.stop before the
+    // next message): already finished at the click, it must not reopen a bubble.
+    if (pendingStopAcks > 0 && et !== "stream.cancelled" && !workspaceEvent) return;
     // Reset streaming timeout on any event from the server
     if (currentStreamingElement) startStreamingTimeout();
     if (et === "heartbeat") return;
@@ -4500,6 +4507,9 @@
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: "chat.stop", thread_id: activeThreadId || "" }));
       pendingStopAcks++;
+      // Never let a lost ack mute later turns: the ack normally lands in < 1 s.
+      clearTimeout(stopAckTimer);
+      stopAckTimer = setTimeout(function() { pendingStopAcks = 0; }, 10000);
     }
     finishStreaming("Stopped.");
     enableInput();
