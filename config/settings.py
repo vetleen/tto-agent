@@ -681,6 +681,11 @@ CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS = _env_int("CHAT_ATTACHMENT_READY_TIMEOUT_
 # past MAX seconds from the hold's start. EXTEND=0 or MAX <= TIMEOUT disables it.
 CHAT_ATTACHMENT_READY_EXTEND_SECONDS = _env_int("CHAT_ATTACHMENT_READY_EXTEND_SECONDS", "60")
 CHAT_ATTACHMENT_READY_MAX_SECONDS = _env_int("CHAT_ATTACHMENT_READY_MAX_SECONDS", "300")
+# A message that arrives after the previous turn's answer was delivered (the
+# composer re-enables on its message_end) but before that reply row is saved waits
+# up to this many seconds for the save, instead of cancelling the turn and losing
+# the reply (chat/consumers.py:_await_reply_persisted). Normally one DB write.
+CHAT_REPLY_PERSIST_WAIT_SECONDS = _env_int("CHAT_REPLY_PERSIST_WAIT_SECONDS", "30")
 # Decks above this many slides get text only (no renders); attachments are not
 # gated by a PII scan, so this only bounds render time and storage.
 CHAT_ATTACHMENT_RENDER_MAX_SLIDES = _env_int("CHAT_ATTACHMENT_RENDER_MAX_SLIDES", "50")

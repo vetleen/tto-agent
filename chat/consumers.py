@@ -58,6 +58,17 @@ class _TurnState:
     # Automatic model choice: the turn's chat.auto_model.RouteDecision, once
     # routed (logged on the turn's LLMCallLog and shown under the reply).
     auto_route: object | None = None
+    # The pipeline's single final ``message_end`` was handled: the browser has
+    # the whole answer and re-enables the composer on it. Set BEFORE that event
+    # is forwarded, so a follow-up message can never see a delivered answer
+    # without this flag.
+    answer_delivered: bool = False
+    # The final reply row (+ its sub-agent delivery marks) is saved, or there is
+    # nothing to save. Set in _stream_response right after the save and again
+    # in its ``finally``. A follow-up that arrives after answer_delivered waits
+    # on this before cancelling the turn (_await_reply_persisted) — NOT on
+    # stream_finished, which only fires after the LLMCallLog write.
+    reply_persisted: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 # Seconds between processing-state polls while a turn waits for its attachments
@@ -2077,6 +2088,30 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 thread_id, exc_info=True,
             )
 
+    async def _await_reply_persisted(self, turn) -> None:
+        """Hold a follow-up message until the previous turn's delivered reply is saved.
+
+        The browser re-enables the composer on the turn's final ``message_end``;
+        the reply row is written right after it (_stream_response). A message in
+        that gap used to cancel the turn before the write and lose the reply.
+        A turn whose answer was NOT delivered (still streaming) is not waited
+        for — a mid-stream message still supersedes it at once. Bounded by
+        CHAT_REPLY_PERSIST_WAIT_SECONDS; this runs inside receive(), so it must
+        stay short (normally one DB write).
+        """
+        if turn is None or not turn.answer_delivered or turn.reply_persisted.is_set():
+            return
+        from django.conf import settings
+
+        timeout = float(getattr(settings, "CHAT_REPLY_PERSIST_WAIT_SECONDS", 30) or 0)
+        try:
+            await asyncio.wait_for(turn.reply_persisted.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "previous reply not saved after %.1fs; cancelling its turn anyway thread=%s",
+                timeout, getattr(self, "_active_thread_id", None),
+            )
+
     async def _handle_chat_message(self, data, *, seed_mode: bool = False):
         """Handle a user-sent (or server-seeded) chat message.
 
@@ -2089,7 +2124,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
         content = (data.get("content") or "").strip()
         if not seed_mode:
             self._stopped = False
-            # Cancel any running stream so the new message starts clean
+            # Cancel any running stream so the new message starts clean — but
+            # first let a turn whose answer was already delivered finish saving
+            # it (the composer unlocks on message_end, before the save lands).
+            if self._stream_task and not self._stream_task.done():
+                await self._await_reply_persisted(self._turn)
             if self._stream_task and not self._stream_task.done():
                 if self._cancel_event:
                     self._cancel_event.set()
@@ -3323,6 +3362,75 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # Provider replay state for the final reply (Gemini thought-signed text
         # blocks), stored on the assistant message and sent back on later turns.
         replay_blocks = None
+        final_persisted = False
+
+        async def _persist_final() -> None:
+            """Save what is still pending and the final reply, exactly once.
+
+            Called as soon as the pipeline's single final ``message_end`` has been
+            forwarded — the browser re-enables the composer on it, and the stream
+            itself only ends after the LLMCallLog write (seconds on a big thread),
+            so a follow-up message must never find the reply unsaved — and again
+            after the loop as a fallback for streams that end without one.
+            """
+            nonlocal pending_tool_calls, pending_tool_results, accumulated_content
+            nonlocal accumulated_thinking, narration_parts, final_persisted
+            if final_persisted:
+                return
+            final_persisted = True
+            # Persist any remaining tool loop messages (if stream ends after tools)
+            if pending_tool_calls:
+                await self._persist_tool_loop_messages(
+                    thread, pending_tool_calls, pending_tool_results,
+                    content=round_text(),
+                    thinking=accumulated_thinking,
+                )
+                pending_tool_calls = []
+                pending_tool_results = []
+                accumulated_content = ""
+                accumulated_thinking = ""
+                narration_parts = []
+
+            if narration_parts and not accumulated_content.strip():
+                # Nothing followed the progress note: it is the answer.
+                accumulated_content = round_text()
+                narration_parts = []
+
+            # Persist final assistant message (with thinking in metadata if present)
+            if accumulated_content.strip():
+                metadata = {}
+                if accumulated_thinking:
+                    metadata["thinking"] = accumulated_thinking
+                if narration_parts:
+                    # Progress notes the model wrote before this answer in the
+                    # same response; shown in the turn's activity timeline.
+                    metadata["narration"] = "\n\n".join(narration_parts)
+                replay = build_assistant_replay(resolved_model, replay_blocks, accumulated_content)
+                if replay:
+                    metadata["replay"] = replay
+                if turn is not None and turn.auto_route is not None:
+                    metadata["auto_route"] = self._auto_route_display(turn.auto_route, thinking_level)
+                # Any turn whose prompt replayed sub-agent outcomes is their
+                # report — seeded continuations and manual user turns alike
+                # (otherwise the post-stream claim would fire a redundant
+                # seeded turn). Exactly the runs snapshotted at history load
+                # are marked, so an outcome that landed mid-stream stays
+                # unreported and seeds its own continuation. Marked AFTER
+                # the row exists: a crash in between yields a duplicate
+                # report, never a lost one.
+                delivered = list(turn.pending_subagent_run_ids) if turn else []
+                if delivered:
+                    metadata["subagent_delivered_run_ids"] = delivered
+                await self._create_message(
+                    thread, "assistant", accumulated_content, metadata=metadata,
+                )
+                if delivered:
+                    await self._mark_subagents_delivered(str(thread.id), delivered)
+            accumulated_content = ""
+            accumulated_thinking = ""
+            narration_parts = []
+            if turn is not None:
+                turn.reply_persisted.set()
         heartbeat_task = (
             asyncio.create_task(self._send_heartbeats())
             if self._sink.wants_heartbeats else None
@@ -3364,6 +3472,25 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 # still recorded in LLMCallLog.error_message via log_stream).
                 if event_data.get("event_type") == "error":
                     event_data.get("data", {}).pop("details", None)
+
+                if (
+                    event.event_type == "message_end"
+                    and not stream_error
+                    and not degenerate_stop
+                ):
+                    # The pipeline's single final message_end: the answer is
+                    # complete and the browser unlocks on it. Flag the turn
+                    # BEFORE forwarding (a follow-up that sees the unlock waits
+                    # for the save instead of cancelling it), then save now
+                    # rather than after the LLMCallLog write ends the stream.
+                    # (An error path's usage-only message_end always follows an
+                    # `error` event, so stream_error is already set for it.)
+                    if turn is not None:
+                        turn.answer_delivered = True
+                    await self._sink.send_event(event_data)
+                    await _persist_final()
+                    continue
+
                 await self._sink.send_event(event_data)
 
                 # Accumulate assistant text from token events
@@ -3585,54 +3712,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     last_guard_len = 0
 
             # Don't persist partial content from error-interrupted or
-            # degeneration-aborted streams.
+            # degeneration-aborted streams. Normally the reply was already saved
+            # at message_end; this covers a stream that ended without one.
             if not stream_error and not degenerate_stop:
-                # Persist any remaining tool loop messages (if stream ends after tools)
-                if pending_tool_calls:
-                    await self._persist_tool_loop_messages(
-                        thread, pending_tool_calls, pending_tool_results,
-                        content=round_text(),
-                        thinking=accumulated_thinking,
-                    )
-                    accumulated_content = ""
-                    accumulated_thinking = ""
-                    narration_parts = []
-
-                if narration_parts and not accumulated_content.strip():
-                    # Nothing followed the progress note: it is the answer.
-                    accumulated_content = round_text()
-                    narration_parts = []
-
-                # Persist final assistant message (with thinking in metadata if present)
-                if accumulated_content.strip():
-                    metadata = {}
-                    if accumulated_thinking:
-                        metadata["thinking"] = accumulated_thinking
-                    if narration_parts:
-                        # Progress notes the model wrote before this answer in the
-                        # same response; shown in the turn's activity timeline.
-                        metadata["narration"] = "\n\n".join(narration_parts)
-                    replay = build_assistant_replay(resolved_model, replay_blocks, accumulated_content)
-                    if replay:
-                        metadata["replay"] = replay
-                    if turn is not None and turn.auto_route is not None:
-                        metadata["auto_route"] = self._auto_route_display(turn.auto_route, thinking_level)
-                    # Any turn whose prompt replayed sub-agent outcomes is their
-                    # report — seeded continuations and manual user turns alike
-                    # (otherwise the post-stream claim would fire a redundant
-                    # seeded turn). Exactly the runs snapshotted at history load
-                    # are marked, so an outcome that landed mid-stream stays
-                    # unreported and seeds its own continuation. Marked AFTER
-                    # the row exists: a crash in between yields a duplicate
-                    # report, never a lost one.
-                    delivered = list(turn.pending_subagent_run_ids) if turn else []
-                    if delivered:
-                        metadata["subagent_delivered_run_ids"] = delivered
-                    await self._create_message(
-                        thread, "assistant", accumulated_content, metadata=metadata,
-                    )
-                    if delivered:
-                        await self._mark_subagents_delivered(str(thread.id), delivered)
+                await _persist_final()
 
         except LLMConfigurationError:
             logger.exception("LLM misconfigured for streaming response")
@@ -3676,6 +3759,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     await heartbeat_task
                 except asyncio.CancelledError:
                     pass
+            # Nothing (more) will be saved for this turn: release any follow-up
+            # waiting in _await_reply_persisted (error / cancel paths too).
+            turn.reply_persisted.set()
             turn.stream_finished.set()
             self._cancel_event = None
 
