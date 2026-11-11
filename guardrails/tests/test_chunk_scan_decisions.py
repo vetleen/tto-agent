@@ -102,6 +102,34 @@ class ChunkScanDecisionsTest(TestCase):
         self.assertEqual(request.params["_log_metadata"]["kind"], FALLBACK_KIND)
         self.assertEqual(request.params["_log_metadata"]["feature"], "guardrail_chunk_scan")
 
+    @override_settings(GUARDRAIL_SHADOW_ENABLED=True)
+    def test_a_chunk_the_fallback_omits_is_retried_tagged_and_recorded_as_legacy(self):
+        from guardrails.models import ChunkScanShadowResult
+        from guardrails.schemas import BatchClassifierResult, ChunkClassification
+
+        DataRoomDocumentChunk.objects.create(
+            version=self.version, chunk_index=1, text="More ordinary patent text.", token_count=4,
+        )
+        self.decisions.decide.side_effect = LLMTimeoutError("down")
+
+        def clean(index):
+            return ChunkClassification(
+                chunk_index=index, is_suspicious=False, concern_tags=[], confidence=0.1, reasoning="ok",
+            )
+
+        legacy = MagicMock()
+        legacy.run_structured.side_effect = [
+            (BatchClassifierResult(results=[clean(0)]), None),  # the batch call omits chunk 1
+            (BatchClassifierResult(results=[clean(1)]), None),  # its individual retry
+        ]
+        with patch("llm.get_llm_service", return_value=legacy):
+            self._scan()
+        batch, retry = (call.args[0] for call in legacy.run_structured.call_args_list)
+        self.assertEqual(retry.params["_log_metadata"]["kind"], FALLBACK_KIND)
+        self.assertEqual(retry.context.run_id, batch.context.run_id)
+        notes = dict(ChunkScanShadowResult.objects.values_list("chunk_index", "shadow_note"))
+        self.assertEqual(notes, {0: "prod_legacy:LLMTimeoutError", 1: "prod_legacy:LLMTimeoutError"})
+
     def test_refusal_uses_the_legacy_classifier(self):
         from guardrails.schemas import BatchClassifierResult, ChunkClassification
 

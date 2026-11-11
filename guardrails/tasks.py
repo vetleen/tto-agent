@@ -352,22 +352,9 @@ def _classify_chunk_batch(
     would be invisible to the classifier yet fully retrievable.
     """
     chunk_by_index = {c["chunk_index"]: c for c in chunks}
+    # Chunks the legacy classifier omitted were already retried one by one inside
+    # _decide_chunk_batch.
     results_by_index = _decide_chunk_batch(doc, chunks, model, org_id)
-
-    # Models routinely drop items from long lists (and an adversarial chunk could
-    # try to induce its own omission). Classify each omitted chunk on its own —
-    # which also isolates it from its batch-mates — before giving up.
-    missing = set(chunk_by_index) - set(results_by_index)
-    if missing:
-        logger.warning(
-            "scan_document_chunks: classifier omitted chunk_indexes=%s document_id=%s; "
-            "retrying individually",
-            sorted(missing), doc.id,
-        )
-        for chunk_index in sorted(missing):
-            results_by_index.update(
-                _run_batch_classifier(doc, [chunk_by_index[chunk_index]], model, org_id)
-            )
 
     # Fail closed: a chunk still unclassified after its own call must not slip
     # through. Raising here, before any quarantine/event writes, hands the whole
@@ -417,8 +404,8 @@ def _decisions_available(org_id) -> bool:
 def _decide_chunk_batch(doc, chunks: list[dict], model: str, org_id: int | None = None) -> dict:
     """The batch's Layer-1 verdicts: one Decisions call (two questions per chunk),
     or the legacy batch classifier when Decisions fails. ``{chunk_index: result}``;
-    the Decisions path answers every chunk, the legacy one may omit some (the caller
-    retries those individually)."""
+    the Decisions path answers every chunk; the legacy one retries each chunk it
+    omitted on its own and may still miss some (the caller fails closed)."""
     from guardrails.decisions import (
         build_chunk_input,
         build_chunk_questions,
@@ -438,6 +425,22 @@ def _decide_chunk_batch(doc, chunks: list[dict], model: str, org_id: int | None 
                 "Decisions failed and no model resolves for guardrail_chunk_scan."
             )
         results = _run_batch_classifier(doc, chunks, model, org_id, context=context, log_metadata=meta)
+        # Models routinely drop items from long lists (and an adversarial chunk could
+        # try to induce its own omission). Classify each omitted chunk on its own —
+        # which also isolates it from its batch-mates. Same run and log tag as the
+        # batch call, and wrapped below like it: a retried verdict is a legacy one.
+        missing = sorted({c["chunk_index"] for c in chunks} - set(results))
+        if missing:
+            logger.warning(
+                "scan_document_chunks: classifier omitted chunk_indexes=%s document_id=%s; "
+                "retrying individually",
+                missing, doc.id,
+            )
+            chunk_by_index = {c["chunk_index"]: c for c in chunks}
+            for chunk_index in missing:
+                results.update(_run_batch_classifier(
+                    doc, [chunk_by_index[chunk_index]], model, org_id, context=context, log_metadata=meta,
+                ))
         return {index: wrap_legacy_chunk(result, meta) for index, result in results.items()}
 
     try:

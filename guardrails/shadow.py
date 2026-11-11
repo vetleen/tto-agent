@@ -104,7 +104,9 @@ def record_chunk_verdicts(*, version, chunks: list[dict], results: dict, org_id)
             result = results.get(chunk["chunk_index"])
             if result is None:
                 continue
-            source = getattr(result, "source", "decisions")
+            # A result without a source is a bare legacy ChunkClassification; it
+            # must never be recorded as a Decisions verdict.
+            source = getattr(result, "source", "legacy")
             note = f"prod_legacy:{getattr(result, 'decide_error', '')}" if source == "legacy" else ""
             rows.append(ChunkScanShadowResult(
                 run_date=today, org_id=org_id, version_id=version.id,
