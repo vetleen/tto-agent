@@ -346,6 +346,15 @@ class MintAndHashTests(SimpleTestCase):
         issues = schema.validate_deck(deck)
         self.assertTrue(any("too large" in i["message"] for i in issues))
 
+    def test_deck_char_limit_message_names_the_real_size_and_rule(self):
+        deck = _valid_deck()
+        deck["slides"][0]["name"] = "x" * (schema.DECK_MAX_CHARS + 10)
+        size = len(schema.canonical_deck_text(deck))
+        msg = next(i["message"] for i in schema.validate_deck(deck) if "too large" in i["message"])
+        self.assertIn(f"{size:,} chars", msg)
+        self.assertIn(f"{schema.DECK_MAX_CHARS:,} limit", msg)
+        self.assertIn("indented canonical JSON", msg)
+
 
 class ThemeTests(SimpleTestCase):
     def test_override_merges(self):

@@ -540,8 +540,16 @@ def _semantic_issues(deck: dict) -> list[dict]:
                                        "message": f"Edge references a node index outside 0..{n - 1}."})
                         break
 
-    if len(canonical_deck_text(deck)) > DECK_MAX_CHARS:
-        issues.append({"path": "(root)", "message": f"Deck is too large (max {DECK_MAX_CHARS} chars)."})
+    size = len(canonical_deck_text(deck))
+    if size > DECK_MAX_CHARS:
+        # The model sends compact JSON and can't see the canonical size, so say
+        # the number and how it is measured (2026-11-11 prod: 67k sent, refused).
+        issues.append({"path": "(root)", "message": (
+            f"Deck is too large: {size:,} chars of the {DECK_MAX_CHARS:,} limit, measured on the "
+            "deck's indented canonical JSON (about twice the size of compact JSON). The limit is "
+            "for the whole deck, so splitting the writes doesn't help: shorten text, drop "
+            "elements, or remove slides."
+        )})
 
     return issues
 
