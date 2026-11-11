@@ -563,6 +563,9 @@ class PIIScanShadowResult(models.Model):
     # done = both halves; skipped = the shadow could not run (shadow_note says why).
     state = models.CharField(max_length=12, default="done")
     shadow_note = models.CharField(max_length=64, blank=True, default="")
+    # Failed legacy-classifier calls for this row; at pii_shadow.MAX_ATTEMPTS it is
+    # skipped ("classifier_error"). db_default: old dynos insert during a release.
+    attempts = models.PositiveSmallIntegerField(default=0, db_default=0)
 
     # Production, this window (PIIReviewEvent): the classifier's Art. 9/10 candidate
     # flags and the reviewer's verdict. Empty when the classifier raised none here.

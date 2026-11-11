@@ -163,6 +163,9 @@ class ChunkScanShadowResult(models.Model):
     # done = both halves; skipped = the shadow could not run (shadow_note says why).
     state = models.CharField(max_length=12, default="done")
     shadow_note = models.CharField(max_length=64, blank=True, default="")
+    # Failed legacy-classifier calls for this row; at shadow.MAX_ATTEMPTS it is
+    # skipped ("classifier_error"). db_default: old dynos insert during a release.
+    attempts = models.PositiveSmallIntegerField(default=0, db_default=0)
     # Blind reviewer verdict for a positive under either system:
     # allow | quarantine | error | no_model | not_reviewed | "" (not a positive)
     blind_review = models.CharField(max_length=24, blank=True, default="")

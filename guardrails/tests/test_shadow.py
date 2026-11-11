@@ -238,7 +238,52 @@ class RunShadowTests(_ShadowBase):
         summary = run_shadow_for_day(DAY)
         self.assertEqual(summary["classifier_errors"], 3)
         self.assertEqual(summary["skipped"]["aborted"], 1)
-        self.assertEqual({r.state for r in self._rows().values()}, {"pending"})
+        rows = self._rows()
+        self.assertEqual({r.state for r in rows.values()}, {"pending"})
+        self.assertEqual([rows[i].attempts for i in range(5)], [1, 1, 1, 0, 0])
+
+    def test_rows_that_always_fail_are_given_up_and_stop_blocking(self):
+        """Three chunks whose batches always fail come first every night; without an
+        attempt bound the abort would keep the chunk behind them pending forever."""
+        chunks = [self._chunk(i, "x" * 30_000) for i in range(4)]  # one chunk per batch
+        self._record(chunks, [_verdict(i, 0.1) for i in range(4)])
+        self.legacy = {3: (False, 0.1, [])}
+
+        def answer(request, schema):
+            if '"chunk_index": 3' not in request.messages[1].content:
+                raise RuntimeError("refused")
+            return self._legacy_answer(request, schema)
+
+        self.legacy_llm.run_structured.side_effect = answer
+        for _night in range(2):
+            run_shadow_for_day(DAY)
+            self.assertEqual({r.state for r in self._rows().values()}, {"pending"})
+        summary = run_shadow_for_day(DAY)
+        rows = self._rows()
+        self.assertEqual(
+            [(rows[i].state, rows[i].shadow_note, rows[i].attempts) for i in range(3)],
+            [("skipped", "classifier_error", 3)] * 3,
+        )
+        self.assertEqual(summary["skipped"]["classifier_error"], 3)
+        run_shadow_for_day(DAY)
+        self.assertEqual(self._rows()[3].state, "done")
+
+    def test_a_chunk_pending_on_two_days_is_classified_once_and_both_rows_finish(self):
+        c = self._chunk(0)
+        self._record([c], [_verdict(0, 0.1)])
+        with patch("django.utils.timezone.localdate", return_value=DAY + timedelta(days=1)):
+            record_chunk_verdicts(
+                version=self.version, chunks=[{"id": c.id, "chunk_index": 0, "text": c.text}],
+                results={0: _verdict(0, 0.9)}, org_id=self.org.id,
+            )
+        self.legacy = {0: (True, 0.8, ["jailbreak"])}
+        summary = run_shadow_for_day(DAY + timedelta(days=1))
+        rows = list(ChunkScanShadowResult.objects.order_by("run_date"))
+        self.assertEqual([(r.state, r.classifier_flagged) for r in rows], [("done", True), ("done", True)])
+        self.assertEqual(self.legacy_llm.run_structured.call_count, 1)
+        self.assertEqual(self.legacy_llm.run_structured.call_args.args[0].messages[1].content.count('"chunk_index"'), 1)
+        self.assertEqual((summary["chunks"], summary["classifier_only"], summary["both_positive"]), (1, 1, 1))
+        self.assertEqual(summary["reviews"], 1)
 
     def test_no_side_effects_on_chunks_events_or_versions(self):
         c = self._chunk(0)

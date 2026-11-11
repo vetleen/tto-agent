@@ -225,7 +225,43 @@ class RunTests(_Base):
         summary = run_pii_shadow_for_day(DAY)
         self.assertEqual(summary["classifier_errors"], 3)
         self.assertEqual(summary["skipped"]["aborted"], 1)
-        self.assertEqual({r.state for r in self._rows().values()}, {"pending"})
+        rows = self._rows()
+        self.assertEqual({r.state for r in rows.values()}, {"pending"})
+        self.assertEqual([rows[i].attempts for i in range(3)], [1, 1, 1])
+
+    def test_windows_that_always_fail_are_given_up_and_stop_blocking(self):
+        """Three windows that always fail come first every night; without an attempt
+        bound the abort would keep the version behind them pending forever."""
+        self._record({0: _probs(), 1: _probs(), 2: _probs()})
+        later = make_version(
+            self.doc, version_index=1, status=READY, make_active=False,
+            chunks=[{"text": "fine text", "token_count": 10}],
+        )
+        with patch("django.utils.timezone.localdate", return_value=DAY):
+            record_window_verdict(
+                version_id=later.id, document_id=self.doc.id, org_id=self.org.id, window_index=0,
+                window=dict(iter_pii_windows(later.id))[0], text="fine text",
+                verdict=PIIWindowVerdict(categories={}, probabilities=_probs(), pathway="quick", source="decisions"),
+            )
+
+        def answer(request, schema):
+            if "fine text" not in str(request.messages):
+                raise RuntimeError("refused")
+            return self._legacy(request, schema)
+
+        self.legacy_llm.run_structured.side_effect = answer
+        later_row = lambda: PIIScanShadowResult.objects.get(version_id=later.id)  # noqa: E731
+        for _night in range(2):
+            run_pii_shadow_for_day(DAY)
+            self.assertEqual(later_row().state, "pending")
+        summary = run_pii_shadow_for_day(DAY)
+        failed = PIIScanShadowResult.objects.filter(version_id=self.version.id)
+        self.assertEqual(
+            {(r.state, r.shadow_note, r.attempts) for r in failed}, {("skipped", "classifier_error", 3)},
+        )
+        self.assertEqual(summary["skipped"]["classifier_error"], 3)
+        run_pii_shadow_for_day(DAY)
+        self.assertEqual(later_row().state, "done")
 
     def test_no_side_effects_on_tags_events_or_versions(self):
         self._record({0: _probs()})

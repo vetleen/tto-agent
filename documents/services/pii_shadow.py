@@ -50,6 +50,10 @@ SHADOW_FEATURE_KEY = "shadow_pii_scan"
 DIRECTION = "legacy_shadow"
 # Consecutive failed legacy calls after which the night is abandoned.
 CONSECUTIVE_ERRORS_ABORT = 3
+# Failed legacy calls after which a window is given up (skipped, "classifier_error").
+# Without a bound, windows that always fail stay first in line and abort every night
+# before anything behind them is reached.
+MAX_ATTEMPTS = 3
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +219,14 @@ def run_pii_shadow_for_day(day: date, *, max_windows: int | None = None, max_rev
         PIIScanShadowResult.objects.bulk_update(rows, ["state", "shadow_note"])
         skipped[note] += len(rows)
 
+    def record_failure(row):
+        """Count a failed legacy call against its window; give up at MAX_ATTEMPTS."""
+        row.attempts = (row.attempts or 0) + 1
+        if row.attempts >= MAX_ATTEMPTS:
+            row.state, row.shadow_note = "skipped", "classifier_error"
+            skipped["classifier_error"] += 1
+        row.save(update_fields=["attempts", "state", "shadow_note"])
+
     try:
         run = PIIScanShadowRun.objects.create(run_date=day, trace_id=trace_id)
         by_version: dict[int, list] = defaultdict(list)
@@ -272,6 +284,7 @@ def run_pii_shadow_for_day(day: date, *, max_windows: int | None = None, max_rev
                     logger.exception("shadow_pii_scan: legacy classifier failed version_id=%s window=%s",
                                      version_id, row.window_index)
                     counters["classifier_errors"] += 1
+                    record_failure(row)
                     consecutive_errors += 1
                     if consecutive_errors >= CONSECUTIVE_ERRORS_ABORT:
                         skipped["aborted"] += 1

@@ -44,6 +44,10 @@ DIRECTION = "legacy_shadow"
 SHADOW_REVIEW_PLACEHOLDER = REASONING_PLACEHOLDER_CHUNK
 # Consecutive failed legacy calls after which the night is abandoned.
 CONSECUTIVE_ERRORS_ABORT = 3
+# Failed legacy calls after which a row is given up (skipped, "classifier_error").
+# Without a bound, rows that always fail stay first in line and abort every night
+# before anything behind them is reached.
+MAX_ATTEMPTS = 3
 
 
 @dataclass(frozen=True)
@@ -261,6 +265,15 @@ def run_shadow_for_day(day: date, *, max_chunks: int | None = None, max_reviews:
         ChunkScanShadowResult.objects.bulk_update(rows, ["state", "shadow_note"])
         skipped[note] += len(rows)
 
+    def record_failure(rows):
+        """Count a failed legacy call against its rows; give up on a row at MAX_ATTEMPTS."""
+        for row in rows:
+            row.attempts = (row.attempts or 0) + 1
+            if row.attempts >= MAX_ATTEMPTS:
+                row.state, row.shadow_note = "skipped", "classifier_error"
+                skipped["classifier_error"] += 1
+        ChunkScanShadowResult.objects.bulk_update(rows, ["attempts", "state", "shadow_note"])
+
     try:
         run = ChunkScanShadowRun.objects.create(run_date=day, trace_id=trace_id)
         by_version: dict[int, list] = defaultdict(list)
@@ -299,8 +312,16 @@ def run_shadow_for_day(day: date, *, max_chunks: int | None = None, max_reviews:
             continue
         versions_seen.add(version_id)
         orgs_seen.add(org_id)
-        row_by_index = {r.chunk_index: r for r in rows}
-        chunks = [{"id": r.chunk_id, "chunk_index": r.chunk_index, "text": texts[r.chunk_id]} for r in rows]
+        # A chunk rescanned on another day has one pending row per day: classify it
+        # once and fill in every row (a dict keyed by index kept only the last one,
+        # leaving the earlier row pending forever and the chunk twice in the prompt).
+        rows_by_index: dict[int, list] = defaultdict(list)
+        for r in rows:
+            rows_by_index[r.chunk_index].append(r)
+        chunks = [
+            {"id": group[0].chunk_id, "chunk_index": index, "text": texts[group[0].chunk_id]}
+            for index, group in rows_by_index.items()
+        ]
 
         for batch in _batch_chunks_by_budget(chunks):
             try:
@@ -310,6 +331,7 @@ def run_shadow_for_day(day: date, *, max_chunks: int | None = None, max_reviews:
             except Exception:
                 logger.exception("shadow_chunk_scan: legacy classifier failed version_id=%s", version_id)
                 counters["classifier_errors"] += 1
+                record_failure([r for c in batch for r in rows_by_index[c["chunk_index"]]])
                 consecutive_errors += 1
                 if consecutive_errors >= CONSECUTIVE_ERRORS_ABORT:
                     skipped["aborted"] += 1
@@ -319,46 +341,51 @@ def run_shadow_for_day(day: date, *, max_chunks: int | None = None, max_reviews:
             prod = production_verdicts([c["id"] for c in batch])
             done = []
             for chunk in batch:
-                row = row_by_index[chunk["chunk_index"]]
                 result = legacy.get(chunk["chunk_index"])
-                row.prod_review = prod[chunk["id"]].review
-                row.trace_id = trace_id
-                done.append(row)
                 counters["chunks"] += 1
-                if result is None:
-                    row.state, row.shadow_note = "skipped", "legacy_omitted"
-                    skipped["legacy_omitted"] += 1
-                    continue
-                row.state = "done"
-                row.classifier_flagged = bool(result.is_suspicious)
-                row.classifier_confidence = result.confidence
-                row.classifier_tags = list(result.concern_tags or [])
-                if row.classifier_flagged and row.quick_flagged:
-                    counters["both_positive"] += 1
-                elif row.classifier_flagged:
-                    counters["classifier_only"] += 1
-                elif row.quick_flagged:
-                    counters["quick_only"] += 1
-                else:
-                    counters["both_negative"] += 1
-                if not (row.classifier_flagged and not row.quick_flagged):
-                    continue
-                # Only the legacy classifier flagged it: production's reviewer never saw it.
-                row.blind_review_source = "classifier"
-                if reviews_left <= 0:
-                    row.blind_review = "not_reviewed"
-                    counters["reviews_capped"] += 1
-                    continue
-                reviews_left -= 1
-                counters["reviews"] += 1
-                flag = ShadowFlag(concern_tags=list(row.classifier_tags), confidence=float(result.confidence or 0.0))
-                row.blind_review, row.blind_review_confidence, row.blind_review_severity = blind_review(
-                    chunk=chunk, version=version, doc=doc, org_id=org_id, flag=flag, context=context,
-                )
-                if row.blind_review in ("allow", "quarantine"):
-                    counters[f"blind_{row.blind_review}_classifier"] += 1
-                else:
-                    counters["blind_error"] += 1
+                review = None  # one blind review per chunk, shared by its rows
+                for row in rows_by_index[chunk["chunk_index"]]:
+                    row.prod_review = prod[chunk["id"]].review
+                    row.trace_id = trace_id
+                    done.append(row)
+                    if result is None:
+                        row.state, row.shadow_note = "skipped", "legacy_omitted"
+                        skipped["legacy_omitted"] += 1
+                        continue
+                    row.state = "done"
+                    row.classifier_flagged = bool(result.is_suspicious)
+                    row.classifier_confidence = result.confidence
+                    row.classifier_tags = list(result.concern_tags or [])
+                    if row.classifier_flagged and row.quick_flagged:
+                        counters["both_positive"] += 1
+                    elif row.classifier_flagged:
+                        counters["classifier_only"] += 1
+                    elif row.quick_flagged:
+                        counters["quick_only"] += 1
+                    else:
+                        counters["both_negative"] += 1
+                    if not (row.classifier_flagged and not row.quick_flagged):
+                        continue
+                    # Only the legacy classifier flagged it: production's reviewer never saw it.
+                    row.blind_review_source = "classifier"
+                    if review is None:
+                        if reviews_left <= 0:
+                            row.blind_review = "not_reviewed"
+                            counters["reviews_capped"] += 1
+                            continue
+                        reviews_left -= 1
+                        counters["reviews"] += 1
+                        flag = ShadowFlag(
+                            concern_tags=list(row.classifier_tags), confidence=float(result.confidence or 0.0),
+                        )
+                        review = blind_review(
+                            chunk=chunk, version=version, doc=doc, org_id=org_id, flag=flag, context=context,
+                        )
+                        if review[0] in ("allow", "quarantine"):
+                            counters[f"blind_{review[0]}_classifier"] += 1
+                        else:
+                            counters["blind_error"] += 1
+                    row.blind_review, row.blind_review_confidence, row.blind_review_severity = review
             ChunkScanShadowResult.objects.bulk_update(done, _DONE_FIELDS)
             chunks_left -= len(batch)
 
