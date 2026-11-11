@@ -39,9 +39,11 @@ from documents.services.pii_scan import (
     PII_CATEGORIES,
     _PII_SYSTEM_PROMPT,
     iter_pii_windows,
+    build_pii_input,
+    build_pii_questions,
     pii_window_text,
 )
-from llm.types.decisions import InputMessage, Question, TextPart
+from llm.types.decisions import InputMessage, Question
 
 logger = logging.getLogger(__name__)
 
@@ -59,43 +61,12 @@ PATHWAY_QUICK = "quick"
 # ---------------------------------------------------------------------------
 
 
-QUESTION_STEM = "The text clearly contains personal data relating to identifiable natural persons, of this kind: "
-QUESTION_TAIL = " Generic, organisational or hypothetical data does not count; when in doubt, answer no."
-
-
 def build_questions() -> list[Question]:
-    """One predicate per GDPR category, worded from the production schema's own
-    field descriptions (``PIICategoryOutput``) so both systems judge the same thing.
-
-    The descriptions alone ("Financial and business data: business information, …")
-    leave out the system prompt's "relating to identifiable natural persons", so every
-    question states it, with one bar for all ten categories: "clearly" (no recall
-    preference for Art. 9/10 — a fixed line, revisit if it misses cases)."""
-    from llm.types.structured import PIICategoryOutput
-
-    questions = []
-    for category in PII_CATEGORIES:
-        description = (PIICategoryOutput.model_fields[category].description or category).strip().rstrip(".")
-        # Continue the sentence: lowercase a leading capitalised word ("Personal identity
-        # data" → "personal …") but leave acronyms alone ("GDPR Article 9 …").
-        if len(description) > 1 and description[0].isupper() and description[1].islower():
-            description = description[0].lower() + description[1:]
-        questions.append(Question(
-            type="predicate", name=category,
-            instructions=f"{QUESTION_STEM}{description}.{QUESTION_TAIL}",
-        ))
-    return questions
+    return build_pii_questions()
 
 
 def build_input(window_text: str) -> list[InputMessage]:
-    """The PII system prompt as the developer message + the window text as production
-    sends it (same head/tail truncation as ``scan_pii_categories``)."""
-    from documents.services.description import _prepare_document_text
-
-    return [
-        InputMessage(role="developer", content=[TextPart(text=_PII_SYSTEM_PROMPT)]),
-        InputMessage(role="user", content=[TextPart(text=_prepare_document_text(window_text))]),
-    ]
+    return build_pii_input(window_text)
 
 
 def decide_window(service, window_text: str, *, org_id, context) -> tuple[dict[str, float | None], str]:

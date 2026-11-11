@@ -211,6 +211,53 @@ def pii_gate_applies(org_id) -> bool:
     return bool(pii_model and pii_enabled and pii_quarantine_enabled)
 
 
+# ---------------------------------------------------------------------------
+# The Decisions service's questions (production and the PII shadow share them)
+# ---------------------------------------------------------------------------
+
+# Probability at/above which a category counts as present.
+PII_FLAG_THRESHOLD = 0.5
+PII_QUESTION_STEM = "The text clearly contains personal data relating to identifiable natural persons, of this kind: "
+PII_QUESTION_TAIL = " Generic, organisational or hypothetical data does not count; when in doubt, answer no."
+
+
+def build_pii_questions():
+    """One predicate per GDPR category, worded from the production schema's own
+    field descriptions (``PIICategoryOutput``) so the Decisions service and the
+    structured classifier judge the same thing.
+
+    The descriptions alone ("Financial and business data: business information, …")
+    leave out the system prompt's "relating to identifiable natural persons", so every
+    question states it, with one bar for all ten categories."""
+    from llm.types.decisions import Question
+    from llm.types.structured import PIICategoryOutput
+
+    questions = []
+    for category in PII_CATEGORIES:
+        description = (PIICategoryOutput.model_fields[category].description or category).strip().rstrip(".")
+        # Continue the sentence: lowercase a leading capitalised word ("Personal identity
+        # data" → "personal …") but leave acronyms alone ("GDPR Article 9 …").
+        if len(description) > 1 and description[0].isupper() and description[1].islower():
+            description = description[0].lower() + description[1:]
+        questions.append(Question(
+            type="predicate", name=category,
+            instructions=f"{PII_QUESTION_STEM}{description}.{PII_QUESTION_TAIL}",
+        ))
+    return questions
+
+
+def build_pii_input(window_text: str):
+    """The PII system prompt as the developer message + the window text with the
+    structured classifier's head/tail truncation (``_prepare_document_text``)."""
+    from documents.services.description import _prepare_document_text
+    from llm.types.decisions import InputMessage, TextPart
+
+    return [
+        InputMessage(role="developer", content=[TextPart(text=_PII_SYSTEM_PROMPT)]),
+        InputMessage(role="user", content=[TextPart(text=_prepare_document_text(window_text))]),
+    ]
+
+
 def scan_pii_categories(
     text: str,
     user_id: int | None = None,
