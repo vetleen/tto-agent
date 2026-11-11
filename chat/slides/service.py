@@ -363,13 +363,15 @@ def edit_slides(deck_pk, edits: list[tuple[str, str, str]], *, description: str 
     Like the old whole-deck edit, edits that match are applied and the misses are
     reported; but if any slide's edited text stops being valid JSON, changes a
     slide id, or the deck stops validating, NOTHING is saved. Returns the
-    :func:`_mutate_deck` tuple plus ``(applied, failed)``."""
+    :func:`_mutate_deck` tuple plus ``(applied_ids, applied, failed)``:
+    ``applied_ids`` are the slide ids that took at least one edit (a slide whose
+    edits all missed is unchanged and must not count as written)."""
     from chat.edit_utils import apply_unique_text_edits
 
     groups: dict[str, list[tuple[str, str]]] = {}
     for slide_id, old_text, new_text in edits:
         groups.setdefault(slide_id or "", []).append((old_text, new_text))
-    stats = {"applied": 0, "failed": []}
+    stats = {"applied": 0, "failed": [], "applied_ids": []}
 
     def _mutate(content):
         for slide_id, pairs in groups.items():
@@ -412,13 +414,15 @@ def edit_slides(deck_pk, edits: list[tuple[str, str, str]], *, description: str 
                 content.update(parsed)
                 content["slides"] = slides
             stats["applied"] += applied
+            if slide_id:
+                stats["applied_ids"].append(slide_id)
         if not stats["applied"]:
             raise SlideOpError("No edits applied.", failed=stats["failed"])
 
     result = _mutate_deck(
         deck_pk, _mutate, description=description or f"Edited {len(edits)} section(s)"
     )
-    return (*result, stats["applied"], stats["failed"])
+    return (*result, stats["applied_ids"], stats["applied"], stats["failed"])
 
 
 def move_slides(deck_pk, slide_ids: list[str], position: int):

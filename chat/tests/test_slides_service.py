@@ -72,6 +72,16 @@ class SlideServiceTests(TestCase):
         self.assertEqual(applied, 1)
         self.assertEqual({f["slide_id"] for f in failed}, {"s1", "s9"})
 
+    def test_edit_reports_only_the_slides_that_took_an_edit(self):
+        *_r, applied_ids, applied, failed = service.edit_slides(self.deck.pk, [
+            ("s1", '"t": "One"', '"t": "Uno"'),
+            ("s2", "not there", "x"),
+            ("", '"w": 960', '"w": 961'),
+        ])
+        self.assertEqual(applied_ids, ["s1"])  # s2 missed; the deck settings are not a slide
+        self.assertEqual(applied, 2)
+        self.assertEqual([f["slide_id"] for f in failed], ["s2"])
+
     def test_edit_nothing_applied_raises(self):
         with self.assertRaises(service.SlideOpError) as cm:
             service.edit_slides(self.deck.pk, [("s1", "not there", "x")])

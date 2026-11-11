@@ -680,7 +680,7 @@ class EditDeckTool(ContextAwareTool):
         # inside it (service._mutate_deck), so a parallel deck tool in the same batch
         # can't have its write reverted here.
         try:
-            locked, old, new, issues, applied, failed = service.edit_slides(deck.pk, triples)
+            locked, old, new, issues, applied_ids, applied, failed = service.edit_slides(deck.pk, triples)
         except service.SlideOpError as exc:
             return _op_error(exc)
         if locked is None:
@@ -693,8 +693,9 @@ class EditDeckTool(ContextAwareTool):
             }, ensure_ascii=False)
 
         service.activate_deck(thread_id, locked)
-        touched = list(dict.fromkeys(sid for sid, _o, _n in triples if sid))
-        live = [new["slides"][i] for i in (service.slide_index(new, sid) for sid in touched) if i is not None]
+        # Only slides that took an edit count as written: stamping one whose edits
+        # all missed would hide the user's comment on it and its "changed" flag.
+        live = [new["slides"][i] for i in (service.slide_index(new, sid) for sid in applied_ids) if i is not None]
         service.record_agent_slide_view(locked.pk, live, wrote=True)
         return json.dumps(_deck_result(
             locked, old, new, applied=applied, failed=failed,

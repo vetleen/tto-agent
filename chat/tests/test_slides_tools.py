@@ -314,6 +314,35 @@ class SlideToolTests(TestCase):
         self.assertIn("Welcome", json.dumps(deck.content))
         self.assertIn("s1", deck.agent_seen)  # an edit is a write: the slide counts as seen
 
+    def test_edit_that_misses_a_slide_does_not_mark_it_written(self):
+        """One edit applies, the other slide's edit misses: the missed slide is not
+        'edited', keeps its unseen state and the user's comment on it stays open."""
+        from django.utils import timezone
+
+        from chat.models import SlideComment
+        from chat.slides import service
+
+        w = self._run(CreateDeckTool(), title="Deck A", layouts=["title", "bullets"])
+        deck = SlideSet.objects.get(pk=w["deck_id"])
+        SlideComment.objects.create(
+            slide_set=deck, slide_id="s2", text="Shorter please",
+            status=SlideComment.Status.SENT, sent_at=timezone.now(),
+        )
+        r = self._run(EditDeckTool(), edits=[
+            {"slide_id": "s1", "old_text": '"Presentation title"', "new_text": '"Welcome"'},
+            {"slide_id": "s2", "old_text": "not in the slide", "new_text": "x"},
+        ])
+        self.assertEqual(r["status"], "ok", r)
+        self.assertEqual(r["applied"], 1)
+        self.assertEqual([f["slide_id"] for f in r["failed"]], ["s2"])
+        self.assertEqual(r["edited"], ["slide 1 · Title"])
+        self.assertEqual(EditDeckTool().end_label_for_result(r), "Edited slide 1 · Title")
+        deck.refresh_from_db()
+        self.assertEqual(set(deck.agent_seen), {"s1"})
+        outline = service.deck_outline(deck)
+        self.assertEqual(outline[1]["seen"], "never")
+        self.assertEqual(outline[1]["comments"], ["Shorter please"])
+
     def test_edit_json_guard_rejects_and_preserves(self):
         w = self._run(CreateDeckTool(), title="Deck A", layouts=["title"])
         deck = SlideSet.objects.get(pk=w["deck_id"])
