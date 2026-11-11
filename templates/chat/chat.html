@@ -3142,6 +3142,12 @@
 
   var latestTasks = [];
   var locked = false;
+  // Lease token of a turn running elsewhere whose bubble the user stopped
+  // watching (Stop on a "still working" bubble); cleared by its turn.finished.
+  var dismissedServerTurn = null;
+  // chat.stop requests whose stream.cancelled ack hasn't arrived yet. Stop is
+  // applied locally at the click, so the ack must not finish a newer bubble.
+  var pendingStopAcks = 0;
   function renderTaskPlan(tasks) {
     if (tasks !== undefined) latestTasks = tasks;
     if (!taskPlanCard || !taskPlanList || !taskPlanBadge) return;
@@ -3642,6 +3648,11 @@
 
   function handleEvent(data) {
     const et = data.event_type;
+    // The user pressed Stop on a turn running elsewhere ("still working" bubble):
+    // this tab no longer renders that turn's forwarded stream (it would land in
+    // whatever bubble is current); turn.finished fills its bubble at the end.
+    // Workspace updates (canvas, deck, tasks, sub-agents, title) still apply.
+    if (data.via_broadcast && dismissedServerTurn && !/^(canvas|slidedeck\.|tasks\.|subagents\.|thread\.)/.test(et || "")) return;
     // Reset streaming timeout on any event from the server
     if (currentStreamingElement) startStreamingTimeout();
     if (et === "heartbeat") return;
@@ -3682,8 +3693,10 @@
       // reply (idempotent if loop.events already streamed it here) and unlock.
       var fin = data.data || {};
       var finEl = fin.token && messagesContainer.querySelector('[data-server-turn="' + fin.token + '"]');
+      if (fin.token && fin.token === dismissedServerTurn) dismissedServerTurn = null;
       if (!finEl) return;
       var finWait = finEl.querySelector(".waiting-indicator"); if (finWait) finWait.remove();
+      finEl.querySelectorAll(".wf-server-turn-note").forEach(function(n) { n.remove(); });
       var finContent = finEl.querySelector(".message-content");
       if (fin.reply && fin.reply.content) {
         if (finContent) { finContent.innerHTML = renderMarkdown(fin.reply.content); renderMermaidBlocks(finContent); renderEmailBlocks(finContent); renderImageBlocks(finContent); renderFileChips(finContent); }
@@ -3738,7 +3751,12 @@
       return;
     }
     if (et === "subagents.updated") { setSubagentRuns(data.runs, data.server_now); return; }
-    if (et === "stream.cancelled") { finishStreaming("Stopped."); clearSubagentPanel(); enableInput(); return; }
+    if (et === "stream.cancelled") {
+      // The ack of a Stop this tab already applied at the click: by now the
+      // user may have sent another message, whose bubble must not be finished.
+      if (pendingStopAcks > 0) { pendingStopAcks--; clearSubagentPanel(); return; }
+      finishStreaming("Stopped."); clearSubagentPanel(); enableInput(); return;
+    }
     if (et === "stream.degenerate") {
       var degenMsg = (data && data.message) ? data.message : "Wilfred started repeating itself and was stopped. Try rephrasing or resending.";
       if (currentStreamingElement) { var dc = currentStreamingElement.querySelector(".message-content"); if (dc) dc.innerHTML = '<span class="italic text-body">' + escapeHtml(degenMsg) + '</span>'; }
@@ -3926,6 +3944,7 @@
       return;
     }
     if (et === "thread.loaded") {
+      dismissedServerTurn = null;
       loadReasoningStateForThread(data.thread_id || activeThreadId);
       // Replace data room pills with loaded thread's rooms
       attachedRoomsContainer.innerHTML = "";
@@ -4458,8 +4477,29 @@
 
   // -- Stop button --
   stopButton.addEventListener("click", function() {
+    var serverTurn = currentStreamingElement && currentStreamingElement.getAttribute("data-server-turn");
+    if (serverTurn) {
+      // A turn running elsewhere (another tab, a reload, the background) can't
+      // be stopped from here, and chat.stop would cancel its sub-agents. Only
+      // stop watching it: keep its bubble for turn.finished, unlock the composer
+      // (a message sent now waits for that turn on the server).
+      dismissedServerTurn = serverTurn;
+      var el = currentStreamingElement;
+      if (currentThinkingBlock) collapseThinking();
+      var waitLabel = el.querySelector(".waiting-indicator span");
+      var watchNote = ASSISTANT_NAME + " is still working on this — the reply will appear here.";
+      if (waitLabel) waitLabel.textContent = watchNote;
+      else {
+        var noteHost = el.querySelector(".message-content");
+        if (noteHost) noteHost.insertAdjacentHTML("beforeend", '<p class="wf-server-turn-note italic text-body text-sm">' + escapeHtml(watchNote) + '</p>');
+      }
+      currentStreamingElement = null; accumulatedContent = ""; clearTimeout(streamingTimeout);
+      enableInput();
+      return;
+    }
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: "chat.stop", thread_id: activeThreadId || "" }));
+      pendingStopAcks++;
     }
     finishStreaming("Stopped.");
     enableInput();

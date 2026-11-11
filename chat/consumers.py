@@ -525,6 +525,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
             return
         inner = event.get("event")
         if inner is not None:
+            if isinstance(inner, dict):
+                # Lets the page tell a turn running elsewhere from its own (a tab
+                # that stopped watching that turn drops these until turn.finished).
+                inner = {**inner, "via_broadcast": True}
             await self.send(text_data=json.dumps(inner))
 
     async def subagent_status(self, event):
