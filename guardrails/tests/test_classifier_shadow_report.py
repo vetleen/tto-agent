@@ -101,6 +101,9 @@ class ReportTests(TestCase):
 
     def _run(self, *args):
         out = StringIO()
+        # These fixtures are pre-2026-11 rows (production = the legacy classifier).
+        if "--direction" not in args:
+            args = (*args, "--direction", "decisions_shadow")
         call_command("classifier_shadow_report", *args, stdout=out)
         return out.getvalue()
 

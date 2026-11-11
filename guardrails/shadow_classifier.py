@@ -1,39 +1,41 @@
-"""Inline shadow comparison of the text classifiers against the decisions service.
+"""Shadow comparison of the text classifiers: the legacy classifier against production.
 
-Four classifier families share ``guardrails.classifier._run_classifier`` (one system
-prompt each, a cheap model, ``ClassifierResult``): chat messages, fetched web content,
-skill content and the identity fields (profile/org description, SOUL, names). For each
-production call, the call site hands the text and the production outcome (classifier
-verdict + its reviewer's) to :func:`run_classifier_shadow`, which asks the decisions
-quick pathway the same question (the family's system prompt as the developer message,
-a predicate + a concern choice) and records both verdicts in
-``ClassifierShadowResult``. A positive under either system gets ONE blind call to the
-family's own Layer-2 reviewer with a placeholder Layer-1 block (tag + number, no written
-reasoning), so false-positive rates are comparable.
+Four classifier families take their production verdict from the Decisions service
+(``guardrails.classifier._classify_text``): chat messages, fetched web content, skill
+content and the identity fields (profile/org description, SOUL, names). For each
+production call, the call site hands the text and the production outcome (the
+Decisions probability/concern/pathway and its reviewer's verdict, :class:`ProdOutcome`)
+to :func:`run_classifier_shadow`, which runs the legacy cheap-model classifier
+(``guardrails.classifier._run_classifier``, same system prompt) and records both
+verdicts in a ``ClassifierShadowResult`` (``direction="legacy_shadow"``). A text only
+the legacy classifier flagged gets ONE blind call to the family's own Layer-2 reviewer
+with a placeholder Layer-1 block (tag + number, no written reasoning) — the same block
+production's reviewer now sees for every Decisions positive, so false-positive rates
+are comparable.
 
-Where it runs: the web-content and skill scans already run on the worker, so their
-shadow runs inline there. The chat classifier runs on the web dyno and the identity
-classifiers in web views, so those call sites only enqueue ``shadow_classifier_task``.
-A short chat message travels in the task args; a long one is re-read from its
-``ChatMessage`` row on the worker (skipped if it was redacted meanwhile), so the broker
-never carries large payloads.
+Where it runs: off the request path, as before. The web-content and skill scans
+already run on the worker, so their shadow runs inline there. The chat classifier runs
+on the web dyno and the identity classifiers in web views, so those call sites only
+enqueue ``shadow_classifier_task``. A short chat message travels in the task args; a
+long one is re-read from its ``ChatMessage`` row on the worker (skipped if it was
+redacted meanwhile), so the broker never carries large payloads. When production
+itself fell back to the legacy classifier there is nothing to compare: the row is
+written ``state="skipped"`` with ``shadow_note="prod_legacy"`` and no call is made.
 
 Side-effect free for production: never changes a verdict, never writes a
 ``GuardrailEvent``; only ``ClassifierShadowResult`` rows and its own ``LLMCallLog`` rows,
 grouped per family and day by ``trace_id`` (``shadow-<family>-<YYYYMMDD>``). Rows hold
-ids, a hash and numbers — never text, including user-authored names. It uses the chunk
-shadow's decisions service and skip window (``decisions_quick_skip:shadow``), so a
-failure never routes live traffic to the structured pathway. Bounded by per-family
-daily caps and a daily review cap (consumed only by comparisons that actually run);
-off under ``manage.py test``. Never raises into a caller.
-Report: ``manage.py classifier_shadow_report``.
+ids, a hash and numbers — never text, including user-authored names. Bounded by
+per-family daily caps and a daily review cap (consumed only by comparisons that
+actually run); off under ``manage.py test``. Never raises into a caller.
+Report: ``manage.py classifier_shadow_report``. Rows before 2026-11
+(``direction="decisions_shadow"``) are the opposite comparison.
 """
 
 from __future__ import annotations
 
 import hashlib
 import logging
-import os
 from dataclasses import dataclass
 from datetime import date, datetime
 
@@ -41,22 +43,23 @@ from django.conf import settings
 from django.utils import timezone
 
 from guardrails import classifier as _classifier
-from guardrails.decisions import (
-    QUESTION_ADVERSARIAL,
-    QUESTION_CONCERN,
-    REASONING_PLACEHOLDER_TEXT,
-    build_text_input,
-    build_text_questions,
-)
-from llm.types.decisions import InputMessage, Question
+from guardrails.decisions import REASONING_PLACEHOLDER_TEXT
 
 logger = logging.getLogger(__name__)
 
+DIRECTION = "legacy_shadow"
 FAMILIES = ("chat_message", "web_content", "skill_content", "identity_field")
 FAMILY_PROMPTS = {
     "chat_message": _classifier._CLASSIFIER_SYSTEM_PROMPT,
     "web_content": _classifier._WEB_CLASSIFIER_SYSTEM_PROMPT,
     "skill_content": _classifier._SKILL_CLASSIFIER_PROMPT,
+}
+# Which per-feature cheap model the family's legacy classifier resolves.
+FAMILY_FEATURE_KEYS = {
+    "chat_message": "guardrails_classifier",
+    "identity_field": "guardrails_classifier",
+    "web_content": "guardrail_web_scan",
+    "skill_content": "guardrail_web_scan",
 }
 # The identity fields run three different prompts; ``subject["field"]`` picks one.
 IDENTITY_PROMPTS = {
@@ -72,22 +75,44 @@ MAX_SHADOW_TEXT_CHARS = 40_000
 # A chat message longer than this is not carried through the broker; the worker
 # re-reads it from the ChatMessage row instead (the broker Redis is small).
 CHAT_QUEUED_TEXT_MAX_CHARS = 4_000
-# Quick probability at/above which the text counts as a positive (the report
-# recomputes agreement at other thresholds from the stored probability).
-SHADOW_FLAG_THRESHOLD = 0.5
-# The Layer-1 block the reviewer sees for EVERY shadow-reviewed positive, whichever
-# system flagged it (guardrails.shadow.SHADOW_REVIEW_PLACEHOLDER says "chunk").
+# The Layer-1 block the reviewer sees for a shadow-reviewed positive.
 SHADOW_REVIEW_PLACEHOLDER = REASONING_PLACEHOLDER_TEXT
 
 
 @dataclass(frozen=True)
 class ProdOutcome:
-    """What production decided: the classifier's verdict and its reviewer's."""
+    """What production decided: the Decisions verdict and its reviewer's.
+
+    ``probability``/``concern``/``pathway`` are the Decisions answers (``None``/""
+    when production fell back to the legacy classifier: ``source == "legacy"``).
+    """
 
     flagged: bool
     confidence: float | None
     tags: list
-    review: str  # the family's verdict string; "" when the classifier did not flag
+    review: str  # the family's verdict string; "" when production did not flag
+    probability: float | None = None
+    concern: str = ""
+    pathway: str = ""
+    source: str = "decisions"
+    decide_error: str = ""
+
+    @classmethod
+    def from_result(cls, result, review: str = "") -> "ProdOutcome":
+        """From a production ``PrimaryClassifierResult`` (a plain ``ClassifierResult``
+        counts as a legacy verdict)."""
+        source = getattr(result, "source", "legacy")
+        return cls(
+            flagged=bool(result.is_suspicious),
+            confidence=result.confidence,
+            tags=list(result.concern_tags or []),
+            review=review if result.is_suspicious else "",
+            probability=getattr(result, "probability", None) if source == "decisions" else None,
+            concern=str(getattr(result, "concern", "") or ""),
+            pathway=str(getattr(result, "pathway", "") or ""),
+            source=source,
+            decide_error=str(getattr(result, "decide_error", "") or ""),
+        )
 
     @classmethod
     def from_dict(cls, data: dict) -> "ProdOutcome":
@@ -96,10 +121,19 @@ class ProdOutcome:
             confidence=data.get("confidence"),
             tags=list(data.get("tags") or []),
             review=str(data.get("review") or ""),
+            probability=data.get("probability"),
+            concern=str(data.get("concern") or ""),
+            pathway=str(data.get("pathway") or ""),
+            source=str(data.get("source") or "decisions"),
+            decide_error=str(data.get("decide_error") or ""),
         )
 
     def to_dict(self) -> dict:
-        return {"flagged": self.flagged, "confidence": self.confidence, "tags": list(self.tags), "review": self.review}
+        return {
+            "flagged": self.flagged, "confidence": self.confidence, "tags": list(self.tags),
+            "review": self.review, "probability": self.probability, "concern": self.concern,
+            "pathway": self.pathway, "source": self.source, "decide_error": self.decide_error,
+        }
 
 
 @dataclass(frozen=True)
@@ -111,17 +145,6 @@ class ShadowClassifierFlag:
     confidence: float
     is_suspicious: bool = True
     reasoning: str = SHADOW_REVIEW_PLACEHOLDER
-
-
-@dataclass(frozen=True)
-class QuickVerdict:
-    probability: float | None  # None = refusal or decide error
-    concern: str
-    pathway: str
-
-    @property
-    def flagged(self) -> bool:
-        return self.probability is not None and self.probability >= SHADOW_FLAG_THRESHOLD
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +165,7 @@ def _daily_key(name: str, day: date) -> str:
 def take_daily_slot(name: str, cap: int) -> bool:
     """One slot of today's ``cap`` for ``name`` (a family, or ``reviews``).
 
-    A cache failure fails open: a call costs ~$0.0001 and the kill switch remains.
+    A cache failure fails open: a call is cheap and the kill switch remains.
     """
     from django.core.cache import cache
 
@@ -169,35 +192,6 @@ def prompt_for(family: str, subject: dict | None) -> str | None:
     if family == "identity_field":
         return IDENTITY_PROMPTS.get(str((subject or {}).get("field") or ""))
     return FAMILY_PROMPTS.get(family)
-
-
-# ---------------------------------------------------------------------------
-# The decisions call
-# ---------------------------------------------------------------------------
-
-
-def build_questions() -> list[Question]:
-    return build_text_questions()
-
-
-def build_input(system_prompt: str, text: str) -> list[InputMessage]:
-    return build_text_input(system_prompt, text, MAX_SHADOW_TEXT_CHARS)
-
-
-def _decide(family: str, system_prompt: str, text: str, *, org_id, context) -> QuickVerdict:
-    from guardrails import shadow as chunk_shadow
-
-    result = chunk_shadow.get_shadow_decisions_service().decide(
-        build_questions(), build_input(system_prompt, text),
-        feature_key=f"shadow_{family}", org_id=org_id, context=context,
-    )
-    predicate = result[QUESTION_ADVERSARIAL]
-    choice = result[QUESTION_CONCERN]
-    return QuickVerdict(
-        probability=predicate.probability if predicate.type == "predicate" else None,
-        concern=choice.choice if choice.type == "choice" else "",
-        pathway=result.pathway,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -256,12 +250,12 @@ def run_classifier_shadow(
     subject: dict | None = None, system_prompt: str | None = None, history_before: datetime | None = None,
     review_label: str = "",
 ):
-    """Compare one production classification with the quick pathway and record it.
+    """Compare one production classification with the legacy classifier and record it.
 
     Never raises. Returns the stored ``ClassifierShadowResult`` or ``None`` when the
-    shadow skipped (disabled, empty text, no OpenAI key, skip window open, org without
-    the quick pathway, daily cap) or could not be stored. ``subject`` must hold ids
-    only — it is stored; ``review_label`` is shown to the skill reviewer, not stored.
+    shadow skipped (disabled, empty text, no legacy model, daily cap) or could not be
+    stored. ``subject`` must hold ids only — it is stored; ``review_label`` is shown
+    to the skill reviewer, not stored.
     """
     try:
         return _run(
@@ -274,52 +268,72 @@ def run_classifier_shadow(
         return None
 
 
-def _run(family, text, *, prod, org_id, user_id, conversation_id, subject, system_prompt, history_before, review_label):
-    from guardrails import shadow as chunk_shadow
+def _row(family, text, *, prod, org_id, user_id, conversation_id, subject, trace_id, **fields):
     from guardrails.models import ClassifierShadowResult
+
+    return ClassifierShadowResult.objects.create(
+        family=family,
+        org_id=org_id,
+        user_id=int(user_id) if user_id is not None else None,
+        conversation_id=conversation_id or "",
+        subject=_json_safe(subject or {}),
+        text_chars=len(text),
+        text_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        prod_review=prod.review[:24],
+        quick_probability=prod.probability,
+        quick_concern=prod.concern[:32],
+        quick_flagged=prod.flagged,
+        quick_pathway=prod.pathway[:12],
+        decide_error=prod.decide_error[:64],
+        trace_id=trace_id,
+        direction=DIRECTION,
+        **fields,
+    )
+
+
+def _run(family, text, *, prod, org_id, user_id, conversation_id, subject, system_prompt, history_before, review_label):
+    from core.preferences import resolve_org_feature_model
     from llm.types import RunContext
 
     if family not in FAMILIES or not shadow_enabled(family) or not text or not text.strip():
         return None
-    if not os.environ.get("OPENAI_API_KEY"):
-        return None
-    if chunk_shadow.shadow_availability().is_suspended():
-        return None
-    from core.preferences import resolve_decisions_settings, resolve_org_feature_model
-
-    prefs = resolve_decisions_settings(org_id)
-    if not prefs.quick_enabled or not prefs.quick_model:
-        return None
     system_prompt = system_prompt or prompt_for(family, subject)
     if not system_prompt:
         logger.warning("classifier shadow: no prompt for family=%s subject keys=%s", family, sorted((subject or {}).keys()))
+        return None
+    text = text[:MAX_SHADOW_TEXT_CHARS]
+    conversation_id = str(conversation_id) if conversation_id else None
+    common = dict(prod=prod, org_id=org_id, user_id=user_id, conversation_id=conversation_id, subject=subject)
+    if prod.source != "decisions":
+        # Production already used the legacy classifier: nothing to compare.
+        return _row(family, text, trace_id="", state="skipped", shadow_note="prod_legacy",
+                    classifier_flagged=prod.flagged, classifier_confidence=prod.confidence,
+                    classifier_tags=list(prod.tags), **common)
+    feature_key = FAMILY_FEATURE_KEYS[family]
+    if not resolve_org_feature_model(org_id, feature_key):
         return None
     # Every gate above is free; only a comparison that will actually run consumes a slot.
     if not take_daily_slot(family, int(getattr(settings, "CLASSIFIER_SHADOW_MAX_PER_DAY", 2000))):
         logger.debug("classifier shadow: daily cap reached family=%s", family)
         return None
 
-    text = text[:MAX_SHADOW_TEXT_CHARS]
-    conversation_id = str(conversation_id) if conversation_id else None
     context = RunContext(trace_id=day_trace_id(family), conversation_id=conversation_id)
-
-    quick = QuickVerdict(None, "", "")
-    decide_error = ""
     try:
-        quick = _decide(family, system_prompt, text, org_id=org_id, context=context)
+        legacy = _classifier._run_classifier(
+            text, user_id, conversation_id, system_prompt, org_id, feature_key,
+            context=context, log_metadata={"kind": "shadow", "feature": f"shadow_{family}"},
+        )
     except Exception as exc:
-        decide_error = type(exc).__name__
-        logger.warning("classifier shadow: decide failed family=%s error=%s", family, decide_error, exc_info=True)
+        logger.warning("classifier shadow: legacy classifier failed family=%s error=%s", family,
+                       type(exc).__name__, exc_info=True)
+        return _row(family, text, trace_id=context.trace_id, state="skipped",
+                    shadow_note=f"classifier_error:{type(exc).__name__}"[:64], **common)
 
     blind_verdict, blind_source, blind_confidence, blind_severity = "", "", None, ""
-    if (prod.flagged or quick.flagged) and family != "identity_field":
-        if prod.flagged:
-            flag = ShadowClassifierFlag(list(prod.tags), float(prod.confidence or 0.0))
-            blind_source = "classifier"
-        else:
-            tags = [quick.concern] if quick.concern not in ("", "none") else []
-            flag = ShadowClassifierFlag(tags, float(quick.probability or 0.0))
-            blind_source = "quick"
+    if legacy.is_suspicious and not prod.flagged and family != "identity_field":
+        # Only the legacy classifier flagged it: production's reviewer never saw it.
+        blind_source = "classifier"
+        flag = ShadowClassifierFlag(list(legacy.concern_tags or []), float(legacy.confidence or 0.0))
         if not resolve_org_feature_model(org_id, "guardrails_reviewer"):
             blind_verdict = "no_model"  # nothing to call; consumes no review slot
         elif not take_review_slot():
@@ -330,34 +344,21 @@ def _run(family, text, *, prod, org_id, user_id, conversation_id, subject, syste
                 subject=subject, context=context, history_before=history_before, label=review_label,
             )
 
-    row = ClassifierShadowResult.objects.create(
-        family=family,
-        org_id=org_id,
-        user_id=int(user_id) if user_id is not None else None,
-        conversation_id=conversation_id or "",
-        subject=_json_safe(subject or {}),
-        text_chars=len(text),
-        text_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
-        classifier_flagged=prod.flagged,
-        classifier_confidence=prod.confidence,
-        classifier_tags=list(prod.tags),
-        prod_review=prod.review[:24],
-        quick_probability=quick.probability,
-        quick_concern=quick.concern[:32],
-        quick_flagged=quick.flagged,
-        quick_pathway=quick.pathway[:12],
+    row = _row(
+        family, text, trace_id=context.trace_id, state="done",
+        classifier_flagged=bool(legacy.is_suspicious),
+        classifier_confidence=legacy.confidence,
+        classifier_tags=list(legacy.concern_tags or []),
         blind_review=blind_verdict[:24],
         blind_review_source=blind_source,
         blind_review_confidence=blind_confidence,
         blind_review_severity=(blind_severity or "")[:10],
-        trace_id=context.trace_id,
-        decide_error=decide_error[:64],
+        **common,
     )
     logger.info(
-        "classifier shadow: family=%s prod_flagged=%s prod_review=%s quick_p=%s quick_concern=%s "
-        "pathway=%s blind=%s decide_error=%s row=%s",
-        family, prod.flagged, prod.review or "-", quick.probability, quick.concern or "-",
-        quick.pathway or "-", blind_verdict or "-", decide_error or "-", row.pk,
+        "classifier shadow: family=%s decisions_p=%s flagged=%s prod_review=%s legacy_flagged=%s blind=%s row=%s",
+        family, prod.probability, prod.flagged, prod.review or "-", legacy.is_suspicious,
+        blind_verdict or "-", row.pk,
     )
     return row
 
@@ -426,12 +427,7 @@ def enqueue_chat_message_shadow(*, text, verdict, org_id, user_id, thread_id, me
     classifier_result = getattr(verdict, "classifier_result", None)
     if classifier_result is None or "classifier_error" in (classifier_result.concern_tags or []):
         return
-    prod = ProdOutcome(
-        flagged=bool(classifier_result.is_suspicious),
-        confidence=classifier_result.confidence,
-        tags=list(classifier_result.concern_tags or []),
-        review=str(getattr(verdict, "review_outcome", "") or "") if classifier_result.is_suspicious else "",
-    )
+    prod = ProdOutcome.from_result(classifier_result, str(getattr(verdict, "review_outcome", "") or ""))
     from guardrails.tasks import shadow_classifier_task
 
     thread = str(thread_id) if thread_id else None
@@ -453,12 +449,7 @@ def shadow_identity_field(field: str, text: str, *, user, org_id, result) -> Non
     try:
         if not shadow_enabled("identity_field") or not text or not text.strip() or result is None:
             return
-        prod = ProdOutcome(
-            flagged=bool(result.is_suspicious),
-            confidence=result.confidence,
-            tags=list(result.concern_tags or []),
-            review="blocked" if result.is_suspicious else "",
-        )
+        prod = ProdOutcome.from_result(result, "blocked")
         from guardrails.tasks import shadow_classifier_task
 
         shadow_classifier_task.delay(

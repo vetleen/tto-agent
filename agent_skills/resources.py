@@ -432,7 +432,7 @@ def _scan_text_guardrail(text, user, org_id, label, *, subject=None) -> tuple[st
 
 
 def _shadow_skill_window(window, index, cres, prod_review, *, subject, label, uid, org_id) -> None:
-    """Shadow comparison of one classified window against the decisions service
+    """Shadow comparison of one classified window against the legacy classifier
     (guardrails/shadow_classifier.py). Inline: this already runs on the worker.
     Never raises; never changes the verdict. ``label`` (a skill/resource name — user
     text) only frames the blind review; the stored subject holds ids."""
@@ -440,10 +440,7 @@ def _shadow_skill_window(window, index, cres, prod_review, *, subject, label, ui
 
     run_classifier_shadow(
         "skill_content", window,
-        prod=ProdOutcome(
-            flagged=bool(cres.is_suspicious), confidence=cres.confidence,
-            tags=list(cres.concern_tags or []), review=prod_review,
-        ),
+        prod=ProdOutcome.from_result(cres, prod_review),
         org_id=org_id, user_id=uid, conversation_id=None,
         subject={**(subject or {}), "window": index},
         review_label=label,

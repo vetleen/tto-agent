@@ -5,6 +5,12 @@ Usage:
     python manage.py classifier_shadow_report --date 2026-10-25 --days 1
     python manage.py classifier_shadow_report --family web_content --family chat_message
     python manage.py classifier_shadow_report --days 14 --disagreements
+    python manage.py classifier_shadow_report --direction decisions_shadow   # the pre-2026-11 comparison
+
+Directions: ``legacy_shadow`` (default; production = Decisions, the legacy classifier
+is the shadow) and ``decisions_shadow`` (before 2026-11; production = the legacy
+classifier). Columns are by system either way: "classifier" = the legacy classifier,
+"quick" = Decisions. Only completed rows are compared; skipped rows are counted.
 
 Per family, per day and in total: rows the quick pathway answered (headline), the
 confusion matrix at 0.5, agreement at 0.3/0.5/0.7, quick-probability deciles split by
@@ -71,11 +77,13 @@ def summarize_family(rows, family: str) -> dict:
         "classifier_blind": allow_share((r.blind_review for r in clf_pos), allow, act),
         "quick_blind": allow_share((r.blind_review for r in quick_pos), allow, act),
         "classifier_prod": allow_share((r.prod_review for r in clf_pos), allow, act),
+        "quick_prod": allow_share((r.prod_review for r in quick_pos), allow, act),
         "prod_vs_blind": pct(
             sum(1 for r in both_judged if (r.blind_review in allow) == (r.prod_review in allow)), len(both_judged),
         ),
     }
     out["prod_reviews"] = dict(Counter(r.prod_review or "-" for r in rows if r.classifier_flagged))
+    out["prod_reviews_quick"] = dict(Counter(r.prod_review or "-" for r in rows if r.quick_flagged))
     reviewed = [r for r in rows if r.blind_review in allow | act]
     by_verdict = {}
     for verdict in sorted({r.blind_review for r in reviewed}):
@@ -92,7 +100,7 @@ def summarize_family(rows, family: str) -> dict:
 
 
 class Command(BaseCommand):
-    help = "Report on the inline classifier shadow (decisions quick pathway vs. the text classifiers)."
+    help = "Report on the text-classifier shadow (Decisions vs. the legacy classifiers)."
 
     def add_arguments(self, parser):
         parser.add_argument("--date", help="Last day to report, YYYY-MM-DD (default: yesterday).")
@@ -101,6 +109,8 @@ class Command(BaseCommand):
                             help="Family to report (repeatable; default: all).")
         parser.add_argument("--disagreements", action="store_true",
                             help="List classifier-only / quick-only rows (chat messages with a live preview).")
+        parser.add_argument("--direction", choices=("legacy_shadow", "decisions_shadow"), default="legacy_shadow",
+                            help="Which comparison to report (default: legacy_shadow, production = Decisions).")
 
     def handle(self, *args, **options):
         from django.utils import timezone
@@ -115,10 +125,17 @@ class Command(BaseCommand):
         start, _ = day_bounds(start_day)
         _, end = day_bounds(end_day)
 
-        rows = list(
-            ClassifierShadowResult.objects.filter(
-                family__in=families, created_at__gte=start, created_at__lt=end,
-            ).order_by("created_at")
+        self.direction = options["direction"]
+        in_range = ClassifierShadowResult.objects.filter(
+            family__in=families, created_at__gte=start, created_at__lt=end, direction=self.direction,
+        )
+        rows = list(in_range.filter(state="done").order_by("created_at"))
+        skipped = Counter(in_range.filter(state="skipped").values_list("shadow_note", flat=True))
+        self.stdout.write(
+            f"direction: {self.direction} ("
+            + ("production = Decisions, shadow = legacy classifier" if self.direction == "legacy_shadow"
+               else "production = legacy classifier, shadow = Decisions")
+            + ")   skipped: " + (" ".join(f"{k or '-'}={v}" for k, v in sorted(skipped.items())) or "-")
         )
         if not rows:
             self.stdout.write(f"Nothing to report for {start_day}..{end_day} ({', '.join(families)}).")
@@ -163,10 +180,15 @@ class Command(BaseCommand):
             w('false-positive rates (reviewer "allow" share: ' + "/".join(sorted(verdicts["allow"])) + "):")
             w(f"  classifier positives, blind review : {fp['classifier_blind']}")
             w(f"  quick positives, blind review      : {fp['quick_blind']}")
-            w(f"  classifier positives, prod review  : {fp['classifier_prod']}")
+            if getattr(self, "direction", "legacy_shadow") == "legacy_shadow":
+                w(f"  quick positives, prod review       : {fp['quick_prod']}")
+            else:
+                w(f"  classifier positives, prod review  : {fp['classifier_prod']}")
             w(f"  prod vs blind agreement on classifier positives: {fp['prod_vs_blind']}")
-        prod_reviews = " ".join(f"{k}={v}" for k, v in sorted(s["prod_reviews"].items())) or "-"
-        w(f"production verdicts on classifier positives: {prod_reviews}")
+        legacy_shadow = getattr(self, "direction", "legacy_shadow") == "legacy_shadow"
+        key = "prod_reviews_quick" if legacy_shadow else "prod_reviews"
+        prod_reviews = " ".join(f"{k}={v}" for k, v in sorted(s[key].items())) or "-"
+        w(f"production verdicts on {'quick' if legacy_shadow else 'classifier'} positives: {prod_reviews}")
         b = s["blind"]
         by_verdict = " | ".join(
             f"{v} n={d['n']} mean conf " + (f"{d['mean_confidence']:.2f}" if d["mean_confidence"] is not None else "-")

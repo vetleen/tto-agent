@@ -889,7 +889,7 @@ def _scan_web_content(text: str, user_id: int, thread_id, source_label: str) -> 
     else:
         prod_review = _record_flagged_web_content(text, user_id, thread_id, org_id, source_label, result)
 
-    # Shadow comparison against the decisions service (guardrails/shadow_classifier.py):
+    # Shadow comparison against the legacy classifier (guardrails/shadow_classifier.py):
     # inline here because the fetched text exists nowhere else, and this task is
     # already off the request path. Never raises; never changes the verdict above.
     _shadow_web_content(
@@ -904,10 +904,7 @@ def _shadow_web_content(text, result, prod_review, *, org_id, user_id, thread_id
     thread = str(thread_id) if thread_id else None
     run_classifier_shadow(
         "web_content", text,
-        prod=ProdOutcome(
-            flagged=bool(result.is_suspicious), confidence=result.confidence,
-            tags=list(result.concern_tags or []), review=prod_review,
-        ),
+        prod=ProdOutcome.from_result(result, prod_review),
         org_id=org_id, user_id=user_id, conversation_id=thread,
         subject={"source_label": source_label, "thread_id": thread},
     )
@@ -991,7 +988,7 @@ def shadow_classifier_task(
     self, family, text, prod, org_id, user_id, conversation_id, subject,
     system_prompt_key=None, started_at=None,
 ) -> str:
-    """Off-dyno shadow comparison of one text classification
+    """Off-dyno legacy-classifier shadow of one text classification
     (guardrails.shadow_classifier) — used by the chat-message and identity-field
     call sites, which run on the web dyno; the web and skill scans shadow inline on
     the worker. A plain task: no retries (a lost comparison is just a missing row),
