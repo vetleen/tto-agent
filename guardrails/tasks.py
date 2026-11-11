@@ -259,7 +259,7 @@ def _scan_chunks_for_version(version) -> None:
             org_id = mem
 
     cheap_model = resolve_org_feature_model(org_id, "guardrail_chunk_scan")
-    if not cheap_model:
+    if not cheap_model and not _decisions_available(org_id):
         # Released with a heuristics-only scan — deliberate: this is a system
         # misconfiguration, not an attack signal, and failing the document
         # would brick uploads. Chunks stay HEURISTIC_DONE so a later rescan
@@ -268,7 +268,7 @@ def _scan_chunks_for_version(version) -> None:
         _refresh_partial_quarantine(version)
         logger.warning(
             "scan_document_chunks: document_id=%s released without classifier scan "
-            "(no model resolves for guardrail_chunk_scan); heuristic_flagged=%s",
+            "(no Decisions model and no model for guardrail_chunk_scan); heuristic_flagged=%s",
             document_id, len(flagged_chunk_ids),
         )
         return
@@ -352,7 +352,7 @@ def _classify_chunk_batch(
     would be invisible to the classifier yet fully retrievable.
     """
     chunk_by_index = {c["chunk_index"]: c for c in chunks}
-    results_by_index = _run_batch_classifier(doc, chunks, model, org_id)
+    results_by_index = _decide_chunk_batch(doc, chunks, model, org_id)
 
     # Models routinely drop items from long lists (and an adversarial chunk could
     # try to induce its own omission). Classify each omitted chunk on its own —
@@ -395,8 +395,72 @@ def _classify_chunk_batch(
         )
 
 
-def _run_batch_classifier(doc, chunks: list[dict], model: str, org_id: int | None = None) -> dict:
-    """One classifier call over ``chunks``; returns ``{chunk_index: result}``.
+def _decisions_available(org_id) -> bool:
+    """Whether the Decisions service could answer for this org (a model resolves on
+    either pathway and the kill switch is on)."""
+    from django.conf import settings
+
+    from core.preferences import resolve_decisions_settings
+
+    if not getattr(settings, "DECISIONS_PRIMARY_ENABLED", True):
+        return False
+    prefs = resolve_decisions_settings(org_id)
+    return bool(prefs.quick_model or prefs.structured_model)
+
+
+def _decide_chunk_batch(doc, chunks: list[dict], model: str, org_id: int | None = None) -> dict:
+    """The batch's Layer-1 verdicts: one Decisions call (two questions per chunk),
+    or the legacy batch classifier when Decisions fails. ``{chunk_index: result}``;
+    the Decisions path answers every chunk, the legacy one may omit some (the caller
+    retries those individually)."""
+    from guardrails.decisions import (
+        build_chunk_input,
+        build_chunk_questions,
+        interpret_chunk_result,
+        wrap_legacy_chunk,
+    )
+    from llm.service.decisions_fallback import FALLBACK_KIND, decide_with_fallback
+    from llm.types import RunContext
+
+    context = RunContext.create(user_id=doc.uploaded_by_id)
+
+    def legacy(meta: dict) -> dict:
+        if not model:
+            from guardrails.classifier import GuardrailModelUnavailableError
+
+            raise GuardrailModelUnavailableError(
+                "Decisions failed and no model resolves for guardrail_chunk_scan."
+            )
+        results = _run_batch_classifier(doc, chunks, model, org_id, context=context, log_metadata=meta)
+        return {index: wrap_legacy_chunk(result, meta) for index, result in results.items()}
+
+    try:
+        decision_input = build_chunk_input(chunks, CHUNK_SCAN_SYSTEM_PROMPT, _MAX_CHUNK_CHARS)
+    except ValueError:
+        # Over the endpoint's JSON size cap (heavily escaped text): the legacy path.
+        logger.info("scan_document_chunks: batch too large for Decisions document_id=%s", doc.id)
+        return legacy({"kind": FALLBACK_KIND, "feature": "guardrail_chunk_scan", "decide_error": "InputTooLarge", "error_code": ""})
+    return decide_with_fallback(
+        build_chunk_questions(chunks), decision_input,
+        feature_key="guardrail_chunk_scan", org_id=org_id, context=context,
+        prompt_cache_key="decisions:guardrail_chunk_scan",
+        interpret=lambda r: interpret_chunk_result(r, chunks), fallback=legacy,
+        service=_get_decisions_service(),
+    )
+
+
+def _get_decisions_service():
+    """The Decisions service — extracted for testability."""
+    from llm.service.decisions_service import get_decisions_service
+
+    return get_decisions_service()
+
+
+def _run_batch_classifier(
+    doc, chunks: list[dict], model: str, org_id: int | None = None, *,
+    context=None, log_metadata: dict | None = None,
+) -> dict:
+    """The legacy classifier: one call over ``chunks``; returns ``{chunk_index: result}``.
 
     Deduped (first occurrence wins) with hallucinated indexes not in ``chunks``
     dropped. May be missing indexes: the caller checks completeness.
@@ -426,9 +490,13 @@ def _run_batch_classifier(doc, chunks: list[dict], model: str, org_id: int | Non
 
     from core.preferences import org_feature_reasoning_params
 
-    context = RunContext.create(
-        user_id=doc.uploaded_by_id,
-    )
+    if context is None:
+        context = RunContext.create(
+            user_id=doc.uploaded_by_id,
+        )
+    params = org_feature_reasoning_params(org_id, "guardrail_chunk_scan", model)
+    if log_metadata:
+        params = {**(params or {}), "_log_metadata": dict(log_metadata)}
     request = ChatRequest(
         messages=[
             Message(role="system", content=CHUNK_SCAN_SYSTEM_PROMPT),
@@ -438,7 +506,7 @@ def _run_batch_classifier(doc, chunks: list[dict], model: str, org_id: int | Non
         stream=False,
         tools=[],
         context=context,
-        params=org_feature_reasoning_params(org_id, "guardrail_chunk_scan", model),
+        params=params,
     )
 
     service = get_llm_service()
