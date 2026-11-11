@@ -3149,6 +3149,8 @@
   // applied locally at the click, so the ack must not finish a newer bubble.
   var pendingStopAcks = 0;
   var stopAckTimer = null;
+  // True while handleEvent processes a forwarded loop.event (see ensureBubble).
+  var handlingBroadcastEvent = false;
   function renderTaskPlan(tasks) {
     if (tasks !== undefined) latestTasks = tasks;
     if (!taskPlanCard || !taskPlanList || !taskPlanBadge) return;
@@ -3328,7 +3330,14 @@
           if (window.SlideDeck) SlideDeck.requestState();
         }
       };
-      ws.onmessage = function(event) { try { handleEvent(JSON.parse(event.data)); } catch(e) { console.error('Failed to parse WebSocket message:', e); } };
+      ws.onmessage = function(event) {
+        try {
+          var parsed = JSON.parse(event.data);
+          handlingBroadcastEvent = !!(parsed && parsed.via_broadcast);
+          handleEvent(parsed);
+        } catch(e) { console.error('Failed to parse WebSocket message:', e); }
+        finally { handlingBroadcastEvent = false; }
+      };
       ws.onerror = function() { updateConnectionStatus(false, false); };
       ws.onclose = function(event) {
         clearTimeout(stableTimer);
@@ -3413,8 +3422,16 @@
   // turn.in_flight): open a locked "still working" bubble tagged with its lease
   // token; its loop.events (if broadcast) render into it, turn.finished closes it.
   function showTurnInFlight(t) {
-    if (!t || !t.token || currentStreamingElement) return;
+    if (!t || !t.token) return;
     if (messagesContainer.querySelector('[data-server-turn="' + t.token + '"]')) return;
+    if (currentStreamingElement) {
+      // That turn's forwarded events got here first and opened a bubble: adopt
+      // it (Stop and turn.finished find it by token). Never an own-turn bubble.
+      if (currentStreamingElement.getAttribute("data-broadcast-turn") && !currentStreamingElement.getAttribute("data-server-turn")) {
+        currentStreamingElement.setAttribute("data-server-turn", t.token);
+      }
+      return;
+    }
     ensureBubble();
     currentStreamingElement.setAttribute("data-server-turn", t.token);
     var label = currentStreamingElement.querySelector(".waiting-indicator span");
@@ -4215,6 +4232,9 @@
     const div = document.createElement("div"); div.className = "wmsg"; div.setAttribute("data-role", "assistant");
     div.innerHTML = `<span class="wmsg__av">${escapeHtml(ASSISTANT_NAME.charAt(0).toUpperCase())}</span><div class="wmsg__body"><div class="wmsg__timeline"></div>${WAITING_INDICATOR_HTML}<div class="text-sm text-body mt-1 message-content wmsg__answer markdown-content"></div>${COPY_BTN_HTML}</div>`;
     div._turnStart = Date.now();
+    // Opened by a turn running elsewhere (forwarded loop.event): showTurnInFlight
+    // adopts it when thread.loaded / turn.in_flight names that turn's token.
+    if (handlingBroadcastEvent) div.setAttribute("data-broadcast-turn", "1");
     return div;
   }
 
