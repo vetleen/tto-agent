@@ -205,6 +205,37 @@ class ThreadTurnQueueTests(TransactionTestCase):
         self.assertEqual([r[1] for r in rows], ["First question", "Hi", "Follow-up", "SECOND"])
         self.assertIsNone(thread_turn_lease.current(thread_id))
 
+    @patch("llm.get_llm_service")
+    async def test_turn_survives_a_close_before_it_reaches_the_gate(self, get_service):
+        """Send, then close at once (the turn is still in its pre-stream hold):
+        the message is answered detached instead of being dropped."""
+        dispatcher = tg.StreamDispatcher(1)
+        get_service.return_value = self._service(dispatcher)
+        hold = asyncio.Event()
+        reached = asyncio.Event()
+
+        async def slow_hold(consumer, *args, **kwargs):
+            reached.set()
+            await hold.wait()
+            return True
+
+        with patch.object(ChatConsumer, "_wait_for_attachments", slow_hold):
+            tab = await self._connect()
+            await tab.send_json_to({"type": "chat.message", "content": "Quick question"})
+            created = await self._read_until(tab, "thread.created")
+            await asyncio.wait_for(reached.wait(), timeout=5)
+            await tab.disconnect()
+            hold.set()
+            await tg._until(lambda: dispatcher.streams[0].started.is_set(),
+                            message="the turn was dropped when its tab closed before the gate")
+            dispatcher.streams[0].release.set()
+            rows = await self._wait_visible(
+                created["thread_id"], lambda rows: ("assistant", "Hi") in rows, "reply missing",
+            )
+        await tg._until(lambda: turn_gate.stats()["active"] == 0, message="a turn kept its slot")
+        self.assertEqual(rows, [("user", "Quick question"), ("assistant", "Hi")])
+        self.assertIsNone(thread_turn_lease.current(created["thread_id"]))
+
     @override_settings(CHAT_THREAD_TURN_WAIT_SECONDS=0.2)
     @patch("llm.get_llm_service")
     async def test_timeout_reports_thread_busy_and_keeps_the_message(self, get_service):

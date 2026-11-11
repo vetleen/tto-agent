@@ -73,11 +73,11 @@ class _TurnState:
     # keeps it alive; released by _release_thread_turn once the reply is saved.
     thread_lease: object | None = None
     lease_keepalive_task: asyncio.Task | None = None
-    # Had to wait for another turn on this thread. Unlike a turn queued for a
-    # gate slot, it is the thread's next answer to a message the user already
-    # sent, so a disconnect lets it finish detached instead of dropping it
-    # (the message would otherwise stay unanswered).
-    waited_for_thread: bool = False
+    # Waiting in the per-user/global gate queue right now (turn.queued with a
+    # gate reason). Only such a turn is dropped on disconnect; any other turn
+    # answering a saved user message finishes detached, or that message would
+    # stay unanswered (a reload during the safety check or the thread wait).
+    gate_queued: bool = False
 
 
 # Seconds between processing-state polls while a turn waits for its attachments
@@ -475,11 +475,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
         cancelled: it finishes detached (``_detach_from_socket``) so its reply
         is persisted and a reconnected tab can pick it up. Cancelling here used
         to lose the partial reply and the current tool round on every network
-        drop. A turn still waiting in line for a gate slot is dropped as before —
-        nothing has been generated, and a departed user must not hold a place in
-        the queue — unless it waited for another turn on the same thread
-        (``waited_for_thread``): that one is the thread's queued answer to a
-        message already saved, so it finishes detached too.
+        drop. The same holds before the gate (safety check, attachment hold,
+        waiting for another turn on the thread) for a turn answering a saved user
+        message — dropping it left that message unanswered. A turn waiting in line
+        for a gate slot (``gate_queued``) is dropped as before — a departed user
+        must not hold a place in the queue — and so is a seeded continuation that
+        has not started (another consumer claims its results).
         """
         # Leave thread channel group
         if self._current_thread_id:
@@ -487,7 +488,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         streaming = self._stream_task and not self._stream_task.done()
         turn = self._turn
-        if streaming and turn is not None and (turn.slot_held or turn.waited_for_thread):
+        if streaming and turn is not None and (
+            turn.slot_held or (turn.user_message_id is not None and not turn.gate_queued)
+        ):
             # The guardrail task is left alone too: _finalize_guardrail awaits
             # it in the turn's `finally`, so the verdict still gets applied.
             self._detach_from_socket(f"close {close_code}")
@@ -2688,6 +2691,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         async def _on_queued(reason, position):
             nonlocal queue_hb
+            if reason != "thread_busy":
+                turn.gate_queued = True  # see disconnect()
             await self._sink.send_event({
                 "event_type": "turn.queued",
                 "data": {"reason": reason, "position": position},
@@ -2708,11 +2713,6 @@ class ChatConsumer(AsyncWebsocketConsumer):
             })
             if self._sink.wants_heartbeats and queue_hb is None:
                 queue_hb = asyncio.create_task(self._send_heartbeats())
-
-        async def _on_thread_busy():
-            # From here on a disconnect detaches this turn instead of dropping it.
-            turn.waited_for_thread = True
-            await _on_queued("thread_busy", 1)
 
         try:
             if not await self._wait_for_attachments(
@@ -2748,7 +2748,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 should_stop=lambda: (
                     self._stopped or turn.cancel_event.is_set() or self._turn is not turn
                 ),
-                on_waiting=_on_thread_busy,
+                on_waiting=lambda: _on_queued("thread_busy", 1),
             )
             if lease is None:
                 # Stopped or superseded while waiting: same exit as above.
