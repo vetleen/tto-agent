@@ -67,6 +67,9 @@ class ShadowReportTests(TestCase):
 
     def _run(self, *args):
         out = StringIO()
+        # These fixtures are pre-2026-11 rows (production = the legacy classifier).
+        if "--direction" not in args:
+            args = (*args, "--direction", "decisions_shadow")
         call_command("shadow_chunk_scan_report", *args, stdout=out)
         return out.getvalue()
 
@@ -99,7 +102,7 @@ class ShadowReportTests(TestCase):
         self.assertIn("classifier positives, blind review : 50.0% (1/2)", out)
         self.assertIn("quick positives, blind review      : 50.0% (1/2)", out)
         self.assertIn("classifier positives, prod review  : 50.0% (1/2)", out)
-        self.assertIn("runs: 1   skipped: cap_chunks=2 quick_off=3   decide_errors: 1   reviews_capped: 0", out)
+        self.assertIn("runs: 1   skipped: cap_chunks=2 quick_off=3   shadow call errors: 1   reviews_capped: 0", out)
         self.assertIn("openai/gpt-6-luna 1 call(s) $0.0100", out)
         self.assertIn("total $0.0300", out)
         self.assertNotIn("== TOTAL", out)
@@ -134,3 +137,23 @@ class ShadowReportTests(TestCase):
 
         with self.assertRaises(CommandError):
             self._run("--date", "23/10/2026")
+
+
+class LegacyShadowReportTests(TestCase):
+    """The default direction reports only completed legacy-shadow rows."""
+
+    def test_default_direction_counts_pending_and_skipped(self):
+        common = dict(run_date=DAY, version_id=1, chunk_index=0, chunk_chars=10, direction="legacy_shadow")
+        ChunkScanShadowResult.objects.create(chunk_id=1, state="done", quick_probability=0.9, quick_flagged=True,
+                                             quick_pathway="quick", prod_review="allow", **common)
+        ChunkScanShadowResult.objects.create(chunk_id=2, state="pending", **common)
+        ChunkScanShadowResult.objects.create(chunk_id=3, state="skipped", shadow_note="chunk_gone", **common)
+        ChunkScanShadowResult.objects.create(chunk_id=4, run_date=DAY, version_id=1, chunk_index=0, chunk_chars=1)
+        out = StringIO()
+        call_command("shadow_chunk_scan_report", "--date", DAY.isoformat(), "--days", "1", stdout=out)
+        text = out.getvalue()
+        self.assertIn("direction: legacy_shadow", text)
+        self.assertIn("pending: 1", text)
+        self.assertIn("chunk_gone=1", text)
+        self.assertIn("chunks compared: 1", text)
+        self.assertIn("quick positives, prod review", text)

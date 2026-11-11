@@ -5,6 +5,13 @@ Usage:
     python manage.py shadow_chunk_scan_report --date 2026-10-23 --days 1
     python manage.py shadow_chunk_scan_report --days 14 --disagreements
     python manage.py shadow_chunk_scan_report --run 2026-10-23      # run the shadow for that day first
+    python manage.py shadow_chunk_scan_report --direction decisions_shadow   # the pre-2026-11 comparison
+
+Directions: ``legacy_shadow`` (default; production = Decisions, the legacy classifier
+runs nightly as the shadow) and ``decisions_shadow`` (before 2026-11; production = the
+legacy classifier, Decisions was the shadow). Columns are by system either way:
+"classifier" = the legacy classifier, "quick" = Decisions. Only completed rows
+(``state="done"``) are compared; pending and skipped rows are counted.
 
 Headline numbers cover rows the quick pathway answered (``quick_pathway == "quick"``
 with a probability); structured/refused rows are counted separately. False-positive
@@ -63,6 +70,7 @@ def summarize(rows) -> dict:
         "classifier_blind": allow_share((r.blind_review for r in clf_pos), _ALLOW, _ACT),
         "quick_blind": allow_share((r.blind_review for r in quick_pos), _ALLOW, _ACT),
         "classifier_prod": allow_share((r.prod_review for r in clf_pos), _ALLOW, _ACT),
+        "quick_prod": allow_share((r.prod_review for r in quick_pos), _ALLOW, _ACT),
         "prod_vs_blind": pct(sum(1 for r in both_judged if r.blind_review == r.prod_review), len(both_judged)),
     }
     reviewed = [r for r in rows if r.blind_review in judged]
@@ -90,6 +98,8 @@ class Command(BaseCommand):
                             help="List classifier-only / quick-only chunks with a live text preview.")
         parser.add_argument("--run", metavar="DATE",
                             help="Run the shadow for DATE first (fills in a skipped or partial night), then report.")
+        parser.add_argument("--direction", choices=("legacy_shadow", "decisions_shadow"), default="legacy_shadow",
+                            help="Which comparison to report (default: legacy_shadow, production = Decisions).")
 
     def handle(self, *args, **options):
         from django.utils import timezone
@@ -108,9 +118,17 @@ class Command(BaseCommand):
         days = max(1, options["days"])
         start_day = end_day - timedelta(days=days - 1)
 
-        rows = list(
-            ChunkScanShadowResult.objects.filter(run_date__range=(start_day, end_day))
-            .order_by("run_date", "version_id", "chunk_index")
+        direction = options["direction"]
+        in_range = ChunkScanShadowResult.objects.filter(run_date__range=(start_day, end_day), direction=direction)
+        rows = list(in_range.filter(state="done").order_by("run_date", "version_id", "chunk_index"))
+        self.direction = direction
+        self.stdout.write(
+            f"direction: {direction} ("
+            + ("production = Decisions, shadow = legacy classifier" if direction == "legacy_shadow"
+               else "production = legacy classifier, shadow = Decisions")
+            + f")   pending: {in_range.filter(state='pending').count()}   skipped: "
+            + (" ".join(f"{k or '-'}={v}" for k, v in Counter(
+                in_range.filter(state="skipped").values_list("shadow_note", flat=True)).items()) or "-")
         )
         runs = list(ChunkScanShadowRun.objects.filter(run_date__range=(start_day, end_day)).order_by("started_at"))
         if not rows and not runs:
@@ -148,7 +166,10 @@ class Command(BaseCommand):
         w('false-positive rates (reviewer "allow" share):')
         w(f"  classifier positives, blind review : {fp['classifier_blind']}")
         w(f"  quick positives, blind review      : {fp['quick_blind']}")
-        w(f"  classifier positives, prod review  : {fp['classifier_prod']}")
+        if getattr(self, "direction", "legacy_shadow") == "legacy_shadow":
+            w(f"  quick positives, prod review       : {fp['quick_prod']}")
+        else:
+            w(f"  classifier positives, prod review  : {fp['classifier_prod']}")
         w(f"  prod vs blind agreement on classifier positives: {fp['prod_vs_blind']}")
         b = s["blind"]
         verdicts = " | ".join(
@@ -169,10 +190,10 @@ class Command(BaseCommand):
         for run in runs:
             summary = run.summary or {}
             skipped.update(summary.get("skipped") or {})
-            decide_errors += int(summary.get("decide_errors") or 0)
+            decide_errors += int(summary.get("decide_errors") or 0) + int(summary.get("classifier_errors") or 0)
             reviews_capped += int(summary.get("reviews_capped") or 0)
         skipped_text = " ".join(f"{k}={v}" for k, v in sorted(skipped.items())) or "-"
-        self.stdout.write(f"runs: {len(runs)}   skipped: {skipped_text}   decide_errors: {decide_errors}"
+        self.stdout.write(f"runs: {len(runs)}   skipped: {skipped_text}   shadow call errors: {decide_errors}"
                           f"   reviews_capped: {reviews_capped}")
         per_model = (
             LLMCallLog.objects.filter(trace_id__in=[r.trace_id for r in runs])

@@ -394,6 +394,12 @@ def _classify_chunk_batch(
             reviewer_budget=reviewer_budget,
         )
 
+    # The batch's verdicts are final: the pending half of the nightly legacy shadow
+    # (ids and numbers only; never raises).
+    from guardrails.shadow import record_chunk_verdicts
+
+    record_chunk_verdicts(version=version, chunks=chunks, results=results_by_index, org_id=org_id)
+
 
 def _decisions_available(org_id) -> bool:
     """Whether the Decisions service could answer for this org (a model resolves on
@@ -761,8 +767,8 @@ def _refresh_partial_quarantine(version) -> None:
 
 @shared_task(bind=True)
 def shadow_chunk_scan_nightly(self) -> dict | str:
-    """Nightly shadow comparison of yesterday's chunk scans against the decisions
-    service (guardrails.shadow). A plain task, not DocumentPipelineTask: it holds
+    """Nightly legacy-classifier shadow of the chunk scan (guardrails.shadow): fills
+    in the pending rows production recorded up to yesterday. A plain task, not DocumentPipelineTask: it holds
     no document slot and never touches versions, chunks or events. No retries —
     a partial night is completed by ``manage.py shadow_chunk_scan_report --run``.
     """

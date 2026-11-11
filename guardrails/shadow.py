@@ -1,24 +1,25 @@
-"""Nightly shadow comparison of the chunk-scan guardrail against the decisions service.
+"""Nightly shadow of the chunk scan: the legacy chunk classifier against production.
 
 Production (``guardrails.tasks._scan_chunks_for_version``) classifies every document
-chunk with the cheap model and sends each flag to the Layer-2 reviewer. This module
-re-runs the previous day's chunks through the decisions service's quick pathway
-(OpenAI's Decisions endpoint) with the SAME batching, system prompt and concern
-options, and compares:
+chunk through the Decisions service (``guardrails.decisions``) and sends each flag to
+the Layer-2 reviewer. When a batch's verdicts are final it calls
+:func:`record_chunk_verdicts`, which writes one *pending* ``ChunkScanShadowResult`` per
+chunk (``direction="legacy_shadow"``): the Decisions probability, concern and pathway —
+ids and numbers only. Every night :func:`run_shadow_for_day` fills in the other half:
+it re-reads the pending chunks' text, runs the legacy batch classifier
+(``guardrails.tasks._run_batch_classifier``) with the same batching and system prompt,
+records production's reviewer outcome from the chunks' ``GuardrailEvent`` rows, and
+gives ONE blind review — the same reviewer, a placeholder Layer-1 block — to each chunk
+only the legacy classifier flagged (production's reviewer already judged every
+Decisions positive with that same placeholder).
 
-* per chunk, the production verdict (from ``GuardrailEvent`` rows carrying
-  ``chunk_id``) against the quick probability + concern;
-* for every positive under either system, ONE blind call to the same reviewer with
-  a neutral placeholder Layer-1 block (tag + number, no written reasoning), so the
-  false-positive rate — the reviewer's "allow" share — is measured under identical
-  conditions. The production reviewer's own verdict is recorded alongside.
-
-Side-effect free: it writes only ``ChunkScanShadowRun``/``ChunkScanShadowResult``
-rows (ids and numbers, never chunk text) and the ``LLMCallLog`` rows of its own calls
-(grouped by the run's trace_id). It never touches chunks, versions or
-``GuardrailEvent`` rows, and it uses its own decisions skip window so a nightly
-failure never routes live traffic to the structured pathway. The chunk scan itself is
-unchanged. Report: ``manage.py shadow_chunk_scan_report``.
+Side-effect free: it writes only ``ChunkScanShadowRun``/``ChunkScanShadowResult`` rows
+(never chunk text) and the ``LLMCallLog`` rows of its own calls (grouped by the run's
+trace_id). It never touches chunks, versions or ``GuardrailEvent`` rows. Kill switch
+``GUARDRAIL_SHADOW_ENABLED`` (it also gates the pending-row writes); caps
+``GUARDRAIL_SHADOW_MAX_CHUNKS``/``_MAX_REVIEWS``. Report: ``manage.py
+shadow_chunk_scan_report``. Rows before 2026-11 (``direction="decisions_shadow"``) are
+the opposite comparison: production = the legacy classifier, shadow = Decisions.
 """
 
 from __future__ import annotations
@@ -27,38 +28,23 @@ import logging
 import threading
 import time
 import uuid
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from datetime import time as dt_time
 
 from django.conf import settings
 
-from guardrails.decisions import REASONING_PLACEHOLDER_CHUNK, build_chunk_input, build_chunk_questions
-from guardrails.tasks import (
-    CHUNK_SCAN_SYSTEM_PROMPT,
-    _MAX_CHUNK_CHARS,
-    _batch_chunks_by_budget,
-    _build_neighbor_context,
-)
-from llm.types.decisions import InputMessage, Question
+from guardrails.decisions import REASONING_PLACEHOLDER_CHUNK
+from guardrails.tasks import _batch_chunks_by_budget, _build_neighbor_context
 
 logger = logging.getLogger(__name__)
 
 SHADOW_FEATURE_KEY = "shadow_chunk_scan"
-# Quick probability at/above which a chunk counts as a positive (the report
-# recomputes agreement at other thresholds from the stored probability).
-SHADOW_FLAG_THRESHOLD = 0.5
-# Own skip window: a failure here must never route live traffic to the structured
-# pathway (llm.service.decisions_quick.QuickAvailability).
-SHADOW_SKIP_KEY = "decisions_quick_skip:shadow"
-# The Layer-1 block the reviewer sees for EVERY shadow-reviewed positive, whichever
-# system flagged it — the production reviewer gets the classifier's written reasoning,
-# the decisions pathway has none, so both are judged without it.
+DIRECTION = "legacy_shadow"
 SHADOW_REVIEW_PLACEHOLDER = REASONING_PLACEHOLDER_CHUNK
-# Consecutive failed decide() calls after which the night is abandoned.
-CONSECUTIVE_DECIDE_ERRORS_ABORT = 3
-PATHWAY_QUICK = "quick"
+# Consecutive failed legacy calls after which the night is abandoned.
+CONSECUTIVE_ERRORS_ABORT = 3
 
 
 @dataclass(frozen=True)
@@ -81,21 +67,9 @@ class ProdVerdict:
     review: str = ""
 
 
-@dataclass
-class QuickVerdict:
-    probability: float | None  # None = refusal
-    concern: str
-    pathway: str
-
-    @property
-    def flagged(self) -> bool:
-        return self.probability is not None and self.probability >= SHADOW_FLAG_THRESHOLD
-
-
-# ---------------------------------------------------------------------------
-# Service singletons (tests patch get_shadow_decisions_service)
-# ---------------------------------------------------------------------------
-
+# Own quick skip window for shadows that still call Decisions (removed once every
+# shadow runs the legacy classifier instead).
+SHADOW_SKIP_KEY = "decisions_quick_skip:shadow"
 _availability = None
 _service = None
 _lock = threading.Lock()
@@ -117,20 +91,13 @@ def get_shadow_decisions_service():
     """A DecisionsService bound to the shadow skip window."""
     global _service
     if _service is None:
-        # Resolve the availability BEFORE taking the lock: it takes the same
-        # (non-reentrant) lock itself, so doing it inside would deadlock.
-        availability = shadow_availability()
+        availability = shadow_availability()  # takes the same lock: resolve it first
         with _lock:
             if _service is None:
                 from llm.service.decisions_service import DecisionsService
 
                 _service = DecisionsService(availability=availability)
     return _service
-
-
-# ---------------------------------------------------------------------------
-# Selection
-# ---------------------------------------------------------------------------
 
 
 def day_bounds(day: date) -> tuple[datetime, datetime]:
@@ -141,83 +108,47 @@ def day_bounds(day: date) -> tuple[datetime, datetime]:
     return start, start + timedelta(days=1)
 
 
-def has_legacy_events(day: date) -> bool:
-    """Whether the day's chunk events predate ``chunk_id`` (the night after the
-    deploy): production verdicts could not be matched, so the day is skipped."""
-    from guardrails.models import GuardrailEvent
-
-    start, end = day_bounds(day)
-    return GuardrailEvent.objects.filter(
-        trigger_source="document_chunk", created_at__gte=start, created_at__lt=end,
-        chunk_id__isnull=True,
-    ).exists()
-
-
-def _eligible_chunks(day: date):
-    """Chunks the classifier saw on ``day`` and the shadow has not yet recorded."""
-    from documents.models import DataRoomDocumentChunk
-    from guardrails.models import ChunkScanShadowResult, GuardrailEvent
-
-    start, end = day_bounds(day)
-    scan_state = DataRoomDocumentChunk.GuardrailScanState
-    # Heuristic-blocked chunks never reached the classifier.
-    heuristic_blocked = GuardrailEvent.objects.filter(
-        trigger_source="document_chunk", check_type="heuristic", action_taken="blocked",
-        chunk_id__isnull=False, created_at__gte=start,
-    ).values("chunk_id")
-    recorded = ChunkScanShadowResult.objects.filter(run_date=day).values("chunk_id")
-    return (
-        DataRoomDocumentChunk.objects.filter(
-            created_at__gte=start, created_at__lt=end, guardrail_scan_state=scan_state.DONE,
-        )
-        .exclude(pk__in=heuristic_blocked)
-        .exclude(pk__in=recorded)
-    )
-
-
-def select_version_ids(day: date) -> list[int]:
-    return list(
-        _eligible_chunks(day).order_by("version_id").values_list("version_id", flat=True).distinct()
-    )
-
-
-def select_chunks(day: date, version_id: int) -> list[dict]:
-    return list(
-        _eligible_chunks(day).filter(version_id=version_id)
-        .order_by("chunk_index").values("id", "chunk_index", "text")
-    )
-
-
 # ---------------------------------------------------------------------------
-# The decisions call
+# Production side: the pending half
 # ---------------------------------------------------------------------------
 
 
-def build_questions(batch: list[dict]) -> list[Question]:
-    return build_chunk_questions(batch)
+def record_chunk_verdicts(*, version, chunks: list[dict], results: dict, org_id) -> None:
+    """One pending shadow row per chunk of a finished production batch. Never raises.
 
+    ``results`` maps ``chunk_index`` to the production verdict
+    (``PrimaryChunkClassification``). A verdict the legacy classifier produced
+    (Decisions failed) is recorded with ``shadow_note="prod_legacy:<error>"`` and no
+    probability; the nightly run still compares it.
+    """
+    if not getattr(settings, "GUARDRAIL_SHADOW_ENABLED", False) or version is None:
+        return
+    try:
+        from django.utils import timezone
 
-def build_input(batch: list[dict]) -> list[InputMessage]:
-    return build_chunk_input(batch, CHUNK_SCAN_SYSTEM_PROMPT, _MAX_CHUNK_CHARS)
+        from guardrails.models import ChunkScanShadowResult
 
-
-def decide_batch(service, batch: list[dict], *, org_id, context) -> dict[int, QuickVerdict]:
-    """One decide() over a production-shaped batch → verdicts keyed by chunk_index."""
-    result = service.decide(
-        build_questions(batch), build_input(batch),
-        feature_key=SHADOW_FEATURE_KEY, org_id=org_id, context=context,
-    )
-    verdicts: dict[int, QuickVerdict] = {}
-    for chunk in batch:
-        idx = chunk["chunk_index"]
-        predicate = result[f"c{idx}_adversarial"]
-        choice = result[f"c{idx}_concern"]
-        verdicts[idx] = QuickVerdict(
-            probability=predicate.probability if predicate.type == "predicate" else None,
-            concern=choice.choice if choice.type == "choice" else "",
-            pathway=result.pathway,
-        )
-    return verdicts
+        today = timezone.localdate()
+        rows = []
+        for chunk in chunks:
+            result = results.get(chunk["chunk_index"])
+            if result is None:
+                continue
+            source = getattr(result, "source", "decisions")
+            note = f"prod_legacy:{getattr(result, 'decide_error', '')}" if source == "legacy" else ""
+            rows.append(ChunkScanShadowResult(
+                run_date=today, org_id=org_id, version_id=version.id,
+                chunk_id=chunk["id"], chunk_index=chunk["chunk_index"], chunk_chars=len(chunk["text"]),
+                quick_probability=getattr(result, "probability", None) if source == "decisions" else None,
+                quick_concern=(getattr(result, "concern", "") or "")[:32],
+                quick_flagged=bool(result.is_suspicious),
+                quick_pathway=(getattr(result, "pathway", "") or "")[:12],
+                direction=DIRECTION, state="pending", shadow_note=note[:64],
+            ))
+        if rows:
+            ChunkScanShadowResult.objects.bulk_create(rows, ignore_conflicts=True)
+    except Exception:
+        logger.warning("shadow_chunk_scan: recording production verdicts failed (non-fatal)", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +157,7 @@ def decide_batch(service, batch: list[dict], *, org_id, context) -> dict[int, Qu
 
 
 def production_verdicts(chunk_ids: list[int]) -> dict[int, ProdVerdict]:
-    """What the classifier (and its reviewer) decided, from the chunks' events."""
+    """What production's classifier (and its reviewer) decided, from the chunks' events."""
     from guardrails.models import GuardrailEvent
 
     verdicts = {chunk_id: ProdVerdict() for chunk_id in chunk_ids}
@@ -285,31 +216,48 @@ def blind_review(*, chunk: dict, version, doc, org_id, flag: ShadowFlag, context
 
 
 # ---------------------------------------------------------------------------
-# The run
+# The nightly run
 # ---------------------------------------------------------------------------
 
 
+def pending_rows(day: date):
+    """Pending rows recorded on or before ``day`` (older ones a capped night left)."""
+    from guardrails.models import ChunkScanShadowResult
+
+    return ChunkScanShadowResult.objects.filter(direction=DIRECTION, state="pending", run_date__lte=day)
+
+
+_DONE_FIELDS = [
+    "prod_review", "classifier_flagged", "classifier_confidence", "classifier_tags",
+    "blind_review", "blind_review_source", "blind_review_confidence", "blind_review_severity",
+    "state", "shadow_note", "trace_id",
+]
+
+
 def run_shadow_for_day(day: date, *, max_chunks: int | None = None, max_reviews: int | None = None) -> dict:
-    """Compare ``day``'s chunks; returns the summary (also stored on the run row).
+    """Fill in the legacy half of every pending row up to ``day``; returns the
+    summary (also stored on the run row).
 
-    Idempotent: chunks already recorded for ``day`` are skipped, so a retry or a
-    manual ``--run`` fills in what a partial night left out.
+    Idempotent and resumable: only ``state="pending"`` rows are selected and each
+    batch is saved as it finishes, so a retry or a manual ``--run`` continues where
+    a partial night stopped.
     """
-    import os
-
     from django.db.models import Count, Sum
     from django.db.utils import InterfaceError, OperationalError
     from django.utils import timezone
 
-    from documents.models import DataRoomDocumentVersion
+    from core.preferences import resolve_org_feature_model
+    from documents.models import DataRoomDocumentChunk, DataRoomDocumentVersion
     from documents.services.pii_scan import org_id_for_document
     from guardrails.models import ChunkScanShadowResult, ChunkScanShadowRun
+    from guardrails.tasks import _run_batch_classifier
     from llm.models import LLMCallLog
     from llm.types.context import RunContext
 
     t0 = time.perf_counter()
     trace_id = f"shadow-{day:%Y%m%d}-{uuid.uuid4().hex[:12]}"
     context = RunContext(trace_id=trace_id)
+    log_metadata = {"kind": "shadow", "feature": SHADOW_FEATURE_KEY}
     chunks_left = max_chunks if max_chunks is not None else int(settings.GUARDRAIL_SHADOW_MAX_CHUNKS)
     reviews_left = max_reviews if max_reviews is not None else int(settings.GUARDRAIL_SHADOW_MAX_REVIEWS)
     counters: Counter = Counter()
@@ -321,6 +269,7 @@ def run_shadow_for_day(day: date, *, max_chunks: int | None = None, max_reviews:
         out = dict(counters)
         out.update({
             "day": day.isoformat(),
+            "direction": DIRECTION,
             "trace_id": trace_id,
             "versions": len(versions_seen),
             "orgs": len(orgs_seen),
@@ -328,9 +277,7 @@ def run_shadow_for_day(day: date, *, max_chunks: int | None = None, max_reviews:
             "duration_s": round(time.perf_counter() - t0, 1),
         })
         if run is not None:
-            cost = LLMCallLog.objects.filter(trace_id=trace_id).aggregate(
-                total=Sum("cost_usd"), calls=Count("id"),
-            )
+            cost = LLMCallLog.objects.filter(trace_id=trace_id).aggregate(total=Sum("cost_usd"), calls=Count("id"))
             out["cost_usd"] = float(cost["total"] or 0)
             out["llm_calls"] = cost["calls"] or 0
             run.summary = out
@@ -342,161 +289,126 @@ def run_shadow_for_day(day: date, *, max_chunks: int | None = None, max_reviews:
         )
         return out
 
+    def mark_skipped(rows, note):
+        for row in rows:
+            row.state, row.shadow_note = "skipped", note[:64]
+        ChunkScanShadowResult.objects.bulk_update(rows, ["state", "shadow_note"])
+        skipped[note] += len(rows)
+
     try:
         run = ChunkScanShadowRun.objects.create(run_date=day, trace_id=trace_id)
-        if not os.environ.get("OPENAI_API_KEY"):
-            skipped["no_openai_key"] += 1
-            return summary(run)
-        if has_legacy_events(day):
-            # The night after the deploy: that day's events were written without
-            # chunk_id, so production verdicts cannot be matched.
-            logger.warning("shadow_chunk_scan: day=%s has chunk events without chunk_id; skipping", day)
-            skipped["legacy_events"] += 1
-            return summary(run)
-        version_ids = select_version_ids(day)
+        by_version: dict[int, list] = defaultdict(list)
+        for row in pending_rows(day).order_by("version_id", "chunk_index"):
+            by_version[row.version_id].append(row)
     except (OperationalError, InterfaceError):
         logger.info("shadow_chunk_scan: DB unavailable; will retry next tick.", exc_info=True)
         return {"day": day.isoformat(), "skipped": {"db_unavailable": 1}}
 
-    from core.preferences import resolve_decisions_settings, resolve_org_feature_model
-
-    service = get_shadow_decisions_service()
-    org_skip: dict = {}  # org_id -> skip reason or None
     consecutive_errors = 0
-    aborted = False
-
-    for version_id in version_ids:
-        if aborted:
-            break
+    for version_id, rows in by_version.items():
         if chunks_left <= 0:
-            # Count only — never load the texts of chunks we are not going to compare.
-            skipped["cap_chunks"] += _eligible_chunks(day).filter(version_id=version_id).count()
+            skipped["cap_chunks"] += len(rows)  # they stay pending for the next night
             continue
-        version = (
-            DataRoomDocumentVersion.objects.select_related("document").filter(pk=version_id).first()
-        )
+        version = DataRoomDocumentVersion.objects.select_related("document").filter(pk=version_id).first()
         if version is None:
+            mark_skipped(rows, "version_gone")
             continue
         doc = version.document
         org_id = org_id_for_document(doc)
-        if org_id not in org_skip:
-            reason = None
-            if not resolve_org_feature_model(org_id, "guardrail_chunk_scan"):
-                reason = "classifier_off"
-            else:
-                prefs = resolve_decisions_settings(org_id)
-                if not prefs.quick_enabled or not prefs.quick_model:
-                    reason = "quick_off"
-            org_skip[org_id] = reason
-        chunks = select_chunks(day, version_id)
-        if org_skip[org_id]:
-            skipped[org_skip[org_id]] += len(chunks)
+        cheap_model = resolve_org_feature_model(org_id, "guardrail_chunk_scan")
+        if not cheap_model:
+            mark_skipped(rows, "classifier_off")
             continue
-        if len(chunks) > chunks_left:
-            skipped["cap_chunks"] += len(chunks) - chunks_left
-            chunks = chunks[:chunks_left]
+        texts = dict(
+            DataRoomDocumentChunk.objects.filter(pk__in=[r.chunk_id for r in rows]).values_list("id", "text")
+        )
+        gone = [r for r in rows if r.chunk_id not in texts]
+        if gone:
+            mark_skipped(gone, "chunk_gone")
+        rows = [r for r in rows if r.chunk_id in texts]
+        if len(rows) > chunks_left:
+            skipped["cap_chunks"] += len(rows) - chunks_left
+            rows = rows[:chunks_left]
+        if not rows:
+            continue
         versions_seen.add(version_id)
         orgs_seen.add(org_id)
+        row_by_index = {r.chunk_index: r for r in rows}
+        chunks = [{"id": r.chunk_id, "chunk_index": r.chunk_index, "text": texts[r.chunk_id]} for r in rows]
 
         for batch in _batch_chunks_by_budget(chunks):
-            if shadow_availability().is_suspended():
-                skipped["quick_suspended"] += len(batch)
-                continue
             try:
-                quick = decide_batch(service, batch, org_id=org_id, context=context)
-            except Exception:
-                logger.exception(
-                    "shadow_chunk_scan: decide failed version_id=%s chunks=%d", version_id, len(batch),
+                legacy = _run_batch_classifier(
+                    doc, batch, cheap_model, org_id, context=context, log_metadata=log_metadata,
                 )
-                counters["decide_errors"] += 1
+            except Exception:
+                logger.exception("shadow_chunk_scan: legacy classifier failed version_id=%s", version_id)
+                counters["classifier_errors"] += 1
                 consecutive_errors += 1
-                if consecutive_errors >= CONSECUTIVE_DECIDE_ERRORS_ABORT:
+                if consecutive_errors >= CONSECUTIVE_ERRORS_ABORT:
                     skipped["aborted"] += 1
-                    aborted = True
-                    break
+                    return summary(run)
                 continue
             consecutive_errors = 0
             prod = production_verdicts([c["id"] for c in batch])
-
-            rows = []
+            done = []
             for chunk in batch:
-                q = quick[chunk["chunk_index"]]
-                p = prod[chunk["id"]]
+                row = row_by_index[chunk["chunk_index"]]
+                result = legacy.get(chunk["chunk_index"])
+                row.prod_review = prod[chunk["id"]].review
+                row.trace_id = trace_id
+                done.append(row)
                 counters["chunks"] += 1
-                if q.pathway != PATHWAY_QUICK:
-                    counters["non_quick"] += 1
-                if q.probability is None:
-                    counters["refusals"] += 1
-                if p.flagged and q.flagged:
+                if result is None:
+                    row.state, row.shadow_note = "skipped", "legacy_omitted"
+                    skipped["legacy_omitted"] += 1
+                    continue
+                row.state = "done"
+                row.classifier_flagged = bool(result.is_suspicious)
+                row.classifier_confidence = result.confidence
+                row.classifier_tags = list(result.concern_tags or [])
+                if row.classifier_flagged and row.quick_flagged:
                     counters["both_positive"] += 1
-                elif p.flagged:
+                elif row.classifier_flagged:
                     counters["classifier_only"] += 1
-                elif q.flagged:
+                elif row.quick_flagged:
                     counters["quick_only"] += 1
                 else:
                     counters["both_negative"] += 1
-
-                blind, blind_conf, blind_sev, source = "", None, "", ""
-                if p.flagged or q.flagged:
-                    if p.flagged:
-                        source = "classifier"
-                        flag = ShadowFlag(concern_tags=list(p.tags), confidence=float(p.confidence or 0.0))
-                    else:
-                        source = "quick"
-                        tags = [q.concern] if q.concern not in ("", "none") else []
-                        flag = ShadowFlag(concern_tags=tags, confidence=float(q.probability or 0.0))
-                    if reviews_left > 0:
-                        reviews_left -= 1
-                        counters["reviews"] += 1
-                        blind, blind_conf, blind_sev = blind_review(
-                            chunk=chunk, version=version, doc=doc, org_id=org_id, flag=flag, context=context,
-                        )
-                        if blind in ("allow", "quarantine"):
-                            if p.flagged:
-                                counters[f"blind_{blind}_classifier"] += 1
-                            if q.flagged:
-                                counters[f"blind_{blind}_quick"] += 1
-                        else:
-                            counters["blind_error"] += 1
-                    else:
-                        blind = "not_reviewed"
-                        counters["reviews_capped"] += 1
-
-                rows.append(ChunkScanShadowResult(
-                    run_date=day, trace_id=trace_id, org_id=org_id,
-                    version_id=version_id, chunk_id=chunk["id"], chunk_index=chunk["chunk_index"],
-                    chunk_chars=len(chunk["text"]),
-                    classifier_flagged=p.flagged, classifier_confidence=p.confidence,
-                    classifier_tags=list(p.tags), prod_review=p.review,
-                    quick_probability=q.probability, quick_concern=q.concern,
-                    quick_flagged=q.flagged, quick_pathway=q.pathway,
-                    blind_review=blind, blind_review_source=source,
-                    blind_review_confidence=blind_conf, blind_review_severity=blind_sev,
-                ))
-            ChunkScanShadowResult.objects.bulk_create(rows, ignore_conflicts=True)
+                if not (row.classifier_flagged and not row.quick_flagged):
+                    continue
+                # Only the legacy classifier flagged it: production's reviewer never saw it.
+                row.blind_review_source = "classifier"
+                if reviews_left <= 0:
+                    row.blind_review = "not_reviewed"
+                    counters["reviews_capped"] += 1
+                    continue
+                reviews_left -= 1
+                counters["reviews"] += 1
+                flag = ShadowFlag(concern_tags=list(row.classifier_tags), confidence=float(result.confidence or 0.0))
+                row.blind_review, row.blind_review_confidence, row.blind_review_severity = blind_review(
+                    chunk=chunk, version=version, doc=doc, org_id=org_id, flag=flag, context=context,
+                )
+                if row.blind_review in ("allow", "quarantine"):
+                    counters[f"blind_{row.blind_review}_classifier"] += 1
+                else:
+                    counters["blind_error"] += 1
+            ChunkScanShadowResult.objects.bulk_update(done, _DONE_FIELDS)
             chunks_left -= len(batch)
 
     return summary(run)
 
 
 __all__ = [
+    "DIRECTION",
     "SHADOW_FEATURE_KEY",
-    "SHADOW_FLAG_THRESHOLD",
     "SHADOW_REVIEW_PLACEHOLDER",
-    "SHADOW_SKIP_KEY",
     "ProdVerdict",
-    "QuickVerdict",
     "ShadowFlag",
     "blind_review",
-    "build_input",
-    "build_questions",
     "day_bounds",
-    "decide_batch",
-    "get_shadow_decisions_service",
-    "has_legacy_events",
+    "pending_rows",
     "production_verdicts",
+    "record_chunk_verdicts",
     "run_shadow_for_day",
-    "select_chunks",
-    "select_version_ids",
-    "shadow_availability",
 ]
