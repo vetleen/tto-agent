@@ -303,9 +303,9 @@ The resolver also produces three PyPy-only lines (`brotlicffi`, `cbor2==5.9.0`,
 | `transcribe_uploaded_audio_task` | meetings | default | 1800s hard / 1740s soft | Transcribe an uploaded audio file (may be long) |
 | `render_document_pages` | documents | 3 | 1800s hard / 1740s soft | Render a READY data-room pptx version's slides to JPEGs via the Gotenberg render service (batches of 8, one conversion in flight per worker; retries busy/unavailable with 30 s → 600 s backoff) |
 | `process_chat_attachment` | chat | 3 | 900s hard / 840s soft | Process a pdf/docx/pptx chat or meeting attachment right after upload: text extraction (embedded pictures → attachment-owned Assets), page/slide count, and for decks the slide renders via the render service. The chat turn waits on `ChatAttachment.processing_state` (≤ `CHAT_ATTACHMENT_READY_TIMEOUT_SECONDS`); retries busy/unavailable with 30 s → 300 s backoff |
-| `shadow_chunk_scan_nightly` | guardrails | 0 | none (bounded by `GUARDRAIL_SHADOW_MAX_CHUNKS`/`_REVIEWS`) | Beat 02:37 Europe/Oslo (beat crontabs follow Django's `TIME_ZONE`): re-runs yesterday's chunk scans through the decisions quick pathway and blind-reviews both systems' positives with the Layer-2 reviewer (`guardrails/shadow.py`). Side-effect free: writes only `ChunkScanShadowRun`/`ChunkScanShadowResult` + its own `LLMCallLog` rows. Skips the day after a deploy whose events lack `chunk_id`. `GUARDRAIL_SHADOW_ENABLED=false` turns it off |
-| `shadow_classifier_task` | guardrails | 0 | none (one quick call + at most one reviewer call) | Off-dyno half of the inline classifier shadow (`guardrails/shadow_classifier.py`): the chat-message and identity-field call sites enqueue it from the web dyno with the text and the production verdict; it re-asks the decisions quick pathway and records both verdicts in `ClassifierShadowResult` (ids and a hash, never text). The web-content and skill scans shadow inline on the worker instead. Bounded by `CLASSIFIER_SHADOW_MAX_PER_DAY`/`_MAX_REVIEWS_PER_DAY`; `CLASSIFIER_SHADOW_ENABLED=false` turns every inline shadow off |
-| `shadow_pii_scan_nightly` | documents | 0 | none (bounded by `PII_SHADOW_MAX_WINDOWS`/`_REVIEWS`) | Beat 02:52 Europe/Oslo: re-windows yesterday's READY versions exactly like the PII scan and asks the decisions quick pathway ten category predicates per window; records the probabilities next to the version's PII tags and the window's Art. 9/10 review event, and blind-reviews quick-only gated positives with the PII reviewer (`documents/services/pii_shadow.py`). Side-effect free: writes only `PIIScanShadowRun`/`PIIScanShadowResult` + its own `LLMCallLog` rows. `PII_SHADOW_ENABLED=false` turns it off |
+| `shadow_chunk_scan_nightly` | guardrails | 0 | none (bounded by `GUARDRAIL_SHADOW_MAX_CHUNKS`/`_REVIEWS`) | Beat 02:37 Europe/Oslo (beat crontabs follow Django's `TIME_ZONE`): fills in the pending `ChunkScanShadowResult` rows the chunk scan recorded (production = Decisions) by running the legacy batch classifier on the stored chunk text, and blind-reviews chunks only the legacy classifier flagged (`guardrails/shadow.py`). Resumable: capped rows stay pending. Side-effect free: writes only `ChunkScanShadowRun`/`ChunkScanShadowResult` + its own `LLMCallLog` rows. `GUARDRAIL_SHADOW_ENABLED=false` turns it (and the pending-row writes) off |
+| `shadow_classifier_task` | guardrails | 0 | none (one legacy classifier call + at most one reviewer call) | Off-dyno half of the text-classifier shadow (`guardrails/shadow_classifier.py`): the chat-message and identity-field call sites enqueue it from the web dyno with the text and the production (Decisions) outcome; it runs the legacy classifier and records both verdicts in `ClassifierShadowResult` (ids and a hash, never text). The web-content and skill scans shadow inline on the worker instead. Bounded by `CLASSIFIER_SHADOW_MAX_PER_DAY`/`_MAX_REVIEWS_PER_DAY`; `CLASSIFIER_SHADOW_ENABLED=false` turns every inline shadow off |
+| `shadow_pii_scan_nightly` | documents | 0 | none (bounded by `PII_SHADOW_MAX_WINDOWS`/`_REVIEWS`) | Beat 02:52 Europe/Oslo: fills in the pending `PIIScanShadowResult` rows the PII scan recorded (production = Decisions): rebuilds each window (skipped when its chunk range drifted), runs the legacy structured classifier, records the version's PII tags and the window's Art. 9/10 review event, and blind-reviews legacy-only gated positives with the PII reviewer (`documents/services/pii_shadow.py`). Side-effect free: writes only `PIIScanShadowRun`/`PIIScanShadowResult` + its own `LLMCallLog` rows. `PII_SHADOW_ENABLED=false` turns it off |
 
 Tasks use exponential backoff on retry, except `run_subagent_task`, which retries after a fixed 30 s: a retrying run keeps holding its sub-agent execution slot, so it must not sit idle for long.
 
@@ -345,7 +345,8 @@ python manage.py enforce_retention
 python manage.py enforce_retention --dry-run
 python manage.py enforce_retention --target LLMCallLog   # single target
 
-# Chunk-scan shadow comparison (decisions quick pathway vs. the classifier; see
+# Chunk-scan shadow comparison (production = Decisions, shadow = the legacy classifier
+# since 2026-11; --direction decisions_shadow shows the earlier comparison; see
 # shadow_chunk_scan_nightly). Agreement, probability deciles, false-positive rates
 # (blind reviewer "allow" share per system), skipped counters and cost.
 python manage.py shadow_chunk_scan_report                       # last 7 days up to yesterday
@@ -353,15 +354,16 @@ python manage.py shadow_chunk_scan_report --date 2026-10-23 --days 1
 python manage.py shadow_chunk_scan_report --days 14 --disagreements   # + live text previews
 python manage.py shadow_chunk_scan_report --run 2026-10-23      # run the shadow for that day first (a write: one-off dyno on prod is user-gated)
 
-# Inline classifier shadow (chat message, web content, skill content, identity fields;
-# see guardrails/shadow_classifier.py). Same numbers per family, plus the production
+# Text-classifier shadow (chat message, web content, skill content, identity fields;
+# see guardrails/shadow_classifier.py; --direction as above). Same numbers per family, plus the production
 # verdict distribution and the shadow's own cost per family.
 python manage.py classifier_shadow_report                        # last 7 days up to yesterday, all families
 python manage.py classifier_shadow_report --date 2026-10-25 --days 1
 python manage.py classifier_shadow_report --family web_content --family chat_message
 python manage.py classifier_shadow_report --days 14 --disagreements   # chat rows get a live preview; others ids + hash
 
-# Nightly PII shadow (documents/services/pii_shadow.py; see shadow_pii_scan_nightly).
+# Nightly PII shadow (documents/services/pii_shadow.py; see shadow_pii_scan_nightly;
+# --direction as above, plus a window-level comparison in the legacy_shadow direction).
 # Version-level agreement per GDPR category (quick max probability vs. the version's
 # tags), the Art. 9/10 section (production reviewer on classifier candidates vs. the
 # same reviewer on quick-only candidates), skipped counters and cost.
@@ -616,16 +618,17 @@ See `.env.example` for the full list with comments. Key production variables:
 | `DECISIONS_QUICK_SKIP_SECONDS` | No | After a failed Decisions endpoint call, every process (web + worker, via the cache) uses the structured pathway for this long (default 60; `0` = retry the endpoint on every request). One WARNING per skip episode. |
 | `DECISIONS_STRUCTURED_BATCH_SIZE` | No | Questions per structured-output call on the structured decisions pathway (default 25). |
 | `DECISIONS_MAX_INPUT_TOKENS` | No | Cap on a decision call's shared input, cl100k estimate (default 100000); over it the call raises `LLMRequestTooLargeError` without trying either pathway. `0` = no cap. |
-| `GUARDRAIL_SHADOW_ENABLED` | No | Nightly shadow comparison of the chunk-scan guardrail against the decisions service (`shadow_chunk_scan_nightly`, default `true`). `false` turns the job off. |
-| `GUARDRAIL_SHADOW_MAX_CHUNKS` | No | Chunks the shadow compares per night (default 3000; ~16 quick calls at today's volume). |
-| `GUARDRAIL_SHADOW_MAX_REVIEWS` | No | Blind Layer-2 reviewer calls the shadow makes per night, over both systems' positives (default 60). |
-| `CLASSIFIER_SHADOW_ENABLED` | No | Inline shadow of the text classifiers (chat message, web content, skill content, identity fields) against the decisions service (`guardrails/shadow_classifier.py`; default `true`, forced off under `manage.py test`). `false` turns every inline shadow off. |
+| `DECISIONS_PRIMARY_ENABLED` | No | The classification jobs (chunk scan, chat/web/skill/identity classifiers, PII scan) take their verdict from the Decisions service, with the legacy classifier as fallback (default `true`; forced off under `manage.py test`). `false` = every job uses its legacy classifier directly: the kill switch to undo the 2026-11 migration without a deploy. Fallbacks are countable: `LLMCallLog.response_metadata.kind = "decisions_fallback"`. |
+| `GUARDRAIL_SHADOW_ENABLED` | No | Legacy-classifier shadow of the chunk scan (`shadow_chunk_scan_nightly` and the chunk scan's pending-row writes, default `true`). `false` turns both off. |
+| `GUARDRAIL_SHADOW_MAX_CHUNKS` | No | Chunks the shadow compares per night (default 3000; the rest stay pending). |
+| `GUARDRAIL_SHADOW_MAX_REVIEWS` | No | Blind Layer-2 reviewer calls the shadow makes per night, over legacy-only positives (default 60). |
+| `CLASSIFIER_SHADOW_ENABLED` | No | Legacy-classifier shadow of the text classifiers (chat message, web content, skill content, identity fields; `guardrails/shadow_classifier.py`; default `true`, forced off under `manage.py test`). `false` turns every text shadow off. |
 | `CLASSIFIER_SHADOW_FAMILIES` | No | Comma list of the families to shadow (default all four: `chat_message,web_content,skill_content,identity_field`). |
 | `CLASSIFIER_SHADOW_MAX_PER_DAY` | No | Comparisons per family per day (default 2000; ~550 web scans/day at today's volume). |
 | `CLASSIFIER_SHADOW_MAX_REVIEWS_PER_DAY` | No | Blind Layer-2 reviewer calls per day over all families' positives (default 30). |
-| `PII_SHADOW_ENABLED` | No | Nightly shadow comparison of the PII category classifier against the decisions service (`shadow_pii_scan_nightly`, default `true`). `false` turns the job off. |
-| `PII_SHADOW_MAX_WINDOWS` | No | PII windows the shadow compares per night, one quick call each (default 500; ~20/day at today's volume). |
-| `PII_SHADOW_MAX_REVIEWS` | No | Blind PII reviewer calls per night over quick-only Art. 9/10 positives (default 20). |
+| `PII_SHADOW_ENABLED` | No | Legacy-classifier shadow of the PII scan (`shadow_pii_scan_nightly` and the PII scan's pending-row writes, default `true`). `false` turns both off. |
+| `PII_SHADOW_MAX_WINDOWS` | No | PII windows the shadow compares per night, one legacy call each (default 500; the rest stay pending). |
+| `PII_SHADOW_MAX_REVIEWS` | No | Blind PII reviewer calls per night over legacy-only Art. 9/10 positives (default 20). |
 | `ANTHROPIC_API_KEY` | No | Anthropic LLM provider |
 | `GEMINI_API_KEY` | No | Google Gemini LLM provider |
 | `MOONSHOT_API_KEY` | No | Moonshot/Kimi LLM provider |

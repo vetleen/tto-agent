@@ -1029,17 +1029,19 @@ AUTO_MODEL_CACHE_TTL_SECONDS = {
 # the turn on the fallback category instead. Never blocks the socket.
 AUTO_MODEL_ROUTE_TIMEOUT_SECONDS = _env_int("AUTO_MODEL_ROUTE_TIMEOUT_SECONDS", "5")
 
-# Nightly shadow comparison of the chunk-scan classifier against the decisions
-# service (guardrails/shadow.py). Reads yesterday's chunks and events; writes only
-# its own tables + LLMCallLog rows. The caps bound one night's spend.
+# Nightly legacy-classifier shadow of the chunk scan (guardrails/shadow.py): the chunk
+# scan records a pending row per chunk (gated by this switch too); the night runs the
+# legacy batch classifier on them. Writes only its own tables + LLMCallLog rows. The
+# caps bound one night's spend.
 GUARDRAIL_SHADOW_ENABLED = _get_env_bool(os.environ.get("GUARDRAIL_SHADOW_ENABLED"), True)
 GUARDRAIL_SHADOW_MAX_CHUNKS = _env_int("GUARDRAIL_SHADOW_MAX_CHUNKS", "3000")
 GUARDRAIL_SHADOW_MAX_REVIEWS = _env_int("GUARDRAIL_SHADOW_MAX_REVIEWS", "60")
 
-# Inline shadow of the text classifiers (chat message, web content, skill content,
-# identity fields) against the decisions service (guardrails/shadow_classifier.py).
-# Each production classification is re-asked on the quick pathway and both verdicts
-# are recorded; positives get one blind Layer-2 review. Forced off under
+# Legacy-classifier shadow of the text classifiers (chat message, web content, skill
+# content, identity fields; guardrails/shadow_classifier.py). Each production
+# (Decisions) classification is re-run on the legacy classifier off the request path
+# and both verdicts are recorded; legacy-only positives get one blind Layer-2 review.
+# Forced off under
 # `manage.py test` (whatever .env says) so the existing classifier/view tests never
 # touch the broker (precedent: RATELIMIT_ENABLE); hook tests opt in with
 # override_settings. An empty CLASSIFIER_SHADOW_FAMILIES shadows nothing.
@@ -1055,12 +1057,12 @@ CLASSIFIER_SHADOW_FAMILIES = (
 CLASSIFIER_SHADOW_MAX_PER_DAY = _env_int("CLASSIFIER_SHADOW_MAX_PER_DAY", "2000")  # per family
 CLASSIFIER_SHADOW_MAX_REVIEWS_PER_DAY = _env_int("CLASSIFIER_SHADOW_MAX_REVIEWS_PER_DAY", "30")  # all families
 
-# Nightly shadow comparison of the PII category classifier against the decisions
-# service (documents/services/pii_shadow.py): yesterday's READY versions re-windowed
-# exactly like production, ten predicates per window; quick-only Art. 9/10 positives
-# get one blind PII review. Writes only its own tables + LLMCallLog rows.
+# Nightly legacy-classifier shadow of the PII scan (documents/services/pii_shadow.py):
+# the PII scan records a pending row per window (gated by this switch too); the night
+# runs the legacy structured classifier on them; legacy-only Art. 9/10 positives get one
+# blind PII review. Writes only its own tables + LLMCallLog rows.
 PII_SHADOW_ENABLED = _get_env_bool(os.environ.get("PII_SHADOW_ENABLED"), True)
-PII_SHADOW_MAX_WINDOWS = _env_int("PII_SHADOW_MAX_WINDOWS", "500")  # one quick call each
+PII_SHADOW_MAX_WINDOWS = _env_int("PII_SHADOW_MAX_WINDOWS", "500")  # one legacy call each
 PII_SHADOW_MAX_REVIEWS = _env_int("PII_SHADOW_MAX_REVIEWS", "20")
 
 # Transcription settings
@@ -1206,7 +1208,7 @@ CELERY_BEAT_SCHEDULE = {
         "task": "chat.tasks.expire_stale_canvas_imports",
         "schedule": 300.0,
     },
-    # Shadow-compare yesterday's chunk scans against the decisions service
+    # Legacy-classifier shadow of the chunk scans recorded up to yesterday
     # (guardrails.shadow). Beat crontabs run in TIME_ZONE (Europe/Oslo): Celery falls
     # back to Django's TIME_ZONE when CELERY_TIMEZONE is unset, and the first run rows
     # confirmed it (02:37 Oslo = 01:37 UTC in winter). So: after the 02:00 Oslo
@@ -1216,11 +1218,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "guardrails.tasks.shadow_chunk_scan_nightly",
         "schedule": crontab(hour=2, minute=37),
     },
-    # Shadow-compare yesterday's PII scans against the decisions service
+    # Legacy-classifier shadow of the PII scans recorded up to yesterday
     # (documents.services.pii_shadow). 02:52 Oslo: its own entry (independent kill
     # switch and failure domain from the chunk shadow); at most PII_SHADOW_MAX_WINDOWS
-    # quick calls (~3 s each cold, less once the long prompt is cached), so it finishes
-    # well before the 03:45 worker restart.
+    # legacy calls; rows the 03:45 worker restart leaves pending wait for the next night.
     "shadow-pii-scan-nightly": {
         "task": "documents.tasks.shadow_pii_scan_nightly",
         "schedule": crontab(hour=2, minute=52),

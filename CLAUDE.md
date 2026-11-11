@@ -158,48 +158,57 @@ retries requeues the batch on the structured pathway and opens a shared
 `DECISIONS_QUICK_SKIP_SECONDS` window (`QuickAvailability`, cache-shared like the EPO throttle).
 Request-too-large and 400s raise instead. Quick calls write their own `LLMCallLog` rows
 (`log_decisions`, `response_metadata.kind="decisions"`); structured rows are tagged through
-`params["_log_metadata"]`. An application is one small function with its own `feature_key`; no
-existing classifier has been moved onto it yet.
+`params["_log_metadata"]`. An application is one small function with its own `feature_key`.
 
-**Chunk-scan shadow** (`guardrails/shadow.py`, beat task `shadow_chunk_scan_nightly`, 02:37 Europe/Oslo —
-beat crontabs follow Django's `TIME_ZONE`, not UTC): the
-first evidence-gathering step. Every night it re-runs yesterday's document chunks through the quick
-pathway with the chunk scan's own batching, system prompt (`CHUNK_SCAN_SYSTEM_PROMPT`) and concern
-tags (`CONCERN_TAGS`), compares against production's per-chunk verdicts (`GuardrailEvent.chunk_id`),
-and sends every positive from either system to the same Layer-2 reviewer **blind** — a placeholder
-Layer-1 block with tag + number, no reasoning — so false-positive rates are comparable. Side-effect
-free: it writes `ChunkScanShadowRun`/`ChunkScanShadowResult` (ids and numbers, never text) and its
-own `LLMCallLog` rows (`feature=shadow_chunk_scan`, grouped by the run's trace_id), uses its own skip
-window (`decisions_quick_skip:shadow`), and never touches chunks, versions or events. Read it with
-`manage.py shadow_chunk_scan_report`. The chunk scan itself is unchanged.
+**The classification jobs run on Decisions** (since 2026-11): the chunk scan, the four text
+classifiers (chat message, web content, skill content, identity fields) and the PII scan take their
+Layer-1 verdict from the service through `llm/service/decisions_fallback.py:decide_with_fallback`
+— the org's pathway; any failure after input validation, or a refused required answer
+(`DecisionsRefused`), runs the job's **legacy classifier** instead, its `LLMCallLog` row tagged
+`response_metadata.kind="decisions_fallback"` (one WARNING per feature per minute). Kill switch
+`DECISIONS_PRIMARY_ENABLED` (False = every job uses its legacy classifier directly; forced off
+under `manage.py test`, so classifier tests exercise the legacy path and Decisions-path tests opt in
+with `override_settings`). Questions/inputs live in `guardrails/decisions.py` (text + chunk; the
+job's system prompt verbatim as the developer message) and `documents/services/pii_scan.py`
+(`build_pii_questions`, ten predicates, soft wording — no "clearly"/"when in doubt"). Flag at
+probability **≥ 0.5** everywhere (`FLAG_THRESHOLD`, `PII_FLAG_THRESHOLD`). Verdicts are
+`PrimaryClassifierResult` / `PrimaryChunkClassification` (subclasses of the legacy schemas with
+`probability`, `concern`, `pathway`, `source`) and `PIIWindowVerdict`, so call sites and reviewers
+are unchanged. **`confidence` now means the probability that the content is adversarial** (on
+`GuardrailEvent` too); the reviewers see a placeholder Layer-1 reasoning (`REASONING_PLACEHOLDER_*`).
+Reviewer-less thresholds apply to that probability: chunk quarantine ≥ 0.7, skill quarantine ≥ 0.9,
+identity HIGH severity ≥ 0.8. A positive whose concern choice is "none" takes the likeliest real
+concern. The chunk scan releases heuristics-only only when neither a Decisions model nor the chunk
+model resolves; a failure on both paths fails the batch (retry → SCAN_FAILED).
 
-**Classifier shadows** (`guardrails/shadow_classifier.py`): the same comparison, inline, for the four
-text classifiers that share `guardrails/classifier.py:_run_classifier` — chat messages, web content,
-skill content and the identity fields. Each call site hands the text and the production outcome
-(classifier verdict + its reviewer's) to `run_classifier_shadow`, which re-asks the quick pathway
-(the family's own system prompt as the developer message, a predicate + a concern choice), blind-reviews
-a positive with the family's own reviewer (the chat reviewer's sync core with a `history_before`
-cutoff at the pipeline's start) and writes a `ClassifierShadowResult` (ids, a hash and numbers; never
-text). Web and skill scans run it inline on the worker; the chat consumer and the settings views only
-enqueue `shadow_classifier_task` (`guardrails/service.py:run_classifier_pipeline` → `asyncio.to_thread`
-publish; `shadow_identity_field`). `LLMCallLog` rows are grouped per family and day by
-`trace_id="shadow-<family>-<YYYYMMDD>"`. Caps `CLASSIFIER_SHADOW_MAX_PER_DAY` / `_MAX_REVIEWS_PER_DAY`,
-kill switch `CLASSIFIER_SHADOW_ENABLED` (forced off under `manage.py test`; hook tests opt in with
-`override_settings`). Report: `manage.py classifier_shadow_report [--family …] [--disagreements]`.
-Never changes a verdict, never writes a `GuardrailEvent`.
+**Shadows, reversed** (2026-11): the legacy classifiers are now the shadow, to tune prompts where the
+two disagree. Rows say `direction` (`legacy_shadow` now, `decisions_shadow` before) and `state`
+(`pending`/`done`/`skipped` + `shadow_note`); columns are named by system — `classifier_*` = legacy,
+`quick_*` = Decisions, `prod_review` = production's reviewer. Only legacy-only positives get a
+blind review (production's reviewer already judged every Decisions positive with the same
+placeholder). Every report takes `--direction` (default `legacy_shadow`).
+- **Chunk scan** (`guardrails/shadow.py`): the scan records a pending `ChunkScanShadowResult` per
+  chunk when a batch is final (`record_chunk_verdicts`); beat `shadow_chunk_scan_nightly` (02:37
+  Europe/Oslo — beat crontabs follow Django's `TIME_ZONE`, not UTC) runs the legacy batch classifier
+  on the stored chunk text. Caps `GUARDRAIL_SHADOW_MAX_CHUNKS`/`_REVIEWS` (capped rows stay pending),
+  kill switch `GUARDRAIL_SHADOW_ENABLED`. Report `manage.py shadow_chunk_scan_report`.
+- **Text classifiers** (`guardrails/shadow_classifier.py`): each production call hands the text and
+  a `ProdOutcome` (Decisions probability/concern/pathway/source + reviewer verdict) to
+  `run_classifier_shadow`, which runs `guardrails/classifier.py:_run_classifier`. Off the request path:
+  web and skill scans inline on the worker, chat and identity fields via `shadow_classifier_task`.
+  A production verdict that already came from the legacy classifier is recorded `skipped`
+  (`prod_legacy`) without a call. `trace_id="shadow-<family>-<YYYYMMDD>"`, caps
+  `CLASSIFIER_SHADOW_MAX_PER_DAY`/`_MAX_REVIEWS_PER_DAY`, kill switch `CLASSIFIER_SHADOW_ENABLED`
+  (forced off under `manage.py test`). Report `manage.py classifier_shadow_report`.
+- **PII** (`documents/services/pii_shadow.py`): the PII scan records a pending `PIIScanShadowResult`
+  per window (`record_window_verdict`); beat `shadow_pii_scan_nightly` (02:52) rebuilds each window
+  (`skipped`/`drifted` when its chunk range changed), runs `pii_scan._scan_pii_categories_legacy`
+  into `classifier_categories`, records the window's `PIIReviewEvent` and the version's tags, and
+  blind-reviews legacy-only Art. 9/10 positives. Caps `PII_SHADOW_MAX_WINDOWS`/`_MAX_REVIEWS`, kill
+  switch `PII_SHADOW_ENABLED`. Report `manage.py pii_shadow_report` (window-level comparison too).
 
-**PII shadow** (`documents/services/pii_shadow.py`, beat task `shadow_pii_scan_nightly`, 02:52 Europe/Oslo):
-re-windows yesterday's READY versions exactly like the PII scan (`pii_scan.iter_pii_windows` +
-`pii_window_text`, the same head/tail truncation) and asks the quick pathway ten predicates per
-window, worded from `PIICategoryOutput`'s field descriptions. Production stores only the per-version
-union (`DataRoomDocumentTag`) and a `PIIReviewEvent` per Art. 9/10 candidate window, so the
-comparison is version-level per category, plus the gated section: production's reviewer is already
-blind (candidates only), so only quick-only gated positives the version was never tagged with get a
-second review by the same reviewer. Writes `PIIScanShadowRun`/`PIIScanShadowResult` (ids and numbers)
-and its own `LLMCallLog` rows (trace_id `shadow-pii-<date>-…`); shares the chunk shadow's decisions
-service and skip window; caps `PII_SHADOW_MAX_WINDOWS` / `_MAX_REVIEWS`, kill switch
-`PII_SHADOW_ENABLED`. Report: `manage.py pii_shadow_report [--disagreements] [--run DATE]`. The PII
-scan itself is unchanged.
+All shadows are side-effect free: ids, hashes and numbers only, their own `LLMCallLog` rows, never a
+verdict, event, tag, chunk or version change.
 
 ## Transcription
 
