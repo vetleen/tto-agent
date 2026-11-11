@@ -292,13 +292,32 @@ class MintAndHashTests(SimpleTestCase):
             schema.canonical_deck_text(deck), schema.canonical_deck_text(shuffled)
         )
 
-    def test_hash_is_position_sensitive(self):
+    def test_hash_ignores_total_slide_count(self):
         deck = _valid_deck()
-        h0 = schema.slide_content_hash(deck, 0)
-        moved = copy.deepcopy(deck)
-        moved["slides"].append({"id": "s3"})
-        # s1 is still index 0 but total changed -> page-number-affecting hash differs
-        self.assertNotEqual(h0, schema.slide_content_hash(moved, 0))
+        grown = copy.deepcopy(deck)
+        grown["slides"].append({"id": "s3"})
+        # Nothing draws the total, so appending a slide changes no existing hash.
+        self.assertEqual(schema.slide_hashes(deck), {k: v for k, v in schema.slide_hashes(grown).items() if k != "s3"})
+
+    def test_hash_keys_position_only_when_a_page_number_is_drawn(self):
+        deck = _valid_deck()  # the default theme stamps the page number on the right
+        shifted = copy.deepcopy(deck)
+        shifted["slides"].insert(0, {"id": "s0"})
+        # s1 skips the footer: its pixels don't depend on position.
+        self.assertEqual(schema.slide_hashes(deck)["s1"], schema.slide_hashes(shifted)["s1"])
+        # s2 carries the page number: moving it re-renders it.
+        self.assertNotEqual(schema.slide_hashes(deck)["s2"], schema.slide_hashes(shifted)["s2"])
+
+    def test_hash_ignores_position_without_a_page_number_section(self):
+        deck = _valid_deck()
+        deck["theme"] = {"footer": {"sections": [
+            {"colspan": 4, "align": "left", "content": "logo"},
+            {"colspan": 4, "align": "center", "content": "text"},
+            {"colspan": 4, "align": "right", "content": "none"},
+        ]}}
+        shifted = copy.deepcopy(deck)
+        shifted["slides"].insert(0, {"id": "s0"})
+        self.assertEqual(schema.slide_hashes(deck)["s2"], schema.slide_hashes(shifted)["s2"])
 
     def test_changed_slide_ids(self):
         deck = _valid_deck()

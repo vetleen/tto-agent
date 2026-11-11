@@ -599,26 +599,35 @@ def _counter(prefix: str, used: set[str]):
 # Bump when the RENDERERS change what pixels an unchanged slide produces (bullet
 # glyphs, text insets, corner radii, edge trimming, …) so cached previews of
 # existing decks go stale and re-render instead of diverging from the export.
-RENDERER_REV = 3  # 3: up/down arrows, plus and cross drawn as polygons (were rects)
+RENDERER_REV = 4  # 4: position keyed only when the footer stamps a page number
+
+
+def _footer_shows_page_number(theme: dict) -> bool:
+    """True when the footer stamps a page number (any section that is neither
+    empty, the logo nor the disclaimer text — see the renderers' _stamp_footer)."""
+    sections = ((theme or {}).get("footer") or {}).get("sections") or []
+    return any(s.get("content") not in (None, "", "none", "logo", "text") for s in sections)
 
 
 def slide_content_hash(deck: dict, index: int) -> str:
     """Stable hash of everything that affects slide ``index``'s rendered pixels.
 
-    Includes the resolved theme, the deck size, the slide's position/total
-    (the footer page-number stamp bakes position into the image), and the
-    renderer revision, so a slide that merely shifts position — or an unchanged
-    slide after a renderer upgrade — re-renders.
+    Includes the resolved theme, the deck size and the renderer revision. The
+    slide's position is included only when it is drawn — a footer page number on
+    a slide without ``skip_footer`` — so inserting, deleting or moving a slide
+    re-renders just the slides whose pixels change, not the whole deck.
     """
     slides = deck.get("slides") or []
+    slide = slides[index]
+    theme = resolve_theme(deck)
     payload = {
-        "slide": slides[index],
-        "theme": canonical_deck_text(resolve_theme(deck)),
+        "slide": slide,
+        "theme": canonical_deck_text(theme),
         "size": deck.get("size"),
-        "index": index,
-        "total": len(slides),
         "rev": RENDERER_REV,
     }
+    if not slide.get("skip_footer") and _footer_shows_page_number(theme):
+        payload["index"] = index
     return hashlib.sha256(canonical_deck_text(payload).encode("utf-8")).hexdigest()
 
 
