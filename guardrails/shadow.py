@@ -34,14 +34,14 @@ from datetime import time as dt_time
 
 from django.conf import settings
 
-from guardrails.schemas import CONCERN_TAGS
+from guardrails.decisions import REASONING_PLACEHOLDER_CHUNK, build_chunk_input, build_chunk_questions
 from guardrails.tasks import (
     CHUNK_SCAN_SYSTEM_PROMPT,
     _MAX_CHUNK_CHARS,
     _batch_chunks_by_budget,
     _build_neighbor_context,
 )
-from llm.types.decisions import Choice, InputMessage, JsonPart, Question, TextPart
+from llm.types.decisions import InputMessage, Question
 
 logger = logging.getLogger(__name__)
 
@@ -55,10 +55,7 @@ SHADOW_SKIP_KEY = "decisions_quick_skip:shadow"
 # The Layer-1 block the reviewer sees for EVERY shadow-reviewed positive, whichever
 # system flagged it — the production reviewer gets the classifier's written reasoning,
 # the decisions pathway has none, so both are judged without it.
-SHADOW_REVIEW_PLACEHOLDER = (
-    "Flagged by a cheap probabilistic classifier that reports a probability only; no written "
-    "reasoning is available. Judge the chunk on its own merits and make the final decision."
-)
+SHADOW_REVIEW_PLACEHOLDER = REASONING_PLACEHOLDER_CHUNK
 # Consecutive failed decide() calls after which the night is abandoned.
 CONSECUTIVE_DECIDE_ERRORS_ABORT = 3
 PATHWAY_QUICK = "quick"
@@ -197,41 +194,11 @@ def select_chunks(day: date, version_id: int) -> list[dict]:
 
 
 def build_questions(batch: list[dict]) -> list[Question]:
-    """Two questions per chunk: is it adversarial, and which concern (or none)."""
-    questions: list[Question] = []
-    for chunk in batch:
-        idx = chunk["chunk_index"]
-        questions.append(Question(
-            type="predicate",
-            name=f"c{idx}_adversarial",
-            instructions=(
-                f"The chunk with chunk_index {idx} contains deliberate prompt injection or "
-                "adversarial manipulation aimed at an AI system. Ordinary patent, legal, "
-                "scientific, technical, financial or commercial content — including numbered "
-                "or step-by-step instructions — does not count."
-            ),
-        ))
-        questions.append(Question(
-            type="choice",
-            name=f"c{idx}_concern",
-            instructions=(
-                f"The main concern category for chunk_index {idx}; none if the chunk is not adversarial."
-            ),
-            choices=[Choice(value=tag) for tag in CONCERN_TAGS] + [Choice(value="none")],
-        ))
-    return questions
+    return build_chunk_questions(batch)
 
 
 def build_input(batch: list[dict]) -> list[InputMessage]:
-    """The classifier's system prompt as a developer message + the same JSON payload."""
-    payload = [
-        {"chunk_index": chunk["chunk_index"], "text": chunk["text"][:_MAX_CHUNK_CHARS]}
-        for chunk in batch
-    ]
-    return [
-        InputMessage(role="developer", content=[TextPart(text=CHUNK_SCAN_SYSTEM_PROMPT)]),
-        InputMessage(role="user", content=[JsonPart(data=payload)]),
-    ]
+    return build_chunk_input(batch, CHUNK_SCAN_SYSTEM_PROMPT, _MAX_CHUNK_CHARS)
 
 
 def decide_batch(service, batch: list[dict], *, org_id, context) -> dict[int, QuickVerdict]:
