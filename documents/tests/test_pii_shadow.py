@@ -48,8 +48,8 @@ class ShapeTests(SimpleTestCase):
         questions = build_questions()
         self.assertEqual([q.name for q in questions], list(PII_CATEGORIES))
         self.assertTrue(all(q.type == "predicate" for q in questions))
-        stem = "The text clearly contains personal data relating to identifiable natural persons, of this kind: "
-        tail = " Generic, organisational or hypothetical data does not count; when in doubt, answer no."
+        stem = "The text contains personal data relating to identifiable natural persons, of this kind: "
+        tail = " Generic, organisational or hypothetical data does not count."
         # One bar for all ten categories, Art. 9/10 included.
         for q in questions:
             self.assertTrue(q.instructions.startswith(stem), q.name)

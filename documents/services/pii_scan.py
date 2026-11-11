@@ -217,8 +217,11 @@ def pii_gate_applies(org_id) -> bool:
 
 # Probability at/above which a category counts as present.
 PII_FLAG_THRESHOLD = 0.5
-PII_QUESTION_STEM = "The text clearly contains personal data relating to identifiable natural persons, of this kind: "
-PII_QUESTION_TAIL = " Generic, organisational or hypothetical data does not count; when in doubt, answer no."
+# No "clearly" and no "when in doubt, answer no": against an Opus 5.5 reference on 300
+# windows (2026-11-11) that wording cost recall (.877 vs .912 at 0.5). The Art. 9/10
+# reviewer absorbs the extra candidates; ordinary tags are only a user aid.
+PII_QUESTION_STEM = "The text contains personal data relating to identifiable natural persons, of this kind: "
+PII_QUESTION_TAIL = " Generic, organisational or hypothetical data does not count."
 
 
 def build_pii_questions():
