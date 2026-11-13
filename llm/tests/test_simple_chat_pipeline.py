@@ -1929,7 +1929,7 @@ class FinalReplyReplayBlocksTests(TestCase):
                 sequence=1, run_id="r",
             ),
         ])
-        req = ChatRequest(messages=[Message(role="user", content="hi")], model="gemini/gemini-3.8-flash")
+        req = ChatRequest(messages=[Message(role="user", content="hi")], model="gemini/gemini-4-hydrogen")
         end = list(SimpleChatPipeline().stream(req))[-1]
         self.assertEqual(end.data["replay_blocks"], blocks)
         self.assertNotIn("content_blocks", end.data)

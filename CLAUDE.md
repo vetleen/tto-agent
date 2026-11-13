@@ -129,7 +129,8 @@ For deploy details, config vars, rollback, and ops, see `RUNBOOK.md`.
 ## Model Registry
 
 `llm/model_registry.py` keeps **one live model per line**: when a newer generation of the same
-line ships (Fable 5.1 → 5.2, GPT-6 Sol → 6.1 Sol) the older entry is deleted from `_MODELS` and
+line ships (Fable 5.1 → 5.2, GPT-6 Sol → 6.1 Sol; a renamed line counts when the vendor names it
+the upgrade: Gemini 3.8 Flash → Gemini 4 Hydrogen) the older entry is deleted from `_MODELS` and
 forwarded with a `MODEL_REPLACEMENTS` row (rows are never repointed; chains resolve). A different
 line is never a successor (Gemini 3.1 Pro stays beside Gemini 4). **Every add or retire also
 updates `llm/model_benchmarks.py`**: look up the model's real scores on each source; where a source

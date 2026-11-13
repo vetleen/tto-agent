@@ -33,6 +33,8 @@ class DisplayNameTests(SimpleTestCase):
         # Retired IDs show their successor's name.
         self.assertEqual(get_display_name("openai/gpt-5.6-sol"), "GPT-6.1 Sol")
         self.assertEqual(get_display_name("anthropic/claude-fable-5"), "Claude Fable 5.2")
+        self.assertEqual(get_display_name("gemini/gemini-4-hydrogen"), "Gemini 4 Hydrogen")
+        self.assertEqual(get_display_name("gemini/gemini-3.8-flash"), "Gemini 4 Hydrogen")
         self.assertEqual(get_display_name("gemini/gemini-3.5-flash-lite"), "Gemini 3.5 Flash-Lite")
 
     def test_date_suffix_and_fallback(self):
@@ -130,9 +132,9 @@ class PickerRatingTests(SimpleTestCase):
             "openai/gpt-5.4-nano": 1,
             "gemini/gemini-3.5-flash-lite": 1,
             # Same $2.50 output as flash-lite, but its >100K band input/cache
-            # prices put it with Gemini 3.8 Flash.
+            # prices put it with Gemini 4 Hydrogen.
             "anthropic/claude-haiku-5-5": 2,
-            "gemini/gemini-3.8-flash": 2,
+            "gemini/gemini-4-hydrogen": 2,
             "openai/gpt-6.1-terra": 2,
             "openai/gpt-6.1-sol": 3,
             "gemini/gemini-3.1-pro-preview": 3,
@@ -202,8 +204,9 @@ class PickerRatingTests(SimpleTestCase):
         self.assertEqual(get_capability_level("gemini/gemini-4-carbon"), 5)
         self.assertEqual(get_capability_level("gemini/gemini-4-argon"), 5)
         self.assertEqual(get_capability_level("gemini/gemini-3.1-pro-preview"), 3)
-        self.assertEqual(get_capability_level("gemini/gemini-3.8-flash"), 2)
+        self.assertEqual(get_capability_level("gemini/gemini-4-hydrogen"), 3)
         # Retired IDs rate as their replacement.
+        self.assertEqual(get_capability_level("gemini/gemini-3.8-flash"), 3)
         self.assertEqual(get_capability_level("openai/gpt-5.6-sol"), 4)
         self.assertEqual(get_capability_level("openai/gpt-6-sol"), 4)
         self.assertEqual(get_capability_level("anthropic/claude-fable-5-1"), 5)

@@ -245,7 +245,7 @@ class GeminiReasoningTests(SimpleTestCase):
     def test_structured_client_honours_thinking_level(self, create_variant):
         variant = MagicMock()
         create_variant.return_value = variant
-        model = GeminiChatModel("gemini/gemini-3.8-flash", MagicMock())
+        model = GeminiChatModel("gemini/gemini-4-hydrogen", MagicMock())
         schema = object()
         model.structured_client(_request("medium"), schema)
         self.assertEqual(create_variant.call_args.kwargs["thinking_level"], "medium")
@@ -263,7 +263,7 @@ class GeminiReasoningTests(SimpleTestCase):
 
     def test_thinking_parts_are_parsed(self):
         # langchain-google-genai 4.x shape for thought summaries.
-        model = GeminiChatModel("gemini/gemini-3.8-flash", MagicMock())
+        model = GeminiChatModel("gemini/gemini-4-hydrogen", MagicMock())
         chunk = SimpleNamespace(content=[
             {"type": "thinking", "thinking": "Plan", "index": "0"},
             {"type": "text", "text": "Answer", "index": "1"},
@@ -274,12 +274,12 @@ class GeminiReasoningTests(SimpleTestCase):
         )
 
     def test_legacy_thought_parts_still_parsed(self):
-        model = GeminiChatModel("gemini/gemini-3.8-flash", MagicMock())
+        model = GeminiChatModel("gemini/gemini-4-hydrogen", MagicMock())
         chunk = SimpleNamespace(content=[{"thought": True, "text": "Plan"}])
         self.assertEqual(model._parse_chunk(chunk), [("thinking", {"text": "Plan"})])
 
     def test_signature_only_text_part_yields_nothing(self):
-        model = GeminiChatModel("gemini/gemini-3.8-flash", MagicMock())
+        model = GeminiChatModel("gemini/gemini-4-hydrogen", MagicMock())
         chunk = SimpleNamespace(content=[
             {"type": "text", "text": "", "extras": {"signature": "abc"}, "index": "1"},
         ])
@@ -288,7 +288,7 @@ class GeminiReasoningTests(SimpleTestCase):
     def test_signed_text_part_is_kept_for_replay_without_thinking(self):
         # The base keeps content blocks only when a thinking block exists; a
         # signed text part alone must still travel back.
-        model = GeminiChatModel("gemini/gemini-3.8-flash", MagicMock())
+        model = GeminiChatModel("gemini/gemini-4-hydrogen", MagicMock())
         content = [
             {"type": "text", "text": "Answer"},
             {"type": "text", "text": "", "extras": {"signature": "c2ln"}},
@@ -297,7 +297,7 @@ class GeminiReasoningTests(SimpleTestCase):
         self.assertEqual(meta, {"content_blocks": content})
 
     def test_unsigned_reply_needs_no_replay(self):
-        model = GeminiChatModel("gemini/gemini-3.8-flash", MagicMock())
+        model = GeminiChatModel("gemini/gemini-4-hydrogen", MagicMock())
         meta = model._extract_replay_metadata(
             SimpleNamespace(additional_kwargs={}, content=[{"type": "text", "text": "Answer"}])
         )
@@ -314,9 +314,9 @@ class GeminiReasoningTests(SimpleTestCase):
         client = MagicMock()
         client.stream = MagicMock(return_value=iter(chunks))
         client.bind = MagicMock(return_value=client)
-        model = GeminiChatModel("gemini/gemini-3.8-flash", client)
+        model = GeminiChatModel("gemini/gemini-4-hydrogen", client)
         request = ChatRequest(
-            messages=[{"role": "user", "content": "hi"}], model="gemini/gemini-3.8-flash",
+            messages=[{"role": "user", "content": "hi"}], model="gemini/gemini-4-hydrogen",
             stream=True,
         )
         events = list(model.stream(request))
@@ -384,10 +384,10 @@ class OutputCapBindingTests(SimpleTestCase):
     def test_gemini_binds_max_output_tokens(self, create_variant):
         variant = MagicMock()
         create_variant.return_value = variant
-        model = GeminiChatModel("gemini/gemini-3.8-flash", MagicMock())
+        model = GeminiChatModel("gemini/gemini-4-hydrogen", MagicMock())
         result = model._get_streaming_client(_request("medium"))
         variant.bind.assert_called_once_with(
-            max_output_tokens=output_token_cap("gemini/gemini-3.8-flash", "medium")
+            max_output_tokens=output_token_cap("gemini/gemini-4-hydrogen", "medium")
         )
         self.assertIs(result, variant.bind.return_value)
 

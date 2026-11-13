@@ -41,7 +41,7 @@ class ReplayMetadataForTests(SimpleTestCase):
         )
 
     def test_other_model_does_not(self):
-        self.assertIsNone(replay_metadata_for(self._msg(), "gemini/gemini-3.8-flash"))
+        self.assertIsNone(replay_metadata_for(self._msg(), "gemini/gemini-4-hydrogen"))
         self.assertIsNone(replay_metadata_for(self._msg(), "anthropic/claude-opus-5-5"))
 
     def test_changed_content_does_not(self):

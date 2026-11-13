@@ -1849,7 +1849,7 @@ class RunSubagentServiceTests(TestCase):
         )
         run = SubAgentRun.objects.create(
             thread=self.thread, user=self.user, prompt="task",
-            model_used="gemini/gemini-3.8-flash", model_tier="low",
+            model_used="gemini/gemini-4-hydrogen", model_tier="low",
         )
 
         from chat.subagent_service import run_subagent

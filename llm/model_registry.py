@@ -422,21 +422,21 @@ _MODELS: dict[str, ModelInfo] = {
         long_context_cached_input_price=Decimal("0.40"),
         long_context_output_price=Decimal("18.00"),
     ),
-    "gemini/gemini-3.8-flash": ModelInfo(
-        display_name="Gemini 3.8 Flash", provider="google_genai",
-        api_model="gemini-3.8-flash", stars=2,
-        reasoning_levels=("low", "medium", "high"), default_reasoning_level="medium",
+    "gemini/gemini-4-hydrogen": ModelInfo(
+        display_name="Gemini 4 Hydrogen", provider="google_genai",
+        api_model="gemini-4-hydrogen", stars=3,
+        # The Flash line's successor (Google: "recommended upgrade from Gemini
+        # 3.8 Flash"). No minimal; provider default is high. Google also offers
+        # "xhigh", which the pinned langchain-google-genai cannot send (its
+        # thinking level is a Literal up to "high"): add it with the SDK bump.
+        # Sampling parameters (temperature, top_p, top_k) are ignored.
+        reasoning_levels=("low", "medium", "high"), default_reasoning_level="high",
         input_modalities=_MULTIMODAL, context_window=1_048_576,
-        # Fast when it answers; on tool loops it sometimes sends nothing at all
-        # (2026-10-21), so fail fast instead of waiting out a long deadline.
-        request_timeout_seconds=120,
-        max_output_tokens=65_536, input_price=Decimal("0.75"),
-        cached_input_price=Decimal("0.075"), output_price=Decimal("3.75"),
-        price_changes=(PriceChange(
-            starts_on=date(2027, 1, 1), input_price=Decimal("1.50"),
-            cached_input_price=Decimal("0.15"), cache_write_price=None,
-            cache_write_1h_price=None, output_price=Decimal("7.50"),
-        ),),
+        max_output_tokens=65_536,
+        request_timeout_seconds=300,
+        # Flat across the 1M window; implicit caching only (no cache writes).
+        input_price=Decimal("1.50"), cached_input_price=Decimal("0.075"),
+        output_price=Decimal("7.50"),
     ),
     "gemini/gemini-3.5-flash-lite": ModelInfo(
         display_name="Gemini 3.5 Flash-Lite", provider="google_genai",
@@ -457,7 +457,9 @@ _MODELS: dict[str, ModelInfo] = {
 # model, delete its own row here.
 #
 # One live model per line: when a newer generation of the SAME line ships
-# (Fable 5.1 → 5.2, GPT-6 Sol → 6.1 Sol), the older one is retired and forwarded.
+# (Fable 5.1 → 5.2, GPT-6 Sol → 6.1 Sol, Gemini 3.8 Flash → Gemini 4 Hydrogen:
+# the vendor's named upgrade counts, whatever the line is now called), the older
+# one is retired and forwarded.
 # A different line is never a successor (Gemini 3.1 Pro stays next to Gemini 4;
 # Sonnet never forwards to Opus).
 #
@@ -483,6 +485,7 @@ MODEL_REPLACEMENTS: dict[str, str] = {
     "anthropic/claude-fable-5-1": "anthropic/claude-fable-5-2",
     "gemini/gemini-3.5-flash": "gemini/gemini-3.7-flash",
     "gemini/gemini-3.7-flash": "gemini/gemini-3.8-flash",
+    "gemini/gemini-3.8-flash": "gemini/gemini-4-hydrogen",
     "gemini/gemini-3.1-flash-lite": "gemini/gemini-3.5-flash-lite",
 }
 

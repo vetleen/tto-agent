@@ -46,7 +46,7 @@ class BenchmarkDataTests(SimpleTestCase):
                 self.assertEqual(len(seen), len(set(seen)))
 
     def test_missing_models(self):
-        # Every model is ranked on the Arena business board (2026-11-09):
+        # Every model is ranked on the Arena business board (2026-11-11):
         # Fable 5.2 and GPT-6.1 Terra through their predecessor's row.
         self.assertEqual(missing_models(BENCHMARK_ARENA_BUSINESS), [])
         self.assertEqual(missing_models(BENCHMARK_GDPVAL), [])
@@ -91,7 +91,8 @@ class BenchmarkDataTests(SimpleTestCase):
 
     def test_livebench_if_missing_models(self):
         # The Gemini 4 models are not in a LiveBench release with the IF table
-        # (LiveBench 2.0 replaced it) and have no predecessor to borrow from.
+        # (LiveBench 2.0 replaced it). Carbon and Argon have no predecessor to
+        # borrow from; Hydrogen borrows Gemini 3.8 Flash's row.
         self.assertEqual(
             missing_models(BENCHMARK_LIVEBENCH_IF),
             ["gemini/gemini-4-carbon", "gemini/gemini-4-argon"],
@@ -103,7 +104,7 @@ class BenchmarkDataTests(SimpleTestCase):
             BENCHMARK_GDPVAL: [("high", 1733)],
             BENCHMARK_GDP_PDF: [("low", 28.6), ("medium", 29.6), ("high", 28.4)],
             BENCHMARK_OMNISCIENCE: [("low", 19.8), ("medium", 4.2), ("high", 11.4)],
-            BENCHMARK_ARENA_BUSINESS: [("high", 1512)],
+            BENCHMARK_ARENA_BUSINESS: [("high", 1513)],
             BENCHMARK_LIVEBENCH_IF: [],
             BENCHMARK_RESPONSE_TIME: [],
         }
@@ -112,6 +113,41 @@ class BenchmarkDataTests(SimpleTestCase):
                 got = get_scores(key, "gemini/gemini-4-carbon")
                 self.assertEqual([(s.effort, s.score) for s in got], rows)
                 self.assertFalse(any(s.inherited_from for s in got))
+
+    def test_gemini_4_hydrogen_scores(self):
+        model = "gemini/gemini-4-hydrogen"
+        # Real Hydrogen numbers where the source has them (AA's xhigh run is
+        # a level we do not offer, so it has no row).
+        measured = {
+            BENCHMARK_GDP_PDF: [("low", 28.2), ("medium", 32.8), ("high", 30.0)],
+            BENCHMARK_OMNISCIENCE: [("low", 18.8), ("medium", 12.5), ("high", 8.7)],
+            BENCHMARK_ARENA_BUSINESS: [("high", 1476)],
+        }
+        for key, rows in measured.items():
+            with self.subTest(key=key):
+                got = get_scores(key, model)
+                self.assertEqual([(s.effort, s.score) for s in got], rows)
+                self.assertFalse(any(s.inherited_from for s in got))
+        # Not measured yet on these three: Gemini 3.8 Flash's rows stand in.
+        borrowed = {
+            BENCHMARK_GDPVAL: [("low", 1316), ("medium", 1431), ("high", 1445)],
+            BENCHMARK_LIVEBENCH_IF: [("high", 81.41)],
+            BENCHMARK_RESPONSE_TIME: [("high", 76.8)],
+        }
+        for key, rows in borrowed.items():
+            with self.subTest(key=key):
+                got = get_scores(key, model)
+                self.assertEqual([(s.effort, s.score) for s in got], rows)
+                for s in got:
+                    self.assertEqual(s.inherited_from, "gemini/gemini-3.8-flash")
+                    self.assertTrue(s.note.startswith(
+                        "Measured on Gemini 3.8 Flash; no Gemini 4 Hydrogen score published yet."
+                    ))
+        # The retired ID reads the same rows.
+        self.assertEqual(
+            get_scores(BENCHMARK_GDP_PDF, "gemini/gemini-3.8-flash"),
+            get_scores(BENCHMARK_GDP_PDF, model),
+        )
 
     def test_fable_5_2_scores(self):
         efforts = ["low", "medium", "high", "xhigh", "max"]
@@ -124,7 +160,7 @@ class BenchmarkDataTests(SimpleTestCase):
         self.assertEqual(gdpval["max"], 1831)
         # Not measured yet on these three: Fable 5.1's rows stand in.
         for key, first in (
-            (BENCHMARK_ARENA_BUSINESS, ("max", 1489)),
+            (BENCHMARK_ARENA_BUSINESS, ("max", 1488)),
             (BENCHMARK_LIVEBENCH_IF, ("max", 72.99)),
             (BENCHMARK_RESPONSE_TIME, ("low", 38.2)),
         ):
@@ -138,18 +174,19 @@ class BenchmarkDataTests(SimpleTestCase):
                     ))
 
     def test_gemini_4_argon_scores(self):
-        # AA and LMArena only run Argon at high.
+        # AA runs Argon at medium and high (medium since 2026-11-13); LMArena
+        # and the 100K timing only at high.
         expected = {
-            BENCHMARK_GDPVAL: 1633,
-            BENCHMARK_GDP_PDF: 21.8,
-            BENCHMARK_OMNISCIENCE: 4.3,
-            BENCHMARK_ARENA_BUSINESS: 1517,
-            BENCHMARK_RESPONSE_TIME: 86.1,
+            BENCHMARK_GDPVAL: [("medium", 1578), ("high", 1633)],
+            BENCHMARK_GDP_PDF: [("medium", 25.6), ("high", 21.8)],
+            BENCHMARK_OMNISCIENCE: [("medium", 15.4), ("high", 4.3)],
+            BENCHMARK_ARENA_BUSINESS: [("high", 1515)],
+            BENCHMARK_RESPONSE_TIME: [("high", 86.1)],
         }
-        for key, score in expected.items():
+        for key, scores in expected.items():
             with self.subTest(key=key):
                 rows = get_scores(key, "gemini/gemini-4-argon")
-                self.assertEqual([(s.effort, s.score) for s in rows], [("high", score)])
+                self.assertEqual([(s.effort, s.score) for s in rows], scores)
 
     def test_haiku_5_5_scores(self):
         # Every effort level on AA; LiveBench lists only xhigh and max.

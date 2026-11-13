@@ -90,25 +90,27 @@ def _row(model_id, effort, score, source_label, ci=None, note=None):
 # artificialanalysis.ai pages (the model object's gdpval, gdpPdfAllPass and
 # omniscienceHallucinationRate); source_label is AA's slug. Every AA row of
 # the three benchmarks below was re-read from one snapshot of each slug's
-# /models/<slug> page on 2026-11-11, when Fable 5.2 and Gemini 4 Carbon were
-# added. A metric the page no longer shows keeps its earlier value
-# (Omniscience: GPT-5.4 nano, Gemini 3.1 Pro). GDPval Elo is relative and
-# drifts as AA adds models, so all GDPval rows are re-read together from one
-# snapshot whenever a model is added. Unsuffixed OpenAI/Anthropic slugs are
-# the max-effort runs; unsuffixed Gemini slugs are "high". AA runs Gemini 4
-# Argon at high only, and has a GDPval score for Carbon at high only.
+# /models/<slug> page on 2026-11-13, when Gemini 4 Hydrogen was added. A
+# metric the page no longer shows keeps its earlier value (Omniscience:
+# GPT-5.4 nano, Gemini 3.1 Pro). GDPval Elo is relative and drifts as AA adds
+# models, so all GDPval rows are re-read together from one snapshot whenever a
+# model is added. Unsuffixed OpenAI/Anthropic slugs are the max-effort runs;
+# unsuffixed Gemini slugs are "high", except gemini-4-hydrogen, which is the
+# xhigh run (a level we do not offer yet, so it has no row). AA runs Gemini 4
+# Argon at medium and high, and has a GDPval score for Carbon at high only and
+# none for Hydrogen yet (it borrows Gemini 3.8 Flash's, see _PREDECESSORS).
 _AA_SCORES = {
     BENCHMARK_GDPVAL: (
         _row("openai/gpt-6-astra", "low", 1403, "gpt-6-astra-low"),
         _row("openai/gpt-6-astra", "medium", 1498, "gpt-6-astra-medium"),
         _row("openai/gpt-6-astra", "high", 1536, "gpt-6-astra-high"),
         _row("openai/gpt-6-astra", "xhigh", 1569, "gpt-6-astra-xhigh"),
-        _row("openai/gpt-6-astra", "max", 1584, "gpt-6-astra"),
+        _row("openai/gpt-6-astra", "max", 1586, "gpt-6-astra"),
         _row("openai/gpt-6.1-sol", "low", 1322, "gpt-6-1-sol-low"),
         _row("openai/gpt-6.1-sol", "medium", 1459, "gpt-6-1-sol-medium"),
         _row("openai/gpt-6.1-sol", "high", 1520, "gpt-6-1-sol-high"),
         _row("openai/gpt-6.1-sol", "xhigh", 1555, "gpt-6-1-sol-xhigh"),
-        _row("openai/gpt-6.1-sol", "max", 1609, "gpt-6-1-sol"),
+        _row("openai/gpt-6.1-sol", "max", 1608, "gpt-6-1-sol"),
         _row("openai/gpt-6.1-terra", "none", 1286, "gpt-6-1-terra-non-reasoning"),
         _row("openai/gpt-6.1-terra", "low", 1204, "gpt-6-1-terra-low"),
         _row("openai/gpt-6.1-terra", "medium", 1325, "gpt-6-1-terra-medium"),
@@ -143,8 +145,10 @@ _AA_SCORES = {
         _row("anthropic/claude-haiku-5-5", "xhigh", 1522, "claude-haiku-5-5-xhigh"),
         _row("anthropic/claude-haiku-5-5", "max", 1629, "claude-haiku-5-5"),
         _row("gemini/gemini-4-carbon", "high", 1733, "gemini-4-carbon"),
+        _row("gemini/gemini-4-argon", "medium", 1578, "gemini-4-argon-medium"),
         _row("gemini/gemini-4-argon", "high", 1633, "gemini-4-argon"),
         _row("gemini/gemini-3.1-pro-preview", None, 799, "gemini-3-1-pro-preview"),
+        # Retired; stands in for Gemini 4 Hydrogen (see _PREDECESSORS).
         _row("gemini/gemini-3.8-flash", "low", 1316, "gemini-3-8-flash-low"),
         _row("gemini/gemini-3.8-flash", "medium", 1431, "gemini-3-8-flash-medium"),
         _row("gemini/gemini-3.8-flash", "high", 1445, "gemini-3-8-flash"),
@@ -197,11 +201,12 @@ _AA_SCORES = {
         _row("gemini/gemini-4-carbon", "low", 28.6, "gemini-4-carbon-low"),
         _row("gemini/gemini-4-carbon", "medium", 29.6, "gemini-4-carbon-medium"),
         _row("gemini/gemini-4-carbon", "high", 28.4, "gemini-4-carbon"),
+        _row("gemini/gemini-4-argon", "medium", 25.6, "gemini-4-argon-medium"),
         _row("gemini/gemini-4-argon", "high", 21.8, "gemini-4-argon"),
         _row("gemini/gemini-3.1-pro-preview", None, 17.8, "gemini-3-1-pro-preview"),
-        _row("gemini/gemini-3.8-flash", "low", 18.6, "gemini-3-8-flash-low"),
-        _row("gemini/gemini-3.8-flash", "medium", 22.8, "gemini-3-8-flash-medium"),
-        _row("gemini/gemini-3.8-flash", "high", 21.0, "gemini-3-8-flash"),
+        _row("gemini/gemini-4-hydrogen", "low", 28.2, "gemini-4-hydrogen-low"),
+        _row("gemini/gemini-4-hydrogen", "medium", 32.8, "gemini-4-hydrogen-medium"),
+        _row("gemini/gemini-4-hydrogen", "high", 30.0, "gemini-4-hydrogen-high"),
         _row("gemini/gemini-3.5-flash-lite", None, 13.6, "gemini-3-5-flash-lite"),
     ),
     BENCHMARK_OMNISCIENCE: (
@@ -253,38 +258,42 @@ _AA_SCORES = {
         _row("gemini/gemini-4-carbon", "low", 19.8, "gemini-4-carbon-low"),
         _row("gemini/gemini-4-carbon", "medium", 4.2, "gemini-4-carbon-medium"),
         _row("gemini/gemini-4-carbon", "high", 11.4, "gemini-4-carbon"),
+        _row("gemini/gemini-4-argon", "medium", 15.4, "gemini-4-argon-medium"),
         _row("gemini/gemini-4-argon", "high", 4.3, "gemini-4-argon"),
         _row("gemini/gemini-3.1-pro-preview", None, 50.9, "gemini-3-1-pro-preview"),
-        _row("gemini/gemini-3.8-flash", "low", 68.1, "gemini-3-8-flash-low"),
-        _row("gemini/gemini-3.8-flash", "medium", 51.5, "gemini-3-8-flash-medium"),
-        _row("gemini/gemini-3.8-flash", "high", 55.1, "gemini-3-8-flash"),
+        _row("gemini/gemini-4-hydrogen", "low", 18.8, "gemini-4-hydrogen-low"),
+        _row("gemini/gemini-4-hydrogen", "medium", 12.5, "gemini-4-hydrogen-medium"),
+        _row("gemini/gemini-4-hydrogen", "high", 8.7, "gemini-4-hydrogen-high"),
         _row("gemini/gemini-3.5-flash-lite", None, 26.7, "gemini-3-5-flash-lite"),
     ),
 }
 
-# LMArena rows are all read from one snapshot of the board (2026-11-09; the
-# page shows whole points). It could only be read down to rank 151: Fable 5.2
+# LMArena rows are all read from one snapshot of the board (2026-11-11; the
+# page shows whole points). It could only be read down to rank 149: Fable 5.2
 # and GPT-6.1 Terra are not in that part (not rated yet), and GPT-5.4 nano
 # ranks below it, so its row keeps the 2026-09-25 value.
 _ARENA_SCORES = (
     _row("openai/gpt-6-astra", "max", 1478, "gpt-6-astra-max", ci=11),
-    _row("openai/gpt-6.1-sol", "max", 1483, "gpt-6.1-sol-max", ci=14),
-    _row("openai/gpt-6-luna", "max", 1440, "gpt-6-luna-max", ci=6),
+    _row("openai/gpt-6.1-sol", "max", 1480, "gpt-6.1-sol-max", ci=14),
+    _row("openai/gpt-6-luna", "max", 1439, "gpt-6-luna-max", ci=6),
     # Retired; stands in for GPT-6.1 Terra (see _PREDECESSORS).
     _row("openai/gpt-5.6-terra", "xhigh", 1466, "gpt-5.6-terra-xhigh", ci=7),
     _row("openai/gpt-5.4-nano", "high", 1405.1, "gpt-5.4-nano-high", ci=6.6),
     # Retired; stands in for Fable 5.2 (see _PREDECESSORS).
-    _row("anthropic/claude-fable-5-1", "max", 1489, "claude-fable-5.1-max", ci=10),
+    _row("anthropic/claude-fable-5-1", "max", 1488, "claude-fable-5.1-max", ci=10),
     _row("anthropic/claude-opus-5-5", "high", 1493, "claude-opus-5.5-high", ci=12),
-    _row("anthropic/claude-sonnet-5-5", "xhigh", 1472, "claude-sonnet-5.5-xhigh", ci=13),
-    _row("anthropic/claude-haiku-5-5", "high", 1431, "claude-haiku-5.5-high", ci=13),
+    _row("anthropic/claude-sonnet-5-5", "xhigh", 1474, "claude-sonnet-5.5-xhigh", ci=13),
+    _row("anthropic/claude-haiku-5-5", "high", 1430, "claude-haiku-5.5-high", ci=13),
     _row(
-        "gemini/gemini-4-carbon", "high", 1512, "gemini-4-carbon-high", ci=22,
-        note="Preliminary: only 713 votes so far.",
+        "gemini/gemini-4-carbon", "high", 1513, "gemini-4-carbon-high", ci=22,
+        note="Preliminary: only 715 votes so far.",
     ),
-    _row("gemini/gemini-4-argon", "high", 1517, "gemini-4-argon-high", ci=11),
+    _row("gemini/gemini-4-argon", "high", 1515, "gemini-4-argon-high", ci=11),
     _row("gemini/gemini-3.1-pro-preview", None, 1478, "gemini-3.1-pro-preview", ci=5),
-    _row("gemini/gemini-3.8-flash", "high", 1486, "gemini-3.8-flash-high", ci=7),
+    _row(
+        "gemini/gemini-4-hydrogen", "high", 1476, "gemini-4-hydrogen-high", ci=21,
+        note="Preliminary: only 791 votes so far.",
+    ),
     _row("gemini/gemini-3.5-flash-lite", None, 1453, "gemini-3.5-flash-lite", ci=8),
 )
 
@@ -292,7 +301,8 @@ _ARENA_SCORES = (
 # category is the mean of paraphrase, simplify, story_generation and summarize.
 # All rows share one question set. LiveBench 2.0 has since replaced the IF
 # table, so models released after it (GPT-6.1 Terra, Fable 5.2, Gemini 4) have
-# no row; the two with a retired predecessor borrow its row (_PREDECESSORS).
+# no row; those with a retired predecessor (Terra, Fable 5.2, Gemini 4
+# Hydrogen) borrow its row (_PREDECESSORS).
 _LIVEBENCH_IF_SCORES = (
     _row("openai/gpt-6-astra", "max", 75.58, "gpt-6-astra-max"),
     _row("openai/gpt-6.1-sol", "max", 74.15, "gpt-6.1-sol-max"),
@@ -308,6 +318,7 @@ _LIVEBENCH_IF_SCORES = (
     _row("anthropic/claude-haiku-5-5", "xhigh", 66.47, "claude-haiku-5-5-xhigh-effort"),
     _row("anthropic/claude-haiku-5-5", "max", 54.66, "claude-haiku-5-5-max-effort"),
     _row("gemini/gemini-3.1-pro-preview", "high", 79.10, "gemini-3.1-pro-preview-high"),
+    # Retired; stands in for Gemini 4 Hydrogen (see _PREDECESSORS).
     _row("gemini/gemini-3.8-flash", "high", 81.41, "gemini-3.8-flash-high"),
     _row("gemini/gemini-3.5-flash-lite", "high", 67.24, "gemini-3.5-flash-lite-high"),
 )
@@ -318,8 +329,9 @@ _LIVEBENCH_IF_SCORES = (
 # read 2026-11-03. Effort variants AA has no 100K measurement for are left out
 # (Gemini 3.8 Flash low/medium); GPT-5.4 nano has none. On 2026-11-11 the pages
 # no longer carried that series in a form we could read (only time to first
-# token per prompt size), so Fable 5.2 borrows Fable 5.1's rows and Gemini 4
-# Carbon has none. Re-read all rows together when the series is back.
+# token per prompt size; still so on 2026-11-13), so Fable 5.2 borrows Fable
+# 5.1's rows, Gemini 4 Hydrogen borrows Gemini 3.8 Flash's and Gemini 4 Carbon
+# has none. Re-read all rows together when the series is back.
 _RESPONSE_TIME_SCORES = (
     _row("openai/gpt-6-astra", "low", 12.2, "gpt-6-astra-low"),
     _row("openai/gpt-6-astra", "medium", 26.0, "gpt-6-astra-medium"),
@@ -365,11 +377,12 @@ _RESPONSE_TIME_SCORES = (
     _row("anthropic/claude-haiku-5-5", "max", 371.6, "claude-haiku-5-5"),
     _row("gemini/gemini-4-argon", "high", 86.1, "gemini-4-argon"),
     _row("gemini/gemini-3.1-pro-preview", None, 69.6, "gemini-3-1-pro-preview"),
+    # Retired; stands in for Gemini 4 Hydrogen (see _PREDECESSORS).
     _row("gemini/gemini-3.8-flash", "high", 76.8, "gemini-3-8-flash"),
     _row("gemini/gemini-3.5-flash-lite", None, 14.3, "gemini-3-5-flash-lite"),
 )
 
-_FETCHED = date(2026, 11, 11)
+_FETCHED = date(2026, 11, 13)
 _RESPONSE_TIME_FETCHED = date(2026, 11, 3)
 
 # Successor -> (retired predecessor, its display name). On a benchmark where
@@ -378,6 +391,7 @@ _RESPONSE_TIME_FETCHED = date(2026, 11, 3)
 _PREDECESSORS: dict[str, tuple[str, str]] = {
     "anthropic/claude-fable-5-2": ("anthropic/claude-fable-5-1", "Claude Fable 5.1"),
     "openai/gpt-6.1-terra": ("openai/gpt-5.6-terra", "GPT-5.6 Terra"),
+    "gemini/gemini-4-hydrogen": ("gemini/gemini-3.8-flash", "Gemini 3.8 Flash"),
 }
 
 
@@ -455,7 +469,7 @@ BENCHMARKS: dict[str, Benchmark] = {
                 "https://arena.ai/leaderboard/text/"
                 "industry-business-and-management-and-financial-operations"
             ),
-            as_of=date(2026, 11, 9),
+            as_of=date(2026, 11, 11),
             scores=_with_inherited(_ARENA_SCORES),
             caveat="Measures preference on business topics, not writing quality as such.",
         ),

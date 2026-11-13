@@ -118,15 +118,13 @@ class PricingLookupTests(SimpleTestCase):
             (Decimal("4.00"), Decimal("0.20"), Decimal("4.00"), Decimal("20.00")),
         )
 
-    def test_gemini_flash_introductory_price_schedule(self):
-        self.assertEqual(
-            get_model_pricing("gemini-3.7-flash", as_of=date(2026, 12, 31)),
-            (Decimal("0.75"), Decimal("0.075"), Decimal("0.75"), Decimal("3.75")),
-        )
-        self.assertEqual(
-            get_model_pricing("gemini-3.7-flash", as_of=date(2027, 1, 1)),
-            (Decimal("1.50"), Decimal("0.15"), Decimal("1.50"), Decimal("7.50")),
-        )
+    def test_gemini_4_hydrogen_price_is_flat(self):
+        # No introductory price; the retired Flash generations bill as Hydrogen.
+        flat = (Decimal("1.50"), Decimal("0.075"), Decimal("1.50"), Decimal("7.50"))
+        for model in ("gemini-4-hydrogen", "gemini-3.8-flash", "gemini-3.7-flash"):
+            for day in (date(2026, 12, 31), date(2027, 1, 1)):
+                with self.subTest(model=model, day=day):
+                    self.assertEqual(get_model_pricing(model, as_of=day), flat)
 
     def test_retired_alias_uses_replacement_price(self):
         self.assertEqual(
@@ -227,13 +225,13 @@ class CostTests(SimpleTestCase):
 
     def test_dated_cost(self):
         promo = calculate_cost(
-            "gemini-3.7-flash", 1_000_000, 1_000_000, as_of=date(2026, 12, 31)
+            "gemini-4-argon", 1_000_000, 1_000_000, as_of=date(2026, 11, 30)
         )
         standard = calculate_cost(
-            "gemini-3.7-flash", 1_000_000, 1_000_000, as_of=date(2027, 1, 1)
+            "gemini-4-argon", 1_000_000, 1_000_000, as_of=date(2026, 12, 1)
         )
-        self.assertEqual(promo, Decimal("4.50"))
-        self.assertEqual(standard, Decimal("9"))
+        self.assertEqual(promo, Decimal("12"))
+        self.assertEqual(standard, Decimal("24"))
 
     def test_missing_counts_are_zero(self):
         self.assertEqual(calculate_cost("gpt-5.4-nano", None, None), Decimal("0"))

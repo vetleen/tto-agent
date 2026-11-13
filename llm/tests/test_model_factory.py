@@ -29,9 +29,9 @@ class ParseProviderTests(SimpleTestCase):
         self.assertEqual(api_model, "claude-sonnet-5-5")
 
     def test_explicit_gemini_prefix(self):
-        provider, api_model = _parse_provider("gemini/gemini-3.8-flash")
+        provider, api_model = _parse_provider("gemini/gemini-4-hydrogen")
         self.assertEqual(provider, "google_genai")
-        self.assertEqual(api_model, "gemini-3.8-flash")
+        self.assertEqual(api_model, "gemini-4-hydrogen")
 
     def test_auto_detect_gpt(self):
         provider, api_model = _parse_provider("gpt-5-mini")
@@ -207,7 +207,9 @@ class RequestTimeoutTests(SimpleTestCase):
         self.assertEqual(mock_init.call_args[1]["timeout"], 600)
         create_chat_model("gemini/gemini-4-argon")
         self.assertEqual(mock_init.call_args[1]["timeout"], 600)
-        create_chat_model("gemini/gemini-3.8-flash")
+        create_chat_model("gemini/gemini-4-hydrogen")
+        self.assertEqual(mock_init.call_args[1]["timeout"], 300)
+        create_chat_model("gemini/gemini-3.5-flash-lite")
         self.assertEqual(mock_init.call_args[1]["timeout"], 120)
 
     @patch("llm.core.model_factory.init_chat_model")
@@ -248,8 +250,11 @@ class RequestTimeoutTests(SimpleTestCase):
 
         self.assertEqual(request_timeout_for_model("gemini/gemini-4-argon"), 600)
         self.assertEqual(request_timeout_for_model("gemini/gemini-3.1-pro-preview"), 600)
-        self.assertEqual(request_timeout_for_model("gemini/gemini-3.8-flash"), 120)
-        self.assertEqual(request_timeout_for_model("gemini/gemini-3.7-flash"), 120)  # retired → 3.8
+        self.assertEqual(request_timeout_for_model("gemini/gemini-4-hydrogen"), 300)
+        # Retired Flash generations forward to Hydrogen.
+        self.assertEqual(request_timeout_for_model("gemini/gemini-3.8-flash"), 300)
+        self.assertEqual(request_timeout_for_model("gemini/gemini-3.7-flash"), 300)
+        self.assertEqual(request_timeout_for_model("gemini/gemini-3.5-flash-lite"), 120)
         self.assertEqual(request_timeout_for_model("openai/gpt-6-luna"), 120)
         self.assertEqual(request_timeout_for_model(""), 120)
 

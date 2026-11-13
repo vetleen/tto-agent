@@ -37,7 +37,7 @@ EXPECTED_IDS = [
     "gemini/gemini-4-carbon",
     "gemini/gemini-4-argon",
     "gemini/gemini-3.1-pro-preview",
-    "gemini/gemini-3.8-flash",
+    "gemini/gemini-4-hydrogen",
     "gemini/gemini-3.5-flash-lite",
 ]
 
@@ -83,7 +83,8 @@ class RegistryTests(SimpleTestCase):
             "gemini/gemini-4-carbon": (("low", "medium", "high"), "medium"),
             "gemini/gemini-4-argon": (("low", "medium", "high"), "medium"),
             "gemini/gemini-3.1-pro-preview": (("low", "medium", "high"), "high"),
-            "gemini/gemini-3.8-flash": (("low", "medium", "high"), "medium"),
+            # Google also offers "xhigh"; the pinned SDK cannot send it yet.
+            "gemini/gemini-4-hydrogen": (("low", "medium", "high"), "high"),
             "gemini/gemini-3.5-flash-lite": (("minimal", "low", "medium", "high"), "minimal"),
         }
         self.assertEqual(list(expected), EXPECTED_IDS)
@@ -98,7 +99,7 @@ class RegistryTests(SimpleTestCase):
         self.assertEqual(get_model_info("gpt-6.1-sol").max_output_tokens, 128_000)
         self.assertEqual(get_model_info("gpt-5.4-nano").context_window, 400_000)
         self.assertEqual(get_model_info("claude-haiku-5-5").max_output_tokens, 128_000)
-        self.assertEqual(get_model_info("gemini-3.8-flash").context_window, 1_048_576)
+        self.assertEqual(get_model_info("gemini-4-hydrogen").context_window, 1_048_576)
 
     def test_flagship_pricing_is_present(self):
         info = get_model_info("openai/gpt-6-astra")
@@ -149,14 +150,30 @@ class RegistryTests(SimpleTestCase):
         self.assertEqual(info.display_input_price, Decimal("0.10"))
         self.assertEqual(info.display_output_price, Decimal("0.50"))
 
-    def test_gemini_3_8_flash_pricing(self):
-        info = get_model_info("gemini/gemini-3.8-flash")
-        self.assertEqual(info.api_model, "gemini-3.8-flash")
-        self.assertEqual(info.input_price, Decimal("0.75"))
-        self.assertEqual(info.output_price, Decimal("3.75"))
-        # Intro pricing doubles on 2027-01-01.
-        self.assertEqual(info.price_changes[0].output_price, Decimal("7.50"))
+    def test_gemini_4_hydrogen_metadata(self):
+        info = get_model_info("gemini/gemini-4-hydrogen")
+        self.assertEqual(info.display_name, "Gemini 4 Hydrogen")
+        self.assertEqual(info.api_model, "gemini-4-hydrogen")
+        self.assertEqual(info.provider, "google_genai")
+        self.assertEqual(info.stars, 3)
+        self.assertFalse(info.flagship)
+        self.assertIsNone(info.warning)
+        self.assertEqual(info.request_timeout_seconds, 300)
         self.assertEqual(info.context_window, 1_048_576)
+        self.assertEqual(info.max_output_tokens, 65_536)
+        # Flat pricing: no introductory price, no long-context band, and
+        # implicit caching only (no cache-write charge).
+        self.assertEqual(info.input_price, Decimal("1.50"))
+        self.assertEqual(info.cached_input_price, Decimal("0.075"))
+        self.assertEqual(info.output_price, Decimal("7.50"))
+        self.assertIsNone(info.cache_write_price)
+        self.assertIsNone(info.long_context_threshold)
+        self.assertEqual(info.price_changes, ())
+        # Every retired Flash generation forwards to it.
+        for retired in (
+            "gemini/gemini-3.8-flash", "gemini/gemini-3.7-flash", "gemini/gemini-3.5-flash",
+        ):
+            self.assertEqual(get_model_info(retired), info)
 
     def test_gemini_4_argon_metadata(self):
         info = get_model_info("gemini/gemini-4-argon")
@@ -232,7 +249,7 @@ class ReplacementTests(SimpleTestCase):
             "openai/gpt-6-sol": "openai/gpt-6.1-sol",
             "openai/gpt-5.6-terra": "openai/gpt-6.1-terra",
             "anthropic/claude-opus-4-7": "anthropic/claude-opus-5-5",
-            "gemini/gemini-3.5-flash": "gemini/gemini-3.8-flash",
+            "gemini/gemini-3.5-flash": "gemini/gemini-4-hydrogen",
             "openai/gpt-5.6-luna": "openai/gpt-6-luna",
             "anthropic/claude-opus-5": "anthropic/claude-opus-5-5",
             "anthropic/claude-opus-4-8": "anthropic/claude-opus-5-5",
@@ -242,7 +259,8 @@ class ReplacementTests(SimpleTestCase):
             "anthropic/claude-haiku-4-5": "anthropic/claude-haiku-5-5",
             "anthropic/claude-fable-5": "anthropic/claude-fable-5-2",
             "anthropic/claude-fable-5-1": "anthropic/claude-fable-5-2",
-            "gemini/gemini-3.7-flash": "gemini/gemini-3.8-flash",
+            "gemini/gemini-3.7-flash": "gemini/gemini-4-hydrogen",
+            "gemini/gemini-3.8-flash": "gemini/gemini-4-hydrogen",
             "gemini/gemini-3.1-flash-lite": "gemini/gemini-3.5-flash-lite",
         }
         self.assertEqual(set(expected), set(MODEL_REPLACEMENTS))
@@ -254,7 +272,8 @@ class ReplacementTests(SimpleTestCase):
     def test_bare_names_are_normalized(self):
         self.assertEqual(canonical_model_id("gpt-6.1-terra"), "openai/gpt-6.1-terra")
         self.assertEqual(canonical_model_id("claude-opus-5-5"), "anthropic/claude-opus-5-5")
-        self.assertEqual(canonical_model_id("gemini-3.8-flash"), "gemini/gemini-3.8-flash")
+        self.assertEqual(canonical_model_id("gemini-4-hydrogen"), "gemini/gemini-4-hydrogen")
+        self.assertEqual(canonical_model_id("gemini-3.8-flash"), "gemini/gemini-4-hydrogen")
         # Bare retired names forward too.
         self.assertEqual(canonical_model_id("claude-opus-4-6"), "anthropic/claude-opus-5-5")
         self.assertEqual(canonical_model_id("claude-fable-5"), "anthropic/claude-fable-5-2")
@@ -337,7 +356,7 @@ class TierTests(SimpleTestCase):
                 "anthropic/claude-sonnet-5-5",
                 "anthropic/claude-haiku-5-5",
                 "gemini/gemini-3.1-pro-preview",
-                "gemini/gemini-3.8-flash",
+                "gemini/gemini-4-hydrogen",
             ],
         )
         self.assertEqual(
