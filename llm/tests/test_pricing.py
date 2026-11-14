@@ -14,9 +14,10 @@ class PricingLookupTests(SimpleTestCase):
             get_model_pricing("openai/gpt-6-astra"),
             (Decimal("10.00"), Decimal("1.00"), Decimal("12.50"), Decimal("50.00")),
         )
+        # Retired GPT-5.4 Nano bills as Luna.
         self.assertEqual(
             get_model_pricing("gpt-5.4-nano"),
-            (Decimal("0.20"), Decimal("0.02"), Decimal("0.25"), Decimal("1.25")),
+            (Decimal("0.10"), Decimal("0.01"), Decimal("0.125"), Decimal("0.50")),
         )
         # Cache reads are 0.05x input on GPT-6.1 Sol (not the usual 0.1x).
         self.assertEqual(
@@ -174,8 +175,8 @@ class DecisionsCostTests(SimpleTestCase):
 class CostTests(SimpleTestCase):
     def test_basic_cost(self):
         self.assertEqual(
-            calculate_cost("gpt-5.4-nano", 1_000, 500),
-            Decimal("0.000825"),
+            calculate_cost("gpt-6-luna", 1_000, 500),
+            Decimal("0.00035"),
         )
         self.assertEqual(
             calculate_cost("gpt-6-astra", 1_000, 500),
@@ -234,7 +235,7 @@ class CostTests(SimpleTestCase):
         self.assertEqual(standard, Decimal("24"))
 
     def test_missing_counts_are_zero(self):
-        self.assertEqual(calculate_cost("gpt-5.4-nano", None, None), Decimal("0"))
+        self.assertEqual(calculate_cost("gpt-6-luna", None, None), Decimal("0"))
 
     def test_unknown_model(self):
         self.assertIsNone(calculate_cost("unknown/model", 10, 10))

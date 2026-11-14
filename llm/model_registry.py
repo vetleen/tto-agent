@@ -270,16 +270,6 @@ _MODELS: dict[str, ModelInfo] = {
         long_context_cache_write_price=Decimal("0.25"),
         long_context_output_price=Decimal("0.75"),
     ),
-    "openai/gpt-5.4-nano": ModelInfo(
-        display_name="GPT-5.4 Nano", provider="openai", api_model="gpt-5.4-nano",
-        stars=1,
-        reasoning_levels=("none", "low", "medium", "high", "xhigh"),
-        default_reasoning_level="none", uses_responses_api=True,
-        input_modalities=_MULTIMODAL, context_window=400_000,
-        max_output_tokens=128_000, input_price=Decimal("0.20"),
-        cached_input_price=Decimal("0.02"), cache_write_price=Decimal("0.25"),
-        output_price=Decimal("1.25"),
-    ),
     # Anthropic
     "anthropic/claude-fable-5-2": ModelInfo(
         display_name="Claude Fable 5.2", provider="anthropic",
@@ -475,6 +465,8 @@ MODEL_REPLACEMENTS: dict[str, str] = {
     "openai/gpt-5.6-sol": "openai/gpt-6-sol",
     "openai/gpt-6-sol": "openai/gpt-6.1-sol",
     "openai/gpt-5.6-terra": "openai/gpt-6.1-terra",
+    # OpenAI's small tier: Luna is cheaper per token than Nano was.
+    "openai/gpt-5.4-nano": "openai/gpt-6-luna",
     "anthropic/claude-opus-4-7": "anthropic/claude-opus-5",
     "anthropic/claude-opus-4-6": "anthropic/claude-opus-5-5",
     "anthropic/claude-opus-4-8": "anthropic/claude-opus-5-5",

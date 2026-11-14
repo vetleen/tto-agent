@@ -83,7 +83,7 @@ def _row(model_id, effort, score, source_label, ci=None, note=None):
 # the three benchmarks below was re-read from one snapshot of each slug's
 # /models/<slug> page on 2026-11-13, when Gemini 4 Hydrogen was added. A
 # metric the page no longer shows keeps its earlier value (Omniscience:
-# GPT-5.4 nano, Gemini 3.1 Pro). GDPval Elo is relative and drifts as AA adds
+# Gemini 3.1 Pro). GDPval Elo is relative and drifts as AA adds
 # models, so all GDPval rows are re-read together from one snapshot whenever a
 # model is added. Unsuffixed OpenAI/Anthropic slugs are the max-effort runs;
 # unsuffixed Gemini slugs are "high", except gemini-4-hydrogen, which is the
@@ -114,7 +114,6 @@ _AA_SCORES = {
         _row("openai/gpt-6-luna", "high", 1352, "gpt-6-luna-high"),
         _row("openai/gpt-6-luna", "xhigh", 1373, "gpt-6-luna-xhigh"),
         _row("openai/gpt-6-luna", "max", 1444, "gpt-6-luna"),
-        _row("openai/gpt-5.4-nano", "xhigh", 955, "gpt-5-4-nano"),
         _row("anthropic/claude-fable-5-2", "low", 1546, "claude-fable-5-2-low"),
         _row("anthropic/claude-fable-5-2", "medium", 1591, "claude-fable-5-2-medium"),
         _row("anthropic/claude-fable-5-2", "high", 1718, "claude-fable-5-2-high"),
@@ -164,7 +163,6 @@ _AA_SCORES = {
         _row("openai/gpt-6-luna", "high", 18.2, "gpt-6-luna-high"),
         _row("openai/gpt-6-luna", "xhigh", 18.6, "gpt-6-luna-xhigh"),
         _row("openai/gpt-6-luna", "max", 22.8, "gpt-6-luna"),
-        _row("openai/gpt-5.4-nano", "xhigh", 7.8, "gpt-5-4-nano"),
         _row("anthropic/claude-fable-5-2", "low", 26.8, "claude-fable-5-2-low"),
         _row("anthropic/claude-fable-5-2", "medium", 23.8, "claude-fable-5-2-medium"),
         _row("anthropic/claude-fable-5-2", "high", 21.8, "claude-fable-5-2-high"),
@@ -219,9 +217,6 @@ _AA_SCORES = {
         _row("openai/gpt-6-luna", "high", 84.9, "gpt-6-luna-high"),
         _row("openai/gpt-6-luna", "xhigh", 84.0, "gpt-6-luna-xhigh"),
         _row("openai/gpt-6-luna", "max", 79.3, "gpt-6-luna"),
-        _row("openai/gpt-5.4-nano", "none", 61.5, "gpt-5-4-nano-non-reasoning"),
-        _row("openai/gpt-5.4-nano", "medium", 51.1, "gpt-5-4-nano-medium"),
-        _row("openai/gpt-5.4-nano", "xhigh", 74.2, "gpt-5-4-nano"),
         _row("anthropic/claude-fable-5-2", "low", 56.4, "claude-fable-5-2-low"),
         _row("anthropic/claude-fable-5-2", "medium", 58.5, "claude-fable-5-2-medium"),
         _row("anthropic/claude-fable-5-2", "high", 58.0, "claude-fable-5-2-high"),
@@ -258,13 +253,11 @@ _AA_SCORES = {
 # LMArena rows are all read from one snapshot of the board (2026-11-11; the
 # page shows whole points). It could only be read down to rank 149 of 414:
 # Fable 5.2 and GPT-6.1 Terra are not in that part (not rated yet; still so on
-# 2026-11-14), so they have no row, and GPT-5.4 nano ranks below it, so its row
-# keeps the 2026-09-25 value.
+# 2026-11-14), so they have no row.
 _ARENA_SCORES = (
     _row("openai/gpt-6-astra", "max", 1478, "gpt-6-astra-max", ci=11),
     _row("openai/gpt-6.1-sol", "max", 1480, "gpt-6.1-sol-max", ci=14),
     _row("openai/gpt-6-luna", "max", 1439, "gpt-6-luna-max", ci=6),
-    _row("openai/gpt-5.4-nano", "high", 1405.1, "gpt-5.4-nano-high", ci=6.6),
     _row("anthropic/claude-opus-5-5", "high", 1493, "claude-opus-5.5-high", ci=12),
     _row("anthropic/claude-sonnet-5-5", "xhigh", 1474, "claude-sonnet-5.5-xhigh", ci=13),
     _row("anthropic/claude-haiku-5-5", "high", 1430, "claude-haiku-5.5-high", ci=13),
@@ -291,7 +284,6 @@ _LIVEBENCH_IF_SCORES = (
     _row("openai/gpt-6.1-sol", "max", 74.15, "gpt-6.1-sol-max"),
     _row("openai/gpt-6.1-sol", "xhigh", 71.33, "gpt-6.1-sol-xhigh"),
     _row("openai/gpt-6-luna", "max", 55.93, "gpt-6-luna-max"),
-    _row("openai/gpt-5.4-nano", "xhigh", 67.20, "gpt-5.4-nano-xhigh"),
     _row("anthropic/claude-opus-5-5", "xhigh", 67.05, "claude-opus-5-5-xhigh-effort"),
     _row("anthropic/claude-opus-5-5", "max", 65.74, "claude-opus-5-5-max-effort"),
     _row("anthropic/claude-sonnet-5-5", "xhigh", 70.52, "claude-sonnet-5-5-xhigh-effort"),
@@ -309,8 +301,8 @@ _LIVEBENCH_IF_SCORES = (
 # model object embedded in each artificialanalysis.ai/models/<slug> page; all
 # rows were read together on 2026-11-14. Until 2026-11-03 this benchmark was
 # AA's end-to-end response time (a complete 500-token answer), which the pages
-# stopped carrying on 2026-11-11. Slug-to-effort mapping as for _AA_SCORES
-# (unsuffixed gpt-5-4-nano is xhigh). AA has no 100K figure for Gemini 4 Argon
+# stopped carrying on 2026-11-11. Slug-to-effort mapping as for _AA_SCORES.
+# AA has no 100K figure for Gemini 4 Argon
 # at medium. Re-read all rows together whenever a model is added.
 _RESPONSE_TIME_SCORES = (
     _row("openai/gpt-6-astra", "low", 7.4, "gpt-6-astra-low"),
@@ -335,9 +327,6 @@ _RESPONSE_TIME_SCORES = (
     _row("openai/gpt-6-luna", "high", 29.8, "gpt-6-luna-high"),
     _row("openai/gpt-6-luna", "xhigh", 47.5, "gpt-6-luna-xhigh"),
     _row("openai/gpt-6-luna", "max", 209.2, "gpt-6-luna"),
-    _row("openai/gpt-5.4-nano", "none", 2.5, "gpt-5-4-nano-non-reasoning"),
-    _row("openai/gpt-5.4-nano", "medium", 19.9, "gpt-5-4-nano-medium"),
-    _row("openai/gpt-5.4-nano", "xhigh", 358.8, "gpt-5-4-nano"),
     _row("anthropic/claude-fable-5-2", "low", 25.7, "claude-fable-5-2-low"),
     _row("anthropic/claude-fable-5-2", "medium", 30.4, "claude-fable-5-2-medium"),
     _row("anthropic/claude-fable-5-2", "high", 82.2, "claude-fable-5-2-high"),

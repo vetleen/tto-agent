@@ -49,7 +49,7 @@ class CapabilityTests(SimpleTestCase):
     def test_registered_models_support_thinking_and_vision(self):
         for model_id in (
             "openai/gpt-6.1-terra",
-            "openai/gpt-5.4-nano",
+            "openai/gpt-6-luna",
             "anthropic/claude-fable-5-2",
             "anthropic/claude-haiku-5-5",
             "gemini/gemini-4-carbon",
@@ -129,7 +129,6 @@ class PickerRatingTests(SimpleTestCase):
         # Rated on the blended price at the prod token mix, not output alone.
         expected = {
             "openai/gpt-6-luna": 1,
-            "openai/gpt-5.4-nano": 1,
             "gemini/gemini-3.5-flash-lite": 1,
             # Same $2.50 output as flash-lite, but its >100K band input/cache
             # prices put it with Gemini 4 Hydrogen.
@@ -189,7 +188,9 @@ class PickerRatingTests(SimpleTestCase):
                 self.assertEqual(get_price_level("x/y"), level)
 
     def test_capability_buckets(self):
-        self.assertEqual(get_capability_level("openai/gpt-5.4-nano"), 1)
+        self.assertEqual(get_capability_level("gemini/gemini-3.5-flash-lite"), 1)
+        # Retired Nano rates as Luna.
+        self.assertEqual(get_capability_level("openai/gpt-5.4-nano"), 2)
         # Manually rated 2 to match Haiku (cheap price tier would say 1).
         self.assertEqual(get_capability_level("openai/gpt-5.6-luna"), 2)
         self.assertEqual(get_capability_level("openai/gpt-6.1-terra"), 3)
@@ -250,8 +251,8 @@ class PickerRatingTests(SimpleTestCase):
             "Medium · $10 / 1M output tokens",
         )
         self.assertEqual(
-            get_model_meta_tooltip("openai/gpt-5.4-nano"),
-            "Cheap · $1.25 / 1M output tokens",
+            get_model_meta_tooltip("gemini/gemini-3.5-flash-lite"),
+            "Cheap · $2.50 / 1M output tokens",
         )
         # Shows the >100K band most requests pay, not the $0.50 base.
         self.assertEqual(

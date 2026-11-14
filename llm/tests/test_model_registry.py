@@ -29,7 +29,6 @@ EXPECTED_IDS = [
     "openai/gpt-6.1-sol",
     "openai/gpt-6.1-terra",
     "openai/gpt-6-luna",
-    "openai/gpt-5.4-nano",
     "anthropic/claude-fable-5-2",
     "anthropic/claude-opus-5-5",
     "anthropic/claude-sonnet-5-5",
@@ -75,7 +74,6 @@ class RegistryTests(SimpleTestCase):
             "openai/gpt-6.1-sol": (("low", "medium", "high", "xhigh", "max"), "medium"),
             "openai/gpt-6.1-terra": (("none", "low", "medium", "high", "xhigh", "max"), "medium"),
             "openai/gpt-6-luna": (("none", "low", "medium", "high", "xhigh", "max"), "high"),
-            "openai/gpt-5.4-nano": (("none", "low", "medium", "high", "xhigh"), "none"),
             "anthropic/claude-fable-5-2": (("low", "medium", "high", "xhigh", "max"), "high"),
             "anthropic/claude-opus-5-5": (("low", "medium", "high", "xhigh", "max"), "medium"),
             "anthropic/claude-sonnet-5-5": (("low", "medium", "high", "xhigh", "max"), "high"),
@@ -97,7 +95,7 @@ class RegistryTests(SimpleTestCase):
     def test_context_and_output_limits(self):
         self.assertEqual(get_model_info("gpt-6.1-sol").context_window, 1_050_000)
         self.assertEqual(get_model_info("gpt-6.1-sol").max_output_tokens, 128_000)
-        self.assertEqual(get_model_info("gpt-5.4-nano").context_window, 400_000)
+        self.assertEqual(get_model_info("gpt-6-luna").context_window, 1_050_000)
         self.assertEqual(get_model_info("claude-haiku-5-5").max_output_tokens, 128_000)
         self.assertEqual(get_model_info("gemini-4-hydrogen").context_window, 1_048_576)
 
@@ -252,6 +250,7 @@ class ReplacementTests(SimpleTestCase):
             "gemini/gemini-3.5-flash": "gemini/gemini-4-hydrogen",
             "openai/gpt-5.6-luna": "openai/gpt-6-luna",
             "anthropic/claude-opus-5": "anthropic/claude-opus-5-5",
+            "openai/gpt-5.4-nano": "openai/gpt-6-luna",
             "anthropic/claude-opus-4-8": "anthropic/claude-opus-5-5",
             "anthropic/claude-opus-4-6": "anthropic/claude-opus-5-5",
             "anthropic/claude-sonnet-4-6": "anthropic/claude-sonnet-5-5",
@@ -344,7 +343,6 @@ class TierTests(SimpleTestCase):
             get_models_by_tier(TIER_CHEAP),
             [
                 "openai/gpt-6-luna",
-                "openai/gpt-5.4-nano",
                 "gemini/gemini-3.5-flash-lite",
             ],
         )
@@ -378,11 +376,11 @@ class TierTests(SimpleTestCase):
 
     def test_slot_fit(self):
         # Fit only steers automatic picks; explicit defaults may be any model.
-        self.assertTrue(model_fits_slot("openai/gpt-5.4-nano", "cheap"))
+        self.assertTrue(model_fits_slot("gemini/gemini-3.5-flash-lite", "cheap"))
         self.assertTrue(model_fits_slot("openai/gpt-6-luna", "cheap"))
         # Luna's 2 stars now clear the mid slot's floor (overlap is intended).
         self.assertTrue(model_fits_slot("openai/gpt-6-luna", "medium"))
-        self.assertFalse(model_fits_slot("openai/gpt-5.4-nano", "medium"))
+        self.assertFalse(model_fits_slot("gemini/gemini-3.5-flash-lite", "medium"))
         self.assertTrue(model_fits_slot("openai/gpt-6.1-terra", "medium"))
         # Primary requires 3 stars: Sonnet-class models stay eligible.
         self.assertTrue(model_fits_slot("openai/gpt-6.1-terra", "primary"))
@@ -402,7 +400,7 @@ class TierTests(SimpleTestCase):
 
     def test_get_models_for_slot_canonicalizes_filter(self):
         allowed = ["openai/gpt-5.4-nano", "openai/gpt-5.4"]
-        self.assertEqual(get_models_for_slot("cheap", allowed), ["openai/gpt-5.4-nano"])
+        self.assertEqual(get_models_for_slot("cheap", allowed), ["openai/gpt-6-luna"])
         self.assertEqual(get_models_for_slot("primary", allowed), ["openai/gpt-6.1-terra"])
 
     def test_flagships(self):
