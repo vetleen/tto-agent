@@ -464,8 +464,9 @@ _MODELS: dict[str, ModelInfo] = {
 # Sonnet never forwards to Opus).
 #
 # Every time a model is added or retired, update llm/model_benchmarks.py too:
-# look up the new model's real scores, and see that module's docstring for the
-# predecessor stand-in a model gets until a source has measured it.
+# look up the new model's real scores and delete the retired model's rows (a
+# model a source has not measured stays unranked there; see that module's
+# docstring).
 MODEL_REPLACEMENTS: dict[str, str] = {
     "openai/gpt-5.5": "openai/gpt-5.6-sol",
     "openai/gpt-5.4": "openai/gpt-5.6-terra",

@@ -14,25 +14,19 @@ Our practice when the registry changes (do this EVERY time a model is added or
 retired, see ``MODEL_REPLACEMENTS``):
 
 1. Check every benchmark's source for the new model's real scores and add them.
-2. Where a source has not measured it yet and the model replaces a retired
-   generation of the same line (Fable 5.1 -> 5.2), it borrows that
-   predecessor's rows so it is still ranked: add the pair to
-   ``_PREDECESSORS`` and keep the predecessor's rows on that benchmark. The
-   guide marks such a row ("Measured on ...; no ... score published yet").
-   The stand-in ends by itself the day a real row is added for the benchmark.
-3. A model with no predecessor (a new line, e.g. Gemini 4 Carbon) stays
-   unranked on the benchmarks that have not measured it.
-4. Re-check the sources for every model still on a stand-in, and delete the
-   predecessor's rows (and the ``_PREDECESSORS`` pair) once nothing borrows
-   them. Rows of other retired models are deleted outright.
+2. A model the source has not measured stays unranked on that benchmark. A
+   score measured on another model is never shown for it, a retired
+   predecessor included (we tried such stand-ins until 2026-11-14).
+3. Delete a retired model's rows outright.
+4. Re-check the sources for every model ``missing_models`` reports.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import date
 
-from llm.model_registry import canonical_model_id, get_model_info, get_registered_model_ids
+from llm.model_registry import canonical_model_id, get_registered_model_ids
 
 BENCHMARK_GDPVAL = "gdpval_aa"
 BENCHMARK_ARENA_BUSINESS = "arena_business"
@@ -54,9 +48,6 @@ class BenchmarkScore:
     # vendor-run leaderboard scoring its own model).
     self_reported: bool = False
     note: str | None = None
-    # Set on a stand-in row: the retired predecessor the score was measured on
-    # (see the module docstring and _PREDECESSORS).
-    inherited_from: str | None = None
 
 
 @dataclass(frozen=True)
@@ -98,7 +89,7 @@ def _row(model_id, effort, score, source_label, ci=None, note=None):
 # unsuffixed Gemini slugs are "high", except gemini-4-hydrogen, which is the
 # xhigh run (a level we do not offer yet, so it has no row). AA runs Gemini 4
 # Argon at medium and high, and has a GDPval score for Carbon at high only and
-# none for Hydrogen yet (it borrows Gemini 3.8 Flash's, see _PREDECESSORS).
+# none for Hydrogen yet (still null on all four slugs on 2026-11-14).
 _AA_SCORES = {
     BENCHMARK_GDPVAL: (
         _row("openai/gpt-6-astra", "low", 1403, "gpt-6-astra-low"),
@@ -148,10 +139,6 @@ _AA_SCORES = {
         _row("gemini/gemini-4-argon", "medium", 1578, "gemini-4-argon-medium"),
         _row("gemini/gemini-4-argon", "high", 1633, "gemini-4-argon"),
         _row("gemini/gemini-3.1-pro-preview", None, 799, "gemini-3-1-pro-preview"),
-        # Retired; stands in for Gemini 4 Hydrogen (see _PREDECESSORS).
-        _row("gemini/gemini-3.8-flash", "low", 1316, "gemini-3-8-flash-low"),
-        _row("gemini/gemini-3.8-flash", "medium", 1431, "gemini-3-8-flash-medium"),
-        _row("gemini/gemini-3.8-flash", "high", 1445, "gemini-3-8-flash"),
         _row("gemini/gemini-3.5-flash-lite", None, 995, "gemini-3-5-flash-lite"),
     ),
     BENCHMARK_GDP_PDF: (
@@ -269,18 +256,15 @@ _AA_SCORES = {
 }
 
 # LMArena rows are all read from one snapshot of the board (2026-11-11; the
-# page shows whole points). It could only be read down to rank 149: Fable 5.2
-# and GPT-6.1 Terra are not in that part (not rated yet), and GPT-5.4 nano
-# ranks below it, so its row keeps the 2026-09-25 value.
+# page shows whole points). It could only be read down to rank 149 of 414:
+# Fable 5.2 and GPT-6.1 Terra are not in that part (not rated yet; still so on
+# 2026-11-14), so they have no row, and GPT-5.4 nano ranks below it, so its row
+# keeps the 2026-09-25 value.
 _ARENA_SCORES = (
     _row("openai/gpt-6-astra", "max", 1478, "gpt-6-astra-max", ci=11),
     _row("openai/gpt-6.1-sol", "max", 1480, "gpt-6.1-sol-max", ci=14),
     _row("openai/gpt-6-luna", "max", 1439, "gpt-6-luna-max", ci=6),
-    # Retired; stands in for GPT-6.1 Terra (see _PREDECESSORS).
-    _row("openai/gpt-5.6-terra", "xhigh", 1466, "gpt-5.6-terra-xhigh", ci=7),
     _row("openai/gpt-5.4-nano", "high", 1405.1, "gpt-5.4-nano-high", ci=6.6),
-    # Retired; stands in for Fable 5.2 (see _PREDECESSORS).
-    _row("anthropic/claude-fable-5-1", "max", 1488, "claude-fable-5.1-max", ci=10),
     _row("anthropic/claude-opus-5-5", "high", 1493, "claude-opus-5.5-high", ci=12),
     _row("anthropic/claude-sonnet-5-5", "xhigh", 1474, "claude-sonnet-5.5-xhigh", ci=13),
     _row("anthropic/claude-haiku-5-5", "high", 1430, "claude-haiku-5.5-high", ci=13),
@@ -299,18 +283,15 @@ _ARENA_SCORES = (
 
 # LiveBench release 2026-06-25 (livebench.ai/table_2026_06_25.csv): the IF
 # category is the mean of paraphrase, simplify, story_generation and summarize.
-# All rows share one question set. LiveBench 2.0 has since replaced the IF
-# table, so models released after it (GPT-6.1 Terra, Fable 5.2, Gemini 4) have
-# no row; those with a retired predecessor (Terra, Fable 5.2, Gemini 4
-# Hydrogen) borrow its row (_PREDECESSORS).
+# All rows share one question set. It is still the newest release with the IF
+# table (checked 2026-11-14; LiveBench 2.0 has replaced it on the site), so
+# models released after it (GPT-6.1 Terra, Fable 5.2, Gemini 4) have no row.
 _LIVEBENCH_IF_SCORES = (
     _row("openai/gpt-6-astra", "max", 75.58, "gpt-6-astra-max"),
     _row("openai/gpt-6.1-sol", "max", 74.15, "gpt-6.1-sol-max"),
     _row("openai/gpt-6.1-sol", "xhigh", 71.33, "gpt-6.1-sol-xhigh"),
     _row("openai/gpt-6-luna", "max", 55.93, "gpt-6-luna-max"),
-    _row("openai/gpt-5.6-terra", "max", 64.62, "gpt-5.6-terra-max"),
     _row("openai/gpt-5.4-nano", "xhigh", 67.20, "gpt-5.4-nano-xhigh"),
-    _row("anthropic/claude-fable-5-1", "max", 72.99, "claude-fable-5-1-max-effort"),
     _row("anthropic/claude-opus-5-5", "xhigh", 67.05, "claude-opus-5-5-xhigh-effort"),
     _row("anthropic/claude-opus-5-5", "max", 65.74, "claude-opus-5-5-max-effort"),
     _row("anthropic/claude-sonnet-5-5", "xhigh", 70.52, "claude-sonnet-5-5-xhigh-effort"),
@@ -318,20 +299,17 @@ _LIVEBENCH_IF_SCORES = (
     _row("anthropic/claude-haiku-5-5", "xhigh", 66.47, "claude-haiku-5-5-xhigh-effort"),
     _row("anthropic/claude-haiku-5-5", "max", 54.66, "claude-haiku-5-5-max-effort"),
     _row("gemini/gemini-3.1-pro-preview", "high", 79.10, "gemini-3.1-pro-preview-high"),
-    # Retired; stands in for Gemini 4 Hydrogen (see _PREDECESSORS).
-    _row("gemini/gemini-3.8-flash", "high", 81.41, "gemini-3.8-flash-high"),
     _row("gemini/gemini-3.5-flash-lite", "high", 67.24, "gemini-3.5-flash-lite-high"),
 )
 
 # Artificial Analysis end-to-end response time (seconds to receive a complete
 # 500-token answer, thinking included) for its 100K-token prompt: the median in
 # the "by prompt type" data on each artificialanalysis.ai/models/<slug> page,
-# read 2026-11-03. Effort variants AA has no 100K measurement for are left out
-# (Gemini 3.8 Flash low/medium); GPT-5.4 nano has none. On 2026-11-11 the pages
-# no longer carried that series in a form we could read (only time to first
-# token per prompt size; still so on 2026-11-13), so Fable 5.2 borrows Fable
-# 5.1's rows, Gemini 4 Hydrogen borrows Gemini 3.8 Flash's and Gemini 4 Carbon
-# has none. Re-read all rows together when the series is back.
+# read 2026-11-03. Effort variants AA has no 100K measurement for are left
+# out; GPT-5.4 nano has none. Since 2026-11-11 the pages no longer carry that
+# series (only time to first token per prompt size, a different measure; still
+# so on 2026-11-14), so the models added after that (Fable 5.2, Gemini 4 Carbon
+# and Hydrogen) have no row. Re-read all rows together when the series is back.
 _RESPONSE_TIME_SCORES = (
     _row("openai/gpt-6-astra", "low", 12.2, "gpt-6-astra-low"),
     _row("openai/gpt-6-astra", "medium", 26.0, "gpt-6-astra-medium"),
@@ -355,11 +333,6 @@ _RESPONSE_TIME_SCORES = (
     _row("openai/gpt-6-luna", "high", 29.4, "gpt-6-luna-high"),
     _row("openai/gpt-6-luna", "xhigh", 80.8, "gpt-6-luna-xhigh"),
     _row("openai/gpt-6-luna", "max", 179.0, "gpt-6-luna"),
-    _row("anthropic/claude-fable-5-1", "low", 38.2, "claude-fable-5-1-low"),
-    _row("anthropic/claude-fable-5-1", "medium", 38.5, "claude-fable-5-1-medium"),
-    _row("anthropic/claude-fable-5-1", "high", 57.5, "claude-fable-5-1-high"),
-    _row("anthropic/claude-fable-5-1", "xhigh", 189.7, "claude-fable-5-1-xhigh"),
-    _row("anthropic/claude-fable-5-1", "max", 127.8, "claude-fable-5-1"),
     _row("anthropic/claude-opus-5-5", "low", 24.9, "claude-opus-5-5-low"),
     _row("anthropic/claude-opus-5-5", "medium", 100.6, "claude-opus-5-5-medium"),
     _row("anthropic/claude-opus-5-5", "high", 114.2, "claude-opus-5-5-high"),
@@ -377,59 +350,11 @@ _RESPONSE_TIME_SCORES = (
     _row("anthropic/claude-haiku-5-5", "max", 371.6, "claude-haiku-5-5"),
     _row("gemini/gemini-4-argon", "high", 86.1, "gemini-4-argon"),
     _row("gemini/gemini-3.1-pro-preview", None, 69.6, "gemini-3-1-pro-preview"),
-    # Retired; stands in for Gemini 4 Hydrogen (see _PREDECESSORS).
-    _row("gemini/gemini-3.8-flash", "high", 76.8, "gemini-3-8-flash"),
     _row("gemini/gemini-3.5-flash-lite", None, 14.3, "gemini-3-5-flash-lite"),
 )
 
 _FETCHED = date(2026, 11, 13)
 _RESPONSE_TIME_FETCHED = date(2026, 11, 3)
-
-# Successor -> (retired predecessor, its display name). On a benchmark where
-# the successor has no row of its own, the predecessor's rows stand in for it
-# (module docstring, step 2). Remove a pair once no benchmark needs it.
-_PREDECESSORS: dict[str, tuple[str, str]] = {
-    "anthropic/claude-fable-5-2": ("anthropic/claude-fable-5-1", "Claude Fable 5.1"),
-    "openai/gpt-6.1-terra": ("openai/gpt-5.6-terra", "GPT-5.6 Terra"),
-    "gemini/gemini-4-hydrogen": ("gemini/gemini-3.8-flash", "Gemini 3.8 Flash"),
-}
-
-
-def _with_inherited(
-    scores: tuple[BenchmarkScore, ...],
-    predecessors: dict[str, tuple[str, str]] | None = None,
-) -> tuple[BenchmarkScore, ...]:
-    """One benchmark's rows as the guide sees them: predecessor rows are
-    re-labelled as stand-ins for a successor with no row of its own, and
-    dropped otherwise (a retired model is never shown itself)."""
-    predecessors = _PREDECESSORS if predecessors is None else predecessors
-    measured = {s.model_id for s in scores}
-    stand_in_for = {
-        old: (new, old_name)
-        for new, (old, old_name) in predecessors.items()
-        if new not in measured
-    }
-    retired = {old for old, _ in predecessors.values()}
-    result = []
-    for s in scores:
-        if s.model_id not in retired:
-            result.append(s)
-            continue
-        if s.model_id not in stand_in_for:
-            continue
-        new, old_name = stand_in_for[s.model_id]
-        info = get_model_info(new)
-        if info is None:
-            continue
-        # A level the successor does not offer says nothing about it.
-        if s.effort is not None and s.effort not in info.reasoning_levels:
-            continue
-        note = f"Measured on {old_name}; no {info.display_name} score published yet."
-        result.append(replace(
-            s, model_id=new, inherited_from=s.model_id,
-            note=f"{note} {s.note}" if s.note else note,
-        ))
-    return tuple(result)
 
 
 BENCHMARKS: dict[str, Benchmark] = {
@@ -450,7 +375,7 @@ BENCHMARKS: dict[str, Benchmark] = {
             ),
             source_url="https://artificialanalysis.ai/evaluations/gdpval-aa",
             as_of=_FETCHED,
-            scores=_with_inherited(_AA_SCORES[BENCHMARK_GDPVAL]),
+            scores=_AA_SCORES[BENCHMARK_GDPVAL],
         ),
         Benchmark(
             key=BENCHMARK_ARENA_BUSINESS,
@@ -470,7 +395,7 @@ BENCHMARKS: dict[str, Benchmark] = {
                 "industry-business-and-management-and-financial-operations"
             ),
             as_of=date(2026, 11, 11),
-            scores=_with_inherited(_ARENA_SCORES),
+            scores=_ARENA_SCORES,
             caveat="Measures preference on business topics, not writing quality as such.",
         ),
         Benchmark(
@@ -489,7 +414,7 @@ BENCHMARKS: dict[str, Benchmark] = {
             ),
             source_url="https://artificialanalysis.ai/evaluations/gdp-pdf",
             as_of=_FETCHED,
-            scores=_with_inherited(_AA_SCORES[BENCHMARK_GDP_PDF]),
+            scores=_AA_SCORES[BENCHMARK_GDP_PDF],
             scale="percent",
         ),
         Benchmark(
@@ -508,7 +433,7 @@ BENCHMARKS: dict[str, Benchmark] = {
             ),
             source_url="https://livebench.ai/",
             as_of=date(2026, 6, 25),
-            scores=_with_inherited(_LIVEBENCH_IF_SCORES),
+            scores=_LIVEBENCH_IF_SCORES,
             scale="score",
         ),
         Benchmark(
@@ -526,7 +451,7 @@ BENCHMARKS: dict[str, Benchmark] = {
             ),
             source_url="https://artificialanalysis.ai/evaluations/omniscience",
             as_of=_FETCHED,
-            scores=_with_inherited(_AA_SCORES[BENCHMARK_OMNISCIENCE]),
+            scores=_AA_SCORES[BENCHMARK_OMNISCIENCE],
             higher_is_better=False,
             scale="percent",
             caveat=(
@@ -548,7 +473,7 @@ BENCHMARKS: dict[str, Benchmark] = {
             ),
             source_url="https://artificialanalysis.ai/models",
             as_of=_RESPONSE_TIME_FETCHED,
-            scores=_with_inherited(_RESPONSE_TIME_SCORES),
+            scores=_RESPONSE_TIME_SCORES,
             higher_is_better=False,
             scale="seconds",
             caveat=(
@@ -619,7 +544,6 @@ def build_model_guide(allowed_models: list[str]) -> dict:
                     "note": s.note,
                     "source_label": s.source_label,
                     "self_reported": s.self_reported,
-                    "inherited_from": s.inherited_from,
                 }
                 for s in rows
             ],

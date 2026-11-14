@@ -133,10 +133,10 @@ line ships (Fable 5.1 → 5.2, GPT-6 Sol → 6.1 Sol; a renamed line counts when
 the upgrade: Gemini 3.8 Flash → Gemini 4 Hydrogen) the older entry is deleted from `_MODELS` and
 forwarded with a `MODEL_REPLACEMENTS` row (rows are never repointed; chains resolve). A different
 line is never a successor (Gemini 3.1 Pro stays beside Gemini 4). **Every add or retire also
-updates `llm/model_benchmarks.py`**: look up the model's real scores on each source; where a source
-has not measured it yet, a model that replaces a retired generation borrows that predecessor's rows
-(`_PREDECESSORS`, marked in the guide as "Measured on …") until a real score exists, and a model
-with no predecessor stays unranked. Re-check the sources for models still on a stand-in each time.
+updates `llm/model_benchmarks.py`**: look up the model's real scores on each source and delete the
+retired model's rows. A model a source has not measured stays unranked on that benchmark; a score
+measured on another model (a retired predecessor included) is never shown for it. Re-check the
+sources for the unranked models (`missing_models`) each time.
 A deployed `LLM_ALLOWED_MODELS` naming a retired id forwards by itself; a brand-new line
 (e.g. `gemini/gemini-4-carbon`) must be added to that config var to appear.
 

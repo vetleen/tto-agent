@@ -12,15 +12,12 @@ from llm.model_benchmarks import (
     BENCHMARK_OMNISCIENCE,
     BENCHMARK_RESPONSE_TIME,
     BENCHMARKS,
-    BenchmarkScore,
-    _PREDECESSORS,
-    _with_inherited,
     build_model_guide,
     get_benchmark,
     get_scores,
     missing_models,
 )
-from llm.model_registry import canonical_model_id, get_model_info, get_registered_model_ids
+from llm.model_registry import get_model_info, get_registered_model_ids
 
 
 class BenchmarkDataTests(SimpleTestCase):
@@ -46,10 +43,13 @@ class BenchmarkDataTests(SimpleTestCase):
                 self.assertEqual(len(seen), len(set(seen)))
 
     def test_missing_models(self):
-        # Every model is ranked on the Arena business board (2026-11-11):
-        # Fable 5.2 and GPT-6.1 Terra through their predecessor's row.
-        self.assertEqual(missing_models(BENCHMARK_ARENA_BUSINESS), [])
-        self.assertEqual(missing_models(BENCHMARK_GDPVAL), [])
+        # A model the source has not measured is unranked, never shown with
+        # its retired predecessor's score.
+        self.assertCountEqual(
+            missing_models(BENCHMARK_ARENA_BUSINESS),
+            ["openai/gpt-6.1-terra", "anthropic/claude-fable-5-2"],
+        )
+        self.assertEqual(missing_models(BENCHMARK_GDPVAL), ["gemini/gemini-4-hydrogen"])
         self.assertEqual(missing_models(BENCHMARK_GDP_PDF), [])
         self.assertEqual(missing_models(BENCHMARK_OMNISCIENCE), [])
         for key in BENCHMARKS:
@@ -90,16 +90,17 @@ class BenchmarkDataTests(SimpleTestCase):
         )
 
     def test_livebench_if_missing_models(self):
-        # The Gemini 4 models are not in a LiveBench release with the IF table
-        # (LiveBench 2.0 replaced it). Carbon and Argon have no predecessor to
-        # borrow from; Hydrogen borrows Gemini 3.8 Flash's row.
-        self.assertEqual(
+        # Models released after the last LiveBench release with the IF table
+        # (2026-06-25; LiveBench 2.0 replaced it) have no row.
+        self.assertCountEqual(
             missing_models(BENCHMARK_LIVEBENCH_IF),
-            ["gemini/gemini-4-carbon", "gemini/gemini-4-argon"],
+            [
+                "openai/gpt-6.1-terra", "anthropic/claude-fable-5-2",
+                "gemini/gemini-4-carbon", "gemini/gemini-4-argon", "gemini/gemini-4-hydrogen",
+            ],
         )
 
     def test_gemini_4_carbon_scores(self):
-        # A new line: only real Carbon numbers, never a stand-in.
         expected = {
             BENCHMARK_GDPVAL: [("high", 1733)],
             BENCHMARK_GDP_PDF: [("low", 28.6), ("medium", 29.6), ("high", 28.4)],
@@ -112,37 +113,23 @@ class BenchmarkDataTests(SimpleTestCase):
             with self.subTest(key=key):
                 got = get_scores(key, "gemini/gemini-4-carbon")
                 self.assertEqual([(s.effort, s.score) for s in got], rows)
-                self.assertFalse(any(s.inherited_from for s in got))
 
     def test_gemini_4_hydrogen_scores(self):
         model = "gemini/gemini-4-hydrogen"
         # Real Hydrogen numbers where the source has them (AA's xhigh run is
-        # a level we do not offer, so it has no row).
-        measured = {
+        # a level we do not offer, so it has no row); nothing elsewhere.
+        expected = {
             BENCHMARK_GDP_PDF: [("low", 28.2), ("medium", 32.8), ("high", 30.0)],
             BENCHMARK_OMNISCIENCE: [("low", 18.8), ("medium", 12.5), ("high", 8.7)],
             BENCHMARK_ARENA_BUSINESS: [("high", 1476)],
+            BENCHMARK_GDPVAL: [],
+            BENCHMARK_LIVEBENCH_IF: [],
+            BENCHMARK_RESPONSE_TIME: [],
         }
-        for key, rows in measured.items():
+        for key, rows in expected.items():
             with self.subTest(key=key):
                 got = get_scores(key, model)
                 self.assertEqual([(s.effort, s.score) for s in got], rows)
-                self.assertFalse(any(s.inherited_from for s in got))
-        # Not measured yet on these three: Gemini 3.8 Flash's rows stand in.
-        borrowed = {
-            BENCHMARK_GDPVAL: [("low", 1316), ("medium", 1431), ("high", 1445)],
-            BENCHMARK_LIVEBENCH_IF: [("high", 81.41)],
-            BENCHMARK_RESPONSE_TIME: [("high", 76.8)],
-        }
-        for key, rows in borrowed.items():
-            with self.subTest(key=key):
-                got = get_scores(key, model)
-                self.assertEqual([(s.effort, s.score) for s in got], rows)
-                for s in got:
-                    self.assertEqual(s.inherited_from, "gemini/gemini-3.8-flash")
-                    self.assertTrue(s.note.startswith(
-                        "Measured on Gemini 3.8 Flash; no Gemini 4 Hydrogen score published yet."
-                    ))
         # The retired ID reads the same rows.
         self.assertEqual(
             get_scores(BENCHMARK_GDP_PDF, "gemini/gemini-3.8-flash"),
@@ -155,23 +142,12 @@ class BenchmarkDataTests(SimpleTestCase):
             with self.subTest(key=key):
                 rows = get_scores(key, "anthropic/claude-fable-5-2")
                 self.assertEqual([s.effort for s in rows], efforts)
-                self.assertFalse(any(s.inherited_from for s in rows))
         gdpval = {s.effort: s.score for s in get_scores(BENCHMARK_GDPVAL, "anthropic/claude-fable-5-2")}
         self.assertEqual(gdpval["max"], 1831)
-        # Not measured yet on these three: Fable 5.1's rows stand in.
-        for key, first in (
-            (BENCHMARK_ARENA_BUSINESS, ("max", 1488)),
-            (BENCHMARK_LIVEBENCH_IF, ("max", 72.99)),
-            (BENCHMARK_RESPONSE_TIME, ("low", 38.2)),
-        ):
+        # Not measured yet on these three: no row, not Fable 5.1's.
+        for key in (BENCHMARK_ARENA_BUSINESS, BENCHMARK_LIVEBENCH_IF, BENCHMARK_RESPONSE_TIME):
             with self.subTest(key=key):
-                rows = get_scores(key, "anthropic/claude-fable-5-2")
-                self.assertEqual((rows[0].effort, rows[0].score), first)
-                for s in rows:
-                    self.assertEqual(s.inherited_from, "anthropic/claude-fable-5-1")
-                    self.assertTrue(s.note.startswith(
-                        "Measured on Claude Fable 5.1; no Claude Fable 5.2 score published yet."
-                    ))
+                self.assertEqual(get_scores(key, "anthropic/claude-fable-5-2"), [])
 
     def test_gemini_4_argon_scores(self):
         # AA runs Argon at medium and high (medium since 2026-11-13); LMArena
@@ -211,6 +187,10 @@ class BenchmarkDataTests(SimpleTestCase):
                 self.assertEqual([s.effort for s in rows], efforts)
         gdpval = {s.effort: s.score for s in get_scores(BENCHMARK_GDPVAL, "openai/gpt-6.1-terra")}
         self.assertEqual(gdpval["max"], 1476)
+        # Not rated on LMArena or LiveBench IF: no row, not GPT-5.6 Terra's.
+        for key in (BENCHMARK_ARENA_BUSINESS, BENCHMARK_LIVEBENCH_IF):
+            with self.subTest(key=key):
+                self.assertEqual(get_scores(key, "openai/gpt-6.1-terra"), [])
 
     def test_hallucination_rate_is_lower_is_better(self):
         self.assertFalse(get_benchmark(BENCHMARK_OMNISCIENCE).higher_is_better)
@@ -218,11 +198,14 @@ class BenchmarkDataTests(SimpleTestCase):
     def test_response_time(self):
         bench = get_benchmark(BENCHMARK_RESPONSE_TIME)
         self.assertFalse(bench.higher_is_better)
-        # AA had no 100K timing for nano (2026-11-03); Carbon came out after
-        # the series could last be read and has no predecessor.
-        self.assertEqual(
+        # AA had no 100K timing for nano (2026-11-03); Fable 5.2, Carbon and
+        # Hydrogen came out after the series could last be read.
+        self.assertCountEqual(
             missing_models(BENCHMARK_RESPONSE_TIME),
-            ["openai/gpt-5.4-nano", "gemini/gemini-4-carbon"],
+            [
+                "openai/gpt-5.4-nano", "anthropic/claude-fable-5-2",
+                "gemini/gemini-4-carbon", "gemini/gemini-4-hydrogen",
+            ],
         )
         for s in bench.scores:
             with self.subTest(model=s.model_id, effort=s.effort):
@@ -251,19 +234,15 @@ class ModelGuideTests(SimpleTestCase):
         self.assertEqual(by_key[BENCHMARK_ARENA_BUSINESS]["missing"], [])
         self.assertEqual(by_key[BENCHMARK_GDPVAL]["missing"], [])
 
-    def test_stand_in_rows_are_marked_for_the_guide(self):
+    def test_an_unmeasured_model_is_missing_not_shown_with_a_predecessors_score(self):
         guide = build_model_guide(["anthropic/claude-fable-5-2", "anthropic/claude-opus-5-5"])
         by_key = {b["key"]: b for b in guide["benchmarks"]}
-        arena = {r["model_id"]: r for r in by_key[BENCHMARK_ARENA_BUSINESS]["rows"]}
-        fable = arena["anthropic/claude-fable-5-2"]
-        self.assertEqual(fable["inherited_from"], "anthropic/claude-fable-5-1")
-        self.assertIn("Measured on Claude Fable 5.1", fable["note"])
-        self.assertEqual(fable["source_label"], "claude-fable-5.1-max")
-        self.assertIsNone(arena["anthropic/claude-opus-5-5"]["inherited_from"])
-        # A real score is never marked.
-        for r in by_key[BENCHMARK_GDPVAL]["rows"]:
-            self.assertIsNone(r["inherited_from"])
-
+        arena = by_key[BENCHMARK_ARENA_BUSINESS]
+        self.assertEqual({r["model_id"] for r in arena["rows"]}, {"anthropic/claude-opus-5-5"})
+        self.assertEqual(arena["missing"], ["anthropic/claude-fable-5-2"])
+        for bench in guide["benchmarks"]:
+            for r in bench["rows"]:
+                self.assertNotIn("inherited_from", r)
 
     def test_models_carry_picker_price_and_star_levels(self):
         guide = build_model_guide(self.ALLOWED)
@@ -299,62 +278,17 @@ class ModelGuideTests(SimpleTestCase):
         self.assertEqual(guide["models"], [])
 
 
-class PredecessorStandInTests(SimpleTestCase):
-    """A new model with no score borrows its retired predecessor's rows."""
+class NoStandInTests(SimpleTestCase):
+    """Every row was measured on the model it is shown for."""
 
-    NEW = "anthropic/claude-sonnet-5-5"  # offers low..max, no "off"
-    OLD = "anthropic/claude-sonnet-5"
-    PAIRS = {NEW: (OLD, "Claude Sonnet 5")}
-
-    def _rows(self, *rows):
-        return tuple(BenchmarkScore(m, e, s, f"label-{e}", note=n) for m, e, s, n in rows)
-
-    def test_predecessor_rows_stand_in_when_the_successor_has_none(self):
-        scores = self._rows(
-            (self.OLD, "off", 10, None), (self.OLD, "high", 20, None),
-            (self.OLD, None, 30, "Only 5 votes."),
-            ("anthropic/claude-opus-5-5", "high", 40, None),
-        )
-        result = _with_inherited(scores, self.PAIRS)
-        self.assertEqual(
-            [(s.model_id, s.effort, s.score, s.inherited_from) for s in result],
-            [
-                # "off" is dropped: Sonnet 5.5 does not offer it.
-                (self.NEW, "high", 20, self.OLD),
-                (self.NEW, None, 30, self.OLD),
-                ("anthropic/claude-opus-5-5", "high", 40, None),
-            ],
-        )
-        marker = "Measured on Claude Sonnet 5; no Claude Sonnet 5.5 score published yet."
-        self.assertEqual(result[0].note, marker)
-        self.assertEqual(result[1].note, f"{marker} Only 5 votes.")
-        self.assertEqual(result[0].source_label, "label-high")
-
-    def test_a_real_score_ends_the_stand_in(self):
-        scores = self._rows((self.OLD, "high", 20, None), (self.NEW, "max", 99, None))
-        result = _with_inherited(scores, self.PAIRS)
-        self.assertEqual(
-            [(s.model_id, s.effort, s.score, s.inherited_from) for s in result],
-            [(self.NEW, "max", 99, None)],
-        )
-
-    def test_no_benchmark_shows_a_retired_model(self):
+    def test_no_benchmark_holds_a_retired_models_rows(self):
         registered = set(get_registered_model_ids())
         for key, bench in BENCHMARKS.items():
             with self.subTest(bench=key):
                 self.assertLessEqual({s.model_id for s in bench.scores}, registered)
 
-    def test_every_pair_is_a_live_successor_of_a_retired_model_and_still_needed(self):
-        registered = set(get_registered_model_ids())
-        borrowed = {
-            s.inherited_from for b in BENCHMARKS.values() for s in b.scores if s.inherited_from
-        }
-        for new, (old, old_name) in _PREDECESSORS.items():
-            with self.subTest(successor=new):
-                self.assertIn(new, registered)
-                self.assertNotIn(old, registered)
-                self.assertEqual(canonical_model_id(old), new)
-                self.assertTrue(old_name)
-                # Delete the pair (and the predecessor's rows) once every
-                # benchmark has a real score for the successor.
-                self.assertIn(old, borrowed)
+    def test_no_row_is_marked_as_measured_on_another_model(self):
+        for key, bench in BENCHMARKS.items():
+            for s in bench.scores:
+                with self.subTest(bench=key, model=s.model_id, effort=s.effort):
+                    self.assertNotIn("Measured on", s.note or "")
