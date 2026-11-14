@@ -107,7 +107,7 @@ class BenchmarkDataTests(SimpleTestCase):
             BENCHMARK_OMNISCIENCE: [("low", 19.8), ("medium", 4.2), ("high", 11.4)],
             BENCHMARK_ARENA_BUSINESS: [("high", 1513)],
             BENCHMARK_LIVEBENCH_IF: [],
-            BENCHMARK_RESPONSE_TIME: [],
+            BENCHMARK_RESPONSE_TIME: [("low", 7.5), ("medium", 28.4), ("high", 154.4)],
         }
         for key, rows in expected.items():
             with self.subTest(key=key):
@@ -122,9 +122,9 @@ class BenchmarkDataTests(SimpleTestCase):
             BENCHMARK_GDP_PDF: [("low", 28.2), ("medium", 32.8), ("high", 30.0)],
             BENCHMARK_OMNISCIENCE: [("low", 18.8), ("medium", 12.5), ("high", 8.7)],
             BENCHMARK_ARENA_BUSINESS: [("high", 1476)],
+            BENCHMARK_RESPONSE_TIME: [("low", 11.5), ("medium", 24.0), ("high", 50.6)],
             BENCHMARK_GDPVAL: [],
             BENCHMARK_LIVEBENCH_IF: [],
-            BENCHMARK_RESPONSE_TIME: [],
         }
         for key, rows in expected.items():
             with self.subTest(key=key):
@@ -144,8 +144,10 @@ class BenchmarkDataTests(SimpleTestCase):
                 self.assertEqual([s.effort for s in rows], efforts)
         gdpval = {s.effort: s.score for s in get_scores(BENCHMARK_GDPVAL, "anthropic/claude-fable-5-2")}
         self.assertEqual(gdpval["max"], 1831)
-        # Not measured yet on these three: no row, not Fable 5.1's.
-        for key in (BENCHMARK_ARENA_BUSINESS, BENCHMARK_LIVEBENCH_IF, BENCHMARK_RESPONSE_TIME):
+        speed = get_scores(BENCHMARK_RESPONSE_TIME, "anthropic/claude-fable-5-2")
+        self.assertEqual([s.effort for s in speed], efforts)
+        # Not measured yet on these two: no row, not Fable 5.1's.
+        for key in (BENCHMARK_ARENA_BUSINESS, BENCHMARK_LIVEBENCH_IF):
             with self.subTest(key=key):
                 self.assertEqual(get_scores(key, "anthropic/claude-fable-5-2"), [])
 
@@ -157,7 +159,7 @@ class BenchmarkDataTests(SimpleTestCase):
             BENCHMARK_GDP_PDF: [("medium", 25.6), ("high", 21.8)],
             BENCHMARK_OMNISCIENCE: [("medium", 15.4), ("high", 4.3)],
             BENCHMARK_ARENA_BUSINESS: [("high", 1515)],
-            BENCHMARK_RESPONSE_TIME: [("high", 86.1)],
+            BENCHMARK_RESPONSE_TIME: [("high", 118.7)],
         }
         for key, scores in expected.items():
             with self.subTest(key=key):
@@ -198,15 +200,9 @@ class BenchmarkDataTests(SimpleTestCase):
     def test_response_time(self):
         bench = get_benchmark(BENCHMARK_RESPONSE_TIME)
         self.assertFalse(bench.higher_is_better)
-        # AA had no 100K timing for nano (2026-11-03); Fable 5.2, Carbon and
-        # Hydrogen came out after the series could last be read.
-        self.assertCountEqual(
-            missing_models(BENCHMARK_RESPONSE_TIME),
-            [
-                "openai/gpt-5.4-nano", "anthropic/claude-fable-5-2",
-                "gemini/gemini-4-carbon", "gemini/gemini-4-hydrogen",
-            ],
-        )
+        # AA times every registered model on its 100K workload.
+        self.assertEqual(missing_models(BENCHMARK_RESPONSE_TIME), [])
+        self.assertIn("until the answer starts", bench.description)
         for s in bench.scores:
             with self.subTest(model=s.model_id, effort=s.effort):
                 self.assertGreater(s.score, 0)

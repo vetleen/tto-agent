@@ -302,59 +302,75 @@ _LIVEBENCH_IF_SCORES = (
     _row("gemini/gemini-3.5-flash-lite", "high", 67.24, "gemini-3.5-flash-lite-high"),
 )
 
-# Artificial Analysis end-to-end response time (seconds to receive a complete
-# 500-token answer, thinking included) for its 100K-token prompt: the median in
-# the "by prompt type" data on each artificialanalysis.ai/models/<slug> page,
-# read 2026-11-03. Effort variants AA has no 100K measurement for are left
-# out; GPT-5.4 nano has none. Since 2026-11-11 the pages no longer carry that
-# series (only time to first token per prompt size, a different measure; still
-# so on 2026-11-14), so the models added after that (Fable 5.2, Gemini 4 Carbon
-# and Hydrogen) have no row. Re-read all rows together when the series is back.
+# Artificial Analysis time to first token for its 100K-token workload: seconds
+# from sending the request until the answer starts, thinking included (the
+# number grows with the effort level, and AA's headline timeToFirstToken equals
+# its timeToFirstAnswerToken). It is workloads["100k"].timeToFirstToken in the
+# model object embedded in each artificialanalysis.ai/models/<slug> page; all
+# rows were read together on 2026-11-14. Until 2026-11-03 this benchmark was
+# AA's end-to-end response time (a complete 500-token answer), which the pages
+# stopped carrying on 2026-11-11. Slug-to-effort mapping as for _AA_SCORES
+# (unsuffixed gpt-5-4-nano is xhigh). AA has no 100K figure for Gemini 4 Argon
+# at medium. Re-read all rows together whenever a model is added.
 _RESPONSE_TIME_SCORES = (
-    _row("openai/gpt-6-astra", "low", 12.2, "gpt-6-astra-low"),
-    _row("openai/gpt-6-astra", "medium", 26.0, "gpt-6-astra-medium"),
-    _row("openai/gpt-6-astra", "high", 146.9, "gpt-6-astra-high"),
-    _row("openai/gpt-6-astra", "xhigh", 230.4, "gpt-6-astra-xhigh"),
-    _row("openai/gpt-6-astra", "max", 171.8, "gpt-6-astra"),
-    _row("openai/gpt-6.1-sol", "low", 10.2, "gpt-6-1-sol-low"),
-    _row("openai/gpt-6.1-sol", "medium", 27.9, "gpt-6-1-sol-medium"),
-    _row("openai/gpt-6.1-sol", "high", 116.6, "gpt-6-1-sol-high"),
-    _row("openai/gpt-6.1-sol", "xhigh", 233.0, "gpt-6-1-sol-xhigh"),
-    _row("openai/gpt-6.1-sol", "max", 225.5, "gpt-6-1-sol"),
-    _row("openai/gpt-6.1-terra", "none", 6.9, "gpt-6-1-terra-non-reasoning"),
-    _row("openai/gpt-6.1-terra", "low", 7.4, "gpt-6-1-terra-low"),
-    _row("openai/gpt-6.1-terra", "medium", 9.8, "gpt-6-1-terra-medium"),
-    _row("openai/gpt-6.1-terra", "high", 10.7, "gpt-6-1-terra-high"),
-    _row("openai/gpt-6.1-terra", "xhigh", 35.3, "gpt-6-1-terra-xhigh"),
-    _row("openai/gpt-6.1-terra", "max", 218.7, "gpt-6-1-terra"),
-    _row("openai/gpt-6-luna", "none", 5.2, "gpt-6-luna-non-reasoning"),
-    _row("openai/gpt-6-luna", "low", 7.6, "gpt-6-luna-low"),
-    _row("openai/gpt-6-luna", "medium", 16.4, "gpt-6-luna-medium"),
-    _row("openai/gpt-6-luna", "high", 29.4, "gpt-6-luna-high"),
-    _row("openai/gpt-6-luna", "xhigh", 80.8, "gpt-6-luna-xhigh"),
-    _row("openai/gpt-6-luna", "max", 179.0, "gpt-6-luna"),
-    _row("anthropic/claude-opus-5-5", "low", 24.9, "claude-opus-5-5-low"),
-    _row("anthropic/claude-opus-5-5", "medium", 100.6, "claude-opus-5-5-medium"),
-    _row("anthropic/claude-opus-5-5", "high", 114.2, "claude-opus-5-5-high"),
-    _row("anthropic/claude-opus-5-5", "xhigh", 48.1, "claude-opus-5-5-xhigh"),
-    _row("anthropic/claude-opus-5-5", "max", 485.7, "claude-opus-5-5"),
-    _row("anthropic/claude-sonnet-5-5", "low", 25.7, "claude-sonnet-5-5-low"),
-    _row("anthropic/claude-sonnet-5-5", "medium", 35.3, "claude-sonnet-5-5-medium"),
-    _row("anthropic/claude-sonnet-5-5", "high", 65.1, "claude-sonnet-5-5-high"),
-    _row("anthropic/claude-sonnet-5-5", "xhigh", 183.2, "claude-sonnet-5-5-xhigh"),
-    _row("anthropic/claude-sonnet-5-5", "max", 649.6, "claude-sonnet-5-5"),
-    _row("anthropic/claude-haiku-5-5", "low", 30.2, "claude-haiku-5-5-low"),
-    _row("anthropic/claude-haiku-5-5", "medium", 47.6, "claude-haiku-5-5-medium"),
-    _row("anthropic/claude-haiku-5-5", "high", 78.0, "claude-haiku-5-5-high"),
-    _row("anthropic/claude-haiku-5-5", "xhigh", 89.6, "claude-haiku-5-5-xhigh"),
-    _row("anthropic/claude-haiku-5-5", "max", 371.6, "claude-haiku-5-5"),
-    _row("gemini/gemini-4-argon", "high", 86.1, "gemini-4-argon"),
-    _row("gemini/gemini-3.1-pro-preview", None, 69.6, "gemini-3-1-pro-preview"),
-    _row("gemini/gemini-3.5-flash-lite", None, 14.3, "gemini-3-5-flash-lite"),
+    _row("openai/gpt-6-astra", "low", 7.4, "gpt-6-astra-low"),
+    _row("openai/gpt-6-astra", "medium", 17.0, "gpt-6-astra-medium"),
+    _row("openai/gpt-6-astra", "high", 202.1, "gpt-6-astra-high"),
+    _row("openai/gpt-6-astra", "xhigh", 292.7, "gpt-6-astra-xhigh"),
+    _row("openai/gpt-6-astra", "max", 620.7, "gpt-6-astra"),
+    _row("openai/gpt-6.1-sol", "low", 5.0, "gpt-6-1-sol-low"),
+    _row("openai/gpt-6.1-sol", "medium", 11.4, "gpt-6-1-sol-medium"),
+    _row("openai/gpt-6.1-sol", "high", 139.4, "gpt-6-1-sol-high"),
+    _row("openai/gpt-6.1-sol", "xhigh", 241.5, "gpt-6-1-sol-xhigh"),
+    _row("openai/gpt-6.1-sol", "max", 559.3, "gpt-6-1-sol"),
+    _row("openai/gpt-6.1-terra", "none", 2.4, "gpt-6-1-terra-non-reasoning"),
+    _row("openai/gpt-6.1-terra", "low", 3.3, "gpt-6-1-terra-low"),
+    _row("openai/gpt-6.1-terra", "medium", 11.2, "gpt-6-1-terra-medium"),
+    _row("openai/gpt-6.1-terra", "high", 31.2, "gpt-6-1-terra-high"),
+    _row("openai/gpt-6.1-terra", "xhigh", 83.3, "gpt-6-1-terra-xhigh"),
+    _row("openai/gpt-6.1-terra", "max", 423.7, "gpt-6-1-terra"),
+    _row("openai/gpt-6-luna", "none", 2.4, "gpt-6-luna-non-reasoning"),
+    _row("openai/gpt-6-luna", "low", 4.6, "gpt-6-luna-low"),
+    _row("openai/gpt-6-luna", "medium", 8.4, "gpt-6-luna-medium"),
+    _row("openai/gpt-6-luna", "high", 29.8, "gpt-6-luna-high"),
+    _row("openai/gpt-6-luna", "xhigh", 47.5, "gpt-6-luna-xhigh"),
+    _row("openai/gpt-6-luna", "max", 209.2, "gpt-6-luna"),
+    _row("openai/gpt-5.4-nano", "none", 2.5, "gpt-5-4-nano-non-reasoning"),
+    _row("openai/gpt-5.4-nano", "medium", 19.9, "gpt-5-4-nano-medium"),
+    _row("openai/gpt-5.4-nano", "xhigh", 358.8, "gpt-5-4-nano"),
+    _row("anthropic/claude-fable-5-2", "low", 25.7, "claude-fable-5-2-low"),
+    _row("anthropic/claude-fable-5-2", "medium", 30.4, "claude-fable-5-2-medium"),
+    _row("anthropic/claude-fable-5-2", "high", 82.2, "claude-fable-5-2-high"),
+    _row("anthropic/claude-fable-5-2", "xhigh", 285.9, "claude-fable-5-2-xhigh"),
+    _row("anthropic/claude-fable-5-2", "max", 636.3, "claude-fable-5-2"),
+    _row("anthropic/claude-opus-5-5", "low", 10.6, "claude-opus-5-5-low"),
+    _row("anthropic/claude-opus-5-5", "medium", 59.2, "claude-opus-5-5-medium"),
+    _row("anthropic/claude-opus-5-5", "high", 87.0, "claude-opus-5-5-high"),
+    _row("anthropic/claude-opus-5-5", "xhigh", 257.1, "claude-opus-5-5-xhigh"),
+    _row("anthropic/claude-opus-5-5", "max", 1010.1, "claude-opus-5-5"),
+    _row("anthropic/claude-sonnet-5-5", "low", 4.3, "claude-sonnet-5-5-low"),
+    _row("anthropic/claude-sonnet-5-5", "medium", 14.3, "claude-sonnet-5-5-medium"),
+    _row("anthropic/claude-sonnet-5-5", "high", 27.5, "claude-sonnet-5-5-high"),
+    _row("anthropic/claude-sonnet-5-5", "xhigh", 84.2, "claude-sonnet-5-5-xhigh"),
+    _row("anthropic/claude-sonnet-5-5", "max", 647.9, "claude-sonnet-5-5"),
+    _row("anthropic/claude-haiku-5-5", "low", 7.8, "claude-haiku-5-5-low"),
+    _row("anthropic/claude-haiku-5-5", "medium", 23.1, "claude-haiku-5-5-medium"),
+    _row("anthropic/claude-haiku-5-5", "high", 61.7, "claude-haiku-5-5-high"),
+    _row("anthropic/claude-haiku-5-5", "xhigh", 164.5, "claude-haiku-5-5-xhigh"),
+    _row("anthropic/claude-haiku-5-5", "max", 327.8, "claude-haiku-5-5"),
+    _row("gemini/gemini-4-carbon", "low", 7.5, "gemini-4-carbon-low"),
+    _row("gemini/gemini-4-carbon", "medium", 28.4, "gemini-4-carbon-medium"),
+    _row("gemini/gemini-4-carbon", "high", 154.4, "gemini-4-carbon"),
+    _row("gemini/gemini-4-argon", "high", 118.7, "gemini-4-argon"),
+    _row("gemini/gemini-3.1-pro-preview", None, 27.2, "gemini-3-1-pro-preview"),
+    _row("gemini/gemini-4-hydrogen", "low", 11.5, "gemini-4-hydrogen-low"),
+    _row("gemini/gemini-4-hydrogen", "medium", 24.0, "gemini-4-hydrogen-medium"),
+    _row("gemini/gemini-4-hydrogen", "high", 50.6, "gemini-4-hydrogen-high"),
+    _row("gemini/gemini-3.5-flash-lite", None, 11.2, "gemini-3-5-flash-lite"),
 )
 
 _FETCHED = date(2026, 11, 13)
-_RESPONSE_TIME_FETCHED = date(2026, 11, 3)
+_RESPONSE_TIME_FETCHED = date(2026, 11, 14)
 
 
 BENCHMARKS: dict[str, Benchmark] = {
@@ -461,15 +477,15 @@ BENCHMARKS: dict[str, Benchmark] = {
         ),
         Benchmark(
             key=BENCHMARK_RESPONSE_TIME,
-            name="AA End-to-End Response Time (100K)",
+            name="AA Time to First Token (100K)",
             title="Speed",
-            question="How long do you wait for a reply in a long conversation?",
+            question="How long do you wait for a reply to start in a long conversation?",
             metric="Seconds",
             description=(
                 "Seconds from sending a request with about 100,000 tokens of "
-                "context (a long chat with documents) until a complete "
-                "500-token answer has arrived, thinking time included. Median "
-                "of repeated measurements on the model maker's own service."
+                "context (a long chat with documents) until the answer starts "
+                "to arrive, thinking time included. Measured on the model "
+                "maker's own service."
             ),
             source_url="https://artificialanalysis.ai/models",
             as_of=_RESPONSE_TIME_FETCHED,
@@ -477,9 +493,10 @@ BENCHMARKS: dict[str, Benchmark] = {
             higher_is_better=False,
             scale="seconds",
             caveat=(
-                "Times one reply. When the assistant uses tools, such as "
-                "searching or reading documents, it makes several calls, so "
-                "the full wait is longer."
+                "Times the wait until one reply starts, not until it is "
+                "finished. When the assistant uses tools, such as searching "
+                "or reading documents, it makes several calls, so the full "
+                "wait is longer."
             ),
         ),
     )
