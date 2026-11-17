@@ -206,26 +206,29 @@ _MULTIMODAL = ("text", "image", "pdf")
 # model without putting retired models back into the allow-list.
 _MODELS: dict[str, ModelInfo] = {
     # OpenAI
-    "openai/gpt-6-astra": ModelInfo(
-        display_name="GPT-6 Astra", provider="openai", api_model="gpt-6-astra",
+    "openai/gpt-6.2-astra": ModelInfo(
+        display_name="GPT-6.2 Astra", provider="openai", api_model="gpt-6.2-astra",
         stars=5, flagship=True,
-        # Astra dropped the "none" effort the GPT-5.6 family accepts.
+        # No "none" (or "minimal") effort, unlike the GPT-5.6 family. OpenAI
+        # states no default for 6.2 and recommends starting at medium. Cache
+        # reads are 0.05x input (GPT-6 Astra: 0.1x).
         reasoning_levels=("low", "medium", "high", "xhigh", "max"),
         default_reasoning_level="medium",
         uses_responses_api=True, input_modalities=_MULTIMODAL,
         context_window=1_050_000, max_output_tokens=128_000,
-        input_price=Decimal("10.00"), cached_input_price=Decimal("1.00"),
-        cache_write_price=Decimal("12.50"), output_price=Decimal("50.00"),
+        input_price=Decimal("8.00"), cached_input_price=Decimal("0.40"),
+        cache_write_price=Decimal("10.00"), output_price=Decimal("40.00"),
         long_context_threshold=272_000,
-        long_context_input_price=Decimal("20.00"),
-        long_context_cached_input_price=Decimal("2.00"),
-        long_context_cache_write_price=Decimal("25.00"),
-        long_context_output_price=Decimal("75.00"),
+        long_context_input_price=Decimal("16.00"),
+        long_context_cached_input_price=Decimal("0.80"),
+        long_context_cache_write_price=Decimal("20.00"),
+        long_context_output_price=Decimal("60.00"),
     ),
-    "openai/gpt-6.1-sol": ModelInfo(
-        display_name="GPT-6.1 Sol", provider="openai", api_model="gpt-6.1-sol",
+    "openai/gpt-6.2-sol": ModelInfo(
+        display_name="GPT-6.2 Sol", provider="openai", api_model="gpt-6.2-sol",
         stars=4,
         # Like Astra, no "none" effort. Cache reads are 0.05x input, not 0.1x.
+        # Same prices as GPT-6.1 Sol.
         reasoning_levels=("low", "medium", "high", "xhigh", "max"),
         default_reasoning_level="medium",
         uses_responses_api=True, input_modalities=_MULTIMODAL,
@@ -241,7 +244,7 @@ _MODELS: dict[str, ModelInfo] = {
     "openai/gpt-6.1-terra": ModelInfo(
         display_name="GPT-6.1 Terra", provider="openai", api_model="gpt-6.1-terra",
         stars=3,
-        # Keeps "none", unlike GPT-6.1 Sol. Cache reads are 0.05x input.
+        # Keeps "none", unlike GPT-6.2 Sol. Cache reads are 0.05x input.
         reasoning_levels=_GPT56_LEVELS, default_reasoning_level="medium",
         uses_responses_api=True, input_modalities=_MULTIMODAL,
         context_window=1_050_000, max_output_tokens=128_000,
@@ -464,6 +467,8 @@ MODEL_REPLACEMENTS: dict[str, str] = {
     "openai/gpt-5.6-luna": "openai/gpt-6-luna",
     "openai/gpt-5.6-sol": "openai/gpt-6-sol",
     "openai/gpt-6-sol": "openai/gpt-6.1-sol",
+    "openai/gpt-6.1-sol": "openai/gpt-6.2-sol",
+    "openai/gpt-6-astra": "openai/gpt-6.2-astra",
     "openai/gpt-5.6-terra": "openai/gpt-6.1-terra",
     # OpenAI's small tier: Luna is cheaper per token than Nano was.
     "openai/gpt-5.4-nano": "openai/gpt-6-luna",

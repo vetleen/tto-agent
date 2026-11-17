@@ -47,9 +47,15 @@ class BenchmarkDataTests(SimpleTestCase):
         # its retired predecessor's score.
         self.assertCountEqual(
             missing_models(BENCHMARK_ARENA_BUSINESS),
-            ["openai/gpt-6.1-terra", "anthropic/claude-fable-5-2"],
+            [
+                "openai/gpt-6.2-astra", "openai/gpt-6.2-sol", "openai/gpt-6.1-terra",
+                "anthropic/claude-fable-5-2",
+            ],
         )
-        self.assertEqual(missing_models(BENCHMARK_GDPVAL), ["gemini/gemini-4-hydrogen"])
+        self.assertEqual(
+            missing_models(BENCHMARK_GDPVAL),
+            ["openai/gpt-6.2-astra", "openai/gpt-6.2-sol", "gemini/gemini-4-hydrogen"],
+        )
         self.assertEqual(missing_models(BENCHMARK_GDP_PDF), [])
         self.assertEqual(missing_models(BENCHMARK_OMNISCIENCE), [])
         for key in BENCHMARKS:
@@ -64,10 +70,12 @@ class BenchmarkDataTests(SimpleTestCase):
             {s.effort for s in rows}, {"low", "medium", "high", "xhigh", "max"},
         )
         # Retired ID resolves through MODEL_REPLACEMENTS.
-        sol = get_scores(BENCHMARK_GDPVAL, "openai/gpt-6.1-sol")
+        sol = get_scores(BENCHMARK_GDP_PDF, "openai/gpt-6.2-sol")
         self.assertTrue(sol)
-        for retired in ("openai/gpt-5.5", "openai/gpt-5.6-sol", "openai/gpt-6-sol"):
-            self.assertEqual(get_scores(BENCHMARK_GDPVAL, retired), sol)
+        for retired in (
+            "openai/gpt-5.5", "openai/gpt-5.6-sol", "openai/gpt-6-sol", "openai/gpt-6.1-sol",
+        ):
+            self.assertEqual(get_scores(BENCHMARK_GDP_PDF, retired), sol)
         self.assertEqual(get_scores("nope"), [])
 
     def test_every_benchmark_has_a_plain_language_title_and_question(self):
@@ -95,10 +103,35 @@ class BenchmarkDataTests(SimpleTestCase):
         self.assertCountEqual(
             missing_models(BENCHMARK_LIVEBENCH_IF),
             [
+                "openai/gpt-6.2-astra", "openai/gpt-6.2-sol",
                 "openai/gpt-6.1-terra", "anthropic/claude-fable-5-2",
                 "gemini/gemini-4-carbon", "gemini/gemini-4-argon", "gemini/gemini-4-hydrogen",
             ],
         )
+
+    def test_gpt_6_2_astra_and_sol_scores(self):
+        # AA measured GDP.pdf and Omniscience at every effort on release day;
+        # nothing else has rated them, and the retired GPT-6 Astra / GPT-6.1
+        # Sol rows are gone, not shown in their place.
+        efforts = ["low", "medium", "high", "xhigh", "max"]
+        for model in ("openai/gpt-6.2-astra", "openai/gpt-6.2-sol"):
+            for key in (BENCHMARK_GDP_PDF, BENCHMARK_OMNISCIENCE):
+                with self.subTest(model=model, key=key):
+                    self.assertEqual([s.effort for s in get_scores(key, model)], efforts)
+            for key in (
+                BENCHMARK_GDPVAL, BENCHMARK_ARENA_BUSINESS,
+                BENCHMARK_LIVEBENCH_IF, BENCHMARK_RESPONSE_TIME,
+            ):
+                with self.subTest(model=model, key=key):
+                    self.assertEqual(get_scores(key, model), [])
+        pdf = {s.effort: s.score for s in get_scores(BENCHMARK_GDP_PDF, "openai/gpt-6.2-astra")}
+        self.assertEqual(pdf["max"], 29.8)
+        omni = {s.effort: s.score for s in get_scores(BENCHMARK_OMNISCIENCE, "openai/gpt-6.2-sol")}
+        self.assertEqual(omni["max"], 55.4)
+        for key, bench in BENCHMARKS.items():
+            for s in bench.scores:
+                with self.subTest(bench=key, label=s.source_label):
+                    self.assertNotRegex(s.source_label, r"gpt-6-astra|gpt-6[-.]1-sol")
 
     def test_gemini_4_carbon_scores(self):
         expected = {
@@ -107,7 +140,7 @@ class BenchmarkDataTests(SimpleTestCase):
             BENCHMARK_OMNISCIENCE: [("low", 19.8), ("medium", 4.2), ("high", 11.4)],
             BENCHMARK_ARENA_BUSINESS: [("high", 1513)],
             BENCHMARK_LIVEBENCH_IF: [],
-            BENCHMARK_RESPONSE_TIME: [("low", 7.5), ("medium", 28.4), ("high", 154.4)],
+            BENCHMARK_RESPONSE_TIME: [("low", 6.7), ("medium", 21.7), ("high", 165.0)],
         }
         for key, rows in expected.items():
             with self.subTest(key=key):
@@ -122,7 +155,7 @@ class BenchmarkDataTests(SimpleTestCase):
             BENCHMARK_GDP_PDF: [("low", 28.2), ("medium", 32.8), ("high", 30.0)],
             BENCHMARK_OMNISCIENCE: [("low", 18.8), ("medium", 12.5), ("high", 8.7)],
             BENCHMARK_ARENA_BUSINESS: [("high", 1476)],
-            BENCHMARK_RESPONSE_TIME: [("low", 11.5), ("medium", 24.0), ("high", 50.6)],
+            BENCHMARK_RESPONSE_TIME: [("low", 11.1), ("medium", 24.2), ("high", 34.4)],
             BENCHMARK_GDPVAL: [],
             BENCHMARK_LIVEBENCH_IF: [],
         }
@@ -152,14 +185,14 @@ class BenchmarkDataTests(SimpleTestCase):
                 self.assertEqual(get_scores(key, "anthropic/claude-fable-5-2"), [])
 
     def test_gemini_4_argon_scores(self):
-        # AA runs Argon at medium and high (medium since 2026-11-13); LMArena
-        # and the 100K timing only at high.
+        # AA runs Argon at medium and high (medium since 2026-11-13, its 100K
+        # timing since 2026-11-17); LMArena only at high.
         expected = {
-            BENCHMARK_GDPVAL: [("medium", 1578), ("high", 1633)],
+            BENCHMARK_GDPVAL: [("medium", 1578), ("high", 1634)],
             BENCHMARK_GDP_PDF: [("medium", 25.6), ("high", 21.8)],
             BENCHMARK_OMNISCIENCE: [("medium", 15.4), ("high", 4.3)],
             BENCHMARK_ARENA_BUSINESS: [("high", 1515)],
-            BENCHMARK_RESPONSE_TIME: [("high", 118.7)],
+            BENCHMARK_RESPONSE_TIME: [("medium", 8.8), ("high", 120.1)],
         }
         for key, scores in expected.items():
             with self.subTest(key=key):
@@ -200,8 +233,12 @@ class BenchmarkDataTests(SimpleTestCase):
     def test_response_time(self):
         bench = get_benchmark(BENCHMARK_RESPONSE_TIME)
         self.assertFalse(bench.higher_is_better)
-        # AA times every registered model on its 100K workload.
-        self.assertEqual(missing_models(BENCHMARK_RESPONSE_TIME), [])
+        # AA times every registered model on its 100K workload, bar the two
+        # released on 2026-11-17.
+        self.assertEqual(
+            missing_models(BENCHMARK_RESPONSE_TIME),
+            ["openai/gpt-6.2-astra", "openai/gpt-6.2-sol"],
+        )
         self.assertIn("until the answer starts", bench.description)
         for s in bench.scores:
             with self.subTest(model=s.model_id, effort=s.effort):

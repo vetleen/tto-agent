@@ -11,17 +11,24 @@ from llm.service.pricing import calculate_cost, get_display_pricing, get_model_p
 class PricingLookupTests(SimpleTestCase):
     def test_openai_prices(self):
         self.assertEqual(
-            get_model_pricing("openai/gpt-6-astra"),
-            (Decimal("10.00"), Decimal("1.00"), Decimal("12.50"), Decimal("50.00")),
+            get_model_pricing("openai/gpt-6.2-astra"),
+            (Decimal("8.00"), Decimal("0.40"), Decimal("10.00"), Decimal("40.00")),
+        )
+        # Retired GPT-6 Astra and GPT-6.1 Sol bill as their 6.2 successors.
+        self.assertEqual(
+            get_model_pricing("gpt-6-astra"), get_model_pricing("openai/gpt-6.2-astra"),
+        )
+        self.assertEqual(
+            get_model_pricing("gpt-6.1-sol"), get_model_pricing("openai/gpt-6.2-sol"),
         )
         # Retired GPT-5.4 Nano bills as Luna.
         self.assertEqual(
             get_model_pricing("gpt-5.4-nano"),
             (Decimal("0.10"), Decimal("0.01"), Decimal("0.125"), Decimal("0.50")),
         )
-        # Cache reads are 0.05x input on GPT-6.1 Sol (not the usual 0.1x).
+        # Cache reads are 0.05x input on GPT-6.2 Sol (not the usual 0.1x).
         self.assertEqual(
-            get_model_pricing("openai/gpt-6.1-sol"),
+            get_model_pricing("openai/gpt-6.2-sol"),
             (Decimal("2.00"), Decimal("0.10"), Decimal("2.50"), Decimal("10.00")),
         )
         self.assertEqual(
@@ -87,11 +94,11 @@ class PricingLookupTests(SimpleTestCase):
             (Decimal("2.00"), Decimal("0.10"), Decimal("2.50"), Decimal("7.50")),
         )
         self.assertEqual(
-            get_model_pricing("gpt-6-astra", input_tokens=272_001),
-            (Decimal("20.00"), Decimal("2.00"), Decimal("25.00"), Decimal("75.00")),
+            get_model_pricing("gpt-6.2-astra", input_tokens=272_001),
+            (Decimal("16.00"), Decimal("0.80"), Decimal("20.00"), Decimal("60.00")),
         )
         self.assertEqual(
-            get_model_pricing("gpt-6.1-sol", input_tokens=272_001),
+            get_model_pricing("gpt-6.2-sol", input_tokens=272_001),
             (Decimal("4.00"), Decimal("0.20"), Decimal("5.00"), Decimal("15.00")),
         )
         # A retired ID is priced on its successor's bands.
@@ -130,7 +137,7 @@ class PricingLookupTests(SimpleTestCase):
     def test_retired_alias_uses_replacement_price(self):
         self.assertEqual(
             get_model_pricing("openai/gpt-5.5"),
-            get_model_pricing("openai/gpt-6.1-sol"),
+            get_model_pricing("openai/gpt-6.2-sol"),
         )
         self.assertEqual(
             get_model_pricing("anthropic/claude-sonnet-5"),
@@ -179,8 +186,8 @@ class CostTests(SimpleTestCase):
             Decimal("0.00035"),
         )
         self.assertEqual(
-            calculate_cost("gpt-6-astra", 1_000, 500),
-            Decimal("0.035"),
+            calculate_cost("gpt-6.2-astra", 1_000, 500),
+            Decimal("0.028"),
         )
 
     def test_cache_read_and_both_anthropic_write_ttls(self):
@@ -220,8 +227,8 @@ class CostTests(SimpleTestCase):
             Decimal("0.6075"),
         )
         self.assertEqual(
-            calculate_cost("gpt-6-astra", 300_000, 1_000),
-            Decimal("6.075"),
+            calculate_cost("gpt-6.2-astra", 300_000, 1_000),
+            Decimal("4.86"),
         )
 
     def test_dated_cost(self):

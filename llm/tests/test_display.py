@@ -26,12 +26,12 @@ from llm.display import (
 
 class DisplayNameTests(SimpleTestCase):
     def test_registered_names(self):
-        self.assertEqual(get_display_name("openai/gpt-6-astra"), "GPT-6 Astra")
-        self.assertEqual(get_display_name("openai/gpt-6.1-sol"), "GPT-6.1 Sol")
+        self.assertEqual(get_display_name("openai/gpt-6.2-astra"), "GPT-6.2 Astra")
+        self.assertEqual(get_display_name("openai/gpt-6.2-sol"), "GPT-6.2 Sol")
         self.assertEqual(get_display_name("anthropic/claude-fable-5-2"), "Claude Fable 5.2")
         self.assertEqual(get_display_name("gemini/gemini-4-carbon"), "Gemini 4 Carbon")
         # Retired IDs show their successor's name.
-        self.assertEqual(get_display_name("openai/gpt-5.6-sol"), "GPT-6.1 Sol")
+        self.assertEqual(get_display_name("openai/gpt-5.6-sol"), "GPT-6.2 Sol")
         self.assertEqual(get_display_name("anthropic/claude-fable-5"), "Claude Fable 5.2")
         self.assertEqual(get_display_name("gemini/gemini-4-hydrogen"), "Gemini 4 Hydrogen")
         self.assertEqual(get_display_name("gemini/gemini-3.8-flash"), "Gemini 4 Hydrogen")
@@ -69,7 +69,7 @@ class CapabilityTests(SimpleTestCase):
     def test_decisions_capability_is_registry_only(self):
         # The quick decisions pathway (POST /v1/decisions) takes GPT-6 Luna only.
         self.assertTrue(supports_capability("openai/gpt-6-luna", "decisions"))
-        self.assertFalse(supports_capability("openai/gpt-6.1-sol", "decisions"))
+        self.assertFalse(supports_capability("openai/gpt-6.2-sol", "decisions"))
         self.assertFalse(supports_capability("anthropic/claude-haiku-5-5", "decisions"))
         # No heuristics for unknown models, unlike vision/thinking.
         self.assertFalse(supports_capability("openai/gpt-7-luna", "decisions"))
@@ -87,10 +87,10 @@ class ReasoningLevelTests(SimpleTestCase):
         self.assertEqual(get_default_thinking_level("openai/gpt-6.1-terra"), "medium")
         # Astra dropped the "none" effort level.
         self.assertEqual(
-            get_thinking_levels("openai/gpt-6-astra"),
+            get_thinking_levels("openai/gpt-6.2-astra"),
             ["low", "medium", "high", "xhigh", "max"],
         )
-        self.assertEqual(get_default_thinking_level("openai/gpt-6-astra"), "medium")
+        self.assertEqual(get_default_thinking_level("openai/gpt-6.2-astra"), "medium")
 
     def test_fable_has_no_off_level(self):
         self.assertEqual(
@@ -135,15 +135,17 @@ class PickerRatingTests(SimpleTestCase):
             "anthropic/claude-haiku-5-5": 2,
             "gemini/gemini-4-hydrogen": 2,
             "openai/gpt-6.1-terra": 2,
-            "openai/gpt-6.1-sol": 3,
+            "openai/gpt-6.2-sol": 3,
             "gemini/gemini-3.1-pro-preview": 3,
             "gemini/gemini-4-argon": 3,
             "gemini/gemini-4-carbon": 3,
             "anthropic/claude-sonnet-5-5": 3,
             "anthropic/claude-opus-5-5": 4,
-            # $8/$40 lands one bucket below the $10/$50 flagships.
+            # $8/$40 lands one bucket below what $10/$50 (GPT-6 Astra) rated.
             "anthropic/claude-fable-5-2": 4,
-            "openai/gpt-6-astra": 5,
+            # Also $8/$40: blended $2.99, just inside the $3 bucket. No live
+            # model rates 5 since GPT-6 Astra was retired.
+            "openai/gpt-6.2-astra": 4,
         }
         self.assertEqual(set(expected), set(_MODELS))
         for model_id, level in expected.items():
@@ -199,8 +201,8 @@ class PickerRatingTests(SimpleTestCase):
         self.assertEqual(get_capability_level("anthropic/claude-opus-4-6"), 4)
         # Manually held at 4 stars: the $2.00 input price alone would rate
         # Sol 3.
-        self.assertEqual(get_capability_level("openai/gpt-6.1-sol"), 4)
-        self.assertEqual(get_capability_level("openai/gpt-6-astra"), 5)
+        self.assertEqual(get_capability_level("openai/gpt-6.2-sol"), 4)
+        self.assertEqual(get_capability_level("openai/gpt-6.2-astra"), 5)
         self.assertEqual(get_capability_level("anthropic/claude-fable-5-2"), 5)
         self.assertEqual(get_capability_level("gemini/gemini-4-carbon"), 5)
         self.assertEqual(get_capability_level("gemini/gemini-4-argon"), 5)
@@ -225,8 +227,8 @@ class PickerRatingTests(SimpleTestCase):
 
     def test_tooltips(self):
         self.assertEqual(
-            get_model_meta_tooltip("openai/gpt-6-astra"),
-            "Flagship · $50 / 1M output tokens",
+            get_model_meta_tooltip("openai/gpt-6.2-astra"),
+            "Flagship · $40 / 1M output tokens",
         )
         self.assertEqual(
             get_model_meta_tooltip("anthropic/claude-fable-5-2"),
@@ -238,7 +240,7 @@ class PickerRatingTests(SimpleTestCase):
         )
         # Label follows the manual 4-star rating, not the price tier.
         self.assertEqual(
-            get_model_meta_tooltip("openai/gpt-6.1-sol"),
+            get_model_meta_tooltip("openai/gpt-6.2-sol"),
             "Standard · $10 / 1M output tokens",
         )
         self.assertEqual(

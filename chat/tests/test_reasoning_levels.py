@@ -12,7 +12,7 @@ class ResolveReasoningLevelTests(SimpleTestCase):
         self.assertEqual(_resolve_reasoning_level("gemini/gemini-3.5-flash-lite", None), "minimal")
 
     def test_supported_value_is_preserved(self):
-        self.assertEqual(_resolve_reasoning_level("openai/gpt-6.1-sol", "max"), "max")
+        self.assertEqual(_resolve_reasoning_level("openai/gpt-6.2-sol", "max"), "max")
         self.assertEqual(_resolve_reasoning_level("anthropic/claude-sonnet-5-5", "xhigh"), "xhigh")
         self.assertEqual(_resolve_reasoning_level("gemini/gemini-3.7-flash", "low"), "low")
 
@@ -27,7 +27,7 @@ class ResolveReasoningLevelTests(SimpleTestCase):
         # back to the successor's default (see _is_retired_model_id).
         with self.assertRaisesMessage(ValueError, "Claude Sonnet 5.5"):
             _resolve_reasoning_level("anthropic/claude-sonnet-5", "off")
-        with self.assertRaisesMessage(ValueError, "GPT-6.1 Sol"):
+        with self.assertRaisesMessage(ValueError, "GPT-6.2 Sol"):
             _resolve_reasoning_level("openai/gpt-6-sol", "none")
         self.assertEqual(_resolve_reasoning_level("anthropic/claude-sonnet-5", None), "high")
 

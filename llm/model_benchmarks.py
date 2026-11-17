@@ -81,7 +81,8 @@ def _row(model_id, effort, score, source_label, ci=None, note=None):
 # artificialanalysis.ai pages (the model object's gdpval, gdpPdfAllPass and
 # omniscienceHallucinationRate); source_label is AA's slug. Every AA row of
 # the three benchmarks below was re-read from one snapshot of each slug's
-# /models/<slug> page on 2026-11-13, when Gemini 4 Hydrogen was added. A
+# /models/<slug> page on 2026-11-17, when GPT-6.2 Astra and Sol were added
+# (AA has GDP.pdf and Omniscience for them, no GDPval yet). A
 # metric the page no longer shows keeps its earlier value (Omniscience:
 # Gemini 3.1 Pro). GDPval Elo is relative and drifts as AA adds
 # models, so all GDPval rows are re-read together from one snapshot whenever a
@@ -89,68 +90,58 @@ def _row(model_id, effort, score, source_label, ci=None, note=None):
 # unsuffixed Gemini slugs are "high", except gemini-4-hydrogen, which is the
 # xhigh run (a level we do not offer yet, so it has no row). AA runs Gemini 4
 # Argon at medium and high, and has a GDPval score for Carbon at high only and
-# none for Hydrogen yet (still null on all four slugs on 2026-11-14).
+# none for Hydrogen yet (still null on 2026-11-17).
 _AA_SCORES = {
     BENCHMARK_GDPVAL: (
-        _row("openai/gpt-6-astra", "low", 1403, "gpt-6-astra-low"),
-        _row("openai/gpt-6-astra", "medium", 1498, "gpt-6-astra-medium"),
-        _row("openai/gpt-6-astra", "high", 1536, "gpt-6-astra-high"),
-        _row("openai/gpt-6-astra", "xhigh", 1569, "gpt-6-astra-xhigh"),
-        _row("openai/gpt-6-astra", "max", 1586, "gpt-6-astra"),
-        _row("openai/gpt-6.1-sol", "low", 1322, "gpt-6-1-sol-low"),
-        _row("openai/gpt-6.1-sol", "medium", 1459, "gpt-6-1-sol-medium"),
-        _row("openai/gpt-6.1-sol", "high", 1520, "gpt-6-1-sol-high"),
-        _row("openai/gpt-6.1-sol", "xhigh", 1555, "gpt-6-1-sol-xhigh"),
-        _row("openai/gpt-6.1-sol", "max", 1608, "gpt-6-1-sol"),
         _row("openai/gpt-6.1-terra", "none", 1286, "gpt-6-1-terra-non-reasoning"),
         _row("openai/gpt-6.1-terra", "low", 1204, "gpt-6-1-terra-low"),
-        _row("openai/gpt-6.1-terra", "medium", 1325, "gpt-6-1-terra-medium"),
+        _row("openai/gpt-6.1-terra", "medium", 1324, "gpt-6-1-terra-medium"),
         _row("openai/gpt-6.1-terra", "high", 1353, "gpt-6-1-terra-high"),
-        _row("openai/gpt-6.1-terra", "xhigh", 1415, "gpt-6-1-terra-xhigh"),
+        _row("openai/gpt-6.1-terra", "xhigh", 1416, "gpt-6-1-terra-xhigh"),
         _row("openai/gpt-6.1-terra", "max", 1476, "gpt-6-1-terra"),
         _row("openai/gpt-6-luna", "none", 1052, "gpt-6-luna-non-reasoning"),
-        _row("openai/gpt-6-luna", "low", 1040, "gpt-6-luna-low"),
-        _row("openai/gpt-6-luna", "medium", 1270, "gpt-6-luna-medium"),
-        _row("openai/gpt-6-luna", "high", 1352, "gpt-6-luna-high"),
-        _row("openai/gpt-6-luna", "xhigh", 1373, "gpt-6-luna-xhigh"),
-        _row("openai/gpt-6-luna", "max", 1444, "gpt-6-luna"),
+        _row("openai/gpt-6-luna", "low", 1039, "gpt-6-luna-low"),
+        _row("openai/gpt-6-luna", "medium", 1271, "gpt-6-luna-medium"),
+        _row("openai/gpt-6-luna", "high", 1350, "gpt-6-luna-high"),
+        _row("openai/gpt-6-luna", "xhigh", 1374, "gpt-6-luna-xhigh"),
+        _row("openai/gpt-6-luna", "max", 1443, "gpt-6-luna"),
         _row("anthropic/claude-fable-5-2", "low", 1546, "claude-fable-5-2-low"),
         _row("anthropic/claude-fable-5-2", "medium", 1591, "claude-fable-5-2-medium"),
         _row("anthropic/claude-fable-5-2", "high", 1718, "claude-fable-5-2-high"),
         _row("anthropic/claude-fable-5-2", "xhigh", 1751, "claude-fable-5-2-xhigh"),
         _row("anthropic/claude-fable-5-2", "max", 1831, "claude-fable-5-2"),
-        _row("anthropic/claude-opus-5-5", "low", 1240, "claude-opus-5-5-low"),
-        _row("anthropic/claude-opus-5-5", "medium", 1593, "claude-opus-5-5-medium"),
-        _row("anthropic/claude-opus-5-5", "high", 1714, "claude-opus-5-5-high"),
-        _row("anthropic/claude-opus-5-5", "xhigh", 1835, "claude-opus-5-5-xhigh"),
+        _row("anthropic/claude-opus-5-5", "low", 1239, "claude-opus-5-5-low"),
+        _row("anthropic/claude-opus-5-5", "medium", 1590, "claude-opus-5-5-medium"),
+        _row("anthropic/claude-opus-5-5", "high", 1709, "claude-opus-5-5-high"),
+        _row("anthropic/claude-opus-5-5", "xhigh", 1836, "claude-opus-5-5-xhigh"),
         _row("anthropic/claude-opus-5-5", "max", 1866, "claude-opus-5-5"),
         _row("anthropic/claude-sonnet-5-5", "low", 1182, "claude-sonnet-5-5-low"),
-        _row("anthropic/claude-sonnet-5-5", "medium", 1329, "claude-sonnet-5-5-medium"),
-        _row("anthropic/claude-sonnet-5-5", "high", 1557, "claude-sonnet-5-5-high"),
-        _row("anthropic/claude-sonnet-5-5", "xhigh", 1735, "claude-sonnet-5-5-xhigh"),
+        _row("anthropic/claude-sonnet-5-5", "medium", 1326, "claude-sonnet-5-5-medium"),
+        _row("anthropic/claude-sonnet-5-5", "high", 1551, "claude-sonnet-5-5-high"),
+        _row("anthropic/claude-sonnet-5-5", "xhigh", 1743, "claude-sonnet-5-5-xhigh"),
         _row("anthropic/claude-sonnet-5-5", "max", 1838, "claude-sonnet-5-5"),
         _row("anthropic/claude-haiku-5-5", "low", 1130, "claude-haiku-5-5-low"),
         _row("anthropic/claude-haiku-5-5", "medium", 1282, "claude-haiku-5-5-medium"),
         _row("anthropic/claude-haiku-5-5", "high", 1424, "claude-haiku-5-5-high"),
-        _row("anthropic/claude-haiku-5-5", "xhigh", 1522, "claude-haiku-5-5-xhigh"),
+        _row("anthropic/claude-haiku-5-5", "xhigh", 1523, "claude-haiku-5-5-xhigh"),
         _row("anthropic/claude-haiku-5-5", "max", 1629, "claude-haiku-5-5"),
         _row("gemini/gemini-4-carbon", "high", 1733, "gemini-4-carbon"),
         _row("gemini/gemini-4-argon", "medium", 1578, "gemini-4-argon-medium"),
-        _row("gemini/gemini-4-argon", "high", 1633, "gemini-4-argon"),
+        _row("gemini/gemini-4-argon", "high", 1634, "gemini-4-argon"),
         _row("gemini/gemini-3.1-pro-preview", None, 799, "gemini-3-1-pro-preview"),
-        _row("gemini/gemini-3.5-flash-lite", None, 995, "gemini-3-5-flash-lite"),
+        _row("gemini/gemini-3.5-flash-lite", None, 994, "gemini-3-5-flash-lite"),
     ),
     BENCHMARK_GDP_PDF: (
-        _row("openai/gpt-6-astra", "low", 30.4, "gpt-6-astra-low"),
-        _row("openai/gpt-6-astra", "medium", 30.4, "gpt-6-astra-medium"),
-        _row("openai/gpt-6-astra", "high", 31.0, "gpt-6-astra-high"),
-        _row("openai/gpt-6-astra", "xhigh", 32.2, "gpt-6-astra-xhigh"),
-        _row("openai/gpt-6-astra", "max", 31.0, "gpt-6-astra"),
-        _row("openai/gpt-6.1-sol", "low", 27.0, "gpt-6-1-sol-low"),
-        _row("openai/gpt-6.1-sol", "medium", 30.0, "gpt-6-1-sol-medium"),
-        _row("openai/gpt-6.1-sol", "high", 32.0, "gpt-6-1-sol-high"),
-        _row("openai/gpt-6.1-sol", "xhigh", 31.8, "gpt-6-1-sol-xhigh"),
-        _row("openai/gpt-6.1-sol", "max", 31.0, "gpt-6-1-sol"),
+        _row("openai/gpt-6.2-astra", "low", 28.0, "gpt-6-2-astra-low"),
+        _row("openai/gpt-6.2-astra", "medium", 28.4, "gpt-6-2-astra-medium"),
+        _row("openai/gpt-6.2-astra", "high", 28.6, "gpt-6-2-astra-high"),
+        _row("openai/gpt-6.2-astra", "xhigh", 28.0, "gpt-6-2-astra-xhigh"),
+        _row("openai/gpt-6.2-astra", "max", 29.8, "gpt-6-2-astra"),
+        _row("openai/gpt-6.2-sol", "low", 28.6, "gpt-6-2-sol-low"),
+        _row("openai/gpt-6.2-sol", "medium", 29.2, "gpt-6-2-sol-medium"),
+        _row("openai/gpt-6.2-sol", "high", 28.8, "gpt-6-2-sol-high"),
+        _row("openai/gpt-6.2-sol", "xhigh", 28.4, "gpt-6-2-sol-xhigh"),
+        _row("openai/gpt-6.2-sol", "max", 30.0, "gpt-6-2-sol"),
         _row("openai/gpt-6.1-terra", "none", 23.2, "gpt-6-1-terra-non-reasoning"),
         _row("openai/gpt-6.1-terra", "low", 25.6, "gpt-6-1-terra-low"),
         _row("openai/gpt-6.1-terra", "medium", 28.4, "gpt-6-1-terra-medium"),
@@ -195,16 +186,16 @@ _AA_SCORES = {
         _row("gemini/gemini-3.5-flash-lite", None, 13.6, "gemini-3-5-flash-lite"),
     ),
     BENCHMARK_OMNISCIENCE: (
-        _row("openai/gpt-6-astra", "low", 44.2, "gpt-6-astra-low"),
-        _row("openai/gpt-6-astra", "medium", 45.2, "gpt-6-astra-medium"),
-        _row("openai/gpt-6-astra", "high", 42.5, "gpt-6-astra-high"),
-        _row("openai/gpt-6-astra", "xhigh", 44.6, "gpt-6-astra-xhigh"),
-        _row("openai/gpt-6-astra", "max", 49.8, "gpt-6-astra"),
-        _row("openai/gpt-6.1-sol", "low", 49.9, "gpt-6-1-sol-low"),
-        _row("openai/gpt-6.1-sol", "medium", 48.1, "gpt-6-1-sol-medium"),
-        _row("openai/gpt-6.1-sol", "high", 49.0, "gpt-6-1-sol-high"),
-        _row("openai/gpt-6.1-sol", "xhigh", 48.0, "gpt-6-1-sol-xhigh"),
-        _row("openai/gpt-6.1-sol", "max", 51.9, "gpt-6-1-sol"),
+        _row("openai/gpt-6.2-astra", "low", 55.8, "gpt-6-2-astra-low"),
+        _row("openai/gpt-6.2-astra", "medium", 54.1, "gpt-6-2-astra-medium"),
+        _row("openai/gpt-6.2-astra", "high", 58.1, "gpt-6-2-astra-high"),
+        _row("openai/gpt-6.2-astra", "xhigh", 57.7, "gpt-6-2-astra-xhigh"),
+        _row("openai/gpt-6.2-astra", "max", 59.1, "gpt-6-2-astra"),
+        _row("openai/gpt-6.2-sol", "low", 65.8, "gpt-6-2-sol-low"),
+        _row("openai/gpt-6.2-sol", "medium", 61.1, "gpt-6-2-sol-medium"),
+        _row("openai/gpt-6.2-sol", "high", 60.0, "gpt-6-2-sol-high"),
+        _row("openai/gpt-6.2-sol", "xhigh", 56.2, "gpt-6-2-sol-xhigh"),
+        _row("openai/gpt-6.2-sol", "max", 55.4, "gpt-6-2-sol"),
         _row("openai/gpt-6.1-terra", "none", 77.1, "gpt-6-1-terra-non-reasoning"),
         _row("openai/gpt-6.1-terra", "low", 41.6, "gpt-6-1-terra-low"),
         _row("openai/gpt-6.1-terra", "medium", 39.6, "gpt-6-1-terra-medium"),
@@ -252,11 +243,10 @@ _AA_SCORES = {
 
 # LMArena rows are all read from one snapshot of the board (2026-11-11; the
 # page shows whole points). It could only be read down to rank 149 of 414:
-# Fable 5.2 and GPT-6.1 Terra are not in that part (not rated yet; still so on
-# 2026-11-14), so they have no row.
+# Fable 5.2, GPT-6.1 Terra and GPT-6.2 Astra/Sol are not in that part (not
+# rated yet; the board was still the 2026-11-11 one on 2026-11-17), so they
+# have no row.
 _ARENA_SCORES = (
-    _row("openai/gpt-6-astra", "max", 1478, "gpt-6-astra-max", ci=11),
-    _row("openai/gpt-6.1-sol", "max", 1480, "gpt-6.1-sol-max", ci=14),
     _row("openai/gpt-6-luna", "max", 1439, "gpt-6-luna-max", ci=6),
     _row("anthropic/claude-opus-5-5", "high", 1493, "claude-opus-5.5-high", ci=12),
     _row("anthropic/claude-sonnet-5-5", "xhigh", 1474, "claude-sonnet-5.5-xhigh", ci=13),
@@ -278,11 +268,9 @@ _ARENA_SCORES = (
 # category is the mean of paraphrase, simplify, story_generation and summarize.
 # All rows share one question set. It is still the newest release with the IF
 # table (checked 2026-11-14; LiveBench 2.0 has replaced it on the site), so
-# models released after it (GPT-6.1 Terra, Fable 5.2, Gemini 4) have no row.
+# models released after it (GPT-6.1 Terra, GPT-6.2, Fable 5.2, Gemini 4) have
+# no row.
 _LIVEBENCH_IF_SCORES = (
-    _row("openai/gpt-6-astra", "max", 75.58, "gpt-6-astra-max"),
-    _row("openai/gpt-6.1-sol", "max", 74.15, "gpt-6.1-sol-max"),
-    _row("openai/gpt-6.1-sol", "xhigh", 71.33, "gpt-6.1-sol-xhigh"),
     _row("openai/gpt-6-luna", "max", 55.93, "gpt-6-luna-max"),
     _row("anthropic/claude-opus-5-5", "xhigh", 67.05, "claude-opus-5-5-xhigh-effort"),
     _row("anthropic/claude-opus-5-5", "max", 65.74, "claude-opus-5-5-max-effort"),
@@ -299,67 +287,59 @@ _LIVEBENCH_IF_SCORES = (
 # number grows with the effort level, and AA's headline timeToFirstToken equals
 # its timeToFirstAnswerToken). It is workloads["100k"].timeToFirstToken in the
 # model object embedded in each artificialanalysis.ai/models/<slug> page; all
-# rows were read together on 2026-11-14. Until 2026-11-03 this benchmark was
-# AA's end-to-end response time (a complete 500-token answer), which the pages
-# stopped carrying on 2026-11-11. Slug-to-effort mapping as for _AA_SCORES.
-# AA has no 100K figure for Gemini 4 Argon
-# at medium. Re-read all rows together whenever a model is added.
+# rows were read together on 2026-11-17 (the medians move: most high-effort
+# rows fell by a third or more since 2026-11-14). Until 2026-11-03 this
+# benchmark was AA's end-to-end response time (a complete 500-token answer),
+# which the pages stopped carrying on 2026-11-11. Slug-to-effort mapping as for
+# _AA_SCORES. AA has no 100K figure for GPT-6.2 Astra or Sol yet. Re-read all
+# rows together whenever a model is added.
 _RESPONSE_TIME_SCORES = (
-    _row("openai/gpt-6-astra", "low", 7.4, "gpt-6-astra-low"),
-    _row("openai/gpt-6-astra", "medium", 17.0, "gpt-6-astra-medium"),
-    _row("openai/gpt-6-astra", "high", 202.1, "gpt-6-astra-high"),
-    _row("openai/gpt-6-astra", "xhigh", 292.7, "gpt-6-astra-xhigh"),
-    _row("openai/gpt-6-astra", "max", 620.7, "gpt-6-astra"),
-    _row("openai/gpt-6.1-sol", "low", 5.0, "gpt-6-1-sol-low"),
-    _row("openai/gpt-6.1-sol", "medium", 11.4, "gpt-6-1-sol-medium"),
-    _row("openai/gpt-6.1-sol", "high", 139.4, "gpt-6-1-sol-high"),
-    _row("openai/gpt-6.1-sol", "xhigh", 241.5, "gpt-6-1-sol-xhigh"),
-    _row("openai/gpt-6.1-sol", "max", 559.3, "gpt-6-1-sol"),
-    _row("openai/gpt-6.1-terra", "none", 2.4, "gpt-6-1-terra-non-reasoning"),
-    _row("openai/gpt-6.1-terra", "low", 3.3, "gpt-6-1-terra-low"),
-    _row("openai/gpt-6.1-terra", "medium", 11.2, "gpt-6-1-terra-medium"),
-    _row("openai/gpt-6.1-terra", "high", 31.2, "gpt-6-1-terra-high"),
-    _row("openai/gpt-6.1-terra", "xhigh", 83.3, "gpt-6-1-terra-xhigh"),
-    _row("openai/gpt-6.1-terra", "max", 423.7, "gpt-6-1-terra"),
-    _row("openai/gpt-6-luna", "none", 2.4, "gpt-6-luna-non-reasoning"),
-    _row("openai/gpt-6-luna", "low", 4.6, "gpt-6-luna-low"),
-    _row("openai/gpt-6-luna", "medium", 8.4, "gpt-6-luna-medium"),
-    _row("openai/gpt-6-luna", "high", 29.8, "gpt-6-luna-high"),
-    _row("openai/gpt-6-luna", "xhigh", 47.5, "gpt-6-luna-xhigh"),
-    _row("openai/gpt-6-luna", "max", 209.2, "gpt-6-luna"),
-    _row("anthropic/claude-fable-5-2", "low", 25.7, "claude-fable-5-2-low"),
-    _row("anthropic/claude-fable-5-2", "medium", 30.4, "claude-fable-5-2-medium"),
-    _row("anthropic/claude-fable-5-2", "high", 82.2, "claude-fable-5-2-high"),
-    _row("anthropic/claude-fable-5-2", "xhigh", 285.9, "claude-fable-5-2-xhigh"),
-    _row("anthropic/claude-fable-5-2", "max", 636.3, "claude-fable-5-2"),
-    _row("anthropic/claude-opus-5-5", "low", 10.6, "claude-opus-5-5-low"),
-    _row("anthropic/claude-opus-5-5", "medium", 59.2, "claude-opus-5-5-medium"),
-    _row("anthropic/claude-opus-5-5", "high", 87.0, "claude-opus-5-5-high"),
-    _row("anthropic/claude-opus-5-5", "xhigh", 257.1, "claude-opus-5-5-xhigh"),
-    _row("anthropic/claude-opus-5-5", "max", 1010.1, "claude-opus-5-5"),
-    _row("anthropic/claude-sonnet-5-5", "low", 4.3, "claude-sonnet-5-5-low"),
-    _row("anthropic/claude-sonnet-5-5", "medium", 14.3, "claude-sonnet-5-5-medium"),
-    _row("anthropic/claude-sonnet-5-5", "high", 27.5, "claude-sonnet-5-5-high"),
-    _row("anthropic/claude-sonnet-5-5", "xhigh", 84.2, "claude-sonnet-5-5-xhigh"),
-    _row("anthropic/claude-sonnet-5-5", "max", 647.9, "claude-sonnet-5-5"),
-    _row("anthropic/claude-haiku-5-5", "low", 7.8, "claude-haiku-5-5-low"),
-    _row("anthropic/claude-haiku-5-5", "medium", 23.1, "claude-haiku-5-5-medium"),
-    _row("anthropic/claude-haiku-5-5", "high", 61.7, "claude-haiku-5-5-high"),
-    _row("anthropic/claude-haiku-5-5", "xhigh", 164.5, "claude-haiku-5-5-xhigh"),
-    _row("anthropic/claude-haiku-5-5", "max", 327.8, "claude-haiku-5-5"),
-    _row("gemini/gemini-4-carbon", "low", 7.5, "gemini-4-carbon-low"),
-    _row("gemini/gemini-4-carbon", "medium", 28.4, "gemini-4-carbon-medium"),
-    _row("gemini/gemini-4-carbon", "high", 154.4, "gemini-4-carbon"),
-    _row("gemini/gemini-4-argon", "high", 118.7, "gemini-4-argon"),
-    _row("gemini/gemini-3.1-pro-preview", None, 27.2, "gemini-3-1-pro-preview"),
-    _row("gemini/gemini-4-hydrogen", "low", 11.5, "gemini-4-hydrogen-low"),
-    _row("gemini/gemini-4-hydrogen", "medium", 24.0, "gemini-4-hydrogen-medium"),
-    _row("gemini/gemini-4-hydrogen", "high", 50.6, "gemini-4-hydrogen-high"),
-    _row("gemini/gemini-3.5-flash-lite", None, 11.2, "gemini-3-5-flash-lite"),
+    _row("openai/gpt-6.1-terra", "none", 2.7, "gpt-6-1-terra-non-reasoning"),
+    _row("openai/gpt-6.1-terra", "low", 3.7, "gpt-6-1-terra-low"),
+    _row("openai/gpt-6.1-terra", "medium", 5.5, "gpt-6-1-terra-medium"),
+    _row("openai/gpt-6.1-terra", "high", 10.9, "gpt-6-1-terra-high"),
+    _row("openai/gpt-6.1-terra", "xhigh", 44.1, "gpt-6-1-terra-xhigh"),
+    _row("openai/gpt-6.1-terra", "max", 221.1, "gpt-6-1-terra"),
+    _row("openai/gpt-6-luna", "none", 2.5, "gpt-6-luna-non-reasoning"),
+    _row("openai/gpt-6-luna", "low", 3.7, "gpt-6-luna-low"),
+    _row("openai/gpt-6-luna", "medium", 5.3, "gpt-6-luna-medium"),
+    _row("openai/gpt-6-luna", "high", 11.4, "gpt-6-luna-high"),
+    _row("openai/gpt-6-luna", "xhigh", 18.0, "gpt-6-luna-xhigh"),
+    _row("openai/gpt-6-luna", "max", 102.5, "gpt-6-luna"),
+    _row("anthropic/claude-fable-5-2", "low", 16.2, "claude-fable-5-2-low"),
+    _row("anthropic/claude-fable-5-2", "medium", 15.3, "claude-fable-5-2-medium"),
+    _row("anthropic/claude-fable-5-2", "high", 49.0, "claude-fable-5-2-high"),
+    _row("anthropic/claude-fable-5-2", "xhigh", 57.3, "claude-fable-5-2-xhigh"),
+    _row("anthropic/claude-fable-5-2", "max", 423.8, "claude-fable-5-2"),
+    _row("anthropic/claude-opus-5-5", "low", 8.6, "claude-opus-5-5-low"),
+    _row("anthropic/claude-opus-5-5", "medium", 28.8, "claude-opus-5-5-medium"),
+    _row("anthropic/claude-opus-5-5", "high", 49.2, "claude-opus-5-5-high"),
+    _row("anthropic/claude-opus-5-5", "xhigh", 128.2, "claude-opus-5-5-xhigh"),
+    _row("anthropic/claude-opus-5-5", "max", 585.7, "claude-opus-5-5"),
+    _row("anthropic/claude-sonnet-5-5", "low", 4.7, "claude-sonnet-5-5-low"),
+    _row("anthropic/claude-sonnet-5-5", "medium", 13.5, "claude-sonnet-5-5-medium"),
+    _row("anthropic/claude-sonnet-5-5", "high", 19.5, "claude-sonnet-5-5-high"),
+    _row("anthropic/claude-sonnet-5-5", "xhigh", 64.6, "claude-sonnet-5-5-xhigh"),
+    _row("anthropic/claude-sonnet-5-5", "max", 523.9, "claude-sonnet-5-5"),
+    _row("anthropic/claude-haiku-5-5", "low", 8.2, "claude-haiku-5-5-low"),
+    _row("anthropic/claude-haiku-5-5", "medium", 21.2, "claude-haiku-5-5-medium"),
+    _row("anthropic/claude-haiku-5-5", "high", 39.1, "claude-haiku-5-5-high"),
+    _row("anthropic/claude-haiku-5-5", "xhigh", 107.1, "claude-haiku-5-5-xhigh"),
+    _row("anthropic/claude-haiku-5-5", "max", 380.6, "claude-haiku-5-5"),
+    _row("gemini/gemini-4-carbon", "low", 6.7, "gemini-4-carbon-low"),
+    _row("gemini/gemini-4-carbon", "medium", 21.7, "gemini-4-carbon-medium"),
+    _row("gemini/gemini-4-carbon", "high", 165.0, "gemini-4-carbon"),
+    _row("gemini/gemini-4-argon", "medium", 8.8, "gemini-4-argon-medium"),
+    _row("gemini/gemini-4-argon", "high", 120.1, "gemini-4-argon"),
+    _row("gemini/gemini-3.1-pro-preview", None, 31.9, "gemini-3-1-pro-preview"),
+    _row("gemini/gemini-4-hydrogen", "low", 11.1, "gemini-4-hydrogen-low"),
+    _row("gemini/gemini-4-hydrogen", "medium", 24.2, "gemini-4-hydrogen-medium"),
+    _row("gemini/gemini-4-hydrogen", "high", 34.4, "gemini-4-hydrogen-high"),
+    _row("gemini/gemini-3.5-flash-lite", None, 11.6, "gemini-3-5-flash-lite"),
 )
 
-_FETCHED = date(2026, 11, 13)
-_RESPONSE_TIME_FETCHED = date(2026, 11, 14)
+_FETCHED = date(2026, 11, 17)
+_RESPONSE_TIME_FETCHED = date(2026, 11, 17)
 
 
 BENCHMARKS: dict[str, Benchmark] = {
