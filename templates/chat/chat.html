@@ -5720,7 +5720,10 @@
     }
 
     function isMobile() { return window.matchMedia("(max-width: 639px)").matches; }
-    function bust(url) { return url ? (url + (url.indexOf("?") < 0 ? "?" : "&") + "v=" + Date.now().toString(36)) : url; }
+    // Slide image URLs are never cache-busted: renders are content-addressed per
+    // deck (store_slide_set_image dedupes by sha) and a changed slide gets a new
+    // asset id, so new bytes always arrive under a new URL, and an unchanged
+    // slide keeps its URL and the image the browser already has.
 
     var slidesToggleBtn = document.getElementById("slides-toggle-btn");
     var slidesToggleArrow = document.getElementById("slides-toggle-arrow");
@@ -6029,34 +6032,68 @@
     function applyRendered(data) {
       var byId = {}; (data.slides || []).forEach(function(s) { byId[s.slide_id] = s; });
       if (!slides.length && data.slides) {
-        slides = data.slides.map(function(s) { return { slide_id: s.slide_id, name: "", page: s.page, asset_url: bust(s.asset_url), width: s.width, height: s.height, status: undefined }; });
+        slides = data.slides.map(function(s) { return { slide_id: s.slide_id, name: "", page: s.page, asset_url: s.asset_url, width: s.width, height: s.height, status: undefined }; });
+        slides.sort(function(a, b) { return (a.page || 0) - (b.page || 0); });
       } else {
         var known = {}; slides.forEach(function(s) { known[s.slide_id] = true; });
         slides.forEach(function(s) {
           var r = byId[s.slide_id];
-          if (r) { s.asset_url = bust(r.asset_url); s.width = r.width; s.height = r.height; s.page = r.page; s.status = undefined; }
+          if (r) { s.asset_url = r.asset_url; s.width = r.width; s.height = r.height; s.page = r.page; s.status = undefined; }
         });
         // A slide added this turn (slides_add_slide, or an edit that grew the deck)
         // may be absent locally if its slidedeck.updated carried no slide_ids — add
         // any freshly-rendered slide we don't yet know about so it appears without
         // a manual refresh, rather than waiting for a full slidedeck.state re-hydrate.
         (data.slides || []).forEach(function(s) {
-          if (!known[s.slide_id]) { slides.push({ slide_id: s.slide_id, name: "", page: s.page, asset_url: bust(s.asset_url), width: s.width, height: s.height, status: undefined }); }
+          if (!known[s.slide_id]) { slides.push({ slide_id: s.slide_id, name: "", page: s.page, asset_url: s.asset_url, width: s.width, height: s.height, status: undefined }); }
         });
         slides.sort(function(a, b) { return (a.page || 0) - (b.page || 0); });
       }
       renderFilmstrip();
       scheduleReconcile();  // stops the poll once nothing's pending; keeps it if a slide still is
     }
+    // Several deck edits in one turn finish as back-to-back slidedeck.rendered
+    // events (5 in ~2.6s seen in production); merge a burst into one filmstrip
+    // update — the later event wins per slide — after a short quiet gap, capped
+    // so a steady stream still lands.
+    var RENDERED_QUIET_MS = 400, RENDERED_MAX_WAIT_MS = 1500;
+    var pendingRendered = null, renderedTimer = null, renderedFirstAt = 0;
+    function queueRendered(data) {
+      if (pendingRendered && pendingRendered.deck_id !== data.deck_id) flushRendered();
+      if (!pendingRendered) { pendingRendered = { deck_id: data.deck_id, order: [], byId: {} }; renderedFirstAt = Date.now(); }
+      (data.slides || []).forEach(function(s) {
+        if (!pendingRendered.byId[s.slide_id]) pendingRendered.order.push(s.slide_id);
+        pendingRendered.byId[s.slide_id] = s;
+      });
+      if (renderedTimer) clearTimeout(renderedTimer);
+      var wait = Math.max(0, Math.min(RENDERED_QUIET_MS, renderedFirstAt + RENDERED_MAX_WAIT_MS - Date.now()));
+      renderedTimer = setTimeout(flushRendered, wait);
+    }
+    function dropRendered() {
+      if (renderedTimer) { clearTimeout(renderedTimer); renderedTimer = null; }
+      pendingRendered = null;
+    }
+    function flushRendered() {
+      var p = pendingRendered;
+      dropRendered();
+      if (p) applyRendered({ deck_id: p.deck_id, slides: p.order.map(function(id) { return p.byId[id]; }) });
+    }
 
     function requestState() { if (activeThreadId && ws) ws.send(JSON.stringify({ type: "chat.slides_open", thread_id: activeThreadId })); }
 
     function handleEvent(data) {
       var et = data.event_type;
+      // A queued render burst must not land after a newer event: a full
+      // state/close supersedes it (state is read after those renders completed);
+      // anything else applies it first, keeping today's event order.
+      if (et !== "slidedeck.rendered" && pendingRendered) {
+        if (et === "slidedeck.state" || et === "slidedeck.closed") dropRendered();
+        else flushRendered();
+      }
       if (et === "slidedeck.updated") { renderFailed = false; setRerenderBusy(false); open(); applyUpdated(data); return; }
       if (et === "slidedeck.state") { renderFailed = false; setRerenderBusy(false); open(); setState(data); return; }
       if (et === "slidedeck.render_started") { applyRenderStarted(); return; }
-      if (et === "slidedeck.rendered") { renderFailed = false; open(); applyRendered(data); return; }
+      if (et === "slidedeck.rendered") { renderFailed = false; open(); queueRendered(data); return; }
       if (et === "slidedeck.render_failed") {
         setPdfBusy(false);
         if (data.purpose === "pdf_export") { if (typeof showToast === "function") showToast("Couldn't build the PDF. You can still download the .pptx."); return; }
