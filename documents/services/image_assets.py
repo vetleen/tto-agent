@@ -127,6 +127,9 @@ class EmbeddedImageDescriberBase:
         self.thinking_level = thinking_level
         # Chat thread the vision calls are billed to (/cost); None for data rooms.
         self.conversation_id = conversation_id
+        # Data-room arm: the document the vision calls' log rows are tagged with
+        # (llm.retention.document_log_ids); None for chat.
+        self.log_ids: dict | None = None
         # None → org cache off.
         self.org_id = org_id
         # "" when there is no vision-capable model — assets are still stored.
@@ -260,6 +263,7 @@ class EmbeddedImageDescriberBase:
                     alt_text=rec["alt_text"], model=self.model,
                     conversation_id=self.conversation_id,
                     thinking_level=self.thinking_level,
+                    **({"log_ids": self.log_ids} if self.log_ids else {}),
                 )
             finally:
                 if abandoned.is_set():
@@ -372,6 +376,9 @@ class EmbeddedImageDescriber(EmbeddedImageDescriberBase):
         )
         self.version = version
         self.doc = doc
+        from llm.retention import document_log_ids
+
+        self.log_ids = document_log_ids(doc)
 
     def _store_asset(self, *, img_bytes, content_type, sha, description, alt_text):
         from django.core.files.base import ContentFile

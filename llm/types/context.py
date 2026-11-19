@@ -62,6 +62,12 @@ class RunContext(BaseModel):
     user_id: Optional[str] = None
     conversation_id: Optional[str] = None
     data_room_ids: list[int] = Field(default_factory=list)
+    # The data-room document / data room this call is made FOR (document
+    # pipeline: description, PII scan, chunk scan, picture descriptions). Written
+    # to LLMCallLog so deleting the object redacts the row's content. Unrelated
+    # to data_room_ids (the rooms attached to a chat turn).
+    document_id: Optional[int] = None
+    data_room_id: Optional[int] = None
     started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     deadline_seconds: Optional[int] = None
     # Which agent kind this run is: "main" (the orchestrator) or "subagent".
@@ -252,8 +258,12 @@ class RunContext(BaseModel):
         conversation_id: Any | None = None,
         deadline_seconds: int | None = None,
         data_room_ids: list[int] | None = None,
+        document_id: int | None = None,
+        data_room_id: int | None = None,
     ) -> "RunContext":
         return cls(
+            document_id=document_id,
+            data_room_id=data_room_id,
             user_id=str(user_id) if user_id is not None else None,
             conversation_id=str(conversation_id) if conversation_id is not None else None,
             deadline_seconds=deadline_seconds,

@@ -40,10 +40,13 @@ def redact_llm_call_logs_on_user_delete(sender, instance, **kwargs):
     analytics, but prompt, raw_output, and tool schemas (which can contain
     user messages and document excerpts) are scrubbed. The existing
     on_delete=SET_NULL on LLMCallLog.user fires after this signal and nulls
-    the FK.
+    the FK. The user's organization is stamped on ``org_id`` first (the
+    membership still exists here), so the cost stays attributable to it.
     """
     from llm.models import LLMCallLog
+    from llm.retention import stamp_org
 
+    stamp_org(LLMCallLog.objects.filter(user=instance))
     LLMCallLog.objects.filter(user=instance).update(
         prompt={"redacted": True},
         raw_output="",

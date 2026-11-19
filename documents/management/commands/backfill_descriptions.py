@@ -76,7 +76,8 @@ class Command(BaseCommand):
                     continue
 
                 result = generate_description_and_tags_from_text(
-                    text, user_id=doc.uploaded_by_id, data_room_id=doc.data_room_id
+                    text, user_id=doc.uploaded_by_id, data_room_id=doc.data_room_id,
+                    document_id=doc.pk,
                 )
                 doc.description = result["description"]
                 update_fields = ["description", "updated_at"]

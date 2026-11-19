@@ -67,9 +67,8 @@ def generate_data_room_description(data_room_id: int, user_id: int | None = None
             "documents in the room alone."
         )
 
-    context = RunContext.create(
-        user_id=user_id,
-    )
+    # data_room_id: deleting the room redacts this call's log row.
+    context = RunContext.create(user_id=user_id, data_room_id=data_room_id)
     model = resolve_org_feature_model(org_id, "document_description")
     request = ChatRequest(
         messages=[

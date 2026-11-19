@@ -415,7 +415,9 @@ def _decide_chunk_batch(doc, chunks: list[dict], model: str, org_id: int | None 
     from llm.service.decisions_fallback import FALLBACK_KIND, decide_with_fallback
     from llm.types import RunContext
 
-    context = RunContext.create(user_id=doc.uploaded_by_id)
+    from llm.retention import document_log_ids
+
+    context = RunContext.create(user_id=doc.uploaded_by_id, **document_log_ids(doc))
 
     def legacy(meta: dict) -> dict:
         if not model:
@@ -500,9 +502,9 @@ def _run_batch_classifier(
     from core.preferences import org_feature_reasoning_params
 
     if context is None:
-        context = RunContext.create(
-            user_id=doc.uploaded_by_id,
-        )
+        from llm.retention import document_log_ids
+
+        context = RunContext.create(user_id=doc.uploaded_by_id, **document_log_ids(doc))
     params = org_feature_reasoning_params(org_id, "guardrail_chunk_scan", model)
     if log_metadata:
         params = {**(params or {}), "_log_metadata": dict(log_metadata)}
@@ -576,6 +578,8 @@ def _decide_flagged_chunk(
         )
         try:
             from guardrails.reviewer import review_flagged_chunk
+            from llm.retention import document_log_ids
+            from llm.types import RunContext
 
             decision = review_flagged_chunk(
                 chunk_text=chunk["text"],
@@ -584,6 +588,9 @@ def _decide_flagged_chunk(
                 neighbor_context=neighbor_context,
                 org_id=org_id,
                 user_id=doc.uploaded_by_id,
+                context=RunContext.create(
+                    user_id=doc.uploaded_by_id, **document_log_ids(doc),
+                ),
             )
             # Count the review only once it actually succeeded — an exception must
             # not consume the per-version reviewer budget, or repeated reviewer

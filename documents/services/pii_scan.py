@@ -339,6 +339,7 @@ def scan_pii_window(
     user_id: int | None = None,
     data_room_id: int | None = None,
     org_id: int | None = None,
+    document_id: int | None = None,
 ) -> PIIWindowVerdict:
     """Classify one window into GDPR PII categories: the Decisions service (ten
     predicates, present at probability ≥ 0.5), or the legacy structured classifier
@@ -351,7 +352,10 @@ def scan_pii_window(
 
     from documents.services.description import _prepare_document_text
 
-    context = RunContext.create(user_id=user_id)
+    # document_id / data_room_id: deleting either redacts this call's log row.
+    context = RunContext.create(
+        user_id=user_id, document_id=document_id, data_room_id=data_room_id,
+    )
 
     def legacy(meta: dict) -> PIIWindowVerdict:
         categories = _scan_pii_categories_legacy(
@@ -429,8 +433,14 @@ def _review_gated_candidates(
     from documents.models import PIIReviewEvent
     from documents.services.pii_review import review_flagged_pii_window
 
+    from llm.types import RunContext
+
     decision = review_flagged_pii_window(
         window_text, candidates, document_title, org_id, user_id=user_id,
+        context=RunContext.create(
+            user_id=user_id, document_id=document.id if document else None,
+            data_room_id=data_room_id,
+        ),
     )
 
     if decision is None:
@@ -555,6 +565,7 @@ def _scan_window(
     window_text = pii_window_text(window)
     verdict = scan_pii_window(
         window_text, user_id=user_id, data_room_id=data_room_id, org_id=org_id,
+        document_id=document.id if document else None,
     )
     if verdict.source != "empty":
         # The pending half of the nightly legacy shadow (ids and numbers; never raises).
@@ -607,6 +618,8 @@ def scan_pii_categories_for_version(
     )
     document = version.document if version else None
     document_title = document.display_name if document else ""
+    if data_room_id is None and document is not None:
+        data_room_id = document.data_room_id
 
     state = _ScanState()
     scan_kwargs = dict(

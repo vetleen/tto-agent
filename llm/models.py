@@ -27,6 +27,18 @@ class LLMCallLog(models.Model):
         related_name="llm_call_logs",
     )
     run_id = models.CharField(max_length=255, blank=True, db_index=True)
+    # Plain ids, not FKs (cheap writes, no cascades; see OpsUsageLog).
+    # org_id is stamped from the user's membership when the row loses its user
+    # (account deletion, or enforce_retention's LLMCallLogIdentity target after
+    # LLM_LOG_IDENTITY_RETENTION_DAYS) so cost still aggregates per organization.
+    # NULL while the user is still on the row.
+    org_id = models.PositiveBigIntegerField(null=True, blank=True, db_index=True)
+    # The data-room document / data room the call was made for (document
+    # pipeline only). Deleting either redacts the row's content
+    # (documents/signals.py); cleared with the other references after
+    # LLM_LOG_IDENTITY_RETENTION_DAYS.
+    document_id = models.PositiveBigIntegerField(null=True, blank=True, db_index=True)
+    data_room_id = models.PositiveBigIntegerField(null=True, blank=True, db_index=True)
 
     # Request
     model = models.CharField(max_length=255)

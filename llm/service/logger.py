@@ -183,6 +183,19 @@ def _user_fk_id(user_id: str | None) -> int | None:
         return None
 
 
+def _subject_fields(context) -> dict:
+    """The data-room document / data room a call was made for, from RunContext.
+
+    Set by the document pipeline only, so deleting the document or data room can
+    redact the row's content (documents/signals.py). NULL everywhere else — chat
+    rows are linked by ``conversation_id``.
+    """
+    return {
+        "document_id": getattr(context, "document_id", None),
+        "data_room_id": getattr(context, "data_room_id", None),
+    }
+
+
 def _observability_fields(context) -> dict:
     """Per-turn tool-loop counters from RunContext.observability, mapped to the
     LLMCallLog columns. NULL when no tool loop ran; prune_count is 0 (not NULL)
@@ -261,7 +274,7 @@ def log_call(request: "ChatRequest", response: "ChatResponse", duration_ms: int)
             user_id=_user_fk_id(context.user_id if context else None),
             run_id=context.run_id if context else "",
             trace_id=(context.trace_id if context else "") or "",
-            conversation_id=(context.conversation_id if context else "") or "",
+            conversation_id=(context.conversation_id if context else "") or "", **_subject_fields(context),
             model=request.model or "",
             is_stream=False,
             prompt=_serialize_messages(request),
@@ -372,7 +385,7 @@ def log_stream(
                 user_id=_user_fk_id(context.user_id if context else None),
                 run_id=context.run_id if context else "",
                 trace_id=(context.trace_id if context else "") or "",
-                conversation_id=(context.conversation_id if context else "") or "",
+                conversation_id=(context.conversation_id if context else "") or "", **_subject_fields(context),
                 model=request.model or "",
                 is_stream=True,
                 prompt=_serialize_messages(request),
@@ -400,7 +413,7 @@ def log_stream(
             user_id=_user_fk_id(context.user_id if context else None),
             run_id=context.run_id if context else "",
             trace_id=(context.trace_id if context else "") or "",
-            conversation_id=(context.conversation_id if context else "") or "",
+            conversation_id=(context.conversation_id if context else "") or "", **_subject_fields(context),
             model=request.model or "",
             is_stream=True,
             prompt=_serialize_messages(request),
@@ -443,7 +456,7 @@ def log_error(
             user_id=_user_fk_id(context.user_id if context else None),
             run_id=context.run_id if context else "",
             trace_id=(context.trace_id if context else "") or "",
-            conversation_id=(context.conversation_id if context else "") or "",
+            conversation_id=(context.conversation_id if context else "") or "", **_subject_fields(context),
             model=request.model or "",
             is_stream=is_stream,
             prompt=_serialize_messages(request),
@@ -493,7 +506,7 @@ def log_transcription(
             user_id=_user_fk_id(context.user_id if context else None),
             run_id=context.run_id if context else "",
             trace_id=(context.trace_id if context else "") or "",
-            conversation_id=(context.conversation_id if context else "") or "",
+            conversation_id=(context.conversation_id if context else "") or "", **_subject_fields(context),
             model=model,
             is_stream=False,
             prompt=[{
@@ -537,7 +550,7 @@ def log_transcription_error(
             user_id=_user_fk_id(context.user_id if context else None),
             run_id=context.run_id if context else "",
             trace_id=(context.trace_id if context else "") or "",
-            conversation_id=(context.conversation_id if context else "") or "",
+            conversation_id=(context.conversation_id if context else "") or "", **_subject_fields(context),
             model=model,
             is_stream=False,
             prompt=[{
@@ -590,7 +603,7 @@ def log_image_generation(
             user_id=_user_fk_id(context.user_id if context else None),
             run_id=context.run_id if context else "",
             trace_id=(context.trace_id if context else "") or "",
-            conversation_id=(context.conversation_id if context else "") or "",
+            conversation_id=(context.conversation_id if context else "") or "", **_subject_fields(context),
             model=model,
             is_stream=False,
             prompt=[{"role": "user", "content": f"[{action}: {prompt[:500]}]"}],
@@ -630,7 +643,7 @@ def log_image_generation_error(
             user_id=_user_fk_id(context.user_id if context else None),
             run_id=context.run_id if context else "",
             trace_id=(context.trace_id if context else "") or "",
-            conversation_id=(context.conversation_id if context else "") or "",
+            conversation_id=(context.conversation_id if context else "") or "", **_subject_fields(context),
             model=model,
             is_stream=False,
             prompt=[{"role": "user", "content": f"[{action}: {prompt[:500]}]"}],
@@ -680,7 +693,7 @@ def log_decisions(
             user_id=_user_fk_id(context.user_id if context else None),
             run_id=context.run_id if context else "",
             trace_id=(context.trace_id if context else "") or "",
-            conversation_id=(context.conversation_id if context else "") or "",
+            conversation_id=(context.conversation_id if context else "") or "", **_subject_fields(context),
             model=model,
             is_stream=False,
             prompt=[{
@@ -737,7 +750,7 @@ def log_decisions_error(
             user_id=_user_fk_id(context.user_id if context else None),
             run_id=context.run_id if context else "",
             trace_id=(context.trace_id if context else "") or "",
-            conversation_id=(context.conversation_id if context else "") or "",
+            conversation_id=(context.conversation_id if context else "") or "", **_subject_fields(context),
             model=model,
             is_stream=False,
             prompt=[{
@@ -809,7 +822,7 @@ def log_transcription_streaming(
             user_id=_user_fk_id(context.user_id if context else None),
             run_id=context.run_id if context else "",
             trace_id=(context.trace_id if context else "") or "",
-            conversation_id=(context.conversation_id if context else "") or "",
+            conversation_id=(context.conversation_id if context else "") or "", **_subject_fields(context),
             model=model,
             is_stream=True,
             prompt=[{

@@ -64,6 +64,33 @@ class UserDeleteRedactsLLMCallLogTests(TestCase):
         self.assertEqual(log.output_tokens, 7)
         self.assertEqual(log.total_tokens, 12)
 
+    def test_org_stamped_before_user_is_nulled(self):
+        from accounts.models import Membership, Organization
+
+        org = Organization.objects.create(name="Org", slug="org-stamp")
+        user = User.objects.create_user(
+            email="dora@example.com", password="pw12345!"
+        )
+        Membership.objects.create(user=user, org=org, role=Membership.Role.MEMBER)
+        log = self._make_log(user)
+
+        user.delete()
+
+        log.refresh_from_db()
+        self.assertIsNone(log.user_id)
+        self.assertEqual(log.org_id, org.pk)
+
+    def test_user_without_org_leaves_org_null(self):
+        user = User.objects.create_user(
+            email="erin@example.com", password="pw12345!"
+        )
+        log = self._make_log(user)
+
+        user.delete()
+
+        log.refresh_from_db()
+        self.assertIsNone(log.org_id)
+
     def test_other_users_logs_unaffected(self):
         alice = User.objects.create_user(
             email="alice2@example.com", password="pw12345!"

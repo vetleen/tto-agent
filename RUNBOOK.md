@@ -343,7 +343,8 @@ python manage.py backfill_descriptions --doc-ids 30 33
 # LLM logs. Idempotent — safe to run repeatedly. Scheduled daily via Heroku Scheduler.
 python manage.py enforce_retention
 python manage.py enforce_retention --dry-run
-python manage.py enforce_retention --target LLMCallLog   # single target
+python manage.py enforce_retention --target LLMCallLog   # single target (content redaction)
+python manage.py enforce_retention --target LLMCallLogIdentity   # user/reference anonymization
 
 # Chunk-scan shadow comparison (production = Decisions, shadow = the legacy classifier
 # since 2026-11; --direction decisions_shadow shows the earlier comparison; see
@@ -385,7 +386,15 @@ python manage.py pii_shadow_report --run 2026-10-25             # run the shadow
 | GuardrailEvent | 180 days | Delete |
 | Feedback | 90 days | Delete (removes screenshot from storage) |
 | EmailVerificationToken | 1 day | Delete |
-| LLMCallLog | 90 days | Redact (preserves cost/usage analytics) |
+| LLMCallLog | 30 days (`LLM_LOG_CONTENT_RETENTION_DAYS`) | Redact content: `prompt`, `raw_output`, `tools` (preserves cost/usage analytics) |
+| LLMCallLogIdentity | 365 days (`LLM_LOG_IDENTITY_RETENTION_DAYS`) | Anonymize: `user` → NULL, `run_id`/`trace_id`/`conversation_id`/`document_id`/`data_room_id` cleared; the user's organization is stamped on `org_id` first, so cost still aggregates per organization and model |
+
+LLMCallLog content is also redacted at once when the user, the chat thread, the data-room
+document or the data room it belongs to is deleted (`pre_delete` signals in `accounts`, `chat`,
+`documents`; the retention deletes above fire them too). Document rows are linked through
+`LLMCallLog.document_id`/`data_room_id`, written since 2026-11; older document rows and the
+nightly shadow rows (which span documents) are covered by the 30-day redaction only. Meeting
+transcription rows hold no transcript text. `error_message` and `response_metadata` are not redacted.
 
 Provisioned via the Heroku Scheduler add-on (one-off setup):
 
@@ -629,6 +638,8 @@ See `.env.example` for the full list with comments. Key production variables:
 | `PII_SHADOW_ENABLED` | No | Legacy-classifier shadow of the PII scan (`shadow_pii_scan_nightly` and the PII scan's pending-row writes, default `true`). `false` turns both off. |
 | `PII_SHADOW_MAX_WINDOWS` | No | PII windows the shadow compares per night, one legacy call each (default 500; the rest stay pending). |
 | `PII_SHADOW_MAX_REVIEWS` | No | Blind PII reviewer calls per night over legacy-only Art. 9/10 positives (default 20). |
+| `LLM_LOG_CONTENT_RETENTION_DAYS` | No | Days before `enforce_retention` redacts `LLMCallLog` content: `prompt`, `raw_output`, `tools` (default 30). |
+| `LLM_LOG_IDENTITY_RETENTION_DAYS` | No | Days before `enforce_retention` anonymizes `LLMCallLog` rows: user and run/trace/conversation/document references removed, organization kept on `org_id` (default 365). |
 | `ANTHROPIC_API_KEY` | No | Anthropic LLM provider |
 | `GEMINI_API_KEY` | No | Google Gemini LLM provider |
 | `MOONSHOT_API_KEY` | No | Moonshot/Kimi LLM provider |

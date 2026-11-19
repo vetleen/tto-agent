@@ -1387,8 +1387,12 @@ def describe_image(
     model: str | None = None,
     conversation_id: str | None = None,
     thinking_level: str | None = None,
+    log_ids: dict | None = None,
 ) -> str | None:
     """Use a vision-capable model to describe an image.
+
+    *log_ids* (``llm.retention.document_log_ids``) tags the row with the
+    data-room document the picture belongs to, so deleting it redacts the row.
 
     *conversation_id* attributes the call's ``LLMCallLog`` row to a chat thread
     so it counts toward that thread's cost (``/cost``). *thinking_level* is the
@@ -1446,7 +1450,9 @@ def describe_image(
     if level is not None:
         params["thinking_level"] = level
 
-    context = RunContext.create(user_id=user.pk, conversation_id=conversation_id)
+    context = RunContext.create(
+        user_id=user.pk, conversation_id=conversation_id, **(log_ids or {}),
+    )
     request = ChatRequest(
         messages=[Message(role="user", content=content_blocks)],
         model=model,

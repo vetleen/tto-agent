@@ -101,6 +101,29 @@ class OrgUsagePageTests(TestCase):
         self.assertNotContains(response, "$9.99")
         self.assertNotContains(response, outsider.email)
 
+    def test_anonymized_rows_count_toward_their_org(self):
+        # A row past the identity retention period: no user, org on org_id.
+        anonymized = _create_log(None, cost="0.40")
+        LLMCallLog.objects.filter(pk=anonymized.pk).update(org_id=self.org.pk)
+        _create_log(self.admin, cost="0.10")
+        self.client.login(email=self.admin.email, password=self.password)
+        response = self.client.get(self.url)
+        self.assertContains(response, "$0.50")
+        self.assertContains(response, "Anonymized usage")
+
+    def test_anonymized_rows_of_other_orgs_excluded(self):
+        other_org = Organization.objects.create(name="Other Org", slug="other-org")
+        foreign = _create_log(None, cost="9.99")
+        LLMCallLog.objects.filter(pk=foreign.pk).update(org_id=other_org.pk)
+        _create_log(None, cost="7.77")  # no user, no org
+        _create_log(self.admin, cost="0.01")
+        self.client.login(email=self.admin.email, password=self.password)
+        response = self.client.get(self.url)
+        self.assertContains(response, "$0.01")
+        self.assertNotContains(response, "$9.99")
+        self.assertNotContains(response, "$7.77")
+        self.assertNotContains(response, "Anonymized usage")
+
     def test_date_range_filtering(self):
         now = timezone.now()
         last_month = now - timedelta(days=40)

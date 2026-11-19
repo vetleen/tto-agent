@@ -194,11 +194,13 @@ class ImageDescribeConcurrencyTests(TestCase):
         threads_seen = set()
 
         conversation_ids = set()
+        log_ids_seen = []
 
         def fake_describe(image_bytes, content_type, user, alt_text=None, model=None, conversation_id=None,
-                          thinking_level=None):
+                          thinking_level=None, log_ids=None):
             threads_seen.add(threading.get_ident())
             conversation_ids.add(conversation_id)
+            log_ids_seen.append(log_ids)
             barrier.wait()
             return "desc"
 
@@ -221,6 +223,10 @@ class ImageDescribeConcurrencyTests(TestCase):
         self.assertEqual(progress_calls[-1], (n, n))  # counter reached N/N
         # Data-room work is not billed to any chat thread.
         self.assertEqual(conversation_ids, {None})
+        # ...but every call's log row is tagged with the document and its room,
+        # so deleting either redacts it.
+        expected = {"document_id": self.doc.pk, "data_room_id": self.data_room.pk}
+        self.assertEqual(log_ids_seen, [expected] * n)
 
 
 @override_settings(CACHES=LOCMEM)

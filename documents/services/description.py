@@ -69,6 +69,7 @@ def generate_description_and_tags_from_text(
     data_room_id: int | None = None,
     org_id: int | None = None,
     is_image: bool = False,
+    document_id: int | None = None,
 ) -> dict:
     """Generate a description and document_type tag from raw text using the cheap LLM.
 
@@ -91,8 +92,9 @@ def generate_description_and_tags_from_text(
 
     system_prompt = _STRUCTURED_SYSTEM_PROMPT + (_IMAGE_INPUT_NOTE if is_image else "")
 
+    # document_id / data_room_id: deleting either redacts this call's log row.
     context = RunContext.create(
-        user_id=user_id,
+        user_id=user_id, document_id=document_id, data_room_id=data_room_id,
     )
     request = ChatRequest(
         messages=[

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 
 from django.db import transaction
-from django.db.models.signals import post_delete, post_save
+from django.db.models.signals import post_delete, post_save, pre_delete
 from django.dispatch import receiver
 from django.utils import timezone
 
@@ -38,6 +38,19 @@ def extend_dataroom_retain_on_attach(sender, instance, created, **kwargs):
     DataRoom.objects.filter(pk=instance.data_room_id).update(
         retain_until=timezone.now() + RETENTION_PERIODS["documents.DataRoom"],
     )
+
+
+@receiver(pre_delete, sender="chat.ChatThread")
+def redact_llm_call_logs_on_thread_delete(sender, instance, **kwargs):
+    """GDPR Art. 17: deleting a thread scrubs the content (prompt, raw_output,
+    tool schemas) of every LLMCallLog row of its turns, sub-agents and side
+    calls — they all carry the thread id as ``conversation_id``. The rows stay
+    for cost/usage analytics. Fires per thread on every path: the delete view,
+    queryset deletes, enforce_retention and the user cascade."""
+    from llm.models import LLMCallLog
+    from llm.retention import redact_llm_call_logs
+
+    redact_llm_call_logs(LLMCallLog.objects.filter(conversation_id=str(instance.pk)))
 
 
 def _delete_file_on_commit(storage, name, label, pk):

@@ -161,6 +161,7 @@ def _call_vision(png: bytes, sheet, signal: HeaderInfo, vision_model: str, doc, 
     from chat.services import build_image_content_block
     from llm import get_llm_service
     from llm.core.model_factory import detect_provider
+    from llm.retention import document_log_ids
     from llm.types import ChatRequest, Message, RunContext
 
     provider = detect_provider(vision_model)
@@ -173,7 +174,7 @@ def _call_vision(png: bytes, sheet, signal: HeaderInfo, vision_model: str, doc, 
         model=vision_model,
         stream=False,
         tools=[],
-        context=RunContext.create(user_id=doc.uploaded_by_id),
+        context=RunContext.create(user_id=doc.uploaded_by_id, **document_log_ids(doc)),
         params=dict(params or {}),
     )
     try:

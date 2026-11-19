@@ -558,3 +558,17 @@ server's `error` (incl. the 503 "busy").
 - Log levels: `DEBUG` local only, `INFO` business events, `WARNING` recoverable issues, `ERROR` failed requests/tasks, `CRITICAL` service health.
 - Log exceptions with `logger.exception()` to capture stack traces.
 - Sentry captures `WARNING+` as events and `INFO+` as breadcrumbs when `SENTRY_DSN` is set.
+
+## LLMCallLog Retention
+
+`llm/retention.py` holds both levels; rows are never deleted. **Content** (`prompt`, `raw_output`,
+`tools`) is redacted after `LLM_LOG_CONTENT_RETENTION_DAYS` (30, `enforce_retention --target
+LLMCallLog`) and at once by `pre_delete` signals when the row's user (`accounts/signals.py`), chat
+thread (`chat/signals.py`, by `conversation_id`), data-room document or data room
+(`documents/signals.py`, by `LLMCallLog.document_id`/`data_room_id`) is deleted. **Identity**: after
+`LLM_LOG_IDENTITY_RETENTION_DAYS` (365, target `LLMCallLogIdentity`) the user and the
+run/trace/conversation/document references are removed and the user's organization is stamped on
+`org_id` (also at account deletion); the org usage page counts those rows by `org_id`.
+**A new LLM call made for a data-room document must tag its `RunContext`** with
+`**llm.retention.document_log_ids(doc)` (or `document_id=`/`data_room_id=`), or its row is only
+covered by the 30-day redaction. Calls in a chat thread need nothing beyond `conversation_id`.

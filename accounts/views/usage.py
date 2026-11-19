@@ -6,7 +6,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from django.contrib.auth.decorators import login_required
-from django.db.models import Count, Sum
+from django.db.models import Count, Q, Sum
 from django.db.models.functions import Coalesce
 from django.shortcuts import render
 from django.utils import timezone
@@ -253,8 +253,10 @@ def org_usage_page(request):
     window = resolve_usage_window(request)
 
     user_ids = list(Membership.objects.filter(org=org).values_list("user_id", flat=True))
+    # Rows that lost their user (deleted account, or anonymised after
+    # LLM_LOG_IDENTITY_RETENTION_DAYS) carry the organization on org_id instead.
     qs = LLMCallLog.objects.filter(
-        user_id__in=user_ids,
+        Q(user_id__in=user_ids) | Q(user__isnull=True, org_id=org.pk),
         created_at__gte=window.query_start,
         created_at__lt=window.query_end,
     )

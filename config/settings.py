@@ -1079,6 +1079,13 @@ PII_SHADOW_ENABLED = _get_env_bool(os.environ.get("PII_SHADOW_ENABLED"), True)
 PII_SHADOW_MAX_WINDOWS = _env_int("PII_SHADOW_MAX_WINDOWS", "500")  # one legacy call each
 PII_SHADOW_MAX_REVIEWS = _env_int("PII_SHADOW_MAX_REVIEWS", "20")
 
+# LLMCallLog retention (llm/retention.py, enforced daily by enforce_retention).
+# Content (prompt, raw_output, tools) is redacted after the first; after the
+# second the row also loses its user and its run/trace/conversation/document
+# references, keeping model, tokens, cost and the organization (org_id).
+LLM_LOG_CONTENT_RETENTION_DAYS = _env_int("LLM_LOG_CONTENT_RETENTION_DAYS", "30")
+LLM_LOG_IDENTITY_RETENTION_DAYS = _env_int("LLM_LOG_IDENTITY_RETENTION_DAYS", "365")
+
 # Transcription settings
 TRANSCRIPTION_DEFAULT_MODEL = os.environ.get("TRANSCRIPTION_DEFAULT_MODEL", "openai/gpt-transcribe")
 # Per-path defaults. When unset, fall back to TRANSCRIPTION_DEFAULT_MODEL.

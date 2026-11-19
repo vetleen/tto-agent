@@ -973,8 +973,9 @@ class ProcessDocumentServiceTests(TestCase):
         ]
         captured = {}
 
-        def _fake_describe(img_bytes, media_type, user, model=None, thinking_level=None):
+        def _fake_describe(img_bytes, media_type, user, model=None, thinking_level=None, log_ids=None):
             captured["len"] = len(img_bytes)
+            captured["log_ids"] = log_ids
             return "A noisy test image."
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -998,6 +999,11 @@ class ProcessDocumentServiceTests(TestCase):
                 self.assertLess(version.native_blob.size, doc.original_file.size)
                 # describe_image ran on the optimized (smaller) bytes.
                 self.assertLess(captured["len"], len(raw_bytes))
+                # The call's log row is tagged with the document and its room.
+                self.assertEqual(
+                    captured["log_ids"],
+                    {"document_id": doc.pk, "data_room_id": self.data_room.pk},
+                )
 
     @override_settings(PGVECTOR_CONNECTION="")
     def test_process_document_image_fails_without_vision_model(self):

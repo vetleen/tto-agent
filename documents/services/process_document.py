@@ -237,6 +237,7 @@ def _extract_native(version, doc):
             # PII signal is a planned follow-up).
             version.parser_type = "image"
             from chat.services import describe_image
+            from llm.retention import document_log_ids
             from core.file_types import canonical_mime_for_extension
             from core.preferences import resolve_org_feature_model_and_reasoning
             from documents.services.pii_scan import org_id_for_document
@@ -275,6 +276,7 @@ def _extract_native(version, doc):
             )
             description = describe_image(
                 img_bytes, media_type, doc.uploaded_by, model=model, thinking_level=thinking_level,
+                log_ids=document_log_ids(doc),
             )
             if not description:
                 raise ValueError("Could not generate a description for this image.")

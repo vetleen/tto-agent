@@ -94,7 +94,10 @@
           {% for row in user_breakdown %}
           <tr>
             <td class="px-4 py-3 truncate">
-              {% if row.user__first_name or row.user__last_name %}
+              {% if row.user_id is None %}
+              <p class="text-heading font-medium truncate">Anonymized usage</p>
+              <p class="text-body-subtle text-xs truncate">Deleted accounts and calls past the retention period</p>
+              {% elif row.user__first_name or row.user__last_name %}
               <p class="text-heading font-medium truncate">{{ row.user__first_name }} {{ row.user__last_name }}</p>
               <p class="text-body-subtle text-xs truncate">{{ row.user__email }}</p>
               {% else %}
